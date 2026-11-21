@@ -1,16 +1,16 @@
 [![SWUbanner](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/banner2-direct.svg)](https://supportukrainenow.org/)
 
-# Rust Service Template
+# VilnaCRM API Gateway
 
-[![Quality](https://github.com/VilnaCRM-Org/rust-service-template/actions/workflows/quality.yml/badge.svg)](https://github.com/VilnaCRM-Org/rust-service-template/actions/workflows/quality.yml)
-[![Tests](https://github.com/VilnaCRM-Org/rust-service-template/actions/workflows/tests.yml/badge.svg)](https://github.com/VilnaCRM-Org/rust-service-template/actions/workflows/tests.yml)
-[![Contracts](https://github.com/VilnaCRM-Org/rust-service-template/actions/workflows/contracts.yml/badge.svg)](https://github.com/VilnaCRM-Org/rust-service-template/actions/workflows/contracts.yml)
-[![Security](https://github.com/VilnaCRM-Org/rust-service-template/actions/workflows/security.yml/badge.svg)](https://github.com/VilnaCRM-Org/rust-service-template/actions/workflows/security.yml)
-[![codecov](https://codecov.io/gh/VilnaCRM-Org/rust-service-template/graph/badge.svg)](https://codecov.io/gh/VilnaCRM-Org/rust-service-template)
-[![Latest release](https://img.shields.io/github/v/release/VilnaCRM-Org/rust-service-template)](https://github.com/VilnaCRM-Org/rust-service-template/releases/latest)
-[![License](https://img.shields.io/github/license/VilnaCRM-Org/rust-service-template)](LICENSE)
+[![Quality](https://github.com/VilnaCRM-Org/api-gateway-service/actions/workflows/quality.yml/badge.svg)](https://github.com/VilnaCRM-Org/api-gateway-service/actions/workflows/quality.yml)
+[![Tests](https://github.com/VilnaCRM-Org/api-gateway-service/actions/workflows/tests.yml/badge.svg)](https://github.com/VilnaCRM-Org/api-gateway-service/actions/workflows/tests.yml)
+[![Contracts](https://github.com/VilnaCRM-Org/api-gateway-service/actions/workflows/contracts.yml/badge.svg)](https://github.com/VilnaCRM-Org/api-gateway-service/actions/workflows/contracts.yml)
+[![Security](https://github.com/VilnaCRM-Org/api-gateway-service/actions/workflows/security.yml/badge.svg)](https://github.com/VilnaCRM-Org/api-gateway-service/actions/workflows/security.yml)
+[![codecov](https://codecov.io/gh/VilnaCRM-Org/api-gateway-service/graph/badge.svg)](https://codecov.io/gh/VilnaCRM-Org/api-gateway-service)
+[![Latest release](https://img.shields.io/github/v/release/VilnaCRM-Org/api-gateway-service)](https://github.com/VilnaCRM-Org/api-gateway-service/releases/latest)
+[![License](https://img.shields.io/github/license/VilnaCRM-Org/api-gateway-service)](LICENSE)
 
-`rust-service-template` is the VilnaCRM baseline for backend services written in Rust. It is the Rust counterpart of `php-service-template`: a Cargo workspace with one crate per bounded-context layer, a REST and GraphQL API on axum, PostgreSQL through sqlx, contract snapshots, architecture guards, quality gates behind one command surface, and guidance for AI coding assistants. A downstream service inherits the platform concerns instead of rebuilding them.
+The VilnaCRM API gateway with built-in identity and access management (IAM): it authenticates, authorizes and proxies every request to the upstream services.
 
 ## Baseline
 
