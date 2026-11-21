@@ -1,16 +1,16 @@
 [![SWUbanner](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/banner2-direct.svg)](https://supportukrainenow.org/)
 
-# Rust Service Template
+# VilnaCRM API Gateway
 
-[![Quality](https://github.com/VilnaCRM-Org/rust-service-template/actions/workflows/quality.yml/badge.svg)](https://github.com/VilnaCRM-Org/rust-service-template/actions/workflows/quality.yml)
-[![Tests](https://github.com/VilnaCRM-Org/rust-service-template/actions/workflows/tests.yml/badge.svg)](https://github.com/VilnaCRM-Org/rust-service-template/actions/workflows/tests.yml)
-[![Contracts](https://github.com/VilnaCRM-Org/rust-service-template/actions/workflows/contracts.yml/badge.svg)](https://github.com/VilnaCRM-Org/rust-service-template/actions/workflows/contracts.yml)
-[![Security](https://github.com/VilnaCRM-Org/rust-service-template/actions/workflows/security.yml/badge.svg)](https://github.com/VilnaCRM-Org/rust-service-template/actions/workflows/security.yml)
-[![codecov](https://codecov.io/gh/VilnaCRM-Org/rust-service-template/graph/badge.svg)](https://codecov.io/gh/VilnaCRM-Org/rust-service-template)
-[![Latest release](https://img.shields.io/github/v/release/VilnaCRM-Org/rust-service-template)](https://github.com/VilnaCRM-Org/rust-service-template/releases/latest)
-[![License](https://img.shields.io/github/license/VilnaCRM-Org/rust-service-template)](LICENSE)
+[![Quality](https://github.com/VilnaCRM-Org/api-gateway-service/actions/workflows/quality.yml/badge.svg)](https://github.com/VilnaCRM-Org/api-gateway-service/actions/workflows/quality.yml)
+[![Tests](https://github.com/VilnaCRM-Org/api-gateway-service/actions/workflows/tests.yml/badge.svg)](https://github.com/VilnaCRM-Org/api-gateway-service/actions/workflows/tests.yml)
+[![Contracts](https://github.com/VilnaCRM-Org/api-gateway-service/actions/workflows/contracts.yml/badge.svg)](https://github.com/VilnaCRM-Org/api-gateway-service/actions/workflows/contracts.yml)
+[![Security](https://github.com/VilnaCRM-Org/api-gateway-service/actions/workflows/security.yml/badge.svg)](https://github.com/VilnaCRM-Org/api-gateway-service/actions/workflows/security.yml)
+[![codecov](https://codecov.io/gh/VilnaCRM-Org/api-gateway-service/graph/badge.svg)](https://codecov.io/gh/VilnaCRM-Org/api-gateway-service)
+[![Latest release](https://img.shields.io/github/v/release/VilnaCRM-Org/api-gateway-service)](https://github.com/VilnaCRM-Org/api-gateway-service/releases/latest)
+[![License](https://img.shields.io/github/license/VilnaCRM-Org/api-gateway-service)](LICENSE)
 
-`rust-service-template` is the VilnaCRM baseline for backend services written in Rust. It is the Rust counterpart of `php-service-template`: a Cargo workspace with one crate per bounded-context layer, a REST and GraphQL API on axum, PostgreSQL through sqlx, contract snapshots, architecture guards, quality gates behind one command surface, and guidance for AI coding assistants. A downstream service inherits the platform concerns instead of rebuilding them.
+The VilnaCRM API gateway with built-in identity and access management (IAM): it authenticates, authorizes and proxies every request to the upstream services.
 
 ## Baseline
 
@@ -68,9 +68,9 @@ The single list of verification targets is in the "Verification" section of [`AG
 
 Pull requests run the Quality, Tests, Contracts, Change control, Security, Repository and Load tests workflows, including the mutation tests of the changed code and the smoke load profile. A weekly schedule runs the full mutation suite, a clean bootstrap, the security gates and the dev-container build. The average, stress and spike load profiles run on demand (`make load-tests`). A release is cut from `main` when conventional commits call for one. Every workflow calls the same Make targets that run locally, so a green local run predicts a green pull request. [`docs/repository-settings.md`](docs/repository-settings.md) lists the required status checks and repository settings.
 
-## Creating a service and receiving updates
+## Receiving template updates
 
-Create a repository from this template and follow [`docs/new-service.md`](docs/new-service.md): set the package identity in the workspace manifest, adjust `bmalph/config.json` and the badges above, and choose one template-sync flavour. The two guides in the `.github` directory, `TEMPLATE_SYNC_APP.md` and `TEMPLATE_SYNC_PAT.md`, explain how updates of the template reach a service; each names the other by its bare file name, so deleting one flavour leaves no broken citation.
+This service was created from the VilnaCRM Rust service template and keeps the GitHub App flavour of the template sync. The guide `TEMPLATE_SYNC_APP.md` in the `.github` directory explains how updates of the template reach this repository, and [`docs/new-service.md`](docs/new-service.md) lists what a service owns.
 
 ## Cloud load testing
 

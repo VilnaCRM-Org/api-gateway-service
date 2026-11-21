@@ -14,6 +14,8 @@ yanked = "deny"
 unmaintained = "all"
 ignore = [
     # { id = "RUSTSEC-0000-0000", reason = "why this is acceptable, and until when" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained and has no safe upgrade. It is not in the runtime dependency graph: it enters only through aws-smithy-protocol-test -> cbor-diag, a test-utility path of aws-smithy-http-client that `all-features` and the dev dependency aws-smithy-mocks enable. Accepted on 2026-11-21 until 2027-02-21, or until the AWS SDK drops cbor-diag or the SQS adapter is removed." },
+    { id = "RUSTSEC-2026-0542", reason = "humantime is unmaintained and has no safe upgrade. It is a direct workspace dependency of the template code (duration parsing in crates/service/src/config.rs and one audit log line of the example context) and a dependency of cucumber. Accepted on 2026-11-21 until 2027-02-21; the replacement belongs in rust-service-template and arrives through the template sync." },
 ]
 
 [licenses]
