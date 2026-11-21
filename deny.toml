@@ -14,6 +14,8 @@ yanked = "deny"
 unmaintained = "all"
 ignore = [
     # { id = "RUSTSEC-0000-0000", reason = "why this is acceptable, and until when" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained and has no safe upgrade; it is only a transitive dependency of the AWS SDK crates (aws-smithy-runtime, aws-smithy-mocks). Accepted on 2026-11-21 until 2027-02-21, or until the AWS SDK drops chrono or the SQS adapter is removed." },
+    { id = "RUSTSEC-2026-0542", reason = "humantime is unmaintained (it wraps chrono) and has no safe upgrade; it comes in through cucumber and the configuration duration parsing. Accepted on 2026-11-21 until 2027-02-21, or until a maintained replacement is adopted." },
 ]
 
 [licenses]

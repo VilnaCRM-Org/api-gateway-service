@@ -68,9 +68,9 @@ The single list of verification targets is in the "Verification" section of [`AG
 
 Pull requests run the Quality, Tests, Contracts, Change control, Security, Repository and Load tests workflows, including the mutation tests of the changed code and the smoke load profile. A weekly schedule runs the full mutation suite, a clean bootstrap, the security gates and the dev-container build. The average, stress and spike load profiles run on demand (`make load-tests`). A release is cut from `main` when conventional commits call for one. Every workflow calls the same Make targets that run locally, so a green local run predicts a green pull request. [`docs/repository-settings.md`](docs/repository-settings.md) lists the required status checks and repository settings.
 
-## Creating a service and receiving updates
+## Receiving template updates
 
-Create a repository from this template and follow [`docs/new-service.md`](docs/new-service.md): set the package identity in the workspace manifest, adjust `bmalph/config.json` and the badges above, and choose one template-sync flavour. The two guides in the `.github` directory, `TEMPLATE_SYNC_APP.md` and `TEMPLATE_SYNC_PAT.md`, explain how updates of the template reach a service; each names the other by its bare file name, so deleting one flavour leaves no broken citation.
+This service was created from the VilnaCRM Rust service template and keeps the GitHub App flavour of the template sync. The guide `TEMPLATE_SYNC_APP.md` in the `.github` directory explains how updates of the template reach this repository, and [`docs/new-service.md`](docs/new-service.md) lists what a service owns.
 
 ## Cloud load testing
 
