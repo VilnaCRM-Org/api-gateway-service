@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT seq, hash FROM iam_security_audit_chain_head WHERE id = 1 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "iam_security_audit_chain_head",
+            "name": "seq"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "iam_security_audit_chain_head",
+            "name": "hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "ff00f7fa1d73858918208f81881f457a7df182f54d308e7b9a1af7de3c302e80"
+}
