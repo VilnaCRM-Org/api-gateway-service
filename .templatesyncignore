@@ -60,3 +60,5 @@ docker-compose.yml
 docker-compose.override.yml
 .github/TEMPLATE_SYNC_PAT.md
 docs/extension-seams.md
+docs/operations.md
+docs/make-targets.md

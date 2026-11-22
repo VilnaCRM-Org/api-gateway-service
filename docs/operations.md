@@ -12,6 +12,8 @@ Runbooks for operating the service and for maintaining the repository that hosts
 - [Tool-version review](#tool-version-review)
 - [First measurements](#first-measurements)
 - [Build caches in CI](#build-caches-in-ci)
+- [Mutation runtime budget](#mutation-runtime-budget)
+- [Protected-change requests](#protected-change-requests)
 - [Accepted findings: `.trivyignore` and `.gitleaksignore`](#accepted-findings-trivyignore-and-gitleaksignore)
 
 ## Migrations and rollback
@@ -471,6 +473,39 @@ The keys `crate-isolation` and `query-metadata` (pull request #2) are checked th
 1. The first push to `main` after the merge: in `Crate isolation` and `Persistence query metadata`, the gate step passed and the post step of the toolchain action printed `... Saving cache ...` for `v0-rust-crate-isolation-Linux-x64-<hash>` and `v0-rust-query-metadata-Linux-x64-<hash>`, each with its `Cache Size`. Result: to be measured after the merge of pull request #2.
 2. The rerun of one unchanged pull-request commit after that push, the run of the previous paragraph: both jobs print `Restored from cache key ... full match: true.` and `Third-party crates compiled: 0`. Result: to be measured after the merge of pull request #2.
 3. The quota: in the same rerun, every other job that restores a key still restores the entry that `main` saved. A `No cache found.` there means that the quota of 10 GB evicted an entry of `main`. Then the two keys cannot be kept within the quota, and the counts of the table in [the package selection](#what-a-restored-cache-cannot-cover-the-package-selection) are recorded as a fifth exception of NFR40 instead. Result: to be measured after the merge of pull request #2.
+
+## Mutation runtime budget
+
+Every mutant reruns the whole test suite of its crate, and the integration suites of `crates/service` and of the IAM infrastructure crate start the compose Kafka broker. The mutation gate stays attainable only while each mutant, build and suite together, fits the shard limit (NFR-2, section 19 of `specs/8-iam-scaffolding-and-spikes/architecture.md`).
+
+Where the gate runs:
+
+- On a pull request, each `Mutation shard k/n` job of `tests.yml` runs `make mutation-tests-diff` against `origin/main`.
+- On a push to `main`, the same jobs run `make mutation-tests-diff` against the previous commit of the pushed branch (`base_ref=HEAD~1`), so they judge the code that the merged commit changed. Before Story 1.8 a push ran `make mutation-tests` over the whole workspace, which no longer fits the shards. `scripts/ci/mutation-plan.sh` is unchanged and still counts the mutants of the whole workspace on a push, so its shard count is an over-estimate, capped at 8 shards, and each shard runs its part of the diff.
+- The scheduled workflow keeps the full run, `make mutation-tests`.
+
+Every shard keeps `timeout-minutes: 45`, the limit of rule (a) of the protected `scripts/check-invariants.sh`, and `.cargo/mutants.toml` is unchanged. The seam check `crates/service/tests/integration/template_seams.rs` (run by `make integration-tests`) fails when the push step or the pull-request step calls another target, when the push step is judged against another base, or when the shard timeout changes.
+
+Suite budget: the integration suite of the IAM infrastructure crate and that of `crates/service` each finish in at most 15 seconds on the CI runner while the matrix holds 150 mutants per shard. This budget stays in force until the owner approves the resize below; after it, the budget becomes 30 seconds. Every story that adds integration tests to either crate keeps its suite inside the budget before it closes; `make integration-tests` prints the time of each suite.
+
+Shard capacity (ESTIMATE, not measured): 8 shards of at most 150 mutants in 45 minutes leave about 18 seconds per mutant for its build and its crate suite, so one run holds about 1,200 mutants. With the resize below, 16 shards of 60 mutants at about 30 seconds each would hold about 960 mutants per diff. The figures are replaced by measurements once a shard of the IAM crates has run on a hosted runner.
+
+Fallback when the changed code of a story still exceeds the budget:
+
+- split the story, so that its changed code fits the matrix (8 × 150 mutants at about 18 seconds, or 16 × 60 at about 30 seconds after the resize);
+- move further broker tests from the compose broker to the in-process `test-broker` of krafka;
+- if that is not enough, stop and report to the owner.
+
+A shard timeout is never raised above 45 minutes, no mutant or file is excluded and no test is deleted to make a run fit.
+
+## Protected-change requests
+
+Changes that need a protected file, each with its decision. A request is applied only after the owner approves it: the pull request carries the `approved-config-change` label and the session that edits the files runs with `ALLOW_PROTECTED_CONFIG_EDIT=1`.
+
+| Request | Protected paths | Requested | Decision | Record |
+| --- | --- | --- | --- | --- |
+| Allow-list additions for the gateway | `architecture.toml` | 2026-11-21 | approved by the owner on 2026-11-21, applied by Story 2.3 | `docs/adr/0023-allow-list-additions-for-the-gateway.md` |
+| Resize the mutation matrix to 16 shards of 60 mutants: `per_shard=60` and `max_shards=16` in `scripts/ci/mutation-plan.sh` (not protected itself), with the assertions of `tests/CLI/bats/ci_scripts.bats` updated in the same change (961 mutants give 16 shards, 120 give 2) | `tests/CLI/bats/ci_scripts.bats` | 2026-11-22 (Story 1.8) | not approved (2026-11-22); both files stay unchanged and the 15-second suite budget stays in force | this section and [Mutation runtime budget](#mutation-runtime-budget) |
 
 ## Accepted findings: `.trivyignore` and `.gitleaksignore`
 

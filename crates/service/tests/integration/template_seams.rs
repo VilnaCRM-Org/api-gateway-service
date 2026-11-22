@@ -11,8 +11,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Seam files: changed away from the template, so the template sync must not overwrite them.
-const SEAM_FILES: [&str; 6] = [
+const SEAM_FILES: [&str; 8] = [
     ".github/workflows/tests.yml",
+    "docs/operations.md",
+    "docs/make-targets.md",
     ".github/workflows/scheduled.yml",
     "docker-compose.yml",
     "docker-compose.override.yml",
@@ -32,7 +34,7 @@ const KAFKA_JOBS: [(&str, &str, &[&str]); 3] = [
     (
         ".github/workflows/tests.yml",
         "mutation-shard",
-        &["mutation-tests-diff", "mutation-tests"],
+        &["mutation-tests-diff"],
     ),
     (
         ".github/workflows/scheduled.yml",
@@ -43,6 +45,17 @@ const KAFKA_JOBS: [(&str, &str, &[&str]); 3] = [
 
 /// The compose service the spike tests read.
 const KAFKA_SERVICE: &str = "kafka";
+
+/// The mutation shard job of `tests.yml` (Story 1.8, NFR-2): its pull-request step and its push step both run
+/// `make mutation-tests-diff`, the push step against the previous commit of the pushed branch, and every shard
+/// keeps the 45-minute limit of `scripts/check-invariants.sh` rule (a).
+const MUTATION_WORKFLOW: &str = ".github/workflows/tests.yml";
+const MUTATION_JOB: &str = "mutation-shard";
+const MUTATION_TARGET: &str = "mutation-tests-diff";
+const PULL_REQUEST_CONDITION: &str = "env.EVENT_NAME == 'pull_request'";
+const PUSH_CONDITION: &str = "env.EVENT_NAME != 'pull_request'";
+const PUSH_BASE_REF: &str = "HEAD~1";
+const SHARD_TIMEOUT: &str = "45";
 
 fn repository_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -166,6 +179,146 @@ fn missing_start(workflow: &str, job: &str, targets: &[&str], service: &str) -> 
         .take(first_test)
         .any(|call| call.starts(service));
     (!started).then(|| format!("job {job} does not start {service} before {targets:?}: {calls:?}"))
+}
+
+/// The lines of `job` of `workflow`: the lines after its key at two spaces up to the next job or top-level key.
+fn job_lines<'a>(workflow: &'a str, job: &str) -> Option<Vec<&'a str>> {
+    let key = format!("  {job}:");
+    let mut lines = workflow.lines().skip_while(|line| line.trim_end() != key);
+    lines.next()?;
+    Some(
+        lines
+            .take_while(|line| {
+                line.is_empty() || line.starts_with("   ") || line.trim_start().starts_with('#')
+            })
+            .collect(),
+    )
+}
+
+/// The `make` call of the step of `job` whose `if:` holds `condition`, read from the `run:` line of that step.
+fn conditional_call(workflow: &str, job: &str, condition: &str) -> Option<MakeCall> {
+    let lines = job_lines(workflow, job)?;
+    let start = lines.iter().position(|line| {
+        let item = line.trim_start();
+        let item = item.strip_prefix("- ").unwrap_or(item);
+        item.starts_with("if:") && item.contains(condition)
+    })?;
+    let step_rest = lines.get(start.checked_add(1)?..)?;
+    step_rest
+        .iter()
+        .take_while(|line| !line.trim_start().starts_with("- "))
+        .find_map(|line| {
+            line.trim_start()
+                .strip_prefix("run:")
+                .and_then(|command| MakeCall::parse(command.trim_start()))
+        })
+}
+
+/// The `timeout-minutes` value of `job` itself (four spaces of indentation).
+fn job_timeout<'a>(workflow: &'a str, job: &str) -> Option<&'a str> {
+    job_lines(workflow, job)?
+        .into_iter()
+        .find_map(|line| line.strip_prefix("    timeout-minutes:").map(str::trim))
+}
+
+/// The problems of the mutation shard job: a step that is missing or calls another target, a push step that
+/// is not judged against the previous commit, a timeout other than 45 minutes, or a call of `mutation-tests`.
+fn mutation_job_problems(workflow: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (event, condition) in [
+        ("pull-request", PULL_REQUEST_CONDITION),
+        ("push", PUSH_CONDITION),
+    ] {
+        match conditional_call(workflow, MUTATION_JOB, condition) {
+            None => problems.push(format!("no {event} step runs make")),
+            Some(call) if call.targets != [MUTATION_TARGET] => {
+                problems.push(format!("the {event} step calls {:?}", call.targets));
+            }
+            Some(call) if event == "push" => {
+                let base = call
+                    .variables
+                    .iter()
+                    .find(|(name, _)| name == "base_ref")
+                    .map(|(_, value)| value.as_str());
+                if base != Some(PUSH_BASE_REF) {
+                    problems.push(format!(
+                        "the push step has base_ref {base:?}, not {PUSH_BASE_REF}"
+                    ));
+                }
+            }
+            Some(_) => {}
+        }
+    }
+    let all = jobs(workflow);
+    let calls_full_run = all
+        .iter()
+        .filter(|(name, _)| name == MUTATION_JOB)
+        .flat_map(|(_, calls)| calls)
+        .any(|call| call.targets.iter().any(|target| target == "mutation-tests"));
+    if calls_full_run {
+        problems.push("a step calls make mutation-tests over the whole workspace".to_owned());
+    }
+    let timeout = job_timeout(workflow, MUTATION_JOB);
+    if timeout != Some(SHARD_TIMEOUT) {
+        problems.push(format!(
+            "timeout-minutes is {timeout:?}, not {SHARD_TIMEOUT}"
+        ));
+    }
+    problems
+}
+
+#[test]
+fn the_mutation_shard_job_runs_mutation_tests_diff_on_pull_requests_and_pushes_within_45_minutes() {
+    let problems = mutation_job_problems(&read(MUTATION_WORKFLOW));
+
+    assert!(problems.is_empty(), "{MUTATION_WORKFLOW}: {problems:#?}");
+    let entries = ignore_entries(&read(".templatesyncignore"));
+    assert!(covered(&repository_root(), &entries, MUTATION_WORKFLOW));
+}
+
+#[test]
+fn the_mutation_job_check_rejects_a_full_run_a_missing_step_another_base_and_another_timeout() {
+    let job = |push: &str, timeout: &str| {
+        format!(
+            "\
+jobs:
+  mutation-shard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: {timeout}
+    steps:
+      - run: make start-deps DEPS=kafka
+      - if: ${{{{ env.EVENT_NAME == 'pull_request' }}}}
+        run: make mutation-tests-diff base_ref=\"origin/$BASE_REF\" MUTANTS_SHARD=\"$SHARD\"
+{push}
+  mutation-tests:
+    timeout-minutes: 5
+    steps:
+      - run: make mutation-tests
+"
+        )
+    };
+    let diff_push = "      - if: ${{ env.EVENT_NAME != 'pull_request' }}\n        run: make mutation-tests-diff base_ref=HEAD~1 MUTANTS_SHARD=\"$SHARD\"";
+
+    assert_eq!(
+        mutation_job_problems(&job(diff_push, "45")),
+        Vec::<String>::new()
+    );
+
+    let full_push = "      - if: ${{ env.EVENT_NAME != 'pull_request' }}\n        run: make mutation-tests MUTANTS_SHARD=\"$SHARD\"";
+    let problems = mutation_job_problems(&job(full_push, "45"));
+    assert_eq!(problems.len(), 2, "{problems:#?}");
+
+    let problems = mutation_job_problems(&job("", "45"));
+    assert_eq!(problems, ["no push step runs make"]);
+
+    let other_base = "      - if: ${{ env.EVENT_NAME != 'pull_request' }}\n        run: make mutation-tests-diff base_ref=origin/main";
+    let problems = mutation_job_problems(&job(other_base, "45"));
+    assert_eq!(problems.len(), 1, "{problems:#?}");
+
+    let problems = mutation_job_problems(&job(diff_push, "60"));
+    assert_eq!(problems, ["timeout-minutes is Some(\"60\"), not 45"]);
+
+    assert_eq!(mutation_job_problems("jobs:\n").len(), 3);
 }
 
 #[test]
