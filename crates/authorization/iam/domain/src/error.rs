@@ -1,7 +1,9 @@
 //! Domain errors of the IAM context.
 
+mod catalogue;
 mod spec;
 
+pub use catalogue::{InvalidCatalogueEntry, RenameRefused};
 pub use spec::{InvalidSpec, SpecPosition, SpecTransitionRefused};
 
 use crate::value_object::entity_version::EntityVersion;

@@ -337,6 +337,14 @@ const CORPUS: &[Case] = &[
         expect: Expect::Deny(DecisionReason::PermissionMissing, &["iam:grant:sensitive"]),
     },
     Case {
+        name: "a project assignment never holds a reserved key",
+        roles: &[(1, &["iam:grant:*"], &[])],
+        assignments: &[Assign(1, Some(1), Expiry::Never)],
+        keys: &[("iam:grant:orders", true)],
+        project: None,
+        expect: Expect::Deny(DecisionReason::PermissionMissing, &["iam:grant:orders"]),
+    },
+    Case {
         name: "no wildcard covers a reserved key",
         roles: &[(1, &["gql:iam:*", "rest:iam:*"], &[])],
         assignments: &[Assign(1, None, Expiry::Never)],

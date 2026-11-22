@@ -53,6 +53,12 @@ impl PermissionFlags {
             audit_always: self.audit_always || other.audit_always,
         }
     }
+
+    /// Whether `after` drops a flag that these flags set: the sensitive or the always-audit flag.
+    #[must_use]
+    pub const fn is_downgraded_by(self, after: Self) -> bool {
+        (self.sensitive && !after.sensitive) || (self.audit_always && !after.audit_always)
+    }
 }
 
 #[cfg(test)]

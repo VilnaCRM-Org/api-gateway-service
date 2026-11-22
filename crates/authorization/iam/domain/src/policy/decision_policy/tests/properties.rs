@@ -180,9 +180,13 @@ fn reference_covers(grant: &str, key: &str, is_sensitive: bool) -> bool {
         .is_some_and(|prefix| key.starts_with(prefix))
 }
 
-/// Whether the reference holds the key through an active assignment whose scope is `scope`.
+/// Whether the reference holds the key through an active assignment whose scope is `scope`; a
+/// reserved `iam:` key is held only through a global assignment.
 fn reference_holds(policy: &Policy, key_index: usize, scope: u8) -> bool {
     let (key, is_sensitive) = key_entry(key_index);
+    if scope != 0 && key.starts_with("iam:") {
+        return false;
+    }
     policy
         .assignments
         .iter()

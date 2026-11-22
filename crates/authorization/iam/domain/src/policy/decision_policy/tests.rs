@@ -439,6 +439,36 @@ fn a_reserved_key_is_held_through_its_covering_reserved_key() {
 }
 
 #[test]
+fn a_project_assignment_never_holds_a_reserved_key() {
+    let roles = role_sets(&[(1, &["iam:grant:*"], &[])]);
+    let keys = [required("iam:grant:orders")];
+
+    let without_project = decide(&[in_project(1, 1)], &roles, &keys, None);
+    let in_its_project = decide(&[in_project(1, 1)], &roles, &keys, Some(project(1)));
+
+    let missing = DecisionVerdict::deny(
+        DecisionReason::PermissionMissing,
+        vec!["iam:grant:orders".to_owned()],
+    );
+    assert_eq!(without_project, missing);
+    assert_eq!(in_its_project, missing);
+}
+
+#[test]
+fn a_global_assignment_holds_a_reserved_key_beside_a_project_one() {
+    let roles = role_sets(&[(1, &["iam:grant:*"], &[])]);
+
+    let verdict = decide(
+        &[in_project(1, 1), global(1)],
+        &roles,
+        &[required("iam:grant:orders")],
+        Some(project(2)),
+    );
+
+    assert_eq!(verdict, DecisionVerdict::allow(ScopeSet::All));
+}
+
+#[test]
 fn role_sets_may_live_in_a_hash_map() {
     let roles: HashMap<RoleId, CompiledRoleSet> =
         role_sets(&[(1, &["gql:orders:Query.order"], &[])])

@@ -245,19 +245,13 @@ fn flag_downgrades(candidate: &CoordinateSet, active: &CoordinateSet) -> Vec<Fla
         .iter()
         .filter_map(|(coordinate, before)| {
             let after = candidate.flags(coordinate)?;
-            loses_a_flag(before, after).then(|| FlagDowngrade {
+            before.is_downgraded_by(after).then(|| FlagDowngrade {
                 coordinate: coordinate.clone(),
                 before,
                 after,
             })
         })
         .collect()
-}
-
-/// Whether `after` drops the sensitive or the always-audit flag of `before`.
-const fn loses_a_flag(before: PermissionFlags, after: PermissionFlags) -> bool {
-    (before.is_sensitive() && !after.is_sensitive())
-        || (before.is_audit_always() && !after.is_audit_always())
 }
 
 #[cfg(test)]

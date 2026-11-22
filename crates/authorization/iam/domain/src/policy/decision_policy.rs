@@ -136,6 +136,8 @@ impl DecisionPolicy {
     /// A key nobody holds denies with `permission_missing`; keys held only in other projects deny
     /// with `scope_missing`. Without a project the check is allowed in the projects where every
     /// key is held, listed in the scopes. A check that requires no key is `malformed_operation`.
+    /// A reserved `iam:` key counts only through a global assignment, so a project assignment
+    /// never lends it to a check with or without a project.
     #[must_use]
     pub fn decide<R: RoleSets + ?Sized>(request: &DecisionRequest<'_, R>) -> DecisionVerdict {
         if request.required.is_empty() {
@@ -153,7 +155,8 @@ impl DecisionPolicy {
         Self::decide_scope(&held, request.project)
     }
 
-    /// The projects in which the subject's active assignments hold the key.
+    /// The projects in which the subject's active assignments hold the key; a reserved key is
+    /// held only through global assignments.
     fn scope_of<R: RoleSets + ?Sized>(
         request: &DecisionRequest<'_, R>,
         required: &RequiredKey,
@@ -162,6 +165,7 @@ impl DecisionPolicy {
             .assignments
             .iter()
             .filter(|assignment| assignment.is_active_at(request.now))
+            .filter(|assignment| counts_for(required.key(), assignment.scope()))
             .filter(|assignment| {
                 request
                     .role_sets
@@ -190,6 +194,13 @@ impl DecisionPolicy {
             Some(_) | None => DecisionVerdict::allow(common),
         }
     }
+}
+
+/// Whether an assignment in `scope` can hold `key`: reserved `iam:` keys administer IAM itself
+/// and are required at global scope (FR-4, FR-12, FR-25), so only a global assignment holds them;
+/// every other key is held in the scope of its assignment.
+const fn counts_for(key: &PermissionKey, scope: AssignmentScope) -> bool {
+    !matches!(key, PermissionKey::Reserved(_)) || matches!(scope, AssignmentScope::Global)
 }
 
 /// The text of every held key whose scopes match `denied`, in required order.
