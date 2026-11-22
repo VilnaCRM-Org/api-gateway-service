@@ -1,6 +1,7 @@
 //! Ports of the IAM context and the error they share.
 
 pub mod boot_clock;
+pub mod iam_unit_of_work;
 pub mod policy_epoch_repository;
 pub mod rng;
 pub mod security_audit_log;

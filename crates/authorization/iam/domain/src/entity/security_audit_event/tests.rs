@@ -258,3 +258,21 @@ fn a_stored_record_below_sequence_1_is_rejected(#[case] seq: i64) {
         Err(InvalidIamValue::AuditSequence)
     );
 }
+
+#[test]
+fn a_record_stamped_with_a_policy_version_differs_only_in_that_version() {
+    let event = SecurityAuditEvent::record(complete()).unwrap();
+    let version = PolicyVersion::new(7).ok();
+
+    let stamped = event.with_policy_version(version);
+    let cleared = event.with_policy_version(None);
+
+    assert_eq!(stamped.parts().policy_version, version);
+    assert_eq!(cleared.parts().policy_version, None);
+    assert_eq!(
+        stamped.with_policy_version(event.parts().policy_version),
+        event
+    );
+    assert!(stamped.canonical_form().contains("\npolicy_version=7\n"));
+    assert!(cleared.canonical_form().contains("\npolicy_version=\n"));
+}

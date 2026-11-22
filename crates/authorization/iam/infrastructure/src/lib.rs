@@ -8,3 +8,4 @@ pub mod persistence;
 
 pub use persistence::PgPolicyEpochRepository;
 pub use persistence::security_audit_log::PgSecurityAuditLog;
+pub use persistence::unit_of_work::PgIamUnitOfWork;

@@ -10,12 +10,15 @@ use tokio::time::Instant;
 use crate::support::{DEAD_DATABASE_URL, Scratch, database_url, silent_listener, stderr, stdout};
 
 const TABLE_EXISTS: &str = "SELECT to_regclass('example_api_resources') IS NOT NULL";
-const EPOCH_TABLE_EXISTS: &str = "SELECT to_regclass('iam_policy_epoch') IS NOT NULL";
-const LATEST_TABLE_EXISTS: &str = "SELECT to_regclass('iam_security_audit_events') IS NOT NULL";
-/// The versions of the embedded migrations, oldest first.
-const VERSION: &str = "20261110000000";
-const EPOCH_VERSION: &str = "20261122000224";
-const LATEST_VERSION: &str = "20261122125604";
+/// The embedded migrations, oldest first: the version and a table that the migration creates.
+const MIGRATIONS: [(&str, &str); 6] = [
+    ("20261110000000", "example_api_resources"),
+    ("20261122000224", "iam_policy_epoch"),
+    ("20261122125604", "iam_security_audit_events"),
+    ("20261122134428", "iam_outbox"),
+    ("20261122134436", "iam_idempotency_keys"),
+    ("20261122134442", "iam_change_receipts"),
+];
 /// What a process start and the output handling may add to a wait that is bounded by its timeout.
 const MARGIN: Duration = Duration::from_millis(700);
 
@@ -27,21 +30,23 @@ async fn table_exists(pool: &PgPool) -> bool {
     exists(pool, TABLE_EXISTS).await
 }
 
-async fn latest_table_exists(pool: &PgPool) -> bool {
-    exists(pool, LATEST_TABLE_EXISTS).await
+/// Whether the table of each migration exists, oldest migration first.
+async fn tables(pool: &PgPool) -> Vec<bool> {
+    let mut present = Vec::new();
+    for (_version, table) in MIGRATIONS {
+        let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+            .bind(table)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        present.push(exists);
+    }
+    present
 }
 
-async fn epoch_table_exists(pool: &PgPool) -> bool {
-    exists(pool, EPOCH_TABLE_EXISTS).await
-}
-
-/// Whether the example, the policy epoch and the security audit tables exist.
-async fn tables(pool: &PgPool) -> (bool, bool, bool) {
-    (
-        table_exists(pool).await,
-        epoch_table_exists(pool).await,
-        latest_table_exists(pool).await,
-    )
+/// The expected presence of the tables when the oldest `applied` migrations are applied.
+fn applied(applied: usize) -> Vec<bool> {
+    (0..MIGRATIONS.len()).map(|index| index < applied).collect()
 }
 
 #[sqlx::test(migrations = false)]
@@ -54,13 +59,13 @@ async fn migrate_applies_once_and_changes_nothing_the_second_time(pool: PgPool) 
     let second = scratch.run(&["migrate"], &[("DATABASE_URL", &url)]);
 
     assert!(first.status.success());
-    assert_eq!(stdout(&first), "applied 3 migration(s)\n");
+    assert_eq!(stdout(&first), "applied 6 migration(s)\n");
     assert_eq!(stderr(&first), "");
-    assert_eq!(tables_after_first, (true, true, true));
+    assert_eq!(tables_after_first, applied(6));
     assert!(second.status.success());
     assert_eq!(stdout(&second), "applied 0 migration(s)\n");
     assert_eq!(stderr(&second), "");
-    assert_eq!(tables(&pool).await, (true, true, true));
+    assert_eq!(tables(&pool).await, applied(6));
 }
 
 #[sqlx::test(migrations = false)]
@@ -70,32 +75,22 @@ async fn revert_removes_the_newest_table_first_and_migrate_creates_all_again(poo
     let variables = [("DATABASE_URL", url.as_str())];
     assert!(scratch.run(&["migrate"], &variables).status.success());
 
-    let first = scratch.run(&["migrate", "revert"], &variables);
-    let tables_after_first = tables(&pool).await;
-    let second = scratch.run(&["migrate", "revert"], &variables);
-    let tables_after_second = tables(&pool).await;
-    let third = scratch.run(&["migrate", "revert"], &variables);
-    let tables_after_third = tables(&pool).await;
-    let fourth = scratch.run(&["migrate", "revert"], &variables);
+    for (remaining, (version, _table)) in MIGRATIONS.iter().enumerate().rev() {
+        let reverted = scratch.run(&["migrate", "revert"], &variables);
+
+        assert!(reverted.status.success(), "{version}");
+        assert_eq!(stdout(&reverted), format!("reverted {version}\n"));
+        assert_eq!(stderr(&reverted), "");
+        assert_eq!(tables(&pool).await, applied(remaining), "{version}");
+    }
+    let nothing = scratch.run(&["migrate", "revert"], &variables);
     let again = scratch.run(&["migrate"], &variables);
 
-    assert!(first.status.success());
-    assert_eq!(stdout(&first), format!("reverted {LATEST_VERSION}\n"));
-    assert_eq!(stderr(&first), "");
-    assert_eq!(tables_after_first, (true, true, false));
-    assert!(second.status.success());
-    assert_eq!(stdout(&second), format!("reverted {EPOCH_VERSION}\n"));
-    assert_eq!(stderr(&second), "");
-    assert_eq!(tables_after_second, (true, false, false));
-    assert!(third.status.success());
-    assert_eq!(stdout(&third), format!("reverted {VERSION}\n"));
-    assert_eq!(stderr(&third), "");
-    assert_eq!(tables_after_third, (false, false, false));
-    assert!(fourth.status.success());
-    assert_eq!(stdout(&fourth), "nothing to revert\n");
+    assert!(nothing.status.success());
+    assert_eq!(stdout(&nothing), "nothing to revert\n");
     assert!(again.status.success());
-    assert_eq!(stdout(&again), "applied 3 migration(s)\n");
-    assert_eq!(tables(&pool).await, (true, true, true));
+    assert_eq!(stdout(&again), "applied 6 migration(s)\n");
+    assert_eq!(tables(&pool).await, applied(6));
 }
 
 #[sqlx::test(migrations = false)]

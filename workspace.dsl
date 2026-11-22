@@ -67,7 +67,7 @@ workspace "Service architecture" "C4 model of the service: system context, conta
                 }
                 group "Authorization/Iam" {
                     group "Authorization/Iam/Domain" {
-                        iamDomain = component "iam-domain" "Policy epoch and audit value objects, the security audit event, the policy epoch repository and security audit log ports and the IAM value errors." "Rust crate" {
+                        iamDomain = component "iam-domain" "Policy epoch and audit value objects, the security audit event, the change, event envelope, change receipt and idempotency records, the policy epoch repository, security audit log and unit of work ports and the IAM value errors." "Rust crate" {
                             tags "Domain"
                         }
                     }
@@ -77,7 +77,7 @@ workspace "Service architecture" "C4 model of the service: system context, conta
                         }
                     }
                     group "Authorization/Iam/Infrastructure" {
-                        iamInfrastructure = component "iam-infrastructure" "PostgreSQL policy epoch repository and hash-chained security audit log adapters." "Rust crate" {
+                        iamInfrastructure = component "iam-infrastructure" "PostgreSQL policy epoch repository, hash-chained security audit log and unit of work adapters, and the JSON encoding of event envelopes." "Rust crate" {
                             tags "Infrastructure"
                         }
                     }
@@ -112,12 +112,12 @@ workspace "Service architecture" "C4 model of the service: system context, conta
                 iamApplication -> iamDomain "Uses the policy epoch and its repository port"
                 iamApplication -> sharedDomain "Answers through the bus ports"
                 iamApplication -> sharedApplication "Returns problem documents"
-                iamInfrastructure -> iamDomain "Implements the policy epoch repository and security audit log ports"
+                iamInfrastructure -> iamDomain "Implements the policy epoch repository, security audit log and unit of work ports"
                 iamInfrastructure -> sharedDomain "Uses the shared UUID value object"
                 sharedInfrastructure -> database "Opens the connection pool and applies migrations" "SQL over TCP"
                 healthCheckInfrastructure -> database "Runs SELECT 1" "SQL over TCP"
                 someModuleInfrastructure -> database "Reads and writes example_api_resources" "SQL over TCP"
-                iamInfrastructure -> database "Reads iam_policy_epoch, appends to and reads the security audit chain" "SQL over TCP"
+                iamInfrastructure -> database "Reads and versions iam_policy_epoch, appends to and reads the security audit chain, writes the outbox, change receipts and idempotency keys" "SQL over TCP"
             }
         }
         apiClient -> system.service "Calls the REST and GraphQL API" "HTTP, JSON"

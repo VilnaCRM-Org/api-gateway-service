@@ -1,7 +1,9 @@
 //! PostgreSQL implementation of the policy epoch repository port: the SQL, the row mapping and the
 //! translation of database errors.
 
+pub mod event_encoding;
 pub mod security_audit_log;
+pub mod unit_of_work;
 
 use iam_domain::{
     InvalidIamValue, LogEpoch, PolicyDigestValue, PolicyEpoch, PolicyEpochRepository,

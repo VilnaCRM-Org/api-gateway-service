@@ -40,7 +40,7 @@ external = [
     "uuid",
     "validator",
 ]
-dev_external = ["http-body-util", "proptest", "rstest", "serde_json", "tokio", "tower"]
+dev_external = ["criterion", "http-body-util", "proptest", "rstest", "serde_json", "tokio", "tower"]
 forbidden_transitive = ["aws-config", "aws-sdk-sqs", "moka", "sqlx"]
 
 [[layer]]
@@ -50,16 +50,34 @@ directory = "infrastructure"
 depends_on = ["domain", "infrastructure"]
 dev_depends_on = ["test-support"]
 external = [
+    "arc-swap",
     "async-trait",
     "aws-config",
     "aws-sdk-sqs",
+    "bytes",
+    "http",
+    "http-body-util",
+    "hyper",
+    "hyper-rustls",
+    "hyper-util",
+    "jsonwebtoken",
+    "krafka",
+    "matchit",
     "moka",
+    "rand",
+    "redis",
+    "rustix",
+    "rustls",
+    "rustls-pki-types",
+    "serde",
+    "serde_json",
+    "sha2",
     "sqlx",
     "thiserror",
     "tracing",
     "uuid",
 ]
-dev_external = ["aws-smithy-mocks", "rstest", "tokio"]
+dev_external = ["aws-lc-rs", "aws-smithy-mocks", "criterion", "krafka", "rstest", "tokio"]
 forbidden_transitive = ["async-graphql", "axum", "utoipa"]
 
 [[layer]]

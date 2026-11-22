@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO iam_idempotency_keys (actor, idempotency_key, request_digest, change_id,\n            created_at)\n        VALUES ($1, $2, $3, $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Bytea",
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "374dfc72ce78b04c1f73e6528598fa15540a0117d9d6264d0d69437fea4a2d16"
+}

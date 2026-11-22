@@ -1,6 +1,6 @@
 use rstest::rstest;
 
-use super::{InvalidIamValue, InvalidPermissionKey, VersionConflict};
+use super::{InvalidEventEnvelope, InvalidIamValue, InvalidPermissionKey, VersionConflict};
 use crate::value_object::entity_version::EntityVersion;
 
 const NEGATIVE: &str = "This value must be 0 or greater.";
@@ -149,8 +149,92 @@ const DIGEST: &str = "This value must contain exactly 16 bytes.";
     "range",
     "This value is outside the range of audit sequence numbers."
 )]
+#[case(
+    InvalidIamValue::RequestDigestLength,
+    "requestDigest",
+    "length",
+    "This value must contain exactly 32 bytes."
+)]
+#[case(
+    InvalidIamValue::ChangeAuditOutcome,
+    "audit.outcome",
+    "choice",
+    "A committed change needs an audit record with outcome committed."
+)]
 fn exposes_the_property_path_the_code_and_the_message(
     #[case] error: InvalidIamValue,
+    #[case] property_path: &str,
+    #[case] code: &str,
+    #[case] message: &str,
+) {
+    assert_eq!(error.property_path(), property_path);
+    assert_eq!(error.code(), code);
+    assert_eq!(error.to_string(), message);
+}
+
+#[rstest]
+#[case(
+    InvalidEventEnvelope::IdVersion,
+    "id",
+    "uuid",
+    "This value must be a version 7 UUID."
+)]
+#[case(
+    InvalidEventEnvelope::EventType,
+    "type",
+    "format",
+    "This value must be dotted lower-case words of the form iam.<aggregate>.<verb>."
+)]
+#[case(
+    InvalidEventEnvelope::Timestamp,
+    "occurredAt",
+    "range",
+    "This value must be a time between 1970-01-01 and 9999-12-31."
+)]
+#[case(
+    InvalidEventEnvelope::FieldName,
+    "data",
+    "format",
+    "This field name must be a lower camel-case word of at most 64 characters."
+)]
+#[case(
+    InvalidEventEnvelope::FieldDuplicate,
+    "data",
+    "duplicate",
+    "This field name is already used in the object."
+)]
+#[case(
+    InvalidEventEnvelope::FieldReserved,
+    "data",
+    "reserved",
+    "This field name is reserved for the common fields of the envelope."
+)]
+#[case(
+    InvalidEventEnvelope::FieldForbidden,
+    "data",
+    "forbidden",
+    "This field name names a credential or a specification body."
+)]
+#[case(
+    InvalidEventEnvelope::Credential,
+    "data",
+    "forbidden",
+    "This value must not hold a credential."
+)]
+#[case(
+    InvalidEventEnvelope::ControlCharacter,
+    "data",
+    "format",
+    "This value must not hold a control character."
+)]
+#[case(
+    InvalidEventEnvelope::TooLarge,
+    "envelope",
+    "length",
+    "The encoded event must be at most 65536 bytes."
+)]
+fn an_invalid_envelope_exposes_the_property_path_the_code_and_the_message(
+    #[case] error: InvalidEventEnvelope,
     #[case] property_path: &str,
     #[case] code: &str,
     #[case] message: &str,

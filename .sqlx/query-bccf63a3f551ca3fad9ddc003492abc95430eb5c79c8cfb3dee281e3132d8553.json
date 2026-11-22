@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO iam_outbox (id, kind, topic, record_key, payload, policy_version, log_epoch,\n            event_type, aggregate_id, occurred_at)\n        VALUES ($1, 'event', ($2::text[])[1], ($2::text[])[2], ($2::text[])[3],\n            ($3::bigint[])[1], ($3::bigint[])[2], ($2::text[])[4], ($2::text[])[2], $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "Int8Array",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bccf63a3f551ca3fad9ddc003492abc95430eb5c79c8cfb3dee281e3132d8553"
+}

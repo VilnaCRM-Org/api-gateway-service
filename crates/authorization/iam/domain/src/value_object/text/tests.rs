@@ -1,6 +1,6 @@
 use rstest::rstest;
 
-use super::is_visible_ascii;
+use super::{holds_token, is_visible_ascii};
 
 #[rstest]
 #[case("a", 1, true)]
@@ -18,4 +18,15 @@ fn accepts_one_to_max_visible_ascii_bytes(
     #[case] expected: bool,
 ) {
     assert_eq!(is_visible_ascii(value, max), expected);
+}
+
+#[rstest]
+#[case("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln", true)]
+#[case("token=eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln;", true)]
+#[case("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0", false)]
+#[case("eyJhbGciOiJSUzI1NiJ9..c2ln", false)]
+#[case("abc.def.ghi", false)]
+#[case("role=readers", false)]
+fn finds_a_word_shaped_like_a_token(#[case] value: &str, #[case] expected: bool) {
+    assert_eq!(holds_token(value), expected);
 }

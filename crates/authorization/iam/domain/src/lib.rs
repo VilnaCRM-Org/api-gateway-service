@@ -6,15 +6,21 @@
 
 pub mod entity;
 pub mod error;
+mod micros;
 pub mod port;
 pub mod value_object;
 
+pub use entity::change_receipt::ChangeReceipt;
+pub use entity::event_envelope::{EventEnvelope, EventEnvelopeParts, IamDomainEvent};
+pub use entity::iam_change::{IamChange, IamChangeParts};
+pub use entity::idempotency_record::{IdempotencyRecord, IdempotencyRequest};
 pub use entity::security_audit_event::{
     SecurityAuditEvent, SecurityAuditEventParts, StoredSecurityAuditEvent,
 };
-pub use error::{InvalidIamValue, InvalidPermissionKey, VersionConflict};
+pub use error::{InvalidEventEnvelope, InvalidIamValue, InvalidPermissionKey, VersionConflict};
 pub use port::RepositoryError;
 pub use port::boot_clock::BootClock;
+pub use port::iam_unit_of_work::IamUnitOfWork;
 pub use port::policy_epoch_repository::PolicyEpochRepository;
 pub use port::rng::Rng;
 pub use port::security_audit_log::SecurityAuditLog;
@@ -28,7 +34,11 @@ pub use value_object::audit_reason::AuditReason;
 pub use value_object::audit_summary::AuditSummary;
 pub use value_object::audit_target::AuditTarget;
 pub use value_object::boot_instant::BootInstant;
+pub use value_object::change_statement::ChangeStatement;
+pub use value_object::decision_effect::DecisionEffect;
 pub use value_object::entity_version::EntityVersion;
+pub use value_object::event_data::{EventData, EventValue};
+pub use value_object::event_type::EventType;
 pub use value_object::gql_name::GqlName;
 pub use value_object::http_method::HttpMethod;
 pub use value_object::idempotency_key::IdempotencyKey;
@@ -44,6 +54,7 @@ pub use value_object::policy_digest_value::PolicyDigestValue;
 pub use value_object::policy_epoch::PolicyEpoch;
 pub use value_object::policy_version::PolicyVersion;
 pub use value_object::relay_epoch::RelayEpoch;
+pub use value_object::request_digest::RequestDigest;
 pub use value_object::request_id::RequestId;
 pub use value_object::reserved_permission::{ReservedPermission, ServiceScope};
 pub use value_object::rest_template::RestTemplate;

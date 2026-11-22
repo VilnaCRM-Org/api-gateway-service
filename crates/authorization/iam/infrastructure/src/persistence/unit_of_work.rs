@@ -1,0 +1,358 @@
+//! PostgreSQL implementation of the unit of work: one transaction per administrative change.
+//!
+//! Until Story 7.2 the unit of work writes outbox event rows only; the state rows, the policy
+//! digest and the `__head` row follow there, and Story 7.4 adds the relay wake-up.
+
+use iam_domain::{
+    ChangeReceipt, ChangeStatement, EventEnvelope, IamChange, IamUnitOfWork, IdempotencyRecord,
+    InvalidEventEnvelope, InvalidIamValue, LogEpoch, PolicyVersion, RepositoryError,
+    StoredSecurityAuditEvent,
+};
+use sqlx::PgConnection;
+use sqlx::types::Uuid as SqlUuid;
+use sqlx::types::time::OffsetDateTime;
+
+use crate::persistence::event_encoding::encode;
+use crate::persistence::security_audit_log::{PgSecurityAuditLog, emit};
+
+/// The topic of the IAM domain events.
+pub const EVENTS_TOPIC: &str = "iam.events.v1";
+
+/// The number of nanoseconds in one microsecond.
+const NANOS_PER_MICRO: i128 = 1_000;
+
+/// Commits administrative changes through the `iam_policy_epoch`, `iam_outbox`,
+/// `iam_security_audit_events`, `iam_change_receipts` and `iam_idempotency_keys` tables.
+#[derive(Debug)]
+pub struct PgIamUnitOfWork {
+    pool: sqlx::PgPool,
+}
+
+/// The locked policy epoch row; it never leaves this module.
+struct EpochRow {
+    version: i64,
+    log_epoch: i64,
+}
+
+/// The policy version and log epoch that the transaction locked.
+struct Locked {
+    version: PolicyVersion,
+    log_epoch: LogEpoch,
+}
+
+impl PgIamUnitOfWork {
+    /// Builds the unit of work over a pool; no connection is opened here.
+    #[must_use]
+    pub const fn new(pool: sqlx::PgPool) -> Self {
+        Self { pool }
+    }
+
+    async fn commit_change(&self, change: &IamChange) -> Result<ChangeReceipt, RepositoryError> {
+        let mut transaction = self.pool.begin().await.map_err(translate)?;
+        let (version, stored) = write(&mut transaction, change).await?;
+        transaction.commit().await.map_err(translate)?;
+        stored.iter().for_each(emit);
+        Ok(change.receipt(version))
+    }
+}
+
+/// Writes the whole change inside the caller's transaction and returns the policy version of the
+/// transaction and the appended audit records. A failure leaves the rollback to the caller.
+async fn write(
+    connection: &mut PgConnection,
+    change: &IamChange,
+) -> Result<(PolicyVersion, Vec<StoredSecurityAuditEvent>), RepositoryError> {
+    let changed_at = timestamp(change.occurred_at_micros())?;
+    let locked = lock_epoch(connection).await?;
+    let version = next_version(connection, change, &locked, changed_at).await?;
+    check(&change.parts().statements, locked.version)?;
+    let stored = write_records(connection, change, version, locked.log_epoch, changed_at).await?;
+    Ok((version, stored))
+}
+
+/// The policy version of the transaction: the next one when the change affects decisions, the
+/// locked one otherwise.
+async fn next_version(
+    connection: &mut PgConnection,
+    change: &IamChange,
+    locked: &Locked,
+    changed_at: OffsetDateTime,
+) -> Result<PolicyVersion, RepositoryError> {
+    if change.affects_decisions() {
+        increment(connection, changed_at).await
+    } else {
+        Ok(locked.version)
+    }
+}
+
+/// Writes the outbox event rows, the audit record, the change receipt and the idempotency record.
+async fn write_records(
+    connection: &mut PgConnection,
+    change: &IamChange,
+    version: PolicyVersion,
+    log_epoch: LogEpoch,
+    changed_at: OffsetDateTime,
+) -> Result<Vec<StoredSecurityAuditEvent>, RepositoryError> {
+    for envelope in &change.parts().events {
+        insert_event(connection, &EventRow::of(envelope, version, log_epoch)?).await?;
+    }
+    let audit = change.audit(version);
+    let stored =
+        PgSecurityAuditLog::append_within(connection, std::slice::from_ref(&audit)).await?;
+    insert_receipt(
+        connection,
+        &ReceiptRow::of(&change.receipt(version), changed_at),
+    )
+    .await?;
+    if let Some(record) = change.idempotency_record() {
+        insert_idempotency(connection, &KeyRow::of(&record, changed_at)).await?;
+    }
+    Ok(stored)
+}
+
+/// Locks the single policy epoch row until the end of the transaction.
+async fn lock_epoch(connection: &mut PgConnection) -> Result<Locked, RepositoryError> {
+    let row = sqlx::query_as!(
+        EpochRow,
+        "SELECT version, log_epoch FROM iam_policy_epoch WHERE id = 1 FOR UPDATE",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(translate)?;
+    restore(&row)
+}
+
+/// Takes the next policy version under the row lock.
+async fn increment(
+    connection: &mut PgConnection,
+    changed_at: OffsetDateTime,
+) -> Result<PolicyVersion, RepositoryError> {
+    let version = sqlx::query_scalar!(
+        "UPDATE iam_policy_epoch SET version = version + 1, updated_at = $1 WHERE id = 1 RETURNING version",
+        changed_at,
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(translate)?;
+    PolicyVersion::new(version).map_err(unusable)
+}
+
+/// Refuses the change with a conflict when one of its statements does not hold under the locked
+/// policy version.
+fn check(statements: &[ChangeStatement], locked: PolicyVersion) -> Result<(), RepositoryError> {
+    if statements.iter().all(|statement| statement.holds(locked)) {
+        Ok(())
+    } else {
+        Err(RepositoryError::Conflict)
+    }
+}
+
+/// The column values of one outbox event row; they never leave this module.
+struct EventRow {
+    id: SqlUuid,
+    record_key: String,
+    payload: String,
+    policy_version: i64,
+    log_epoch: i64,
+    event_type: String,
+    occurred_at: OffsetDateTime,
+}
+
+impl EventRow {
+    /// The row of `envelope` in a transaction at `version`, keyed by the aggregate id.
+    fn of(
+        envelope: &EventEnvelope,
+        version: PolicyVersion,
+        log_epoch: LogEpoch,
+    ) -> Result<Self, RepositoryError> {
+        let parts = envelope.parts();
+        Ok(Self {
+            id: parts.id.as_uuid(),
+            record_key: parts.aggregate_id.to_string(),
+            payload: encode(envelope, version).map_err(unencodable)?,
+            policy_version: version.value(),
+            log_epoch: log_epoch.value(),
+            event_type: parts.event_type.as_str().to_owned(),
+            occurred_at: timestamp(envelope.occurred_at_micros())?,
+        })
+    }
+}
+
+/// Inserts one unpublished event row of `iam.events.v1`. The text values travel as one `text[]`
+/// parameter in the order topic, record key, payload and event type, and the numbers as one
+/// `bigint[]` in the order policy version and log epoch, which keeps the parameter list short; the
+/// record key is also the aggregate id.
+async fn insert_event(
+    connection: &mut PgConnection,
+    row: &EventRow,
+) -> Result<(), RepositoryError> {
+    let texts = [
+        EVENTS_TOPIC.to_owned(),
+        row.record_key.clone(),
+        row.payload.clone(),
+        row.event_type.clone(),
+    ];
+    let numbers = [row.policy_version, row.log_epoch];
+    sqlx::query!(
+        "INSERT INTO iam_outbox (id, kind, topic, record_key, payload, policy_version, log_epoch,
+            event_type, aggregate_id, occurred_at)
+        VALUES ($1, 'event', ($2::text[])[1], ($2::text[])[2], ($2::text[])[3],
+            ($3::bigint[])[1], ($3::bigint[])[2], ($2::text[])[4], ($2::text[])[2], $4)",
+        row.id,
+        texts.as_slice(),
+        numbers.as_slice(),
+        row.occurred_at,
+    )
+    .execute(&mut *connection)
+    .await
+    .map(|_done| ())
+    .map_err(translate)
+}
+
+/// The column values of one change receipt; they never leave this module.
+struct ReceiptRow {
+    change_id: SqlUuid,
+    actor: String,
+    target_type: String,
+    target_id: String,
+    entity_version: i64,
+    policy_version: Option<i64>,
+    created_at: OffsetDateTime,
+}
+
+impl ReceiptRow {
+    fn of(receipt: &ChangeReceipt, created_at: OffsetDateTime) -> Self {
+        Self {
+            change_id: receipt.change_id().as_uuid().as_uuid(),
+            actor: receipt.actor().to_string(),
+            target_type: receipt.target().target_type().to_owned(),
+            target_id: receipt.target().target_id().to_owned(),
+            entity_version: receipt.entity_version().value(),
+            policy_version: receipt.policy_version().map(PolicyVersion::value),
+            created_at,
+        }
+    }
+}
+
+/// Inserts the change receipt. The text values travel as one `text[]` parameter in the order
+/// actor, target type and target id.
+async fn insert_receipt(
+    connection: &mut PgConnection,
+    row: &ReceiptRow,
+) -> Result<(), RepositoryError> {
+    let texts = [
+        row.actor.clone(),
+        row.target_type.clone(),
+        row.target_id.clone(),
+    ];
+    sqlx::query!(
+        "INSERT INTO iam_change_receipts (change_id, actor, target_type, target_id, entity_version,
+            policy_version, created_at)
+        VALUES ($1, ($2::text[])[1], ($2::text[])[2], ($2::text[])[3], $3, $4, $5)",
+        row.change_id,
+        texts.as_slice(),
+        row.entity_version,
+        row.policy_version,
+        row.created_at,
+    )
+    .execute(&mut *connection)
+    .await
+    .map(|_done| ())
+    .map_err(translate)
+}
+
+/// The column values of one idempotency record; they never leave this module.
+struct KeyRow {
+    actor: String,
+    key: String,
+    request_digest: Vec<u8>,
+    change_id: SqlUuid,
+    created_at: OffsetDateTime,
+}
+
+impl KeyRow {
+    fn of(record: &IdempotencyRecord, created_at: OffsetDateTime) -> Self {
+        Self {
+            actor: record.actor().to_string(),
+            key: record.key().as_str().to_owned(),
+            request_digest: record.request_digest().as_bytes().to_vec(),
+            change_id: record.change_id().as_uuid().as_uuid(),
+            created_at,
+        }
+    }
+}
+
+/// Inserts the idempotency record; a key the actor already used is a duplicate.
+async fn insert_idempotency(
+    connection: &mut PgConnection,
+    row: &KeyRow,
+) -> Result<(), RepositoryError> {
+    sqlx::query!(
+        "INSERT INTO iam_idempotency_keys (actor, idempotency_key, request_digest, change_id,
+            created_at)
+        VALUES ($1, $2, $3, $4, $5)",
+        row.actor,
+        row.key,
+        row.request_digest,
+        row.change_id,
+        row.created_at,
+    )
+    .execute(&mut *connection)
+    .await
+    .map(|_done| ())
+    .map_err(translate)
+}
+
+/// The `timestamptz` value of a time in microseconds since 1970.
+fn timestamp(micros: i64) -> Result<OffsetDateTime, RepositoryError> {
+    i128::from(micros)
+        .checked_mul(NANOS_PER_MICRO)
+        .and_then(|nanos| OffsetDateTime::from_unix_timestamp_nanos(nanos).ok())
+        .ok_or_else(out_of_range)
+}
+
+/// A time after the year 9999 cannot be stored.
+fn out_of_range() -> RepositoryError {
+    RepositoryError::Unavailable(Box::new(InvalidIamValue::AuditTimestamp))
+}
+
+/// Rebuilds the locked values through the value objects.
+fn restore(row: &EpochRow) -> Result<Locked, RepositoryError> {
+    Ok(Locked {
+        version: PolicyVersion::new(row.version).map_err(unusable)?,
+        log_epoch: LogEpoch::new(row.log_epoch).map_err(unusable)?,
+    })
+}
+
+/// A unique violation (a stored change id, event id or idempotency key) is a duplicate; everything
+/// else, a missing policy epoch row included, is an unavailable repository.
+fn translate(error: sqlx::Error) -> RepositoryError {
+    let duplicate = error
+        .as_database_error()
+        .is_some_and(sqlx::error::DatabaseError::is_unique_violation);
+    if duplicate {
+        RepositoryError::AlreadyExists
+    } else {
+        RepositoryError::Unavailable(Box::new(error))
+    }
+}
+
+/// A stored value that breaks a domain invariant is unusable data.
+fn unusable(error: InvalidIamValue) -> RepositoryError {
+    RepositoryError::Unavailable(Box::new(error))
+}
+
+/// An event that cannot be encoded cannot be published.
+fn unencodable(error: InvalidEventEnvelope) -> RepositoryError {
+    RepositoryError::Unavailable(Box::new(error))
+}
+
+#[async_trait::async_trait]
+impl IamUnitOfWork for PgIamUnitOfWork {
+    async fn commit(&self, change: IamChange) -> Result<ChangeReceipt, RepositoryError> {
+        self.commit_change(&change).await
+    }
+}
+
+#[cfg(test)]
+mod tests;

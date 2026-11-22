@@ -1,0 +1,25 @@
+use shared_domain::Uuid;
+
+use super::ChangeReceipt;
+use crate::value_object::actor_ref::ActorRef;
+use crate::value_object::audit_target::AuditTarget;
+use crate::value_object::entity_version::EntityVersion;
+use crate::value_object::identifier::ChangeId;
+use crate::value_object::policy_version::PolicyVersion;
+
+#[test]
+fn a_receipt_keeps_the_change_its_target_and_both_versions() {
+    let change_id = ChangeId::parse("0190f2a8-7b3c-7d4e-8f00-000000000001").unwrap();
+    let actor = ActorRef::User(Uuid::parse("0190f2a8-7b3c-7d4e-8f00-123456789abc").unwrap());
+    let target = AuditTarget::new("role", "r-1").unwrap();
+    let version = EntityVersion::new(4).unwrap();
+    let policy = PolicyVersion::new(9).ok();
+
+    let receipt = ChangeReceipt::new(change_id, actor.clone(), target.clone(), version, policy);
+
+    assert_eq!(receipt.change_id(), change_id);
+    assert_eq!(receipt.actor(), &actor);
+    assert_eq!(receipt.target(), &target);
+    assert_eq!(receipt.entity_version(), version);
+    assert_eq!(receipt.policy_version(), policy);
+}

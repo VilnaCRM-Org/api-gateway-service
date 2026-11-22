@@ -1,8 +1,9 @@
 //! The security audit record and its place in the hash chain.
 
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use crate::error::InvalidIamValue;
+use crate::micros;
 use crate::value_object::actor_ref::ActorRef;
 use crate::value_object::assignment_scope::AssignmentScope;
 use crate::value_object::audit_action::AuditAction;
@@ -113,6 +114,15 @@ impl SecurityAuditEvent {
         self.occurred_at_micros
     }
 
+    /// The same record with `policy_version` as the resulting policy version, as the unit of
+    /// work stamps it once the version of its transaction is known.
+    #[must_use]
+    pub fn with_policy_version(&self, policy_version: Option<PolicyVersion>) -> Self {
+        let mut stamped = self.clone();
+        stamped.parts.policy_version = policy_version;
+        stamped
+    }
+
     /// The canonical form that the hash chain digests: a header line, then one `name=value` line
     /// per value in a fixed order, an absent value written as nothing after `=`.
     ///
@@ -221,18 +231,12 @@ fn text<T: ToString>(value: Option<T>) -> String {
 
 /// Whole microseconds since 1970.
 fn micros_since_epoch(time: SystemTime) -> Result<i64, InvalidIamValue> {
-    time.duration_since(SystemTime::UNIX_EPOCH)
-        .ok()
-        .and_then(|elapsed| i64::try_from(elapsed.as_micros()).ok())
-        .ok_or(InvalidIamValue::AuditTimestamp)
+    micros::since_epoch(time).ok_or(InvalidIamValue::AuditTimestamp)
 }
 
 /// The time `micros` microseconds after 1970.
 fn time_of(micros: i64) -> Result<SystemTime, InvalidIamValue> {
-    u64::try_from(micros)
-        .ok()
-        .and_then(|micros| SystemTime::UNIX_EPOCH.checked_add(Duration::from_micros(micros)))
-        .ok_or(InvalidIamValue::AuditTimestamp)
+    micros::time_of(micros).ok_or(InvalidIamValue::AuditTimestamp)
 }
 
 #[cfg(test)]

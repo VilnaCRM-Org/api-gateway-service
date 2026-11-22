@@ -9,3 +9,7 @@ mod repository;
 mod security_audit_log;
 #[cfg(test)]
 mod security_audit_migration;
+#[cfg(test)]
+mod unit_of_work;
+#[cfg(test)]
+mod unit_of_work_migration;

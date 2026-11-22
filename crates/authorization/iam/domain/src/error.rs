@@ -86,6 +86,12 @@ pub enum InvalidIamValue {
     /// An audit sequence number is out of range: negative for a chain head, below 1 for a record.
     #[error("This value is outside the range of audit sequence numbers.")]
     AuditSequence,
+    /// A request digest is not exactly 32 bytes long.
+    #[error("This value must contain exactly 32 bytes.")]
+    RequestDigestLength,
+    /// The audit record of a change to commit is not a committed record.
+    #[error("A committed change needs an audit record with outcome committed.")]
+    ChangeAuditOutcome,
 }
 
 impl InvalidIamValue {
@@ -117,6 +123,8 @@ impl InvalidIamValue {
             Self::AuditReasonFormat => "reason",
             Self::AuditHashLength => "hash",
             Self::AuditSequence => "seq",
+            Self::RequestDigestLength => "requestDigest",
+            Self::ChangeAuditOutcome => "audit.outcome",
         }
     }
 
@@ -124,7 +132,10 @@ impl InvalidIamValue {
     #[must_use]
     pub const fn code(self) -> &'static str {
         match self {
-            Self::PolicyDigestLength | Self::ServiceNameLength | Self::AuditHashLength => "length",
+            Self::PolicyDigestLength
+            | Self::ServiceNameLength
+            | Self::AuditHashLength
+            | Self::RequestDigestLength => "length",
             Self::PolicyVersionNegative
             | Self::LogEpochNegative
             | Self::RelayEpochNegative
@@ -134,7 +145,9 @@ impl InvalidIamValue {
             | Self::AuditSequence => "range",
             Self::Identifier | Self::SubjectUserId => "uuid",
             Self::ServiceNamePattern => "pattern",
-            Self::SubjectKind | Self::ScopeKind | Self::AuditOutcome => "choice",
+            Self::SubjectKind | Self::ScopeKind | Self::AuditOutcome | Self::ChangeAuditOutcome => {
+                "choice"
+            }
             Self::RequestIdFormat
             | Self::IdempotencyKeyFormat
             | Self::ActorFormat
@@ -146,6 +159,77 @@ impl InvalidIamValue {
             Self::ScopeProjectMissing => "required",
             Self::ScopeProjectUnexpected => "forbidden",
             Self::GrantSetTooLarge => "count",
+        }
+    }
+}
+
+/// An event envelope that breaks a rule of `iam.events.v1`.
+///
+/// The rules: a UUID v7 id, a type of the form `iam.<aggregate>.<verb>`, a time after 1970, `data`
+/// without credentials or specification bodies and an encoded size of at most 64 KiB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidEventEnvelope {
+    /// The id is not a version 7 UUID.
+    #[error("This value must be a version 7 UUID.")]
+    IdVersion,
+    /// The type does not match `iam.<aggregate>.<verb>` in lower-case words.
+    #[error("This value must be dotted lower-case words of the form iam.<aggregate>.<verb>.")]
+    EventType,
+    /// The time lies before 1970 or cannot be written as an RFC 3339 UTC time.
+    #[error("This value must be a time between 1970-01-01 and 9999-12-31.")]
+    Timestamp,
+    /// A field name is not a lower camel-case word of at most 64 characters.
+    #[error("This field name must be a lower camel-case word of at most 64 characters.")]
+    FieldName,
+    /// A field name is used twice in one object.
+    #[error("This field name is already used in the object.")]
+    FieldDuplicate,
+    /// A field name is one of the common fields that the envelope writes itself.
+    #[error("This field name is reserved for the common fields of the envelope.")]
+    FieldReserved,
+    /// A field name names a credential or a specification body.
+    #[error("This field name names a credential or a specification body.")]
+    FieldForbidden,
+    /// A text value holds a word shaped like a token or a bearer credential.
+    #[error("This value must not hold a credential.")]
+    Credential,
+    /// A text value holds a control character, as a multi-line specification body does.
+    #[error("This value must not hold a control character.")]
+    ControlCharacter,
+    /// The encoded envelope is larger than 64 KiB.
+    #[error("The encoded event must be at most 65536 bytes.")]
+    TooLarge,
+}
+
+impl InvalidEventEnvelope {
+    /// The property that carries the invalid value.
+    #[must_use]
+    pub const fn property_path(self) -> &'static str {
+        match self {
+            Self::IdVersion => "id",
+            Self::EventType => "type",
+            Self::Timestamp => "occurredAt",
+            Self::FieldName
+            | Self::FieldDuplicate
+            | Self::FieldReserved
+            | Self::FieldForbidden
+            | Self::Credential
+            | Self::ControlCharacter => "data",
+            Self::TooLarge => "envelope",
+        }
+    }
+
+    /// The machine-readable violation code.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::IdVersion => "uuid",
+            Self::EventType | Self::FieldName | Self::ControlCharacter => "format",
+            Self::Timestamp => "range",
+            Self::FieldDuplicate => "duplicate",
+            Self::FieldReserved => "reserved",
+            Self::FieldForbidden | Self::Credential => "forbidden",
+            Self::TooLarge => "length",
         }
     }
 }

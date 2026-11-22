@@ -1,6 +1,7 @@
 //! The before or after value of an audited change.
 
 use crate::error::InvalidIamValue;
+use crate::value_object::text::holds_token;
 
 /// A summary of the state before or after an audited change: identifiers, role names and
 /// permission keys only.
@@ -24,7 +25,7 @@ impl AuditSummary {
         let valid = !value.is_empty()
             && value.len() <= Self::MAX_LENGTH
             && !value.chars().any(char::is_control)
-            && !value.split(is_word_boundary).any(looks_like_token);
+            && !holds_token(value);
         if !valid {
             return Err(InvalidIamValue::AuditSummaryFormat);
         }
@@ -36,18 +37,6 @@ impl AuditSummary {
     pub fn as_str(&self) -> &str {
         &self.0
     }
-}
-
-/// Every character that cannot be part of a base64url token segment or its `.` separator.
-const fn is_word_boundary(character: char) -> bool {
-    !(character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
-}
-
-/// Three non-empty dot-separated segments whose first one starts like an encoded JSON header.
-fn looks_like_token(word: &str) -> bool {
-    word.starts_with("eyJ")
-        && word.split('.').count() == 3
-        && word.split('.').all(|segment| !segment.is_empty())
 }
 
 #[cfg(test)]
