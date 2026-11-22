@@ -10,14 +10,18 @@ repository.workspace = true
 autotests = false
 
 [dev-dependencies]
+aws-lc-rs.workspace = true
 axum.workspace = true
 clap.workspace = true
 cucumber.workspace = true
 health-check-domain.workspace = true
 http-body-util.workspace = true
 iam-domain.workspace = true
+jsonwebtoken.workspace = true
+pem.workspace = true
 serde_json.workspace = true
 service.workspace = true
+shared-domain.workspace = true
 shared-infrastructure.workspace = true
 sqlx.workspace = true
 test-support.workspace = true

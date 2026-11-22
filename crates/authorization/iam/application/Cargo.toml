@@ -13,13 +13,17 @@ async-graphql.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 iam-domain.workspace = true
+serde.workspace = true
 shared-application.workspace = true
 shared-domain.workspace = true
 thiserror.workspace = true
+utoipa.workspace = true
 utoipa-axum.workspace = true
+validator.workspace = true
 
 [dev-dependencies]
 rstest.workspace = true
+serde_json.workspace = true
 test-support.workspace = true
 tokio.workspace = true
 tower.workspace = true

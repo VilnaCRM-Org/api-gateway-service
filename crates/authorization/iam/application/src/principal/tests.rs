@@ -58,3 +58,32 @@ fn a_principal_prints_no_role() {
 
     assert!(!printed.contains("ROLE_"), "{printed}");
 }
+
+#[test]
+fn a_principal_keeps_the_roles_claim_and_the_expiry_of_its_token() {
+    let id = Uuid::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ab").unwrap();
+
+    let principal = Principal::from(identity(SubjectId::User(id), Some("s")));
+
+    assert_eq!(principal.roles(), ["ROLE_ADMIN".to_owned()]);
+    assert_eq!(
+        principal.expires_at(),
+        SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_mins(15))
+            .unwrap()
+    );
+}
+
+#[test]
+fn a_printed_principal_names_its_subject_and_token_but_no_role() {
+    let id = Uuid::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ab").unwrap();
+
+    let printed = format!(
+        "{:?}",
+        Principal::from(identity(SubjectId::User(id), Some("session-1")))
+    );
+
+    assert!(printed.starts_with("Principal {"), "{printed}");
+    assert!(printed.contains("session-1"), "{printed}");
+    assert!(printed.contains("jti-3"), "{printed}");
+}

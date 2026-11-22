@@ -113,3 +113,30 @@ fn an_expiry_before_the_issue_is_no_lifetime() {
 
     assert_eq!(TokenIdentity::from(&token).lifetime(), Duration::ZERO);
 }
+
+#[test]
+fn the_identity_keeps_the_roles_claim_as_issued() {
+    let id = Uuid::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ab").unwrap();
+
+    let identity = TokenIdentity::from(&token(SubjectId::User(id), Some("s")));
+
+    assert_eq!(
+        identity.roles(),
+        ["ROLE_USER".to_owned(), "ROLE_ADMIN".to_owned()]
+    );
+}
+
+#[test]
+fn the_printed_identity_names_its_fields_but_no_role() {
+    let id = Uuid::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ab").unwrap();
+
+    let printed = format!(
+        "{:?}",
+        TokenIdentity::from(&token(SubjectId::User(id), Some("session-1")))
+    );
+
+    assert!(printed.starts_with("TokenIdentity {"), "{printed}");
+    assert!(printed.contains("session-1"), "{printed}");
+    assert!(printed.contains("jti-7"), "{printed}");
+    assert!(!printed.contains("ROLE_"), "{printed}");
+}

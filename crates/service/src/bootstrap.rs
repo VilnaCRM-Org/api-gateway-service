@@ -12,11 +12,12 @@ use health_check_application::HealthCheckState;
 use health_check_application::HealthService;
 use health_check_domain::HealthProbe;
 use health_check_infrastructure::{CacheProbe, PostgresProbe, SqsProbe};
-use iam_application::ResolveTokenQueryHandler;
 use iam_application::http::IamState;
 use iam_application::{
     GetChangeReceiptQueryHandler, GetIdempotentReplayQueryHandler, GetPolicyEpochQueryHandler,
 };
+use iam_application::{ResolveSubjectTokenQueryHandler, ResolveTokenQueryHandler};
+use iam_domain::GraphQlSpecRepository;
 use iam_domain::RoleRepository;
 use iam_domain::UserRoleRepository;
 use iam_domain::{
@@ -24,6 +25,7 @@ use iam_domain::{
     SecurityAuditLog,
 };
 use iam_domain::{RevocationRepository, RevocationView, TokenMemo, TokenRepository};
+use iam_infrastructure::PgGraphQlSpecRepository;
 use iam_infrastructure::PgRoleRepository;
 use iam_infrastructure::PgUserRoleRepository;
 use iam_infrastructure::{
@@ -72,6 +74,8 @@ pub struct Adapters {
     pub roles: Arc<dyn RoleRepository>,
     /// Reader of the IAM role assignments.
     pub user_roles: Arc<dyn UserRoleRepository>,
+    /// Reader of the stored GraphQL specification versions.
+    pub graphql_specs: Arc<dyn GraphQlSpecRepository>,
     /// Offline verifier of User service access tokens.
     pub access_tokens: Arc<dyn AccessTokenVerifier>,
     /// Resolver of bearer credentials: memoized verification and the revocation check.
@@ -130,6 +134,7 @@ impl Adapters {
             idempotency_records: Arc::new(PgIdempotencyRepository::new(pool.clone())),
             roles: Arc::new(PgRoleRepository::new(pool.clone())),
             user_roles: Arc::new(PgUserRoleRepository::new(pool.clone())),
+            graphql_specs: Arc::new(PgGraphQlSpecRepository::new(pool.clone())),
             tokens: token_repository(config, Arc::clone(&access_tokens), &clock, &pool),
             revocations: Arc::new(PgRevocationRepository::new(pool.clone())),
             access_tokens,
@@ -237,9 +242,10 @@ fn register_change_queries(
     Ok(bus.register(receipt)?.register(replay)?)
 }
 
-/// Registers the handler that authenticates the callers of IAM's own API.
+/// Registers the handlers that resolve bearer tokens: the one that authenticates the callers of
+/// IAM's own API, and the one behind the token-resolution operation.
 ///
-/// It resolves tokens through the token repository and applies the caller rule of
+/// Both resolve tokens through the token repository; only the first applies the caller rule of
 /// `JWT_CALLER_AUDIENCE` and `JWT_SERVICE_TOKEN_MAX_LIFETIME`.
 fn register_token_queries(
     bus: InMemoryQueryBus,
@@ -247,7 +253,8 @@ fn register_token_queries(
     config: &Config,
 ) -> Result<InMemoryQueryBus, BootstrapError> {
     let resolve = ResolveTokenQueryHandler::new(Arc::clone(tokens), config.tokens.callers.clone());
-    Ok(bus.register(resolve)?)
+    let subject = ResolveSubjectTokenQueryHandler::new(Arc::clone(tokens));
+    Ok(bus.register(resolve)?.register(subject)?)
 }
 
 /// Registers every handler, builds the command and query buses, the state, the `GraphQL` schema
@@ -303,7 +310,10 @@ pub fn router_with_iam_routes(
     let health_check = HealthCheckState {
         service: Arc::new(service),
     };
-    let schema = schema::builder().data(some_module.clone()).finish();
+    let schema = schema::builder()
+        .data(some_module.clone())
+        .data(iam.clone())
+        .finish();
     let state = AppState {
         health_check,
         some_module,

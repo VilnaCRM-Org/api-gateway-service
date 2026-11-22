@@ -1,11 +1,27 @@
-use async_graphql::Value;
-use axum::http::StatusCode;
-use iam_domain::EntityVersion;
-use rstest::rstest;
-use shared_application::http::{Problem, Violation};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
-use super::{IamMutation, IamQuery, expected_version, iam_problem_to_graphql_error};
+use async_graphql::{EmptyMutation, EmptySubscription, Request, Schema, Value, Variables};
+use axum::http::StatusCode;
+use iam_domain::{
+    AccessToken, AccessTokenParts, EntityVersion, SessionId, SubjectId, TokenId, TokenIdentity,
+    TokenRejection,
+};
+use rstest::rstest;
+use serde_json::json;
+use shared_application::http::{Problem, Violation};
+use shared_domain::{CommandBus, QueryBus, Uuid};
+use test_support::bus::{FakeCommandBus, FakeQueryBus};
+use test_support::clock::FixedClock;
+use test_support::id::SequenceUuidGenerator;
+
+use super::{
+    IamMutation, IamQuery, ResolveTokenInput, expected_version, iam_problem_to_graphql_error,
+};
 use crate::error::IamError;
+use crate::http::IamState;
+use crate::principal::Principal;
+use crate::query::resolve_subject_token::{ResolveSubjectTokenQuery, TokenResolution};
 
 fn default_of<T: Default>() -> T {
     T::default()
@@ -159,4 +175,202 @@ fn an_expected_version_is_its_entity_version(#[case] field: i64) {
         expected_version(Some(field)).unwrap(),
         EntityVersion::new(field).unwrap()
     );
+}
+
+fn principal() -> Principal {
+    Principal::from(TokenIdentity::from(&AccessToken::new(AccessTokenParts {
+        subject: SubjectId::User(Uuid::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ab").unwrap()),
+        session: Some(SessionId::new("session-1").unwrap()),
+        token_id: TokenId::new("jti-1").unwrap(),
+        roles: vec!["ROLE_USER".to_owned()],
+        issued_at: SystemTime::UNIX_EPOCH,
+        expires_at: SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_mins(15))
+            .unwrap(),
+    })))
+}
+
+fn state(queries: FakeQueryBus) -> IamState {
+    let command_bus: Arc<dyn CommandBus> = Arc::new(FakeCommandBus::unregistered());
+    let query_bus: Arc<dyn QueryBus> = Arc::new(queries);
+    IamState {
+        command_bus,
+        query_bus,
+        uuid_generator: Arc::new(SequenceUuidGenerator::starting_at(1)),
+        clock: Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH)),
+    }
+}
+
+fn resolving(resolution: TokenResolution) -> FakeQueryBus {
+    FakeQueryBus::answering(move |_query: ResolveSubjectTokenQuery| Ok(resolution.clone()))
+}
+
+const QUERY: &str = "query($credential: String!) { resolveToken(input: { credential: $credential }) \
+    { resolved reason subjectId subjectKind sessionId roles expiresAt } }";
+
+type IamSchema = Schema<IamQuery, EmptyMutation, EmptySubscription>;
+
+fn schema(state: Option<IamState>) -> IamSchema {
+    let builder = Schema::build(IamQuery, EmptyMutation, EmptySubscription);
+    match state {
+        Some(state) => builder.data(state).finish(),
+        None => builder.finish(),
+    }
+}
+
+/// The caller data a request carries: none at all, or the outcome of the authentication.
+enum Caller {
+    Absent,
+    Data(Option<Principal>),
+}
+
+async fn run(schema: &IamSchema, caller: Caller, credential: &str) -> async_graphql::Response {
+    let variables = Variables::from_json(json!({ "credential": credential }));
+    let mut request = Request::new(QUERY).variables(variables);
+    if let Caller::Data(caller) = caller {
+        request = request.data(caller);
+    }
+    schema.execute(request).await
+}
+
+fn error_code(response: &async_graphql::Response) -> Option<Value> {
+    response
+        .errors
+        .first()
+        .and_then(|error| error.extensions.as_ref())
+        .and_then(|extensions| extensions.get("code"))
+        .cloned()
+}
+
+#[tokio::test]
+async fn an_authenticated_caller_resolves_a_valid_credential_into_its_subject() {
+    let state = state(resolving(TokenResolution::Resolved(principal())));
+
+    let response = run(
+        &schema(Some(state)),
+        Caller::Data(Some(principal())),
+        "raw-secret-token",
+    )
+    .await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    assert_eq!(
+        response.data.into_json().unwrap(),
+        json!({ "resolveToken": {
+            "resolved": true,
+            "reason": null,
+            "subjectId": "0190f2a8-7b3c-7d4e-8f10-1234567890ab",
+            "subjectKind": "user",
+            "sessionId": "session-1",
+            "roles": ["ROLE_USER"],
+            "expiresAt": 900,
+        } })
+    );
+}
+
+#[tokio::test]
+async fn a_refused_credential_is_data_with_its_reason_code() {
+    let refused = TokenResolution::Unresolved(TokenRejection::Revoked);
+    let state = state(resolving(refused));
+
+    let response = run(&schema(Some(state)), Caller::Data(Some(principal())), "bad").await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    assert_eq!(
+        response.data.into_json().unwrap(),
+        json!({ "resolveToken": {
+            "resolved": false,
+            "reason": "token_revoked",
+            "subjectId": null,
+            "subjectKind": null,
+            "sessionId": null,
+            "roles": null,
+            "expiresAt": null,
+        } })
+    );
+}
+
+#[rstest]
+#[case::refused_caller(Caller::Data(None))]
+#[case::no_caller_data(Caller::Absent)]
+#[tokio::test]
+async fn a_request_without_an_authenticated_caller_is_unauthenticated(#[case] caller: Caller) {
+    let state = state(resolving(TokenResolution::Resolved(principal())));
+
+    let response = run(&schema(Some(state)), caller, "token").await;
+
+    assert_eq!(error_code(&response), Some(code_of("UNAUTHENTICATED")));
+}
+
+#[tokio::test]
+async fn a_credential_above_the_length_limit_is_a_validation_failure() {
+    let state = state(resolving(TokenResolution::Resolved(principal())));
+
+    let response = run(
+        &schema(Some(state)),
+        Caller::Data(Some(principal())),
+        &"a".repeat(8193),
+    )
+    .await;
+
+    assert_eq!(error_code(&response), Some(code_of("VALIDATION_FAILED")));
+}
+
+#[tokio::test]
+async fn an_unreadable_revocation_state_is_an_internal_error() {
+    let failing = FakeQueryBus::answering(|_query: ResolveSubjectTokenQuery| {
+        Err::<TokenResolution, _>(IamError::Storage("disk on fire".into()))
+    });
+
+    let response = run(
+        &schema(Some(state(failing))),
+        Caller::Data(Some(principal())),
+        "token",
+    )
+    .await;
+
+    assert_eq!(
+        error_code(&response),
+        Some(code_of("INTERNAL_SERVER_ERROR"))
+    );
+    assert!(!format!("{:?}", response.errors).contains("disk on fire"));
+}
+
+#[tokio::test]
+async fn a_schema_without_the_iam_state_is_an_internal_error() {
+    let response = run(&schema(None), Caller::Data(Some(principal())), "token").await;
+
+    assert_eq!(
+        error_code(&response),
+        Some(code_of("INTERNAL_SERVER_ERROR"))
+    );
+}
+
+#[test]
+fn the_input_never_prints_the_credential() {
+    let input = ResolveTokenInput {
+        credential: "raw-secret-token".to_owned(),
+    };
+
+    let printed = format!("{input:?}");
+
+    assert!(printed.starts_with("ResolveTokenInput"), "{printed}");
+    assert!(!printed.contains("raw-secret-token"), "{printed}");
+}
+
+#[test]
+fn the_input_is_read_from_a_graphql_object_and_rejects_other_values() {
+    use async_graphql::{InputType as _, Name};
+
+    let object = Value::Object(
+        std::iter::once((Name::new("credential"), Value::String("token".to_owned()))).collect(),
+    );
+
+    let parsed = ResolveTokenInput::parse(Some(object)).unwrap();
+
+    assert_eq!(parsed.credential, "token");
+    assert!(ResolveTokenInput::parse(Some(Value::Boolean(true))).is_err());
+    let wrong_type =
+        Value::Object(std::iter::once((Name::new("credential"), Value::Boolean(true))).collect());
+    assert!(ResolveTokenInput::parse(Some(wrong_type)).is_err());
 }

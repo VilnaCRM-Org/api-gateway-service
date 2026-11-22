@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO iam_graphql_specs (id, service, content_hash, sdl, status, uploaded_by,\n            created_at, activated_at, retired_at)\n        SELECT $1::uuid, ($2::text[])[1], sha256(convert_to(($2::text[])[2], 'UTF8')), ($2::text[])[2],\n            ($2::text[])[3], ($2::text[])[4], $3::timestamptz, $4::timestamptz, $5::timestamptz\n        WHERE sha256(convert_to(($2::text[])[2], 'UTF8')) = $6",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "Timestamptz",
+        "Timestamptz",
+        "Timestamptz",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e115539b39b2c5bf10a9762823326af896435918e73648f3487eb35a99de4255"
+}

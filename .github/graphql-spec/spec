@@ -33,6 +33,32 @@ type Query {
     "Page number, from 1."
     page: Int! = 1
   ): [ExampleApiResource!]!
+  "Resolves a User service token into its subject, or says why it is refused."
+  resolveToken(input: ResolveTokenInput!): TokenResolution!
+}
+
+"Input of the token-resolution query."
+input ResolveTokenInput {
+  "The User service token to resolve; an empty one resolves as `token_missing`."
+  credential: String!
+}
+
+"The resolution of a credential: the subject and its token claims, or the reason it is refused."
+type TokenResolution {
+  "When the token expires, in seconds since 1970-01-01T00:00:00Z."
+  expiresAt: Int
+  "Why the credential is refused: `token_missing`, `token_invalid`, `token_expired` or `token_revoked`."
+  reason: String
+  "Whether the credential is valid and unrevoked."
+  resolved: Boolean!
+  "The roles claim of the token as issued."
+  roles: [String!]
+  "The User service session of the token, when it names one."
+  sessionId: String
+  "The user id, or the service name of a service principal."
+  subjectId: String
+  "`user` or `service`."
+  subjectKind: String
 }
 
 "Directs the executor to include this field or fragment only when the `if` argument is true."

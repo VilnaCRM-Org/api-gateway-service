@@ -1475,14 +1475,18 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 name = "e2e-tests"
 version = "0.1.0"
 dependencies = [
+ "aws-lc-rs",
  "axum",
  "clap",
  "cucumber",
  "health-check-domain",
  "http-body-util",
  "iam-domain",
+ "jsonwebtoken",
+ "pem",
  "serde_json",
  "service",
+ "shared-domain",
  "shared-infrastructure",
  "sqlx",
  "test-support",
@@ -2113,13 +2117,17 @@ dependencies = [
  "axum",
  "iam-domain",
  "rstest",
+ "serde",
+ "serde_json",
  "shared-application",
  "shared-domain",
  "test-support",
  "thiserror",
  "tokio",
  "tower",
+ "utoipa",
  "utoipa-axum",
+ "validator",
 ]
 
 [[package]]

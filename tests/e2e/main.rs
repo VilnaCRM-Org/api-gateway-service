@@ -3,6 +3,8 @@
 #[cfg(test)]
 mod steps;
 #[cfg(test)]
+mod tokens;
+#[cfg(test)]
 mod world;
 
 use cucumber::World as _;

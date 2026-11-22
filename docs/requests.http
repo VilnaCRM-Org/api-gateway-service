@@ -53,7 +53,26 @@ Content-Type: application/json
   "variables": { "input": { "name": "Example name", "description": "Example description" } }
 }
 
-### IAM (authorization/iam): the context is wired into the service but exposes no REST or GraphQL operation yet.
-# The first IAM operation adds its requests to this section. Until then the health check shows that the
-# service runs with the IAM context wired: 204, or a 500 problem document that lists the failing dependencies.
+### IAM (authorization/iam): the health check shows that the service runs with the IAM context wired: 204, or a 500 problem document that lists the failing dependencies.
+# Every IAM operation requires a bearer token; each one adds its requests to this section.
 GET {{baseUrl}}/api/health
+
+### Resolve a User service token over REST: 200 with the subject, or resolved = false with the token reason code; 401 without a valid bearer token
+# Replace both tokens: the bearer token of the caller (a user token, or a service token that names the IAM caller audience) and the credential to resolve.
+POST {{baseUrl}}/api/token-resolutions
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "credential": "<token to resolve>"
+}
+
+### Resolve a User service token over GraphQL: the same answer as the REST operation; the error code UNAUTHENTICATED without a valid bearer token
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($credential: String!) { resolveToken(input: { credential: $credential }) { resolved reason subjectId subjectKind sessionId roles expiresAt } }",
+  "variables": { "credential": "<token to resolve>" }
+}

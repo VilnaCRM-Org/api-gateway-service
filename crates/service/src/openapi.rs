@@ -1,7 +1,8 @@
 //! The `OpenAPI` document of the REST API (AD-16).
 
 use shared_domain::BoxError;
-use utoipa::OpenApi;
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::{Modify, OpenApi};
 use utoipa_axum::router::OpenApiRouter;
 
 use crate::http::AppState;
@@ -24,9 +25,32 @@ pub const API_VERSION: &str = "1.0.0";
     tags(
         (name = "ExampleApiResource", description = "Template example resource endpoints."),
         (name = "HealthCheck", description = "Runtime health-check endpoints."),
-    )
+        (name = "iam", description = "IAM endpoints: authentication and authorization of API callers."),
+    ),
+    modifiers(&BearerAuth)
 )]
 pub struct ApiDoc;
+
+/// Name of the HTTP bearer security scheme that every IAM operation requires.
+pub const BEARER_AUTH: &str = "bearerAuth";
+
+/// Adds the [`BEARER_AUTH`] security scheme to the document.
+#[derive(Debug)]
+struct BearerAuth;
+
+impl Modify for BearerAuth {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        let scheme = HttpBuilder::new()
+            .scheme(HttpAuthScheme::Bearer)
+            .bearer_format("JWT")
+            .description(Some("A User service access token."))
+            .build();
+        openapi
+            .components
+            .get_or_insert_default()
+            .add_security_scheme(BEARER_AUTH, SecurityScheme::Http(scheme));
+    }
+}
 
 /// The `OpenAPI` document could not be serialised.
 #[derive(Debug, thiserror::Error)]

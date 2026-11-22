@@ -61,18 +61,39 @@ pub enum InvalidSpec {
         /// The `{Type}.{field}` coordinate.
         coordinate: String,
     },
+    /// An `OpenAPI` document is larger than the byte limit; checked before parsing starts.
+    #[error("The document must be at most {limit} bytes.")]
+    DocumentTooLarge {
+        /// The largest number of bytes.
+        limit: usize,
+    },
+    /// An `OpenAPI` document defines more operations than the limit.
+    #[error("The document must define {limit} operations or fewer.")]
+    TooManyOperations {
+        /// The largest number of operations.
+        limit: usize,
+    },
+    /// Two operations of an `OpenAPI` document normalise to the same permission key.
+    #[error("The operation {key} is defined more than once.")]
+    DuplicateOperation {
+        /// The `{METHOD} {template}` form of the operation.
+        key: String,
+    },
 }
 
 impl InvalidSpec {
-    /// The property that carries the invalid document: `document` for a fault located by a JSON
-    /// pointer (an `OpenAPI` document), `sdl` for every other one.
+    /// The property that carries the invalid document: `document` for a fault of an `OpenAPI`
+    /// document (one located by a JSON pointer or a document-wide limit), `sdl` for every other one.
     #[must_use]
     pub const fn property_path(&self) -> &'static str {
         match self {
             Self::Malformed {
                 position: SpecPosition::JsonPointer(_),
                 ..
-            } => "document",
+            }
+            | Self::DocumentTooLarge { .. }
+            | Self::TooManyOperations { .. }
+            | Self::DuplicateOperation { .. } => "document",
             Self::TooLarge { .. }
             | Self::TooManyTypes { .. }
             | Self::TooManyFields { .. }
@@ -85,10 +106,12 @@ impl InvalidSpec {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::TooLarge { .. } => "length",
-            Self::TooManyTypes { .. } | Self::TooManyFields { .. } => "count",
+            Self::TooLarge { .. } | Self::DocumentTooLarge { .. } => "length",
+            Self::TooManyTypes { .. }
+            | Self::TooManyFields { .. }
+            | Self::TooManyOperations { .. } => "count",
             Self::Malformed { .. } => "syntax",
-            Self::DuplicateField { .. } => "duplicate",
+            Self::DuplicateField { .. } | Self::DuplicateOperation { .. } => "duplicate",
         }
     }
 
@@ -100,7 +123,10 @@ impl InvalidSpec {
             Self::TooLarge { .. }
             | Self::TooManyTypes { .. }
             | Self::TooManyFields { .. }
-            | Self::DuplicateField { .. } => None,
+            | Self::DuplicateField { .. }
+            | Self::DocumentTooLarge { .. }
+            | Self::TooManyOperations { .. }
+            | Self::DuplicateOperation { .. } => None,
         }
     }
 }

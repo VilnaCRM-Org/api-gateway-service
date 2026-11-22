@@ -66,14 +66,29 @@ fn the_state_is_extracted_from_the_state_of_the_application() {
 }
 
 #[test]
-fn the_router_documents_no_operation_yet() {
+fn the_router_documents_the_token_resolution_operation_under_the_iam_tag() {
     let (_routes, document) = router::<ApplicationState>().split_for_parts();
 
-    assert!(document.paths.paths.is_empty());
+    let operation = document
+        .paths
+        .paths
+        .get("/token-resolutions")
+        .and_then(|item| item.post.as_ref())
+        .unwrap();
+    assert_eq!(
+        operation.operation_id.as_deref(),
+        Some("api_token_resolutions_post")
+    );
+    assert_eq!(
+        operation.tags.as_deref(),
+        Some(["iam".to_owned()].as_slice())
+    );
+    assert!(operation.security.is_some());
+    assert_eq!(document.paths.paths.len(), 1);
 }
 
 #[tokio::test]
-async fn the_router_serves_no_route_yet() {
+async fn the_router_serves_no_other_route() {
     let (routes, _document) = router::<IamState>().split_for_parts();
     let app: Router = routes.with_state(state());
     let request = Request::builder()

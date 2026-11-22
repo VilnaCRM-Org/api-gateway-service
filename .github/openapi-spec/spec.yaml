@@ -184,6 +184,75 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /api/token-resolutions:
+    post:
+      tags:
+      - iam
+      summary: Resolves a User service token into its subject.
+      description: Returns the subject, session, roles claim and expiry of a valid, unrevoked token, or `resolved = false` with the token reason code. The credential is never echoed.
+      operationId: api_token_resolutions_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TokenResolutionRequest'
+        required: true
+      responses:
+        '200':
+          description: The resolution of the credential.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResolution'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller may not resolve tokens.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
 components:
   schemas:
     CreateExampleApiResourceRequest:
@@ -280,6 +349,72 @@ components:
           items:
             $ref: '#/components/schemas/Violation'
           description: Violated constraints, for `/problems/validation-failed`.
+    TokenResolution:
+      type: object
+      description: |-
+        The answer of the token-resolution operation.
+
+        A resolved credential carries the subject, the session, the roles claim and the expiry; a
+        refused one carries the reason code. The credential itself is never echoed.
+      required:
+      - resolved
+      properties:
+        expiresAt:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: When the token expires, in seconds since 1970-01-01T00:00:00Z.
+          minimum: 0
+        reason:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Why the credential is refused: `token_missing`, `token_invalid`, `token_expired` or
+            `token_revoked`.
+          example: token_expired
+        resolved:
+          type: boolean
+          description: Whether the credential is valid and unrevoked.
+        roles:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+          description: The roles claim of the token as issued.
+        sessionId:
+          type:
+          - string
+          - 'null'
+          description: The User service session of the token, when it names one.
+        subjectId:
+          type:
+          - string
+          - 'null'
+          description: The user id, or the service name of a service principal.
+        subjectKind:
+          type:
+          - string
+          - 'null'
+          description: '`user` or `service`.'
+          example: user
+    TokenResolutionRequest:
+      type: object
+      description: |-
+        Body of the token-resolution operation.
+
+        Its `Debug` output never shows the credential.
+      required:
+      - credential
+      properties:
+        credential:
+          type: string
+          description: The User service token to resolve; an empty one resolves as `token_missing`.
+          example: eyJhbGciOiJSUzI1NiJ9.e30.c2lnbmF0dXJl
+          maxLength: 8192
+      additionalProperties: false
     Violation:
       type: object
       description: One violated constraint.
@@ -297,8 +432,16 @@ components:
         propertyPath:
           type: string
           description: Wire name of the invalid field.
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: A User service access token.
 tags:
 - name: ExampleApiResource
   description: Template example resource endpoints.
 - name: HealthCheck
   description: Runtime health-check endpoints.
+- name: iam
+  description: 'IAM endpoints: authentication and authorization of API callers.'

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT sdl FROM iam_graphql_specs WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sdl",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "iam_graphql_specs",
+            "name": "sdl"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "04d02fde143e4a0dd7ad3c9d0a1d22a80b603b430c6028e24ff7a44f31b4dbbf"
+}

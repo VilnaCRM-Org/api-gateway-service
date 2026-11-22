@@ -75,14 +75,8 @@ pub fn assemble_with_iam_routes(
 }
 
 /// The IAM routes behind `require_principal`.
-///
-/// A router without routes stays as it is, because a route layer needs a route to wrap.
 fn protect(iam: Router<AppState>, authenticator: &Authenticator) -> Router<AppState> {
-    if iam.has_routes() {
-        iam.route_layer(from_fn_with_state(authenticator.clone(), require_principal))
-    } else {
-        iam
-    }
+    iam.route_layer(from_fn_with_state(authenticator.clone(), require_principal))
 }
 
 #[cfg(test)]

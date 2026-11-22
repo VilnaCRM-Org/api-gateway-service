@@ -22,6 +22,7 @@ use test_support::bus::RecordingEventBus;
 use test_support::cache::StubCache;
 use test_support::change_receipt::{FakeChangeReceiptRepository, change_receipt};
 use test_support::clock::FixedClock;
+use test_support::graphql_spec::FakeGraphQlSpecRepository;
 use test_support::id::SequenceUuidGenerator;
 use test_support::idempotency::{FakeIdempotencyRepository, idempotency_request};
 use test_support::log::LogRecorder;
@@ -85,6 +86,7 @@ fn adapters() -> Adapters {
         idempotency_records: Arc::new(FakeIdempotencyRepository::new()),
         roles: Arc::new(FakeRoleRepository::new()),
         user_roles: Arc::new(FakeUserRoleRepository::new()),
+        graphql_specs: Arc::new(FakeGraphQlSpecRepository::new()),
         access_tokens: Arc::new(FakeAccessTokenVerifier::new()),
         tokens: Arc::new(FakeTokenRepository::new()),
         revocations: Arc::new(FakeRevocationRepository::new()),
@@ -543,4 +545,110 @@ async fn connect_wires_a_token_repository_that_refuses_before_reading_the_revoca
             .await;
         assert_eq!(outcome, Err(rejection));
     }
+}
+
+fn user_identity(session: &str, audiences: &[&str]) -> iam_domain::TokenIdentity {
+    iam_domain::TokenIdentity::from(
+        &iam_domain::AccessToken::new(iam_domain::AccessTokenParts {
+            subject: iam_domain::SubjectId::User(
+                shared_domain::Uuid::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ab").unwrap(),
+            ),
+            session: Some(iam_domain::SessionId::new(session).unwrap()),
+            token_id: iam_domain::TokenId::new("jti-1").unwrap(),
+            roles: vec!["ROLE_USER".to_owned()],
+            issued_at: SystemTime::UNIX_EPOCH,
+            expires_at: SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_secs(600))
+                .unwrap(),
+        })
+        .with_audiences(audiences.iter().map(|&value| value.to_owned()).collect()),
+    )
+}
+
+fn resolution_request(bearer: Option<&str>, credential: &str) -> Request<Body> {
+    let mut request =
+        Request::post("/api/token-resolutions").header(header::CONTENT_TYPE, "application/json");
+    if let Some(token) = bearer {
+        request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    request
+        .body(Body::from(format!(r#"{{"credential":"{credential}"}}"#)))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn the_token_resolution_operation_is_registered_behind_the_caller_authentication() {
+    let tokens = FakeTokenRepository::new()
+        .accepting(
+            "caller-token",
+            user_identity("caller-session", &["vilnacrm-api"]),
+        )
+        .accepting(
+            "subject-token",
+            user_identity("subject-session", &["vilnacrm-api"]),
+        )
+        .rejecting("expired-token", TokenRejection::Expired);
+    let mut wiring = adapters();
+    wiring.tokens = Arc::new(tokens);
+    let app = app(wiring);
+
+    let resolved = send(
+        &app,
+        resolution_request(Some("caller-token"), "subject-token"),
+    )
+    .await;
+    let expired = send(
+        &app,
+        resolution_request(Some("caller-token"), "expired-token"),
+    )
+    .await;
+    let anonymous = send(&app, resolution_request(None, "subject-token")).await;
+
+    assert_eq!(resolved.status, StatusCode::OK);
+    assert_eq!(resolved.json()["resolved"], true);
+    assert_eq!(resolved.json()["sessionId"], "subject-session");
+    assert_eq!(expired.status, StatusCode::OK);
+    assert_eq!(expired.json()["reason"], "token_expired");
+    assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(anonymous.headers[header::WWW_AUTHENTICATE], "Bearer");
+}
+
+#[tokio::test]
+async fn the_resolve_token_query_reaches_the_iam_state_of_the_assembled_schema() {
+    let tokens = FakeTokenRepository::new()
+        .accepting(
+            "caller-token",
+            user_identity("caller-session", &["vilnacrm-api"]),
+        )
+        .accepting(
+            "subject-token",
+            user_identity("subject-session", &["vilnacrm-api"]),
+        );
+    let mut wiring = adapters();
+    wiring.tokens = Arc::new(tokens);
+    let app = app(wiring);
+    let query = serde_json::json!({
+        "query": r#"{ resolveToken(input: {credential: "subject-token"}) { resolved sessionId } }"#
+    })
+    .to_string();
+    let request = |bearer: Option<&str>| {
+        let mut request =
+            Request::post("/api/graphql").header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = bearer {
+            request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        request.body(Body::from(query.clone())).unwrap()
+    };
+
+    let authenticated = send(&app, request(Some("caller-token"))).await;
+    let anonymous = send(&app, request(None)).await;
+
+    assert_eq!(
+        authenticated.json()["data"]["resolveToken"],
+        serde_json::json!({ "resolved": true, "sessionId": "subject-session" })
+    );
+    assert_eq!(
+        anonymous.json()["errors"][0]["extensions"]["code"],
+        "UNAUTHENTICATED"
+    );
 }

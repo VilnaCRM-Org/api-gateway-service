@@ -2,6 +2,7 @@
 //! database. A new application instance is built for every request.
 
 use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::str::FromStr as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -12,25 +13,40 @@ use axum::http::{HeaderMap, Request, header};
 use clap::Parser as _;
 use health_check_domain::Dependency;
 use http_body_util::BodyExt as _;
-use iam_domain::PolicyEpoch;
+use iam_domain::{
+    ActorRef, PolicyEpoch, RevocationSource, SessionId, SessionRevocation, SessionRevocationId,
+    SystemComponent,
+};
 use serde_json::Value;
 use service::bootstrap::{Adapters, router};
 use service::cli::{Cli, Command};
 use service::config::Config;
+use shared_domain::Uuid;
 use shared_infrastructure::persistence::MIGRATOR;
 use sqlx::postgres::PgConnectOptions;
 use sqlx::{AssertSqlSafe, ConnectOptions as _, Connection as _, PgConnection};
 use test_support::probe::StubProbe;
 use tower::ServiceExt as _;
 
+use crate::tokens::{SigningKey, USER_ID, instant_after};
+
 /// Counter that makes the database names of the scenarios of one process unique.
 static DATABASES: AtomicUsize = AtomicUsize::new(0);
+
+/// Counter that makes the key file names of the scenarios of one process unique.
+static KEY_FILES: AtomicUsize = AtomicUsize::new(0);
 
 /// The token that stands for the remembered id in paths, doc strings and string arguments.
 const ID_TOKEN: &str = "{id}";
 
+/// The token that stands for the subject credential of the scenario.
+const SUBJECT_TOKEN: &str = "{token}";
+
+/// How long a session revocation recorded by a step is kept before it may be pruned.
+const REVOCATION_RETENTION: Duration = Duration::from_hours(24);
+
 /// What the last request answered.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Reply {
     pub(crate) status: u16,
     pub(crate) headers: HeaderMap,
@@ -52,6 +68,11 @@ pub(crate) struct AppWorld {
     reply: Option<Reply>,
     created: Vec<String>,
     remembered: Option<String>,
+    history: Vec<Reply>,
+    signing: Option<SigningKey>,
+    key_file: Option<PathBuf>,
+    caller_token: Option<String>,
+    subject_token: Option<String>,
 }
 
 /// The configuration as the binary reads it from the environment.
@@ -136,11 +157,82 @@ impl AppWorld {
         assert_eq!(ids, created);
     }
 
-    /// Replaces the `{id}` token by the remembered id.
+    /// Replaces the `{id}` token by the remembered id and the `{token}` token by the subject
+    /// credential.
     pub(crate) fn substitute(&self, text: &str) -> String {
-        self.remembered
+        let text = self
+            .remembered
             .as_deref()
-            .map_or_else(|| text.to_owned(), |id| text.replace(ID_TOKEN, id))
+            .map_or_else(|| text.to_owned(), |id| text.replace(ID_TOKEN, id));
+        self.subject_token
+            .as_deref()
+            .map_or_else(|| text.clone(), |token| text.replace(SUBJECT_TOKEN, token))
+    }
+
+    /// The subject token of the scenario; `None` before a step signed one.
+    pub(crate) fn subject_token(&self) -> Option<&str> {
+        self.subject_token.as_deref()
+    }
+
+    /// The replies of the scenario, oldest first.
+    pub(crate) fn history(&self) -> &[Reply] {
+        &self.history
+    }
+
+    /// The scenario's ephemeral signing key. The first call generates it and writes its public
+    /// half to the key file that every later application instance of the scenario reads as
+    /// `JWT_PUBLIC_KEYS_FILE`.
+    pub(crate) fn signing_key(&mut self) -> &SigningKey {
+        if self.signing.is_none() {
+            let key = SigningKey::generate();
+            let path = std::env::temp_dir().join(format!(
+                "e2e-jwt-{}-{}.pem",
+                std::process::id(),
+                KEY_FILES.fetch_add(1, Ordering::SeqCst)
+            ));
+            std::fs::write(&path, key.public_pem()).expect("write the scenario key file");
+            self.key_file = Some(path);
+            self.signing = Some(key);
+        }
+        self.signing.as_ref().expect("generated above")
+    }
+
+    /// Makes the following requests carry the bearer token of a valid service caller.
+    pub(crate) fn authenticate_as_service(&mut self) {
+        self.caller_token = Some(self.signing_key().caller_token());
+    }
+
+    /// Makes the following requests carry a bearer token that no key file of the application
+    /// holds the key of.
+    pub(crate) fn authenticate_with_unknown_key(&mut self) {
+        self.caller_token = Some(SigningKey::generate().caller_token());
+    }
+
+    /// Sets the credential that `{token}` stands for.
+    pub(crate) fn set_subject_token(&mut self, token: String) {
+        self.subject_token = Some(token);
+    }
+
+    /// Records the revocation of `session` through the production wiring, as the revocation
+    /// repository of the scenario database stores it.
+    pub(crate) async fn revoke_session(&mut self, session: &str) {
+        let config = self.config().await;
+        let adapters = Adapters::connect(&config).await.expect("production wiring");
+        let now = instant_after(Duration::ZERO);
+        let revocation = SessionRevocation {
+            id: SessionRevocationId::from_uuid(adapters.uuid_generator.generate()),
+            session: SessionId::new(session).expect("a valid session id"),
+            user: Uuid::parse(USER_ID).expect("a valid user id"),
+            source: RevocationSource::Operator,
+            revoked_by: ActorRef::System(SystemComponent::Bootstrap),
+            revoked_at: now,
+            prune_after: instant_after(REVOCATION_RETENTION),
+        };
+        adapters
+            .revocations
+            .revoke_session(&revocation)
+            .await
+            .expect("record the session revocation");
     }
 
     /// Creates the scenario database on first use and returns its URL.
@@ -165,10 +257,13 @@ impl AppWorld {
         url_with_database(self.database.as_deref().expect("created above"))
     }
 
-    /// Drops the scenario database, if the scenario made one.
+    /// Drops the scenario database and the scenario key file, if the scenario made them.
     pub(crate) async fn drop_database(&mut self) {
         if let Some(name) = self.database.take() {
             drop_named(&mut admin().await, &name).await;
+        }
+        if let Some(path) = self.key_file.take() {
+            drop(std::fs::remove_file(path));
         }
     }
 
@@ -177,6 +272,9 @@ impl AppWorld {
         let url = self.database_url().await;
         let mut config = base_config();
         config.database.url = url;
+        if let Some(path) = &self.key_file {
+            config.tokens.public_keys_file.clone_from(path);
+        }
         config
     }
 
@@ -208,6 +306,9 @@ impl AppWorld {
         if let Some(content_type) = content_type {
             request = request.header(header::CONTENT_TYPE, content_type);
         }
+        if let Some(token) = &self.caller_token {
+            request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
         let request = request
             .body(Body::from(self.substitute(body)))
             .expect("valid request");
@@ -230,6 +331,7 @@ impl AppWorld {
             body: String::from_utf8_lossy(&bytes).into_owned(),
         };
         self.record(&reply);
+        self.history.push(reply.clone());
         self.reply = Some(reply);
     }
 

@@ -19,4 +19,7 @@ pub use principal::Principal;
 pub use query::get_change_receipt::{GetChangeReceiptQuery, GetChangeReceiptQueryHandler};
 pub use query::get_idempotent_replay::{GetIdempotentReplayQuery, GetIdempotentReplayQueryHandler};
 pub use query::get_policy_epoch::{GetPolicyEpochQuery, GetPolicyEpochQueryHandler};
+pub use query::resolve_subject_token::{
+    ResolveSubjectTokenQuery, ResolveSubjectTokenQueryHandler, TokenResolution,
+};
 pub use query::resolve_token::{ResolveTokenQuery, ResolveTokenQueryHandler};

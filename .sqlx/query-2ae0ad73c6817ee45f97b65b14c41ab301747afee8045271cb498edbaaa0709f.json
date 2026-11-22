@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT spec_id, abstract_type, possible_type\n            FROM iam_graphql_spec_possible_types WHERE spec_id = ANY($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "spec_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "iam_graphql_spec_possible_types",
+            "name": "spec_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "abstract_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "iam_graphql_spec_possible_types",
+            "name": "abstract_type"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "possible_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "iam_graphql_spec_possible_types",
+            "name": "possible_type"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "2ae0ad73c6817ee45f97b65b14c41ab301747afee8045271cb498edbaaa0709f"
+}

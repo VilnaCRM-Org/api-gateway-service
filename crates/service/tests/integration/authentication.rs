@@ -1,7 +1,6 @@
 //! Authentication of IAM's callers through the production wiring: tokens signed at test time with
 //! an ephemeral RSA key, verified by `JwtAccessTokenVerifier` and checked for revocation in
-//! PostgreSQL, sent to a test-local protected route on the IAM router layer (the IAM context
-//! exposes no operation before Story 2.8).
+//! PostgreSQL, sent to a test-local protected route on the IAM router layer.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};

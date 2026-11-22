@@ -70,7 +70,7 @@ fn documents_every_operation(
 }
 
 #[test]
-fn documents_exactly_the_four_operations() {
+fn documents_exactly_the_five_operations() {
     let json = json_document();
     let mut operations = Vec::new();
     for (path, item) in json["paths"].as_object().unwrap() {
@@ -86,6 +86,7 @@ fn documents_exactly_the_four_operations() {
             "post /api/example_api_resources",
             "get /api/example_api_resources/{id}",
             "get /api/health",
+            "post /api/token-resolutions",
         ]
     );
 }
@@ -142,26 +143,103 @@ fn the_identity_comes_from_the_package_manifest_and_is_never_empty() {
 }
 
 #[test]
-fn carries_the_server_the_tags_and_no_security_scheme() {
+fn documents_the_token_resolution_with_the_bearer_requirement_and_the_iam_tag() {
+    let json = json_document();
+    let operation = &json["paths"]["/api/token-resolutions"]["post"];
+
+    assert_eq!(operation["operationId"], "api_token_resolutions_post");
+    assert_eq!(operation["tags"], json!(["iam"]));
+    assert_eq!(operation["security"], json!([{ "bearerAuth": [] }]));
+    let mut documented: Vec<&str> = operation["responses"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    documented.sort_unstable();
+    assert_eq!(
+        documented,
+        ["200", "400", "401", "403", "413", "415", "422", "default"]
+    );
+    for status in ["400", "401", "403", "413", "415", "422", "default"] {
+        assert_eq!(
+            operation["responses"][status]["content"]["application/problem+json"]["schema"]["$ref"],
+            "#/components/schemas/Problem",
+            "{status}"
+        );
+    }
+    assert_eq!(
+        operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/TokenResolution"
+    );
+    assert_eq!(
+        operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/TokenResolutionRequest"
+    );
+}
+
+#[test]
+fn the_bearer_scheme_is_an_http_bearer_jwt_scheme() {
+    let json = json_document();
+
+    assert_eq!(BEARER_AUTH, "bearerAuth");
+    let scheme = &json["components"]["securitySchemes"]["bearerAuth"];
+    assert_eq!(scheme["type"], "http");
+    assert_eq!(scheme["scheme"], "bearer");
+    assert_eq!(scheme["bearerFormat"], "JWT");
+}
+
+#[test]
+fn the_token_resolution_schemas_never_echo_the_credential() {
+    let json = json_document();
+    let schemas = &json["components"]["schemas"];
+
+    assert_eq!(
+        schemas["TokenResolutionRequest"]["properties"]["credential"]["maxLength"],
+        8192
+    );
+    assert_eq!(
+        schemas["TokenResolutionRequest"]["additionalProperties"],
+        false
+    );
+    assert!(
+        schemas["TokenResolution"]["properties"]
+            .get("credential")
+            .is_none()
+    );
+    assert_eq!(schemas["TokenResolution"]["required"], json!(["resolved"]));
+}
+
+#[test]
+fn carries_the_server_the_tags_and_only_the_bearer_scheme() {
     let json = json_document();
 
     assert_eq!(
         json["servers"],
         json!([{ "url": "/", "description": "Current host" }])
     );
+    let mut tags = json["tags"].as_array().unwrap().clone();
+    tags.sort_by_key(|tag| tag["name"].as_str().map(str::to_owned));
     assert_eq!(
-        json["tags"],
-        json!([
-            { "name": "ExampleApiResource", "description": "Template example resource endpoints." },
-            { "name": "HealthCheck", "description": "Runtime health-check endpoints." },
-        ])
+        tags,
+        [
+            json!({ "name": "ExampleApiResource", "description": "Template example resource endpoints." }),
+            json!({ "name": "HealthCheck", "description": "Runtime health-check endpoints." }),
+            json!({ "name": "iam", "description": "IAM endpoints: authentication and authorization of API callers." }),
+        ]
     );
-    assert!(json["components"].get("securitySchemes").is_none());
+    let schemes: Vec<&str> = json["components"]["securitySchemes"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(schemes, ["bearerAuth"]);
     assert!(json.get("security").is_none());
 }
 
 #[test]
-fn defines_exactly_the_five_schemas() {
+fn defines_exactly_the_seven_schemas() {
     let json = json_document();
     let schemas = json["components"]["schemas"].as_object().unwrap();
 
@@ -173,6 +251,8 @@ fn defines_exactly_the_five_schemas() {
             "DependencyFailure",
             "ExampleApiResource",
             "Problem",
+            "TokenResolution",
+            "TokenResolutionRequest",
             "Violation"
         ]
     );
