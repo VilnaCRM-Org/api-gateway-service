@@ -20,6 +20,7 @@ use service::telemetry;
 use test_support::access_token::{DEVELOPMENT_PUBLIC_KEYS_FILE, FakeAccessTokenVerifier};
 use test_support::change_receipt::FakeChangeReceiptRepository;
 use test_support::clock::FixedClock;
+use test_support::graphql_spec::FakeGraphQlSpecRepository;
 use test_support::id::SequenceUuidGenerator;
 use test_support::idempotency::FakeIdempotencyRepository;
 use test_support::policy_epoch::FakePolicyEpochRepository;
@@ -75,6 +76,7 @@ async fn a_panic_is_one_json_line_with_the_request_id_and_a_500_problem() {
         idempotency_records: Arc::new(FakeIdempotencyRepository::new()),
         roles: Arc::new(FakeRoleRepository::new()),
         user_roles: Arc::new(FakeUserRoleRepository::new()),
+        graphql_specs: Arc::new(FakeGraphQlSpecRepository::new()),
         access_tokens: Arc::new(FakeAccessTokenVerifier::new()),
         tokens: Arc::new(FakeTokenRepository::new()),
         revocations: Arc::new(FakeRevocationRepository::new()),

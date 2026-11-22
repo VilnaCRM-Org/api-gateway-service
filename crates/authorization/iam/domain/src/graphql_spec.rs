@@ -2,6 +2,7 @@
 //! schema of a service (FR-30, FR-31, FR-38).
 
 pub mod event;
+pub mod statement;
 
 use std::time::SystemTime;
 

@@ -7,6 +7,8 @@ pub mod graphql_schema_parser;
 pub mod graphql_spec_repository;
 pub mod iam_unit_of_work;
 pub mod idempotency_repository;
+pub mod openapi_document_parser;
+pub mod openapi_spec_repository;
 pub mod policy_epoch_repository;
 pub mod revocation_repository;
 pub mod revocation_view;

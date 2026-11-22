@@ -123,6 +123,15 @@ impl GraphQlTypeGraph {
         self.possible_types.get(abstract_type).into_iter().flatten()
     }
 
+    /// Every pair of an abstract type and one of its possible types, in the order of the names.
+    pub fn possible_type_pairs(&self) -> impl Iterator<Item = (&GqlName, &GqlName)> {
+        self.possible_types
+            .iter()
+            .flat_map(|(abstract_type, members)| {
+                members.iter().map(move |member| (abstract_type, member))
+            })
+    }
+
     /// Every coordinate with its flags.
     #[must_use]
     pub fn coordinates(&self) -> CoordinateSet {

@@ -8,6 +8,7 @@ pub mod entity;
 pub mod error;
 pub mod graphql_spec;
 mod micros;
+pub mod openapi_spec;
 pub mod policy;
 pub mod port;
 pub mod revocation;
@@ -28,9 +29,12 @@ pub use error::{
 };
 pub use error::{InvalidSpec, SpecPosition, SpecTransitionRefused};
 pub use graphql_spec::event::{GraphQlSpecLoaded, GraphQlSpecRetired};
+pub use graphql_spec::statement::GraphQlSpecStatement;
 pub use graphql_spec::{
     GraphQlSpec, GraphQlSpecContent, GraphQlSpecParts, SpecActivation, SpecStamp,
 };
+pub use openapi_spec::event::{OpenApiSpecLoaded, OpenApiSpecRetired};
+pub use openapi_spec::{OpenApiSpec, OpenApiSpecContent, OpenApiSpecParts};
 pub use policy::caller_token_rule::CallerTokenRule;
 pub use policy::compiled_role_set::{CompiledRoleSet, GrantStatus};
 pub use policy::decision_policy::{
@@ -47,6 +51,8 @@ pub use port::graphql_schema_parser::GraphQlSchemaParser;
 pub use port::graphql_spec_repository::{GraphQlSpecPageQuery, GraphQlSpecRepository};
 pub use port::iam_unit_of_work::IamUnitOfWork;
 pub use port::idempotency_repository::IdempotencyRepository;
+pub use port::openapi_document_parser::OpenApiDocumentParser;
+pub use port::openapi_spec_repository::{OpenApiSpecPageQuery, OpenApiSpecRepository};
 pub use port::policy_epoch_repository::PolicyEpochRepository;
 pub use port::revocation_repository::RevocationRepository;
 pub use port::revocation_view::RevocationView;
@@ -109,6 +115,7 @@ pub use value_object::identifier::{
     SessionRevocationId, SpecId, UserRoleId,
 };
 pub use value_object::log_epoch::LogEpoch;
+pub use value_object::path_template::PathTemplate;
 pub use value_object::permission_flags::PermissionFlags;
 pub use value_object::permission_grant::PermissionGrant;
 pub use value_object::permission_grant_set::PermissionGrantSet;
@@ -120,6 +127,9 @@ pub use value_object::relay_epoch::RelayEpoch;
 pub use value_object::request_digest::RequestDigest;
 pub use value_object::request_id::RequestId;
 pub use value_object::reserved_permission::{ReservedPermission, ServiceScope};
+pub use value_object::rest_operation_set::{
+    RestOperation, RestOperationDetails, RestOperationKey, RestOperationSet,
+};
 pub use value_object::rest_template::RestTemplate;
 pub use value_object::role_description::RoleDescription;
 pub use value_object::role_kind::RoleKind;

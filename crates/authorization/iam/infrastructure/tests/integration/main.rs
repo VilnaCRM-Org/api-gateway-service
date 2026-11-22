@@ -2,6 +2,8 @@
 //! database.
 
 #[cfg(test)]
+mod graphql_spec_repository;
+#[cfg(test)]
 mod jwt_access_token_verifier;
 #[cfg(test)]
 mod migration;

@@ -8,6 +8,7 @@ pub mod cache;
 pub mod change_receipt;
 pub mod clock;
 pub mod fixture;
+pub mod graphql_spec;
 pub mod id;
 pub mod idempotency;
 pub mod log;

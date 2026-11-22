@@ -91,6 +91,23 @@ fn holds_the_possible_types_of_interfaces_and_unions() {
 }
 
 #[test]
+fn lists_every_pair_of_an_abstract_type_and_a_possible_type_in_name_order() {
+    let graph = graph();
+
+    let pairs: Vec<(&GqlName, &GqlName)> = graph.possible_type_pairs().collect();
+
+    assert_eq!(
+        pairs,
+        [
+            (&name("Node"), &name("Invoice")),
+            (&name("Node"), &name("Order")),
+            (&name("SearchResult"), &name("Invoice")),
+        ]
+    );
+    assert_eq!(GraphQlTypeGraph::default().possible_type_pairs().count(), 0);
+}
+
+#[test]
 fn counts_declaring_abstract_and_possible_types_once() {
     // Query, Mutation, Invoice, Order, Node, SearchResult.
     assert_eq!(graph().type_count(), 6);

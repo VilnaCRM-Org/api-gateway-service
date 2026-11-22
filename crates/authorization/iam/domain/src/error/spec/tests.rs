@@ -47,6 +47,24 @@ fn line_column(line: u32, column: u32) -> SpecPosition {
     "duplicate",
     "The field Query.me is defined more than once."
 )]
+#[case(
+    InvalidSpec::DocumentTooLarge { limit: 5_242_880 },
+    "document",
+    "length",
+    "The document must be at most 5242880 bytes."
+)]
+#[case(
+    InvalidSpec::TooManyOperations { limit: 5_000 },
+    "document",
+    "count",
+    "The document must define 5000 operations or fewer."
+)]
+#[case(
+    InvalidSpec::DuplicateOperation { key: "GET /users/{}".to_owned() },
+    "document",
+    "duplicate",
+    "The operation GET /users/{} is defined more than once."
+)]
 fn an_invalid_spec_exposes_the_property_path_the_code_and_the_message(
     #[case] error: InvalidSpec,
     #[case] property_path: &str,
@@ -72,6 +90,15 @@ fn only_a_malformed_document_carries_its_position() {
     assert_eq!(
         InvalidSpec::DuplicateField {
             coordinate: "A.b".to_owned()
+        }
+        .position(),
+        None
+    );
+    assert_eq!(InvalidSpec::DocumentTooLarge { limit: 1 }.position(), None);
+    assert_eq!(InvalidSpec::TooManyOperations { limit: 1 }.position(), None);
+    assert_eq!(
+        InvalidSpec::DuplicateOperation {
+            key: "GET /a".to_owned()
         }
         .position(),
         None

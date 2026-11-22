@@ -1,5 +1,6 @@
 //! The statements and guards that a change runs inside its transaction.
 
+use crate::graphql_spec::statement::GraphQlSpecStatement;
 use crate::role::statement::RoleStatement;
 use crate::user_role::statement::UserRoleStatement;
 use crate::value_object::policy_version::PolicyVersion;
@@ -25,6 +26,9 @@ pub enum ChangeStatement {
     /// refuses the change as a duplicate; a stale or revoked stored assignment refuses it as a
     /// conflict.
     SaveUserRole(Box<UserRoleStatement>),
+    /// Insert a new specification version with its SDL; a duplicate id, or a version of the same
+    /// service with the same content hash, refuses the change as a duplicate.
+    SaveGraphQlSpec(Box<GraphQlSpecStatement>),
 }
 
 impl ChangeStatement {
@@ -34,7 +38,7 @@ impl ChangeStatement {
     pub fn holds(&self, locked: PolicyVersion) -> bool {
         match self {
             Self::ExpectPolicyVersion(expected) => *expected == locked,
-            Self::SaveRole(_) | Self::SaveUserRole(_) => true,
+            Self::SaveRole(_) | Self::SaveUserRole(_) | Self::SaveGraphQlSpec(_) => true,
         }
     }
 }

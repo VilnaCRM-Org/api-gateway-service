@@ -3,6 +3,7 @@
 
 pub mod change_receipt;
 pub mod event_encoding;
+pub mod graphql_spec;
 pub mod idempotency;
 pub mod revocation;
 pub mod revocation_view;
