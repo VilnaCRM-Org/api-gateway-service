@@ -1436,6 +1436,7 @@ dependencies = [
  "cucumber",
  "health-check-domain",
  "http-body-util",
+ "iam-domain",
  "serde_json",
  "service",
  "shared-infrastructure",
@@ -2056,6 +2057,49 @@ dependencies = [
  "socket2",
  "tokio",
  "tower-service",
+ "tracing",
+]
+
+[[package]]
+name = "iam-application"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "iam-domain",
+ "rstest",
+ "shared-application",
+ "shared-domain",
+ "test-support",
+ "thiserror",
+ "tokio",
+ "tower",
+ "utoipa-axum",
+]
+
+[[package]]
+name = "iam-domain"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "proptest",
+ "rstest",
+ "shared-domain",
+ "thiserror",
+]
+
+[[package]]
+name = "iam-infrastructure"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "iam-domain",
+ "rstest",
+ "shared-domain",
+ "shared-infrastructure",
+ "sqlx",
+ "test-support",
+ "tokio",
  "tracing",
 ]
 
@@ -3277,6 +3321,9 @@ dependencies = [
  "health-check-infrastructure",
  "http-body-util",
  "humantime",
+ "iam-application",
+ "iam-domain",
+ "iam-infrastructure",
  "rstest",
  "serde_json",
  "shared-application",
@@ -3877,6 +3924,7 @@ dependencies = [
  "async-trait",
  "fake",
  "health-check-domain",
+ "iam-domain",
  "rand",
  "shared-domain",
  "some-module-domain",

@@ -16,5 +16,8 @@ These records explain why the structure of the template is what it is. Each one 
 | [0010](0010-workflow-layout.md) | Workflow layout | DD-08, DD-13 |
 | [0011](0011-release-flow.md) | Release flow | DD-11, DD-12 |
 | [0012](0012-container-images.md) | Container images | DD-19, DD-20 |
+| [0013](0013-iam-bounded-context.md) | IAM bounded context `authorization/iam`, with the gateway as modules inside it | IAM architecture section 3, research section 2.5 (owner item D19) |
+| [0014](0014-postgresql-and-replicated-policy-snapshot.md) | PostgreSQL as system of record and an in-process replicated policy snapshot instead of DynamoDB and DAX | IAM architecture section 13, research section 5 |
+| [0019](0019-security-audit-log-and-access-decision-log.md) | Security audit log in PostgreSQL and access-decision log in Loki (draft) | IAM architecture sections 12.4 and 13, FR-49, FR-52 |
 
 A downstream service keeps its own records in this directory next to the twelve of the template. To add one, copy the form of an existing record, number it with the next free four-digit prefix and add a row to the table above.

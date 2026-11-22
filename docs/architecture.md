@@ -20,13 +20,14 @@ Application and Infrastructure never depend on each other. A handler therefore c
 
 ## Crates and bounded contexts
 
-The workspace has thirteen crates: nine layer crates (three bounded contexts times three layers), the composition root `service` (a library plus the binary), the test-double crate `test-support`, the Gherkin suite `e2e-tests` and the tooling crate `xtask`.
+The workspace has sixteen crates: twelve layer crates (four bounded contexts times three layers), the composition root `service` (a library plus the binary), the test-double crate `test-support`, the Gherkin suite `e2e-tests` and the tooling crate `xtask`.
 
 | Bounded context | Purpose | Crates |
 | --- | --- | --- |
 | `shared` | The shared kernel: aggregate root, domain event, bus ports and their in-process adapters, technical ports and adapters, the problem type and the problem-aware extractors | `shared-domain`, `shared-application`, `shared-infrastructure` |
 | `health-check` | The readiness check: the probe port, the orchestration of the three probes, and the PostgreSQL, cache and SQS probes | `health-check-domain`, `health-check-application`, `health-check-infrastructure` |
 | `some-module` | The example context: create, read by id and list `ExampleApiResource`, REST and GraphQL | `some-module-domain`, `some-module-application`, `some-module-infrastructure` |
+| `iam` | The authorization context (`authorization/iam`), with the gateway as modules inside it ([ADR 0013](adr/0013-iam-bounded-context.md)): the policy epoch, read from PostgreSQL ([ADR 0014](adr/0014-postgresql-and-replicated-policy-snapshot.md)), and the hash-chained security audit log ([ADR 0019](adr/0019-security-audit-log-and-access-decision-log.md)); no REST or GraphQL operation yet | `iam-domain`, `iam-application`, `iam-infrastructure` |
 
 A crate belongs to the context named by the text its layer pattern matches in `architecture.toml` (`some-module-domain` belongs to `some-module`). A context may use itself and the shared kernel and nothing else, so adding a context changes no rule file. `cargo xtask new-context <group> <context>` creates the three crates and registers them in the workspace. The layer crates live at `crates/<group>/<context>/<layer>`; the shared kernel lives at `crates/shared/<layer>`; `service` is at `crates/service`, `test-support` at `tests/support/`, `e2e-tests` at `tests/e2e/` and `xtask` at `xtask/`.
 

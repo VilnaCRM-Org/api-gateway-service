@@ -19,8 +19,10 @@ use service::config::Config;
 use service::telemetry;
 use test_support::clock::FixedClock;
 use test_support::id::SequenceUuidGenerator;
+use test_support::policy_epoch::FakePolicyEpochRepository;
 use test_support::probe::StubProbe;
 use test_support::repository::InMemoryExampleApiResourceRepository;
+use test_support::security_audit::FakeSecurityAuditLog;
 use tower::ServiceExt as _;
 
 const REQUEST_ID: &str = "panic-test-1";
@@ -59,6 +61,8 @@ async fn a_panic_is_one_json_line_with_the_request_id_and_a_500_problem() {
     telemetry::init("info", move || sink.clone()).unwrap();
     let adapters = Adapters {
         repository: Arc::new(InMemoryExampleApiResourceRepository::new()),
+        policy_epochs: Arc::new(FakePolicyEpochRepository::new()),
+        security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
         probes: vec![Arc::new(StubProbe::panicking(Dependency::Database))],
         event_bus: event_bus(),
         clock: Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH)),

@@ -1,20 +1,24 @@
-//! The example migration: the table, its named constraints and the one reversible migration.
+//! The example migration: the table, its named constraints and its reversible pair.
 //!
-//! These tests belong to the example context. The migration-agnostic tests of the embedded
-//! migrator stay in the integration tests of `shared-infrastructure`.
+//! These tests belong to the example context and look at its table and its migration only; other
+//! contexts add migrations of their own. The migration-agnostic tests of the embedded migrator stay
+//! in the integration tests of `shared-infrastructure`.
 
 use shared_infrastructure::persistence::MIGRATOR;
 use sqlx::{PgPool, Row as _};
 
 const COLUMNS: &str = "SELECT table_name::text, column_name::text, data_type::text, is_nullable::text, \
     ordinal_position::text FROM information_schema.columns \
-    WHERE table_schema = current_schema() AND table_name <> '_sqlx_migrations' \
+    WHERE table_schema = current_schema() AND table_name = 'example_api_resources' \
     ORDER BY table_name, ordinal_position";
 
 const CONSTRAINTS: &str = "SELECT conrelid::regclass::text, conname::text, contype::text, \
     pg_get_constraintdef(oid) FROM pg_constraint \
-    WHERE connamespace = current_schema()::regnamespace AND conrelid <> '_sqlx_migrations'::regclass \
+    WHERE connamespace = current_schema()::regnamespace AND conrelid = 'example_api_resources'::regclass \
     ORDER BY conname";
+
+/// The version of the example migration.
+const VERSION: i64 = 20_261_110_000_000;
 
 type Catalog = (Vec<Vec<String>>, Vec<Vec<String>>);
 
@@ -64,18 +68,21 @@ async fn the_migration_creates_the_table_with_named_constraints(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = false)]
-async fn the_embedded_migrator_holds_one_reversible_migration(pool: PgPool) {
+async fn the_embedded_migrator_holds_the_example_migration_as_one_reversible_pair(pool: PgPool) {
     MIGRATOR.run(&pool).await.unwrap();
 
-    let applied: i64 = sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let applied: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations WHERE version = $1")
+            .bind(VERSION)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     assert_eq!(applied, 1);
     assert_eq!(
         MIGRATOR
             .iter()
+            .filter(|migration| migration.version == VERSION)
             .filter(|migration| migration.migration_type.is_down_migration())
             .count(),
         1

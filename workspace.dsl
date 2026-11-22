@@ -65,6 +65,23 @@ workspace "Service architecture" "C4 model of the service: system context, conta
                         }
                     }
                 }
+                group "Authorization/Iam" {
+                    group "Authorization/Iam/Domain" {
+                        iamDomain = component "iam-domain" "Policy epoch and audit value objects, the security audit event, the policy epoch repository and security audit log ports and the IAM value errors." "Rust crate" {
+                            tags "Domain"
+                        }
+                    }
+                    group "Authorization/Iam/Application" {
+                        iamApplication = component "iam-application" "Policy epoch query, the IAM error and its problem mapping, the IAM REST router and GraphQL roots." "Rust crate" {
+                            tags "Application"
+                        }
+                    }
+                    group "Authorization/Iam/Infrastructure" {
+                        iamInfrastructure = component "iam-infrastructure" "PostgreSQL policy epoch repository and hash-chained security audit log adapters." "Rust crate" {
+                            tags "Infrastructure"
+                        }
+                    }
+                }
                 compositionRoot -> sharedApplication "Uses fallbacks and middleware"
                 compositionRoot -> sharedInfrastructure "Builds buses, cache, pool and SQS client"
                 compositionRoot -> healthCheckApplication "Mounts the health route"
@@ -74,6 +91,9 @@ workspace "Service architecture" "C4 model of the service: system context, conta
                 compositionRoot -> sharedDomain "Wires the bus, clock and UUID ports"
                 compositionRoot -> healthCheckDomain "Collects the probes behind the HealthProbe port"
                 compositionRoot -> someModuleDomain "Holds the repository behind the repository port"
+                compositionRoot -> iamApplication "Mounts the IAM router and registers the policy epoch query handler"
+                compositionRoot -> iamInfrastructure "Registers the policy epoch repository and the security audit log"
+                compositionRoot -> iamDomain "Holds the adapters behind the policy epoch repository and security audit log ports"
                 sharedApplication -> sharedDomain "Uses bus errors"
                 sharedInfrastructure -> sharedDomain "Implements bus, cache, clock and UUID ports"
                 healthCheckDomain -> sharedDomain "Uses the shared error type"
@@ -88,9 +108,16 @@ workspace "Service architecture" "C4 model of the service: system context, conta
                 someModuleApplication -> sharedApplication "Uses extractors and problem documents"
                 someModuleInfrastructure -> someModuleDomain "Implements the repository port"
                 someModuleInfrastructure -> sharedDomain "Uses shared value objects"
+                iamDomain -> sharedDomain "Uses the shared error type"
+                iamApplication -> iamDomain "Uses the policy epoch and its repository port"
+                iamApplication -> sharedDomain "Answers through the bus ports"
+                iamApplication -> sharedApplication "Returns problem documents"
+                iamInfrastructure -> iamDomain "Implements the policy epoch repository and security audit log ports"
+                iamInfrastructure -> sharedDomain "Uses the shared UUID value object"
                 sharedInfrastructure -> database "Opens the connection pool and applies migrations" "SQL over TCP"
                 healthCheckInfrastructure -> database "Runs SELECT 1" "SQL over TCP"
                 someModuleInfrastructure -> database "Reads and writes example_api_resources" "SQL over TCP"
+                iamInfrastructure -> database "Reads iam_policy_epoch, appends to and reads the security audit chain" "SQL over TCP"
             }
         }
         apiClient -> system.service "Calls the REST and GraphQL API" "HTTP, JSON"

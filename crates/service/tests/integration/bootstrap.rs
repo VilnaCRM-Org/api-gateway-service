@@ -8,10 +8,14 @@ use axum::http::{Request, StatusCode, header};
 use clap::Parser as _;
 use health_check_domain::Dependency;
 use http_body_util::BodyExt as _;
+use iam_domain::AuditChainHead;
 use serde_json::Value;
 use service::bootstrap::{Adapters, router};
 use service::cli::{Cli, Command};
 use service::config::Config;
+use test_support::policy_epoch::seeded_policy_epoch;
+use test_support::security_audit::security_audit_event;
+use test_support::seed::TestRng;
 use tower::ServiceExt as _;
 
 use crate::support::{database_url, silent_listener};
@@ -77,6 +81,41 @@ async fn a_resource_created_through_one_instance_is_read_through_another(pool: s
     let (status, read) = send(&config, Request::get(path).body(Body::empty()).unwrap()).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(read, created);
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn the_production_wiring_reads_the_seeded_policy_epoch(pool: sqlx::PgPool) {
+    let mut config = config();
+    config.database.url = database_url(&pool).await;
+    let adapters = Adapters::connect(&config).await.unwrap();
+
+    let epoch = adapters.policy_epochs.current().await.unwrap();
+
+    assert_eq!(epoch, seeded_policy_epoch());
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn the_production_wiring_appends_to_the_security_audit_chain(pool: sqlx::PgPool) {
+    let mut config = config();
+    config.database.url = database_url(&pool).await;
+    let adapters = Adapters::connect(&config).await.unwrap();
+    let event = security_audit_event(&mut TestRng::from_env());
+
+    let genesis = adapters.security_audit_log.chain_head().await.unwrap();
+    let head = adapters
+        .security_audit_log
+        .append_batch(std::slice::from_ref(&event))
+        .await
+        .unwrap();
+
+    assert_eq!(genesis, AuditChainHead::GENESIS);
+    assert_eq!(head.seq(), 1);
+    let stored = adapters
+        .security_audit_log
+        .find_by_id(event.parts().id)
+        .await
+        .unwrap();
+    assert_eq!(stored.event(), &event);
 }
 
 #[tokio::test]

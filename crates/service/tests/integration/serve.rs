@@ -401,6 +401,14 @@ async fn health_recovers_without_a_restart_when_the_database_comes_back(pool: Pg
     // truncates names to 63 bytes), derived from it and never from input.
     let missing = name.replacen("_sqlx_test_", "_recovered_", 1);
     assert_ne!(missing, name);
+    // The name is the same in every run, so a run that was interrupted between the creation and
+    // the removal below would leave a database that makes every later run fail at the creation.
+    sqlx::query(AssertSqlSafe(format!(
+        r#"DROP DATABASE IF EXISTS "{missing}" WITH (FORCE)"#
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
     let mut owned = stack_with(&format!("{server_url}/{missing}"));
     let acquire_timeout = Duration::from_secs(30);
     owned.retain(|(variable, _)| *variable != "DATABASE_ACQUIRE_TIMEOUT");

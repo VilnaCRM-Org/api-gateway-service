@@ -52,3 +52,8 @@ Content-Type: application/json
   "query": "mutation ($input: CreateExampleApiResourceInput!) { createExampleApiResource(input: $input) { id name description } }",
   "variables": { "input": { "name": "Example name", "description": "Example description" } }
 }
+
+### IAM (authorization/iam): the context is wired into the service but exposes no REST or GraphQL operation yet.
+# The first IAM operation adds its requests to this section. Until then the health check shows that the
+# service runs with the IAM context wired: 204, or a 500 problem document that lists the failing dependencies.
+GET {{baseUrl}}/api/health

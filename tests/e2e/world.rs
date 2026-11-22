@@ -12,6 +12,7 @@ use axum::http::{HeaderMap, Request, header};
 use clap::Parser as _;
 use health_check_domain::Dependency;
 use http_body_util::BodyExt as _;
+use iam_domain::PolicyEpoch;
 use serde_json::Value;
 use service::bootstrap::{Adapters, router};
 use service::cli::{Cli, Command};
@@ -171,6 +172,25 @@ impl AppWorld {
         }
     }
 
+    /// The configuration of an application instance on the scenario database.
+    async fn config(&mut self) -> Config {
+        let url = self.database_url().await;
+        let mut config = base_config();
+        config.database.url = url;
+        config
+    }
+
+    /// Reads the IAM policy epoch of the scenario database through the production wiring.
+    pub(crate) async fn policy_epoch(&mut self) -> PolicyEpoch {
+        let config = self.config().await;
+        let adapters = Adapters::connect(&config).await.expect("production wiring");
+        adapters
+            .policy_epochs
+            .current()
+            .await
+            .expect("the policy epoch of the scenario database")
+    }
+
     /// Builds a new application instance and sends one request to it.
     pub(crate) async fn send(
         &mut self,
@@ -179,9 +199,7 @@ impl AppWorld {
         content_type: Option<&str>,
         body: &str,
     ) {
-        let url = self.database_url().await;
-        let mut config = base_config();
-        config.database.url = url;
+        let config = self.config().await;
         let mut adapters = Adapters::connect(&config).await.expect("production wiring");
         for dependency in &self.failing {
             adapters = adapters.with_probe(Arc::new(StubProbe::failing(*dependency)));

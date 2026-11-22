@@ -2,6 +2,7 @@
 
 use axum::extract::FromRef;
 use health_check_application::HealthCheckState;
+use iam_application::http::IamState;
 use some_module_application::http::SomeModuleState;
 
 pub mod docs;
@@ -19,4 +20,6 @@ pub struct AppState {
     pub health_check: HealthCheckState,
     /// State of the example context's routes.
     pub some_module: SomeModuleState,
+    /// State of the IAM context's routes.
+    pub iam: IamState,
 }

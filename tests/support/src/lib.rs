@@ -1,14 +1,18 @@
 //! Test doubles, fixtures and seeded random data shared by the unit, integration and end-to-end
 //! tests. This crate is test code: it is excluded from coverage and mutation by path.
 
+pub mod boot_clock;
 pub mod bus;
 pub mod cache;
 pub mod clock;
 pub mod fixture;
 pub mod id;
 pub mod log;
+pub mod policy_epoch;
 pub mod probe;
 pub mod repository;
+pub mod rng;
+pub mod security_audit;
 pub mod seed;
 
 /// Runs a future that completes without waiting for anything, such as the doubles of this crate.

@@ -1,0 +1,21 @@
+[package]
+name = "iam-domain"
+description = "Bounded context iam, domain layer: aggregates, value objects, domain events and the ports of the context"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+shared-domain.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+rstest.workspace = true
+
+[lints]
+workspace = true

@@ -11,6 +11,10 @@ use health_check_application::HealthCheckState;
 use health_check_application::HealthService;
 use health_check_domain::HealthProbe;
 use health_check_infrastructure::{CacheProbe, PostgresProbe, SqsProbe};
+use iam_application::GetPolicyEpochQueryHandler;
+use iam_application::http::IamState;
+use iam_domain::{PolicyEpochRepository, SecurityAuditLog};
+use iam_infrastructure::{PgPolicyEpochRepository, PgSecurityAuditLog};
 use shared_domain::{Clock, CommandBus, EventBus, QueryBus, UuidGenerator};
 use shared_infrastructure::bus::{
     DuplicateHandler, InMemoryCommandBus, InMemoryEventBus, InMemoryQueryBus,
@@ -38,6 +42,10 @@ use crate::http::router::assemble;
 pub struct Adapters {
     /// Repository of the example context.
     pub repository: Arc<dyn ExampleApiResourceRepository>,
+    /// Repository of the IAM policy epoch.
+    pub policy_epochs: Arc<dyn PolicyEpochRepository>,
+    /// The hash-chained IAM security audit log.
+    pub security_audit_log: Arc<dyn SecurityAuditLog>,
     /// Health probes in the order database, cache, message broker.
     pub probes: Vec<Arc<dyn HealthProbe>>,
     /// Bus the command handlers publish domain events to.
@@ -75,6 +83,8 @@ impl Adapters {
         let cache = Arc::new(MokaCache::new());
         Ok(Self {
             repository: Arc::new(PgExampleApiResourceRepository::new(pool.clone())),
+            policy_epochs: Arc::new(PgPolicyEpochRepository::new(pool.clone())),
+            security_audit_log: Arc::new(PgSecurityAuditLog::new(pool.clone())),
             probes: vec![
                 Arc::new(PostgresProbe::new(pool)),
                 Arc::new(CacheProbe::new(cache)),
@@ -115,14 +125,16 @@ fn register_commands(
     Ok(bus.register(create)?)
 }
 
-/// Registers the query handlers of the example context.
+/// Registers the query handlers of the example context and of the IAM context.
 fn register_queries(
     bus: InMemoryQueryBus,
     repository: &Arc<dyn ExampleApiResourceRepository>,
+    policy_epochs: &Arc<dyn PolicyEpochRepository>,
 ) -> Result<InMemoryQueryBus, BootstrapError> {
     let get = GetExampleApiResourceHandler::new(Arc::clone(repository));
     let list = ListExampleApiResourcesHandler::new(Arc::clone(repository));
-    Ok(bus.register(get)?.register(list)?)
+    let policy_epoch = GetPolicyEpochQueryHandler::new(Arc::clone(policy_epochs));
+    Ok(bus.register(get)?.register(list)?.register(policy_epoch)?)
 }
 
 /// Registers every handler, builds the command and query buses, the state, the `GraphQL` schema
@@ -135,17 +147,24 @@ pub fn router(adapters: Adapters, config: &Config) -> Result<Router, BootstrapEr
     let create = CreateExampleApiResourceHandler::new(
         Arc::clone(&adapters.repository),
         adapters.event_bus,
-        adapters.clock,
+        Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
     let command_bus = register_commands(InMemoryCommandBus::new(), create)?;
-    let query_bus = register_queries(InMemoryQueryBus::new(), &adapters.repository)?;
+    let bus = InMemoryQueryBus::new();
+    let query_bus = register_queries(bus, &adapters.repository, &adapters.policy_epochs)?;
     let commands: Arc<dyn CommandBus> = Arc::new(command_bus);
     let queries: Arc<dyn QueryBus> = Arc::new(query_bus);
     let some_module = SomeModuleState {
+        command_bus: Arc::clone(&commands),
+        query_bus: Arc::clone(&queries),
+        uuid_generator: Arc::clone(&adapters.uuid_generator),
+    };
+    let iam = IamState {
         command_bus: commands,
         query_bus: queries,
         uuid_generator: adapters.uuid_generator,
+        clock: adapters.clock,
     };
     let service = HealthService::new(adapters.probes, config.health_probe_timeout);
     let health_check = HealthCheckState {
@@ -155,6 +174,7 @@ pub fn router(adapters: Adapters, config: &Config) -> Result<Router, BootstrapEr
     let state = AppState {
         health_check,
         some_module,
+        iam,
     };
     Ok(assemble(state, schema, config))
 }

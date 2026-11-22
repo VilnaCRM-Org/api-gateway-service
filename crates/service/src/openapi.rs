@@ -60,6 +60,7 @@ pub fn api_router() -> OpenApiRouter<AppState> {
     OpenApiRouter::with_openapi(document)
         .nest("/api", health_check_application::router())
         .nest("/api", some_module_application::http::router())
+        .nest("/api", iam_application::http::router())
 }
 
 /// The document.

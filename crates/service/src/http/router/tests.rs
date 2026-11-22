@@ -9,8 +9,10 @@ use http_body_util::BodyExt as _;
 use serde_json::Value;
 use test_support::clock::FixedClock;
 use test_support::id::SequenceUuidGenerator;
+use test_support::policy_epoch::FakePolicyEpochRepository;
 use test_support::probe::StubProbe;
 use test_support::repository::InMemoryExampleApiResourceRepository;
+use test_support::security_audit::FakeSecurityAuditLog;
 
 use crate::bootstrap::{Adapters, event_bus, router};
 use crate::cli::ServeArgs;
@@ -49,6 +51,8 @@ fn adapters() -> Adapters {
     ];
     Adapters {
         repository: Arc::new(InMemoryExampleApiResourceRepository::new()),
+        policy_epochs: Arc::new(FakePolicyEpochRepository::new()),
+        security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
         probes,
         event_bus: event_bus(),
         clock: Arc::new(FixedClock::at(std::time::SystemTime::UNIX_EPOCH)),

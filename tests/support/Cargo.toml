@@ -12,6 +12,7 @@ repository.workspace = true
 async-trait.workspace = true
 fake.workspace = true
 health-check-domain.workspace = true
+iam-domain.workspace = true
 rand.workspace = true
 shared-domain.workspace = true
 some-module-domain.workspace = true

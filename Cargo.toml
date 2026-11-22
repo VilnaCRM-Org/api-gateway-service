@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/authorization/iam/application",
+    "crates/authorization/iam/domain",
+    "crates/authorization/iam/infrastructure",
     "crates/company-subdomain/some-module/application",
     "crates/company-subdomain/some-module/domain",
     "crates/company-subdomain/some-module/infrastructure",
@@ -32,6 +35,9 @@ repository = "https://github.com/VilnaCRM-Org/api-gateway-service"
 health-check-application = { path = "crates/internal/health-check/application" }
 health-check-domain = { path = "crates/internal/health-check/domain" }
 health-check-infrastructure = { path = "crates/internal/health-check/infrastructure" }
+iam-application = { path = "crates/authorization/iam/application" }
+iam-domain = { path = "crates/authorization/iam/domain" }
+iam-infrastructure = { path = "crates/authorization/iam/infrastructure" }
 service = { path = "crates/service" }
 shared-application = { path = "crates/shared/application" }
 shared-domain = { path = "crates/shared/domain" }

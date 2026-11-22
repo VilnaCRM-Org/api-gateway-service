@@ -7,8 +7,10 @@ use axum::http::{HeaderMap, Request, StatusCode, header};
 use health_check_domain::{Dependency, HealthProbe};
 use health_check_infrastructure::CacheProbe;
 use http_body_util::BodyExt as _;
+use iam_application::{GetPolicyEpochQuery, GetPolicyEpochQueryHandler};
+use iam_domain::PolicyEpochRepository;
 use serde_json::Value;
-use shared_domain::EventBus;
+use shared_domain::{EventBus, QueryBus};
 use shared_infrastructure::bus::{InMemoryCommandBus, InMemoryQueryBus};
 use some_module_application::{CreateExampleApiResourceHandler, GetExampleApiResourceHandler};
 use some_module_domain::ExampleApiResourceRepository;
@@ -17,8 +19,10 @@ use test_support::cache::StubCache;
 use test_support::clock::FixedClock;
 use test_support::id::SequenceUuidGenerator;
 use test_support::log::LogRecorder;
+use test_support::policy_epoch::{FakePolicyEpochRepository, seeded_policy_epoch};
 use test_support::probe::StubProbe;
 use test_support::repository::InMemoryExampleApiResourceRepository;
+use test_support::security_audit::FakeSecurityAuditLog;
 use tower::ServiceExt as _;
 
 use super::{Adapters, BootstrapError, event_bus, register_commands, register_queries, router};
@@ -60,6 +64,8 @@ fn healthy_probes() -> Vec<Arc<dyn HealthProbe>> {
 fn adapters() -> Adapters {
     Adapters {
         repository: Arc::new(InMemoryExampleApiResourceRepository::new()),
+        policy_epochs: Arc::new(FakePolicyEpochRepository::new()),
+        security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
         probes: healthy_probes(),
         event_bus: event_bus(),
         clock: Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH)),
@@ -309,6 +315,10 @@ fn repository() -> Arc<dyn ExampleApiResourceRepository> {
     Arc::new(InMemoryExampleApiResourceRepository::new())
 }
 
+fn policy_epochs() -> Arc<dyn PolicyEpochRepository> {
+    Arc::new(FakePolicyEpochRepository::new())
+}
+
 #[test]
 fn a_second_command_handler_is_a_duplicate_that_names_the_message() {
     let repository = repository();
@@ -333,7 +343,7 @@ fn a_second_query_handler_is_a_duplicate_that_names_the_message() {
         .register(GetExampleApiResourceHandler::new(Arc::clone(&repository)))
         .unwrap();
 
-    let error = register_queries(bus, &repository).unwrap_err();
+    let error = register_queries(bus, &repository, &policy_epochs()).unwrap_err();
 
     assert!(
         matches!(error, BootstrapError::DuplicateHandler(_)),
@@ -343,6 +353,31 @@ fn a_second_query_handler_is_a_duplicate_that_names_the_message() {
         error.to_string().contains("GetExampleApiResource"),
         "{error}"
     );
+}
+
+#[test]
+fn a_second_policy_epoch_query_handler_is_a_duplicate_that_names_the_message() {
+    let bus = InMemoryQueryBus::new()
+        .register(GetPolicyEpochQueryHandler::new(policy_epochs()))
+        .unwrap();
+
+    let error = register_queries(bus, &repository(), &policy_epochs()).unwrap_err();
+
+    assert!(
+        matches!(error, BootstrapError::DuplicateHandler(_)),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("GetPolicyEpochQuery"), "{error}");
+}
+
+#[tokio::test]
+async fn the_query_bus_answers_the_policy_epoch_query_from_the_iam_adapter() {
+    let bus = register_queries(InMemoryQueryBus::new(), &repository(), &policy_epochs()).unwrap();
+    let queries: Arc<dyn QueryBus> = Arc::new(bus);
+
+    let epoch = queries.ask(GetPolicyEpochQuery).await.unwrap();
+
+    assert_eq!(epoch, seeded_policy_epoch());
 }
 
 #[test]
