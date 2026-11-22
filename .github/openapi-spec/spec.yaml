@@ -184,6 +184,233 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /api/roles:
+    get:
+      tags:
+      - iam
+      summary: Retrieves the collection of roles.
+      description: 'Returns one page of roles in a stable order, with the `nextCursor` of the next page. Filters: `namePrefix` (without regard to case) and `kind`.'
+      operationId: api_roles_get
+      parameters:
+      - name: limit
+        in: query
+        description: The largest number of roles of the page.
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 30
+          maximum: 100
+          minimum: 1
+      - name: after
+        in: query
+        description: The `nextCursor` of the previous page; absent for the first page.
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: namePrefix
+        in: query
+        description: Only roles whose name starts with this text, compared without regard to case.
+        required: false
+        schema:
+          type: string
+          maxLength: 100
+      - name: kind
+        in: query
+        description: 'Only roles of this kind: `system` or `custom`.'
+        required: false
+        schema:
+          type: string
+        example: custom
+      responses:
+        '200':
+          description: One page of roles.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RolePage'
+        '400':
+          description: Invalid query parameter.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+    post:
+      tags:
+      - iam
+      summary: Creates a role.
+      description: Creates a custom role without grants at version 1 and records `iam.role.created`. A repeated `Idempotency-Key` with the same body within 24 hours returns the original result.
+      operationId: api_roles_post
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        description: Makes the creation safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRoleRequest'
+        required: true
+      responses:
+        '201':
+          description: The role was created.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the role in double quotes.
+            location:
+              schema:
+                type: string
+              description: Path of the created role.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: A role with this name exists.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed, or the idempotency key was used for another request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+  /api/roles/{id}:
+    get:
+      tags:
+      - iam
+      summary: Retrieves a role.
+      description: Returns the role with the identifier, with its `ETag`.
+      operationId: api_roles_id_get
+      parameters:
+      - name: id
+        in: path
+        description: Role identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The role.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the role in double quotes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+        '400':
+          description: Invalid identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Role not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
   /api/token-resolutions:
     post:
       tags:
@@ -277,6 +504,28 @@ components:
           minLength: 1
           pattern: ^[^\u0000]*$
       additionalProperties: false
+    CreateRoleRequest:
+      type: object
+      description: Body of the role-creation operation.
+      required:
+      - name
+      properties:
+        description:
+          type:
+          - string
+          - 'null'
+          description: What the role is for.
+          example: Manages invoices and refunds.
+          maxLength: 1000
+        name:
+          type: string
+          description: |-
+            The name of the role: unique without regard to case among the roles that are not deleted,
+            without control characters.
+          example: Billing administrator
+          maxLength: 100
+          minLength: 1
+      additionalProperties: false
     DependencyFailure:
       type: object
       description: One dependency that did not answer its probe.
@@ -349,6 +598,74 @@ components:
           items:
             $ref: '#/components/schemas/Violation'
           description: Violated constraints, for `/problems/validation-failed`.
+    Role:
+      type: object
+      description: A role.
+      required:
+      - id
+      - name
+      - kind
+      - grantCount
+      - version
+      - createdAt
+      - updatedAt
+      properties:
+        createdAt:
+          type: string
+          format: date-time
+          description: When the role was created, as an RFC 3339 UTC time.
+          example: 2026-11-23T10:15:30.123456Z
+        description:
+          type:
+          - string
+          - 'null'
+          description: What the role is for.
+          maxLength: 1000
+        grantCount:
+          type: integer
+          format: int64
+          description: The number of permission grants of the role.
+          minimum: 0
+        id:
+          type: string
+          format: uuid
+          description: The identifier of the role.
+        kind:
+          type: string
+          description: '`system` for a role that IAM manages, `custom` for one that an administrator manages.'
+          example: custom
+        name:
+          type: string
+          description: The name of the role.
+          maxLength: 100
+          minLength: 1
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the role was last changed, as an RFC 3339 UTC time.
+          example: 2026-11-23T10:15:30.123456Z
+        version:
+          type: integer
+          format: int64
+          description: The version of the role; its `ETag` is this number in double quotes.
+          minimum: 1
+    RolePage:
+      type: object
+      description: One page of roles.
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Role'
+          description: The roles of the page.
+        nextCursor:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The `after` value of the next page; absent on the last page.
     TokenResolution:
       type: object
       description: |-

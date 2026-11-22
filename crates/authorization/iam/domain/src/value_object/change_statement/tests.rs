@@ -95,3 +95,35 @@ fn a_specification_write_holds_under_every_locked_version() {
     assert!(statement.holds(PolicyVersion::new(1).unwrap()));
     assert!(statement.holds(PolicyVersion::new(9).unwrap()));
 }
+
+#[test]
+fn an_openapi_specification_write_holds_under_every_locked_version() {
+    use crate::graphql_spec::SpecStamp;
+    use crate::openapi_spec::statement::OpenApiSpecStatement;
+    use crate::openapi_spec::{OpenApiSpec, OpenApiSpecContent};
+    use crate::value_object::content_hash::ContentHash;
+    use crate::value_object::identifier::SpecId;
+    use crate::value_object::rest_operation_set::RestOperationSet;
+    use crate::value_object::service_name::ServiceName;
+
+    let spec = OpenApiSpec::load(
+        SpecId::parse("5b2e8c1d-3f4a-4b6c-8d9e-0a1b2c3d4e5f").unwrap(),
+        OpenApiSpecContent {
+            service: ServiceName::new("billing").unwrap(),
+            content_hash: ContentHash::new(&[0x11; 32]).unwrap(),
+            operations: RestOperationSet::new(),
+        },
+        SpecStamp {
+            event_id: Uuid::parse("01890a5d-ac96-774b-bcce-b302099a8057").unwrap(),
+            actor: ActorRef::User(Uuid::parse("3d9b7c1e-5a2f-4e8d-b6c0-9f1e2d3c4b5a").unwrap()),
+            occurred_at: SystemTime::UNIX_EPOCH,
+        },
+    );
+    let statement = ChangeStatement::SaveOpenApiSpec(Box::new(OpenApiSpecStatement::insert(
+        &spec,
+        String::new(),
+    )));
+
+    assert!(statement.holds(PolicyVersion::new(1).unwrap()));
+    assert!(statement.holds(PolicyVersion::new(9).unwrap()));
+}

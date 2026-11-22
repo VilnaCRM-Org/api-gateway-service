@@ -1,6 +1,7 @@
 //! The statements and guards that a change runs inside its transaction.
 
 use crate::graphql_spec::statement::GraphQlSpecStatement;
+use crate::openapi_spec::statement::OpenApiSpecStatement;
 use crate::role::statement::RoleStatement;
 use crate::user_role::statement::UserRoleStatement;
 use crate::value_object::policy_version::PolicyVersion;
@@ -29,6 +30,9 @@ pub enum ChangeStatement {
     /// Insert a new specification version with its SDL; a duplicate id, or a version of the same
     /// service with the same content hash, refuses the change as a duplicate.
     SaveGraphQlSpec(Box<GraphQlSpecStatement>),
+    /// Insert a new `OpenAPI` specification version with its document; a duplicate id, or a version
+    /// of the same service with the same content hash, refuses the change as a duplicate.
+    SaveOpenApiSpec(Box<OpenApiSpecStatement>),
 }
 
 impl ChangeStatement {
@@ -38,7 +42,10 @@ impl ChangeStatement {
     pub fn holds(&self, locked: PolicyVersion) -> bool {
         match self {
             Self::ExpectPolicyVersion(expected) => *expected == locked,
-            Self::SaveRole(_) | Self::SaveUserRole(_) | Self::SaveGraphQlSpec(_) => true,
+            Self::SaveRole(_)
+            | Self::SaveUserRole(_)
+            | Self::SaveGraphQlSpec(_)
+            | Self::SaveOpenApiSpec(_) => true,
         }
     }
 }

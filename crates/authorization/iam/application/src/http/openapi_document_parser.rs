@@ -116,38 +116,86 @@ fn is_internal(reference: &str) -> bool {
     reference == "#" || reference.starts_with("#/")
 }
 
+/// One step from a container to a child: the member name or the list index.
+#[derive(Debug, Clone, Copy)]
+enum Step<'a> {
+    Member(&'a str),
+    Index(usize),
+}
+
+/// A visited container or refused member: the slot of its parent (`None` for the root) and the
+/// step from that parent.
+type Trail<'a> = Vec<(Option<usize>, Option<Step<'a>>)>;
+
 /// Refuses the first `$ref` that is not internal, at the pointer of the `$ref` member.
+///
+/// The walk keeps one step per container, not one pointer per node, so a long member name above
+/// many children costs its length once; the pointer text is built only for the refused `$ref`.
 fn reject_external_references(root: &ConstValue) -> Result<(), InvalidSpec> {
-    let mut pending = vec![(String::new(), root)];
-    while let Some((pointer, value)) = pending.pop() {
-        match value {
-            ConstValue::Object(members) => {
-                for (name, child) in members {
-                    let child_pointer = format!("{pointer}/{}", escape(name));
-                    if is_external_reference(name, child) {
-                        return Err(malformed(
-                            "External references are not supported.",
-                            child_pointer,
-                        ));
-                    }
-                    pending.push((child_pointer, child));
-                }
+    let mut trail: Trail<'_> = vec![(None, None)];
+    let mut pending = vec![(0_usize, root)];
+    while let Some((slot, value)) = pending.pop() {
+        for (step, child) in children(value) {
+            if let Step::Member(name) = step
+                && is_external_reference(name, child)
+            {
+                let refused = trail.len();
+                trail.push((Some(slot), Some(step)));
+                return Err(malformed(
+                    "External references are not supported.",
+                    pointer_of(&trail, refused),
+                ));
             }
-            ConstValue::List(items) => pending.extend(
-                items
-                    .iter()
-                    .enumerate()
-                    .map(|(index, child)| (format!("{pointer}/{index}"), child)),
-            ),
-            ConstValue::Null
-            | ConstValue::Number(_)
-            | ConstValue::String(_)
-            | ConstValue::Boolean(_)
-            | ConstValue::Binary(_)
-            | ConstValue::Enum(_) => {}
+            if is_container(child) {
+                pending.push((trail.len(), child));
+                trail.push((Some(slot), Some(step)));
+            }
         }
     }
     Ok(())
+}
+
+/// The members of an object or the items of a list, each with its step; none for a scalar.
+fn children(value: &ConstValue) -> Vec<(Step<'_>, &ConstValue)> {
+    match value {
+        ConstValue::Object(members) => members
+            .iter()
+            .map(|(name, child)| (Step::Member(name.as_str()), child))
+            .collect(),
+        ConstValue::List(items) => items
+            .iter()
+            .enumerate()
+            .map(|(index, child)| (Step::Index(index), child))
+            .collect(),
+        ConstValue::Null
+        | ConstValue::Number(_)
+        | ConstValue::String(_)
+        | ConstValue::Boolean(_)
+        | ConstValue::Binary(_)
+        | ConstValue::Enum(_) => Vec::new(),
+    }
+}
+
+/// Whether the value is an object or a list.
+const fn is_container(value: &ConstValue) -> bool {
+    matches!(value, ConstValue::Object(_) | ConstValue::List(_))
+}
+
+/// The JSON pointer of the trail entry at `slot`, built from its steps back to the root.
+fn pointer_of(trail: &Trail<'_>, slot: usize) -> String {
+    let mut steps = Vec::new();
+    let mut current = Some(slot);
+    while let Some(&(parent, step)) = current.and_then(|index| trail.get(index)) {
+        steps.extend(step);
+        current = parent;
+    }
+    steps
+        .iter()
+        .rev()
+        .fold(String::new(), |pointer, step| match step {
+            Step::Member(name) => format!("{pointer}/{}", escape(name)),
+            Step::Index(index) => format!("{pointer}/{index}"),
+        })
 }
 
 fn is_external_reference(name: &str, value: &ConstValue) -> bool {

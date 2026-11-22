@@ -5,6 +5,7 @@ pub mod change_receipt;
 pub mod event_encoding;
 pub mod graphql_spec;
 pub mod idempotency;
+pub mod openapi_spec;
 pub mod revocation;
 pub mod revocation_view;
 pub mod role;

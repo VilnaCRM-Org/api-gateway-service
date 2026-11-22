@@ -379,3 +379,31 @@ fn a_fragment_reference_that_is_not_a_pointer_is_refused() {
 
     assert_eq!(pointer(&error), "/paths/~1a/$ref");
 }
+
+#[test]
+fn a_long_member_name_above_many_items_is_walked_without_a_pointer_per_item() {
+    let name = "k".repeat(1_000_000);
+    let items = vec!["0"; 500_000].join(",");
+    let document = DOCUMENT_30.replacen('{', &format!(r#"{{"x-{name}": [{items}],"#), 1);
+
+    assert!(document.len() < OpenApiSpec::MAX_DOCUMENT_BYTES);
+    assert_eq!(parse(&document).unwrap(), parse(DOCUMENT_30).unwrap());
+}
+
+#[test]
+fn an_external_reference_under_a_list_is_refused_at_its_escaped_pointer() {
+    let document = DOCUMENT_30.replacen(
+        '{',
+        r#"{"x-a/b~c": [{"skip": 1}, {"$ref": "https://example.test/spec.json"}],"#,
+        1,
+    );
+
+    let error = parse(&document).unwrap_err();
+
+    assert_eq!(pointer(&error), "/x-a~1b~0c/1/$ref");
+}
+
+#[test]
+fn a_scalar_has_no_children_to_walk() {
+    assert!(super::children(&async_graphql::Value::Null).is_empty());
+}

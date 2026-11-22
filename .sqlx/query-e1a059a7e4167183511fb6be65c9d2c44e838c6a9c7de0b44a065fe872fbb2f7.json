@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO iam_openapi_spec_operations (spec_id, method, path_template, label,\n            sensitive, audit_always)\n        SELECT $1::uuid, method, path_template, label, sensitive, audit_always\n        FROM UNNEST($2::text[], $3::text[], $4::text[], $5::bool[], $6::bool[])\n            AS operations (method, path_template, label, sensitive, audit_always)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "BoolArray",
+        "BoolArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e1a059a7e4167183511fb6be65c9d2c44e838c6a9c7de0b44a065fe872fbb2f7"
+}

@@ -16,6 +16,7 @@ use sqlx::types::time::OffsetDateTime;
 
 use crate::persistence::event_encoding::encode;
 use crate::persistence::graphql_spec;
+use crate::persistence::openapi_spec;
 use crate::persistence::role::save_within;
 use crate::persistence::security_audit_log::{PgSecurityAuditLog, emit};
 use crate::persistence::user_role;
@@ -32,7 +33,8 @@ const NANOS_PER_MICRO: i128 = 1_000;
 /// `iam_change_receipts` and `iam_idempotency_keys` tables, and runs the role statements against
 /// `iam_roles` and `iam_role_permissions`, the assignment statements against `iam_user_roles` and
 /// the specification statements against `iam_graphql_specs`, `iam_graphql_spec_fields` and
-/// `iam_graphql_spec_possible_types`.
+/// `iam_graphql_spec_possible_types`, and the `OpenAPI` specification statements against
+/// `iam_openapi_specs` and `iam_openapi_spec_operations`.
 #[derive(Debug)]
 pub struct PgIamUnitOfWork {
     pool: sqlx::PgPool,
@@ -172,6 +174,9 @@ async fn run(
             }
             ChangeStatement::SaveGraphQlSpec(version) => {
                 graphql_spec::save_within(connection, version).await?;
+            }
+            ChangeStatement::SaveOpenApiSpec(version) => {
+                openapi_spec::save_within(connection, version).await?;
             }
         }
     }

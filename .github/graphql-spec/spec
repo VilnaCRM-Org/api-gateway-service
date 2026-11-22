@@ -6,6 +6,16 @@ input CreateExampleApiResourceInput {
   name: String!
 }
 
+"Input of the role-creation mutation."
+input CreateRoleInput {
+  "What the role is for, at most 1,000 characters."
+  description: String
+  "Makes the creation safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+  "The name of the role: 1 to 100 characters, unique without regard to case among the roles that are not deleted."
+  name: String!
+}
+
 "Template example resource."
 type ExampleApiResource {
   "Description."
@@ -20,6 +30,8 @@ type ExampleApiResource {
 type Mutation {
   "Creates an example API resource."
   createExampleApiResource(input: CreateExampleApiResourceInput!): ExampleApiResource!
+  "Creates a custom role without grants at version 1 and records `iam.role.created`."
+  createRole(input: CreateRoleInput!): Role!
 }
 
 "Query root."
@@ -35,12 +47,59 @@ type Query {
   ): [ExampleApiResource!]!
   "Resolves a User service token into its subject, or says why it is refused."
   resolveToken(input: ResolveTokenInput!): TokenResolution!
+  "Retrieves a role by id; null when it is unknown or deleted."
+  role(id: ID!): Role
+  "Retrieves one page of roles in a stable order, filtered by name prefix and kind."
+  roles(
+    "The nextCursor of the previous page."
+    after: String,
+    "Only roles that match the filter."
+    filter: RoleFilter,
+    "Page size, from 1 to 100."
+    first: Int = 30
+  ): RolePage!
 }
 
 "Input of the token-resolution query."
 input ResolveTokenInput {
   "The User service token to resolve; an empty one resolves as `token_missing`."
   credential: String!
+}
+
+"A role."
+type Role {
+  "When the role was created, as an RFC 3339 UTC time."
+  createdAt: String!
+  "What the role is for."
+  description: String
+  "The number of permission grants of the role."
+  grantCount: Int!
+  "The identifier of the role."
+  id: ID!
+  "`system` for a role that IAM manages, `custom` for one that an administrator manages."
+  kind: String!
+  "The name of the role."
+  name: String!
+  "When the role was last changed, as an RFC 3339 UTC time."
+  updatedAt: String!
+  "The version of the role."
+  version: Int!
+}
+
+"Filters of the role list."
+input RoleFilter {
+  "Only roles of this kind: `system` or `custom`."
+  kind: String
+  "Only roles whose name starts with this text, without regard to case."
+  namePrefix: String
+}
+
+"One page of roles."
+type RolePage {
+  "The roles of the page."
+  items: [Role!]!
+  "The `after` value of the next page; null on the last page."
+  nextCursor: String
 }
 
 "The resolution of a credential: the subject and its token claims, or the reason it is refused."
