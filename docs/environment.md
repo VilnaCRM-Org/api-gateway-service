@@ -35,8 +35,10 @@ A service that adds variables for its own adapters adds their rows here. The syn
 | `JWT_AUDIENCE` | non-empty string | `vilnacrm-api` | no | `service`: the value every access token's `aud` must contain | none |
 | `JWT_CLOCK_SKEW` | duration, at most `60s` | `30s` | no | `service`: tolerance of the `exp`, `nbf` and `iat` checks against the `Clock` port | none |
 | `MAX_TOKEN_LIFETIME` | duration, at least `1s` | `900s` | no | `service`: a token whose `exp - iat` exceeds it is `token_invalid` | none |
+| `TOKEN_MEMO_CAPACITY` | integer, at least `1000` | `200000` | no | `service`: the largest number of verified token identities `MokaTokenMemo` keeps, keyed by the SHA-256 digest of the credential; failed verifications are kept apart, at most 10 000 for 5 s; `check-config` exits 2 below 1000 | none |
+| `TOKEN_MEMO_MAX_TTL` | duration, at most `MAX_TOKEN_LIFETIME` | `900s` (capped at `MAX_TOKEN_LIFETIME` when unset) | no | `service`: an identity is memoized for `min(exp - now, TOKEN_MEMO_MAX_TTL)` on the `Clock` port; the revocation state is still checked on every request, and both memos are flushed when the key set of `JWT_PUBLIC_KEYS_FILE` changes; `check-config` exits 2 above `MAX_TOKEN_LIFETIME` | none |
 
-Cross-field rules checked at start-up: `HEALTH_PROBE_TIMEOUT >= DATABASE_ACQUIRE_TIMEOUT`; `HEALTH_PROBE_TIMEOUT >= SQS_OPERATION_TIMEOUT`; `HTTP_REQUEST_TIMEOUT > HEALTH_PROBE_TIMEOUT`; the two AWS key variables are both set or both unset (the error names the missing one). A configuration problem never prints the value of a variable.
+Cross-field rules checked at start-up: `HEALTH_PROBE_TIMEOUT >= DATABASE_ACQUIRE_TIMEOUT`; `HEALTH_PROBE_TIMEOUT >= SQS_OPERATION_TIMEOUT`; `HTTP_REQUEST_TIMEOUT > HEALTH_PROBE_TIMEOUT`; the two AWS key variables are both set or both unset (the error names the missing one). `TOKEN_MEMO_MAX_TTL <= MAX_TOKEN_LIFETIME` (the error names `TOKEN_MEMO_MAX_TTL`). A configuration problem never prints the value of a variable.
 
 ## Compose and local stack
 
@@ -59,15 +61,15 @@ Cross-field rules checked at start-up: `HEALTH_PROBE_TIMEOUT >= DATABASE_ACQUIRE
 
 ## Test seeds
 
-The two seeds are test settings, not service settings. Cargo passes them to every test process from `[env]` of `.cargo/config.toml`, and a value set by the caller wins. `make` forwards both into the development container. The other two rows are build settings from the same `[env]` table. `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_SASL_SSL_BOOTSTRAP_SERVERS` and `KAFKA_TLS_DIR` are test settings of `.env.test`, which the test targets export.
+The two seeds are test settings, not service settings. Cargo passes them to every test process from `[env]` of `.cargo/config.toml`, and a value set by the caller wins. `make` forwards both into the development container. The other two rows are build settings from the same `[env]` table. `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_SASL_SSL_BOOTSTRAP_SERVERS` and `KAFKA_TLS_DIR` are test settings of `.env.test`, which the test targets export; since Story 1.7 removed the krafka spike tests no test reads them until Epic 7.
 
 | Name | Type | Default | Required | Consumer | PHP name |
 | --- | --- | --- | --- | --- | --- |
 | `TEST_SEED` | unsigned 64-bit integer | `20261110`, the seed recorded in `.cargo/config.toml` | no | `test_support::seed::TestRng` | none (the PHP data was unseeded) |
 | `PROPTEST_RNG_SEED` | unsigned 64-bit integer | `20261110`, recorded in `.cargo/config.toml` | no | property tests (`proptest` reads it) | none |
-| `KAFKA_BOOTSTRAP_SERVERS` | `host:port` | `${KAFKA_HOST}:${KAFKA_PORT}` from `.env.test` | yes for the krafka spike tests | the spike tests of `crates/service/tests/integration/kafka_spike/` that run against the compose broker `kafka` (Story 1.2; removed with the spikes in Story 1.7) | none |
-| `KAFKA_SASL_SSL_BOOTSTRAP_SERVERS` | `host:port` | `${KAFKA_HOST}:${KAFKA_SASL_SSL_PORT}` from `.env.test` | yes for the SCRAM spike test | `kafka_spike/sasl_ssl.rs`, against the SASL_SSL listener of the compose broker (Story 1.5; removed with the spikes in Story 1.7) | none |
-| `KAFKA_TLS_DIR` | absolute path | `${PWD}/target/kafka-tls` from `.env.test` | yes for the SCRAM spike test | `kafka_spike/sasl_ssl.rs` reads `ca.pem` and `untrusted-ca.pem` there, which the compose service `kafka-tls` generates with `scripts/kafka-tls-fixture.sh` before the broker starts (Story 1.5) | none |
+| `KAFKA_BOOTSTRAP_SERVERS` | `host:port` | `${KAFKA_HOST}:${KAFKA_PORT}` from `.env.test` | no | no test reads it since Story 1.7 removed the krafka spike tests (Stories 1.2 to 1.6, ADR 0026); kept for the Kafka adapter tests of Epic 7 against the compose broker `kafka` | none |
+| `KAFKA_SASL_SSL_BOOTSTRAP_SERVERS` | `host:port` | `${KAFKA_HOST}:${KAFKA_SASL_SSL_PORT}` from `.env.test` | no | no test reads it since Story 1.7 removed the SCRAM spike test (Story 1.5); kept for the Kafka adapter tests of Epic 7 against the SASL_SSL listener of the compose broker | none |
+| `KAFKA_TLS_DIR` | absolute path | `${PWD}/target/kafka-tls` from `.env.test` | no | the directory where the compose service `kafka-tls` writes the TLS material of the broker with `scripts/kafka-tls-fixture.sh` before the broker starts (Story 1.5); no test reads it since Story 1.7 removed the SCRAM spike test, and it is kept for the Kafka adapter tests of Epic 7 | none |
 | `SQLX_OFFLINE` | `true` | `true` from `.cargo/config.toml` | no | sqlx macros at build time | none |
 | `SWAGGER_UI_DOWNLOAD_URL` | `vendored-only` | `vendored-only` from `.cargo/config.toml` | no | the build script of `utoipa-swagger-ui`: with the `vendored` feature it uses the embedded assets and ignores the value; without the feature the build stops instead of downloading Swagger UI (FR8) | none |
 

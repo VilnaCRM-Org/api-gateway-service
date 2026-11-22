@@ -193,6 +193,20 @@ pub struct TokenArgs {
         hide_env_values = true
     )]
     pub max_token_lifetime: Option<String>,
+    /// Largest number of memoized token identities, at least 1000 (default 200000).
+    #[arg(
+        long = "token-memo-capacity",
+        env = "TOKEN_MEMO_CAPACITY",
+        hide_env_values = true
+    )]
+    pub memo_capacity: Option<String>,
+    /// Longest time a token identity is memoized, at most `MAX_TOKEN_LIFETIME` (default 900s).
+    #[arg(
+        long = "token-memo-max-ttl",
+        env = "TOKEN_MEMO_MAX_TTL",
+        hide_env_values = true
+    )]
+    pub memo_max_ttl: Option<String>,
 }
 
 /// Settings of `migrate` and `migrate revert`.

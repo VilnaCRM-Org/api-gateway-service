@@ -7,7 +7,7 @@ use test_support::access_token::DEVELOPMENT_PUBLIC_KEYS_FILE;
 
 use crate::support::{Scratch, VALID_ENVIRONMENT, stderr, stdout};
 
-const FULL_ENVIRONMENT: [(&str, &str); 24] = [
+const FULL_ENVIRONMENT: [(&str, &str); 26] = [
     ("APP_ENV", "dev"),
     ("APP_HOST", "127.0.0.1"),
     ("APP_PORT", "0"),
@@ -35,6 +35,8 @@ const FULL_ENVIRONMENT: [(&str, &str); 24] = [
     ("JWT_AUDIENCE", "vilnacrm-api"),
     ("JWT_CLOCK_SKEW", "60s"),
     ("MAX_TOKEN_LIFETIME", "15m"),
+    ("TOKEN_MEMO_CAPACITY", "200000"),
+    ("TOKEN_MEMO_MAX_TTL", "900s"),
 ];
 
 #[test]
@@ -396,6 +398,57 @@ fn a_clock_skew_above_sixty_seconds_exits_2_naming_the_variable() {
         stderr(&output),
         "JWT_CLOCK_SKEW: must be a duration of at most 60s\n"
     );
+}
+
+#[test]
+fn a_token_memo_capacity_below_1000_exits_2_naming_the_variable() {
+    let scratch = Scratch::new();
+
+    let output = check_config_with(&scratch, &[("TOKEN_MEMO_CAPACITY", "999")]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(
+        stderr(&output),
+        "TOKEN_MEMO_CAPACITY: must be an integer of at least 1000\n"
+    );
+}
+
+#[test]
+fn a_token_memo_ttl_above_max_token_lifetime_exits_2_naming_the_variable() {
+    let scratch = Scratch::new();
+
+    let output = check_config_with(
+        &scratch,
+        &[
+            ("MAX_TOKEN_LIFETIME", "900s"),
+            ("TOKEN_MEMO_MAX_TTL", "901s"),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(
+        stderr(&output),
+        "TOKEN_MEMO_MAX_TTL: must be a duration of at most MAX_TOKEN_LIFETIME\n"
+    );
+}
+
+#[test]
+fn token_memo_settings_within_their_bounds_are_accepted() {
+    let scratch = Scratch::new();
+
+    let output = check_config_with(
+        &scratch,
+        &[
+            ("TOKEN_MEMO_CAPACITY", "1000"),
+            ("MAX_TOKEN_LIFETIME", "900s"),
+            ("TOKEN_MEMO_MAX_TTL", "900s"),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout(&output), "configuration OK\n");
 }
 
 #[test]

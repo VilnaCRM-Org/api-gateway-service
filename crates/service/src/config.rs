@@ -14,7 +14,7 @@ use std::time::Duration;
 use axum::http::Uri;
 use axum::http::uri::Authority;
 use iam_domain::TokenLifetimeRule;
-use iam_infrastructure::{JwtKeySet, JwtSettings};
+use iam_infrastructure::{JwtKeySet, JwtSettings, TokenMemoSettings};
 use shared_infrastructure::messaging::SqsSettings;
 use shared_infrastructure::persistence::{
     MAX_STATEMENT_TIMEOUT, MIN_STATEMENT_TIMEOUT, PostgresSettings,
@@ -26,6 +26,12 @@ use crate::cli::{DatabaseArgs, MigrateArgs, ServeArgs, TokenArgs};
 
 /// The largest accepted `JWT_CLOCK_SKEW`.
 const MAX_CLOCK_SKEW: Duration = Duration::from_mins(1);
+
+/// The smallest accepted `TOKEN_MEMO_CAPACITY`.
+const MIN_TOKEN_MEMO_CAPACITY: u64 = 1_000;
+
+/// The `TOKEN_MEMO_MAX_TTL` of a configuration that does not set it.
+const DEFAULT_TOKEN_MEMO_MAX_TTL: Duration = Duration::from_mins(15);
 
 /// Deployment environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +101,8 @@ pub struct TokenSettings {
     pub public_keys_file: PathBuf,
     /// Issuer, audience, `MAX_TOKEN_LIFETIME` and `JWT_CLOCK_SKEW`.
     pub jwt: JwtSettings,
+    /// `TOKEN_MEMO_CAPACITY` and `TOKEN_MEMO_MAX_TTL`.
+    pub memo: TokenMemoSettings,
 }
 
 impl Config {
@@ -405,6 +413,7 @@ fn tokens(collector: &mut Collector, args: &TokenArgs) -> Option<TokenSettings> 
         "MAX_TOKEN_LIFETIME",
         max_token_lifetime(args.max_token_lifetime.as_deref()),
     );
+    let memo = token_memo(collector, args, lifetime);
     Some(TokenSettings {
         public_keys_file: file?,
         jwt: JwtSettings {
@@ -412,7 +421,54 @@ fn tokens(collector: &mut Collector, args: &TokenArgs) -> Option<TokenSettings> 
             audience: audience?,
             lifetime: TokenLifetimeRule::new(lifetime?, skew?),
         },
+        memo: memo?,
     })
+}
+
+/// `TOKEN_MEMO_CAPACITY` and `TOKEN_MEMO_MAX_TTL`, the second checked against `lifetime`, the
+/// valid `MAX_TOKEN_LIFETIME` when there is one.
+fn token_memo(
+    collector: &mut Collector,
+    args: &TokenArgs,
+    lifetime: Option<Duration>,
+) -> Option<TokenMemoSettings> {
+    let capacity = collector.collect(
+        "TOKEN_MEMO_CAPACITY",
+        token_memo_capacity(args.memo_capacity.as_deref()),
+    );
+    let max_ttl = collector.collect(
+        "TOKEN_MEMO_MAX_TTL",
+        token_memo_max_ttl(args.memo_max_ttl.as_deref(), lifetime),
+    );
+    Some(TokenMemoSettings {
+        capacity: capacity?,
+        max_ttl: max_ttl?,
+    })
+}
+
+/// `TOKEN_MEMO_CAPACITY`: an integer of at least 1000.
+fn token_memo_capacity(raw: Option<&str>) -> Parsed<u64> {
+    let reason = "must be an integer of at least 1000";
+    let value = parsed(raw, 200_000, reason)?;
+    if value >= MIN_TOKEN_MEMO_CAPACITY {
+        Ok(value)
+    } else {
+        Err(reason.to_owned())
+    }
+}
+
+/// `TOKEN_MEMO_MAX_TTL`: a duration of at most `MAX_TOKEN_LIFETIME`; when it is not set, 900
+/// seconds or `MAX_TOKEN_LIFETIME` when that is shorter.
+fn token_memo_max_ttl(raw: Option<&str>, lifetime: Option<Duration>) -> Parsed<Duration> {
+    let default = lifetime.map_or(DEFAULT_TOKEN_MEMO_MAX_TTL, |lifetime| {
+        lifetime.min(DEFAULT_TOKEN_MEMO_MAX_TTL)
+    });
+    let value = duration(raw, default)?;
+    if lifetime.is_none_or(|lifetime| value <= lifetime) {
+        Ok(value)
+    } else {
+        Err("must be a duration of at most MAX_TOKEN_LIFETIME".to_owned())
+    }
 }
 
 /// `JWT_PUBLIC_KEYS_FILE`: the file must hold 1 to 3 parsable PEM RSA public keys now, so that

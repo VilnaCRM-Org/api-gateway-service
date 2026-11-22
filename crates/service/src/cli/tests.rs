@@ -122,6 +122,10 @@ fn serve_takes_the_token_settings_as_flags() {
         "10s",
         "--max-token-lifetime",
         "5m",
+        "--token-memo-capacity",
+        "5000",
+        "--token-memo-max-ttl",
+        "1m",
     ])
     .unwrap();
 
@@ -133,6 +137,8 @@ fn serve_takes_the_token_settings_as_flags() {
     assert_eq!(args.tokens.audience.as_deref(), Some("audience"));
     assert_eq!(args.tokens.clock_skew.as_deref(), Some("10s"));
     assert_eq!(args.tokens.max_token_lifetime.as_deref(), Some("5m"));
+    assert_eq!(args.tokens.memo_capacity.as_deref(), Some("5000"));
+    assert_eq!(args.tokens.memo_max_ttl.as_deref(), Some("1m"));
 }
 
 #[test]
@@ -281,6 +287,8 @@ fn serve_declares_exactly_the_variables_of_the_configuration_table() {
         "SQS_CONNECT_TIMEOUT",
         "SQS_MAX_ATTEMPTS",
         "SQS_OPERATION_TIMEOUT",
+        "TOKEN_MEMO_CAPACITY",
+        "TOKEN_MEMO_MAX_TTL",
     ];
     expected.sort_unstable();
     assert_eq!(variables, expected);

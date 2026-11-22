@@ -138,6 +138,88 @@ fn a_clock_skew_above_sixty_seconds_is_rejected() {
 }
 
 #[test]
+fn the_token_memo_defaults_to_200000_identities_for_900_seconds() {
+    let memo = Config::from_args(valid()).unwrap().tokens.memo;
+
+    assert_eq!(
+        memo,
+        TokenMemoSettings {
+            capacity: 200_000,
+            max_ttl: Duration::from_mins(15),
+        }
+    );
+}
+
+#[test]
+fn the_token_memo_accepts_its_bounds() {
+    let mut args = valid();
+    args.tokens.memo_capacity = some("1000");
+    args.tokens.max_token_lifetime = some("10m");
+    args.tokens.memo_max_ttl = some("10m");
+
+    let memo = Config::from_args(args).unwrap().tokens.memo;
+
+    assert_eq!(
+        memo,
+        TokenMemoSettings {
+            capacity: 1_000,
+            max_ttl: Duration::from_mins(10),
+        }
+    );
+}
+
+#[test]
+fn an_unset_memo_ttl_is_capped_at_a_shorter_max_token_lifetime() {
+    let mut args = valid();
+    args.tokens.max_token_lifetime = some("2m");
+
+    let memo = Config::from_args(args).unwrap().tokens.memo;
+
+    assert_eq!(memo.max_ttl, Duration::from_mins(2));
+}
+
+#[rstest]
+#[case("999")]
+#[case("0")]
+#[case("-1")]
+fn a_token_memo_capacity_below_1000_is_rejected(#[case] capacity: &str) {
+    let mut args = valid();
+    args.tokens.memo_capacity = some(capacity);
+
+    assert_eq!(
+        problems(args),
+        [(
+            "TOKEN_MEMO_CAPACITY",
+            "must be an integer of at least 1000".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn a_token_memo_ttl_above_max_token_lifetime_is_rejected() {
+    let mut args = valid();
+    args.tokens.max_token_lifetime = some("10m");
+    args.tokens.memo_max_ttl = some("601s");
+
+    assert_eq!(
+        problems(args),
+        [(
+            "TOKEN_MEMO_MAX_TTL",
+            "must be a duration of at most MAX_TOKEN_LIFETIME".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn a_token_memo_ttl_is_not_compared_with_an_invalid_max_token_lifetime() {
+    let mut args = valid();
+    args.tokens.max_token_lifetime = some("x");
+    args.tokens.memo_max_ttl = some("1h");
+
+    assert_eq!(variables(args), ["MAX_TOKEN_LIFETIME"]);
+}
+
+#[test]
 fn a_max_token_lifetime_below_one_second_is_rejected() {
     let mut args = valid();
     args.tokens.max_token_lifetime = some("999ms");
@@ -888,7 +970,7 @@ type Mutator = fn(&mut ServeArgs);
 
 /// One row per variable of `ServeArgs`: the variable, a way to make it the only problem, and the
 /// variable that the problem names.
-const FIELDS: [(&str, Mutator, &str); 24] = [
+const FIELDS: [(&str, Mutator, &str); 26] = [
     ("APP_ENV", |a| a.app_env = some("x"), "APP_ENV"),
     ("APP_HOST", |a| a.app_host = some("x"), "APP_HOST"),
     ("APP_PORT", |a| a.app_port = some("x"), "APP_PORT"),
@@ -980,6 +1062,16 @@ const FIELDS: [(&str, Mutator, &str); 24] = [
         "MAX_TOKEN_LIFETIME",
         |a| a.tokens.max_token_lifetime = some("x"),
         "MAX_TOKEN_LIFETIME",
+    ),
+    (
+        "TOKEN_MEMO_CAPACITY",
+        |a| a.tokens.memo_capacity = some("x"),
+        "TOKEN_MEMO_CAPACITY",
+    ),
+    (
+        "TOKEN_MEMO_MAX_TTL",
+        |a| a.tokens.memo_max_ttl = some("x"),
+        "TOKEN_MEMO_MAX_TTL",
     ),
 ];
 
