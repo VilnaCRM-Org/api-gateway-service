@@ -5,16 +5,45 @@
 //! krafka, and the module leaves in Story 1.7. The tests against the compose broker read
 //! `KAFKA_BOOTSTRAP_SERVERS` (`.env.test`); the fault tests run against krafka's in-process `test-broker`,
 //! whose hooks inject an open transaction, a dropped connection and broker errors deterministically. The
-//! results are recorded in `docs/spikes/phase-0.md`.
+//! results are recorded in `docs/spikes/phase-0.md`. Story 1.4 adds the idempotent and transactional
+//! producing of the relay (capabilities 6 and 7): `idempotent`, `fencing`, `aborted` and `stable_offset`.
+//! Story 1.3 adds the metadata, leader-epoch and configuration reads of the freshness proof and the Kafka
+//! configuration gates (capabilities 3, 4 and 5): `broker_metadata`, `leader_epoch`, `configuration` and
+//! `multi_broker`, the last run by hand on the 3-broker compose profile outside `make ci`.
+//! Story 1.5 adds the consumer group, SCRAM over TLS with a custom CA and the bootstrap read rate
+//! (capabilities 8, 9 and 11): `consumer_group`, `sasl_ssl` and `read_rate`, the last an ignored
+//! compose-host measurement run by hand outside `make ci`.
 
 #[cfg(test)]
+mod aborted;
+#[cfg(test)]
+mod broker_metadata;
+#[cfg(test)]
+mod configuration;
+#[cfg(test)]
+mod consumer_group;
+#[cfg(test)]
+mod fencing;
+#[cfg(test)]
 mod headers;
+#[cfg(test)]
+mod idempotent;
+#[cfg(test)]
+mod leader_epoch;
+#[cfg(test)]
+mod multi_broker;
 #[cfg(test)]
 mod out_of_range;
 #[cfg(test)]
 mod read_committed;
 #[cfg(test)]
+mod read_rate;
+#[cfg(test)]
 mod reconnect;
+#[cfg(test)]
+mod sasl_ssl;
+#[cfg(test)]
+mod stable_offset;
 #[cfg(test)]
 mod typed_errors;
 
