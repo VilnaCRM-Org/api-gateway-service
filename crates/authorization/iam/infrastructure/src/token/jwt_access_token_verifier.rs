@@ -35,7 +35,8 @@ pub struct JwtSettings {
 ///
 /// The header must name `RS256` and carry none of `jwk`, `jku`, `x5u`, `x5c` and `crit`; `iss` and
 /// `aud` must match; `sub`, `jti`, integer `iat` and `exp` are required, `sid` whenever `roles` is
-/// present, and a `ROLE_SERVICE` token's `sub` must be a service name. The time claims are checked
+/// present, and a `ROLE_SERVICE` token's `sub` must be a service name. The audiences of `aud` are
+/// kept on the token, so that the caller rule can require the IAM caller audience. The time claims are checked
 /// by [`TokenLifetimeRule`] against the `Clock` port, never against the system time.
 #[derive(Debug)]
 pub struct JwtAccessTokenVerifier {
@@ -70,9 +71,27 @@ impl Fingerprint {
     }
 }
 
+/// The `aud` claim: one audience or a list of them.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum Audience {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Audience {
+    fn into_list(self) -> Vec<String> {
+        match self {
+            Self::One(audience) => vec![audience],
+            Self::Many(audiences) => audiences,
+        }
+    }
+}
+
 /// The claims a User service token carries.
 #[derive(Debug, Deserialize)]
 struct Claims {
+    aud: Audience,
     sub: Option<String>,
     jti: Option<String>,
     sid: Option<String>,
@@ -278,6 +297,7 @@ fn access_token(claims: Claims) -> Result<AccessToken, TokenRejection> {
         (None, false) => None,
     };
     let roles = roles.unwrap_or_default();
+    let audiences = claims.aud.into_list();
     let subject = if roles.iter().any(|role| role == ROLE_SERVICE) {
         SubjectId::Service(ServiceName::new(&sub).map_err(|_error| TokenRejection::Invalid)?)
     } else {
@@ -290,7 +310,8 @@ fn access_token(claims: Claims) -> Result<AccessToken, TokenRejection> {
         roles,
         issued_at: instant(claims.iat)?,
         expires_at: instant(claims.exp)?,
-    }))
+    })
+    .with_audiences(audiences))
 }
 
 fn instant(seconds: u64) -> Result<SystemTime, TokenRejection> {

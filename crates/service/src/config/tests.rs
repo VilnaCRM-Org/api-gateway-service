@@ -220,6 +220,93 @@ fn a_token_memo_ttl_is_not_compared_with_an_invalid_max_token_lifetime() {
 }
 
 #[test]
+fn the_caller_rule_defaults_to_the_iam_audience_and_900_seconds() {
+    let callers = Config::from_args(valid()).unwrap().tokens.callers;
+
+    assert_eq!(
+        callers,
+        CallerTokenRule::new("vilnacrm-iam".to_owned(), Duration::from_mins(15))
+    );
+}
+
+#[test]
+fn the_caller_rule_takes_its_settings() {
+    let mut args = valid();
+    args.tokens.caller_audience = some("iam-callers");
+    args.tokens.max_token_lifetime = some("1h");
+    args.tokens.service_token_max_lifetime = some("1h");
+
+    let callers = Config::from_args(args).unwrap().tokens.callers;
+
+    assert_eq!(
+        callers,
+        CallerTokenRule::new("iam-callers".to_owned(), Duration::from_hours(1))
+    );
+}
+
+#[test]
+fn a_service_token_lifetime_of_one_second_is_accepted() {
+    let mut args = valid();
+    args.tokens.service_token_max_lifetime = some("1s");
+
+    let callers = Config::from_args(args).unwrap().tokens.callers;
+
+    assert_eq!(callers.max_service_lifetime(), Duration::from_secs(1));
+}
+
+#[test]
+fn an_unset_service_token_lifetime_is_capped_at_a_shorter_max_token_lifetime() {
+    let mut args = valid();
+    args.tokens.max_token_lifetime = some("2m");
+
+    let callers = Config::from_args(args).unwrap().tokens.callers;
+
+    assert_eq!(callers.max_service_lifetime(), Duration::from_mins(2));
+}
+
+#[rstest]
+#[case::above_one_hour("2h", "3601s")]
+#[case::above_max_token_lifetime("15m", "901s")]
+#[case::below_one_second("15m", "999ms")]
+fn a_service_token_lifetime_out_of_bounds_is_rejected(
+    #[case] max_token_lifetime: &str,
+    #[case] service_lifetime: &str,
+) {
+    let mut args = valid();
+    args.tokens.max_token_lifetime = some(max_token_lifetime);
+    args.tokens.service_token_max_lifetime = some(service_lifetime);
+
+    assert_eq!(
+        problems(args),
+        [(
+            "JWT_SERVICE_TOKEN_MAX_LIFETIME",
+            "must be a duration of at least 1s, at most 3600s and at most MAX_TOKEN_LIFETIME"
+                .to_owned()
+        )]
+    );
+}
+
+#[test]
+fn a_service_token_lifetime_is_not_compared_with_an_invalid_max_token_lifetime() {
+    let mut args = valid();
+    args.tokens.max_token_lifetime = some("x");
+    args.tokens.service_token_max_lifetime = some("30m");
+
+    assert_eq!(variables(args), ["MAX_TOKEN_LIFETIME"]);
+}
+
+#[test]
+fn a_blank_caller_audience_is_rejected() {
+    let mut args = valid();
+    args.tokens.caller_audience = some(" ");
+
+    assert_eq!(
+        problems(args),
+        [("JWT_CALLER_AUDIENCE", "must not be empty".to_owned())]
+    );
+}
+
+#[test]
 fn a_max_token_lifetime_below_one_second_is_rejected() {
     let mut args = valid();
     args.tokens.max_token_lifetime = some("999ms");
@@ -970,7 +1057,7 @@ type Mutator = fn(&mut ServeArgs);
 
 /// One row per variable of `ServeArgs`: the variable, a way to make it the only problem, and the
 /// variable that the problem names.
-const FIELDS: [(&str, Mutator, &str); 26] = [
+const FIELDS: [(&str, Mutator, &str); 28] = [
     ("APP_ENV", |a| a.app_env = some("x"), "APP_ENV"),
     ("APP_HOST", |a| a.app_host = some("x"), "APP_HOST"),
     ("APP_PORT", |a| a.app_port = some("x"), "APP_PORT"),
@@ -1072,6 +1159,16 @@ const FIELDS: [(&str, Mutator, &str); 26] = [
         "TOKEN_MEMO_MAX_TTL",
         |a| a.tokens.memo_max_ttl = some("x"),
         "TOKEN_MEMO_MAX_TTL",
+    ),
+    (
+        "JWT_CALLER_AUDIENCE",
+        |a| a.tokens.caller_audience = some(""),
+        "JWT_CALLER_AUDIENCE",
+    ),
+    (
+        "JWT_SERVICE_TOKEN_MAX_LIFETIME",
+        |a| a.tokens.service_token_max_lifetime = some("x"),
+        "JWT_SERVICE_TOKEN_MAX_LIFETIME",
     ),
 ];
 

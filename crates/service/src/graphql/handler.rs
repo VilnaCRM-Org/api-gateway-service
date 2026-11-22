@@ -1,10 +1,11 @@
 //! The GraphQL transport: `POST /api/graphql` and the development explorer (AD-18).
 
-use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::http::header::CONTENT_SECURITY_POLICY;
 use axum::response::{Html, IntoResponse as _, Response};
+use axum::{Extension, Json};
+use iam_application::Principal;
 use serde_json::{Map, Value};
 use shared_application::http::{ApiJson, Problem};
 
@@ -18,7 +19,8 @@ const EXPLORER_PAGE: &str = include_str!("explorer.html");
 /// Executes one GraphQL operation.
 ///
 /// The body must be a JSON object with a string member `query`; operation errors are part of the
-/// 200 response.
+/// 200 response. The request data holds the `Option<Principal>` of the caller: `Some` when the
+/// authentication middleware resolved a valid bearer token, `None` otherwise.
 ///
 /// # Errors
 ///
@@ -26,13 +28,26 @@ const EXPLORER_PAGE: &str = include_str!("explorer.html");
 /// media type or is too large is rejected by the extractor with its own problem.
 pub async fn execute(
     State(schema): State<ApiSchema>,
+    principal: Option<Extension<Principal>>,
     ApiJson(body): ApiJson<Map<String, Value>>,
 ) -> Result<Json<async_graphql::Response>, Problem> {
-    let request = to_request(body).ok_or_else(|| {
+    let principal = principal.map(|Extension(principal)| principal);
+    let request = graphql_request(body, principal).ok_or_else(|| {
         Problem::new(StatusCode::UNPROCESSABLE_ENTITY)
             .with_detail("The request body is not a GraphQL request.")
     })?;
     Ok(Json(schema.execute(request).await))
+}
+
+/// The request for a body that has a string member `query` and otherwise converts.
+///
+/// Its data holds the caller's principal.
+#[must_use]
+pub fn graphql_request(
+    body: Map<String, Value>,
+    principal: Option<Principal>,
+) -> Option<async_graphql::Request> {
+    to_request(body).map(|request| request.data(principal))
 }
 
 /// The request for a body that has a string member `query` and otherwise converts.

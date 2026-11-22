@@ -12,17 +12,20 @@ use health_check_application::HealthCheckState;
 use health_check_application::HealthService;
 use health_check_domain::HealthProbe;
 use health_check_infrastructure::{CacheProbe, PostgresProbe, SqsProbe};
+use iam_application::ResolveTokenQueryHandler;
 use iam_application::http::IamState;
 use iam_application::{
     GetChangeReceiptQueryHandler, GetIdempotentReplayQueryHandler, GetPolicyEpochQueryHandler,
 };
 use iam_domain::RoleRepository;
+use iam_domain::UserRoleRepository;
 use iam_domain::{
     AccessTokenVerifier, ChangeReceiptRepository, IdempotencyRepository, PolicyEpochRepository,
     SecurityAuditLog,
 };
 use iam_domain::{RevocationRepository, RevocationView, TokenMemo, TokenRepository};
 use iam_infrastructure::PgRoleRepository;
+use iam_infrastructure::PgUserRoleRepository;
 use iam_infrastructure::{
     CachingTokenRepository, MokaTokenMemo, PgRevocationRepository, PgRevocationView,
 };
@@ -50,7 +53,7 @@ use some_module_infrastructure::PgExampleApiResourceRepository;
 use crate::config::Config;
 use crate::graphql::schema;
 use crate::http::AppState;
-use crate::http::router::assemble;
+use crate::http::router::assemble_with_iam_routes;
 
 /// Every driven port of the application.
 #[derive(Debug)]
@@ -67,6 +70,8 @@ pub struct Adapters {
     pub idempotency_records: Arc<dyn IdempotencyRepository>,
     /// Reader of the IAM roles.
     pub roles: Arc<dyn RoleRepository>,
+    /// Reader of the IAM role assignments.
+    pub user_roles: Arc<dyn UserRoleRepository>,
     /// Offline verifier of User service access tokens.
     pub access_tokens: Arc<dyn AccessTokenVerifier>,
     /// Resolver of bearer credentials: memoized verification and the revocation check.
@@ -124,6 +129,7 @@ impl Adapters {
             change_receipts: Arc::new(PgChangeReceiptRepository::new(pool.clone())),
             idempotency_records: Arc::new(PgIdempotencyRepository::new(pool.clone())),
             roles: Arc::new(PgRoleRepository::new(pool.clone())),
+            user_roles: Arc::new(PgUserRoleRepository::new(pool.clone())),
             tokens: token_repository(config, Arc::clone(&access_tokens), &clock, &pool),
             revocations: Arc::new(PgRevocationRepository::new(pool.clone())),
             access_tokens,
@@ -231,6 +237,19 @@ fn register_change_queries(
     Ok(bus.register(receipt)?.register(replay)?)
 }
 
+/// Registers the handler that authenticates the callers of IAM's own API.
+///
+/// It resolves tokens through the token repository and applies the caller rule of
+/// `JWT_CALLER_AUDIENCE` and `JWT_SERVICE_TOKEN_MAX_LIFETIME`.
+fn register_token_queries(
+    bus: InMemoryQueryBus,
+    tokens: &Arc<dyn TokenRepository>,
+    config: &Config,
+) -> Result<InMemoryQueryBus, BootstrapError> {
+    let resolve = ResolveTokenQueryHandler::new(Arc::clone(tokens), config.tokens.callers.clone());
+    Ok(bus.register(resolve)?)
+}
+
 /// Registers every handler, builds the command and query buses, the state, the `GraphQL` schema
 /// and the router with its middleware.
 ///
@@ -238,6 +257,23 @@ fn register_change_queries(
 ///
 /// Returns [`BootstrapError::DuplicateHandler`] when a message has two handlers.
 pub fn router(adapters: Adapters, config: &Config) -> Result<Router, BootstrapError> {
+    router_with_iam_routes(adapters, config, Router::new())
+}
+
+/// [`router`] with `iam_routes` mounted on the IAM router, behind the authentication of IAM's
+/// callers.
+///
+/// The IAM context registers its own operations in its router, so this serves the tests that need
+/// a protected route before it has one.
+///
+/// # Errors
+///
+/// Returns [`BootstrapError::DuplicateHandler`] when a message has two handlers.
+pub fn router_with_iam_routes(
+    adapters: Adapters,
+    config: &Config,
+    iam_routes: Router<AppState>,
+) -> Result<Router, BootstrapError> {
     let create = CreateExampleApiResourceHandler::new(
         Arc::clone(&adapters.repository),
         adapters.event_bus,
@@ -248,7 +284,8 @@ pub fn router(adapters: Adapters, config: &Config) -> Result<Router, BootstrapEr
     let bus = InMemoryQueryBus::new();
     let bus = register_queries(bus, &adapters.repository, &adapters.policy_epochs)?;
     let (receipts, keys) = (&adapters.change_receipts, &adapters.idempotency_records);
-    let query_bus = register_change_queries(bus, receipts, keys, &adapters.clock)?;
+    let bus = register_change_queries(bus, receipts, keys, &adapters.clock)?;
+    let query_bus = register_token_queries(bus, &adapters.tokens, config)?;
     let commands: Arc<dyn CommandBus> = Arc::new(command_bus);
     let queries: Arc<dyn QueryBus> = Arc::new(query_bus);
     let some_module = SomeModuleState {
@@ -272,7 +309,7 @@ pub fn router(adapters: Adapters, config: &Config) -> Result<Router, BootstrapEr
         some_module,
         iam,
     };
-    Ok(assemble(state, schema, config))
+    Ok(assemble_with_iam_routes(state, schema, config, iam_routes))
 }
 
 #[cfg(test)]

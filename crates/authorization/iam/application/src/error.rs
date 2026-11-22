@@ -1,7 +1,7 @@
 //! Application error of the IAM context and its conversion to a problem document.
 
 use axum::http::StatusCode;
-use iam_domain::{RepositoryError, VersionConflict};
+use iam_domain::{RepositoryError, TokenRejection, VersionConflict};
 use shared_application::http::Problem;
 use shared_domain::BoxError;
 
@@ -9,6 +9,10 @@ use shared_domain::BoxError;
 /// maps each variant to its HTTP status and GraphQL code.
 #[derive(Debug, thiserror::Error)]
 pub enum IamError {
+    /// The caller presented no bearer token, or one that is malformed, expired, revoked or not
+    /// meant for IAM; the message never says which check failed.
+    #[error("A valid bearer token is required.")]
+    Unauthenticated,
     /// The requested record does not exist.
     #[error("The requested IAM record was not found.")]
     NotFound,
@@ -40,6 +44,20 @@ impl From<RepositoryError> for IamError {
     }
 }
 
+impl From<TokenRejection> for IamError {
+    /// Every refusal of the credential is [`IamError::Unauthenticated`]; a revocation state that
+    /// cannot be read is a storage failure.
+    fn from(rejection: TokenRejection) -> Self {
+        match rejection {
+            TokenRejection::Unavailable => Self::Storage(Box::new(rejection)),
+            TokenRejection::Missing
+            | TokenRejection::Invalid
+            | TokenRejection::Expired
+            | TokenRejection::Revoked => Self::Unauthenticated,
+        }
+    }
+}
+
 impl From<VersionConflict> for IamError {
     fn from(conflict: VersionConflict) -> Self {
         match conflict {
@@ -52,6 +70,7 @@ impl From<VersionConflict> for IamError {
 impl From<IamError> for Problem {
     fn from(error: IamError) -> Self {
         let status = match &error {
+            IamError::Unauthenticated => StatusCode::UNAUTHORIZED,
             IamError::NotFound => StatusCode::NOT_FOUND,
             IamError::Conflict => StatusCode::CONFLICT,
             IamError::IdempotencyMismatch => StatusCode::UNPROCESSABLE_ENTITY,

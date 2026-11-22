@@ -207,6 +207,21 @@ pub struct TokenArgs {
         hide_env_values = true
     )]
     pub memo_max_ttl: Option<String>,
+    /// Audience a service caller's token must contain to call IAM (default `vilnacrm-iam`).
+    #[arg(
+        long = "jwt-caller-audience",
+        env = "JWT_CALLER_AUDIENCE",
+        hide_env_values = true
+    )]
+    pub caller_audience: Option<String>,
+    /// Longest accepted `exp - iat` of a service caller's token, at most 3600s and at most
+    /// `MAX_TOKEN_LIFETIME` (default 900s).
+    #[arg(
+        long = "jwt-service-token-max-lifetime",
+        env = "JWT_SERVICE_TOKEN_MAX_LIFETIME",
+        hide_env_values = true
+    )]
+    pub service_token_max_lifetime: Option<String>,
 }
 
 /// Settings of `migrate` and `migrate revert`.

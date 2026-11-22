@@ -1,19 +1,20 @@
 //! The identity a memo keeps for a verified token.
 
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use crate::value_object::access_token::AccessToken;
 use crate::value_object::session_id::SessionId;
 use crate::value_object::subject::{SubjectId, SubjectKind};
 use crate::value_object::token_id::TokenId;
 
-/// Who a verified token proves the bearer to be and for how long: subject, kind, session, `iat`,
-/// `exp` and `jti`. It never holds roles, permissions or grants.
+/// Who a verified token proves the bearer to be, for which audiences and for how long: subject,
+/// kind, session, `aud`, `iat`, `exp` and `jti`. It never holds roles, permissions or grants.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TokenIdentity {
     subject: SubjectId,
     session: Option<SessionId>,
     token_id: TokenId,
+    audiences: Vec<String>,
     issued_at: SystemTime,
     expires_at: SystemTime,
 }
@@ -43,6 +44,26 @@ impl TokenIdentity {
         &self.token_id
     }
 
+    /// The audiences of the token (`aud`).
+    #[must_use]
+    pub fn audiences(&self) -> &[String] {
+        &self.audiences
+    }
+
+    /// Whether `audience` is one of the token's audiences.
+    #[must_use]
+    pub fn has_audience(&self, audience: &str) -> bool {
+        self.audiences.iter().any(|candidate| candidate == audience)
+    }
+
+    /// How long the token is valid for (`exp - iat`); zero when `exp` precedes `iat`.
+    #[must_use]
+    pub fn lifetime(&self) -> Duration {
+        self.expires_at
+            .duration_since(self.issued_at)
+            .unwrap_or_default()
+    }
+
     /// When the token was issued (`iat`).
     #[must_use]
     pub const fn issued_at(&self) -> SystemTime {
@@ -63,6 +84,7 @@ impl From<&AccessToken> for TokenIdentity {
             subject: token.subject().clone(),
             session: token.session().cloned(),
             token_id: token.token_id().clone(),
+            audiences: token.audiences().to_vec(),
             issued_at: token.issued_at(),
             expires_at: token.expires_at(),
         }

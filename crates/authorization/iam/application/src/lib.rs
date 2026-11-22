@@ -10,10 +10,13 @@ pub mod command;
 pub mod error;
 pub mod graphql;
 pub mod http;
+pub mod principal;
 pub mod query;
 pub mod subscriber;
 
 pub use error::IamError;
+pub use principal::Principal;
 pub use query::get_change_receipt::{GetChangeReceiptQuery, GetChangeReceiptQueryHandler};
 pub use query::get_idempotent_replay::{GetIdempotentReplayQuery, GetIdempotentReplayQueryHandler};
 pub use query::get_policy_epoch::{GetPolicyEpochQuery, GetPolicyEpochQueryHandler};
+pub use query::resolve_token::{ResolveTokenQuery, ResolveTokenQueryHandler};

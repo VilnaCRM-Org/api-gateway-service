@@ -30,6 +30,12 @@ fn the_roots_are_default_and_debug_like_every_root_the_schema_merges() {
 }
 
 #[rstest]
+#[case::unauthenticated(
+    IamError::Unauthenticated,
+    401,
+    "UNAUTHENTICATED",
+    "A valid bearer token is required."
+)]
 #[case::not_found(
     IamError::NotFound,
     404,

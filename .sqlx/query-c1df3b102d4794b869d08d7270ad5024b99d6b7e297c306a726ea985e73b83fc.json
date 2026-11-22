@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE iam_user_roles SET expires_at = $2, version = $3, updated_at = $4, revoked_at = $5\n        WHERE id = $1 AND version = $6 AND revoked_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Int8",
+        "Timestamptz",
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c1df3b102d4794b869d08d7270ad5024b99d6b7e297c306a726ea985e73b83fc"
+}

@@ -75,6 +75,7 @@ fn a_user_token_yields_every_claim() {
     assert_eq!(token.session().unwrap().as_str(), "session-1");
     assert_eq!(token.token_id().as_str(), "token-1");
     assert_eq!(token.roles(), ["ROLE_USER".to_owned()]);
+    assert_eq!(token.audiences(), [AUDIENCE.to_owned()]);
     assert_eq!(
         token.issued_at(),
         SystemTime::UNIX_EPOCH + Duration::from_secs(NOW)
@@ -98,6 +99,24 @@ fn a_service_token_yields_the_service_principal() {
     assert_eq!(token.session().unwrap().as_str(), "service-session");
     assert_eq!(token.token_id().as_str(), "token-2");
     assert_eq!(token.roles(), ["ROLE_SERVICE".to_owned()]);
+    assert_eq!(
+        token.audiences(),
+        [AUDIENCE.to_owned(), "vilnacrm-iam".to_owned()]
+    );
+}
+
+#[rstest]
+#[case::a_number(json!(7))]
+#[case::a_list_of_numbers(json!([7, 8]))]
+fn an_audience_that_is_neither_a_string_nor_a_list_of_strings_is_invalid(#[case] aud: Value) {
+    let key = TestKey::generate();
+
+    let outcome = verify(
+        &verifier(&[&key]),
+        &key.sign(&with(user_claims(), "aud", aud)),
+    );
+
+    assert_eq!(outcome, Err(TokenRejection::Invalid));
 }
 
 #[test]

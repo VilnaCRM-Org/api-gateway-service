@@ -11,7 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Seam files: changed away from the template, so the template sync must not overwrite them.
-const SEAM_FILES: [&str; 8] = [
+const SEAM_FILES: [&str; 12] = [
     ".github/workflows/tests.yml",
     "docs/operations.md",
     "docs/make-targets.md",
@@ -20,6 +20,10 @@ const SEAM_FILES: [&str; 8] = [
     "docker-compose.override.yml",
     "crates/service/Cargo.toml",
     "crates/service/tests/integration/main.rs",
+    "crates/service/src/http/router.rs",
+    "crates/service/src/http/router/tests.rs",
+    "crates/service/src/graphql/handler.rs",
+    "crates/service/src/graphql/handler/tests.rs",
 ];
 
 /// Jobs that run the integration tests against the compose `kafka` broker (Story 1.2), with the make targets

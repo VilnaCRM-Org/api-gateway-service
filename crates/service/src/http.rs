@@ -5,6 +5,7 @@ use health_check_application::HealthCheckState;
 use iam_application::http::IamState;
 use some_module_application::http::SomeModuleState;
 
+pub mod authentication;
 pub mod docs;
 pub mod ping;
 pub mod request_id;

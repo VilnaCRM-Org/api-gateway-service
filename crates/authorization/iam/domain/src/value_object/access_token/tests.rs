@@ -58,3 +58,28 @@ fn a_service_token_has_the_service_kind_and_may_lack_a_session() {
     assert_eq!(token.subject_kind(), SubjectKind::Service);
     assert_eq!(token.session(), None);
 }
+
+#[test]
+fn a_new_token_names_no_audience() {
+    let token = AccessToken::new(parts(
+        SubjectId::Service(ServiceName::new("billing").unwrap()),
+        None,
+    ));
+
+    assert_eq!(token.audiences(), Vec::<String>::new());
+}
+
+#[test]
+fn the_audiences_of_the_aud_claim_are_kept_in_order() {
+    let token = AccessToken::new(parts(
+        SubjectId::Service(ServiceName::new("billing").unwrap()),
+        None,
+    ))
+    .with_audiences(vec!["vilnacrm-api".to_owned(), "vilnacrm-iam".to_owned()]);
+
+    assert_eq!(
+        token.audiences(),
+        ["vilnacrm-api".to_owned(), "vilnacrm-iam".to_owned()]
+    );
+    assert_eq!(token.subject_kind(), SubjectKind::Service);
+}

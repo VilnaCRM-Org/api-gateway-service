@@ -126,6 +126,10 @@ fn serve_takes_the_token_settings_as_flags() {
         "5000",
         "--token-memo-max-ttl",
         "1m",
+        "--jwt-caller-audience",
+        "callers",
+        "--jwt-service-token-max-lifetime",
+        "2m",
     ])
     .unwrap();
 
@@ -139,6 +143,11 @@ fn serve_takes_the_token_settings_as_flags() {
     assert_eq!(args.tokens.max_token_lifetime.as_deref(), Some("5m"));
     assert_eq!(args.tokens.memo_capacity.as_deref(), Some("5000"));
     assert_eq!(args.tokens.memo_max_ttl.as_deref(), Some("1m"));
+    assert_eq!(args.tokens.caller_audience.as_deref(), Some("callers"));
+    assert_eq!(
+        args.tokens.service_token_max_lifetime.as_deref(),
+        Some("2m")
+    );
 }
 
 #[test]
@@ -278,9 +287,11 @@ fn serve_declares_exactly_the_variables_of_the_configuration_table() {
         "HTTP_MAX_BODY_BYTES",
         "HTTP_REQUEST_TIMEOUT",
         "JWT_AUDIENCE",
+        "JWT_CALLER_AUDIENCE",
         "JWT_CLOCK_SKEW",
         "JWT_ISSUER",
         "JWT_PUBLIC_KEYS_FILE",
+        "JWT_SERVICE_TOKEN_MAX_LIFETIME",
         "LOG_LEVEL",
         "MAX_TOKEN_LIFETIME",
         "SHUTDOWN_GRACE_PERIOD",

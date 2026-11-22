@@ -303,3 +303,92 @@ fn the_pin_check_accepts_exact_versions_only() {
     assert!(!is_pinned("https://unpkg.com/react/umd/react.js"));
     assert!(!is_pinned("https://unpkg.com/react@18.3.1"));
 }
+
+/// A schema whose one field tells which principal the request data holds.
+struct CallerQuery;
+
+#[async_graphql::Object]
+impl CallerQuery {
+    async fn caller(&self, ctx: &async_graphql::Context<'_>) -> String {
+        match ctx.data::<Option<Principal>>() {
+            Ok(Some(principal)) => principal.subject().to_string(),
+            Ok(None) => "anonymous".to_owned(),
+            Err(_error) => "no principal data".to_owned(),
+        }
+    }
+}
+
+fn caller_schema() -> async_graphql::Schema<
+    CallerQuery,
+    async_graphql::EmptyMutation,
+    async_graphql::EmptySubscription,
+> {
+    async_graphql::Schema::new(
+        CallerQuery,
+        async_graphql::EmptyMutation,
+        async_graphql::EmptySubscription,
+    )
+}
+
+fn principal() -> Principal {
+    use iam_domain::{
+        AccessToken, AccessTokenParts, ServiceName, SubjectId, TokenId, TokenIdentity,
+    };
+
+    Principal::from(TokenIdentity::from(&AccessToken::new(AccessTokenParts {
+        subject: SubjectId::Service(ServiceName::new("billing").unwrap()),
+        session: None,
+        token_id: TokenId::new("jti-1").unwrap(),
+        roles: Vec::new(),
+        issued_at: std::time::SystemTime::UNIX_EPOCH,
+        expires_at: std::time::SystemTime::UNIX_EPOCH
+            .checked_add(std::time::Duration::from_secs(600))
+            .unwrap(),
+    })))
+}
+
+fn caller_body() -> Map<String, Value> {
+    serde_json::from_str(r#"{"query":"{ caller }"}"#).unwrap()
+}
+
+#[rstest]
+#[case::with_a_valid_token(Some(principal()), "billing")]
+#[case::without_one(None, "anonymous")]
+#[tokio::test]
+async fn the_request_data_holds_the_principal_of_the_caller(
+    #[case] principal: Option<Principal>,
+    #[case] caller: &str,
+) {
+    let request = graphql_request(caller_body(), principal).unwrap();
+
+    let response = caller_schema().execute(request).await;
+
+    assert_eq!(
+        response.data.into_json().unwrap(),
+        json!({ "caller": caller })
+    );
+}
+
+#[test]
+fn a_body_that_is_not_a_graphql_request_has_no_request() {
+    assert!(graphql_request(Map::new(), Some(principal())).is_none());
+}
+
+#[tokio::test]
+async fn the_principal_of_the_request_extensions_reaches_the_operation() {
+    let app = Router::new()
+        .route("/api/graphql", post(execute))
+        .with_state(builder().finish())
+        .layer(Extension(principal()));
+
+    let response = app
+        .oneshot(post_json(r#"{"query":"{ __typename }"}"#))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        json_of(response).await,
+        json!({ "data": { "__typename": "Query" } })
+    );
+}

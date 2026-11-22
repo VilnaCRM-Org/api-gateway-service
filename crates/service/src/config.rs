@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use axum::http::Uri;
 use axum::http::uri::Authority;
-use iam_domain::TokenLifetimeRule;
+use iam_domain::{CallerTokenRule, TokenLifetimeRule};
 use iam_infrastructure::{JwtKeySet, JwtSettings, TokenMemoSettings};
 use shared_infrastructure::messaging::SqsSettings;
 use shared_infrastructure::persistence::{
@@ -29,6 +29,13 @@ const MAX_CLOCK_SKEW: Duration = Duration::from_mins(1);
 
 /// The smallest accepted `TOKEN_MEMO_CAPACITY`.
 const MIN_TOKEN_MEMO_CAPACITY: u64 = 1_000;
+
+/// The largest accepted `JWT_SERVICE_TOKEN_MAX_LIFETIME`.
+const MAX_SERVICE_TOKEN_LIFETIME: Duration = Duration::from_hours(1);
+
+/// The `JWT_SERVICE_TOKEN_MAX_LIFETIME` of a configuration that does not set it, capped at
+/// `MAX_TOKEN_LIFETIME`.
+const DEFAULT_SERVICE_TOKEN_MAX_LIFETIME: Duration = Duration::from_mins(15);
 
 /// The `TOKEN_MEMO_MAX_TTL` of a configuration that does not set it.
 const DEFAULT_TOKEN_MEMO_MAX_TTL: Duration = Duration::from_mins(15);
@@ -103,6 +110,9 @@ pub struct TokenSettings {
     pub jwt: JwtSettings,
     /// `TOKEN_MEMO_CAPACITY` and `TOKEN_MEMO_MAX_TTL`.
     pub memo: TokenMemoSettings,
+    /// `JWT_CALLER_AUDIENCE` and `JWT_SERVICE_TOKEN_MAX_LIFETIME`: what a service caller's token
+    /// must satisfy to call IAM's own API.
+    pub callers: CallerTokenRule,
 }
 
 impl Config {
@@ -414,6 +424,7 @@ fn tokens(collector: &mut Collector, args: &TokenArgs) -> Option<TokenSettings> 
         max_token_lifetime(args.max_token_lifetime.as_deref()),
     );
     let memo = token_memo(collector, args, lifetime);
+    let callers = caller_token_rule(collector, args, lifetime);
     Some(TokenSettings {
         public_keys_file: file?,
         jwt: JwtSettings {
@@ -422,7 +433,47 @@ fn tokens(collector: &mut Collector, args: &TokenArgs) -> Option<TokenSettings> 
             lifetime: TokenLifetimeRule::new(lifetime?, skew?),
         },
         memo: memo?,
+        callers: callers?,
     })
+}
+
+/// `JWT_CALLER_AUDIENCE` and `JWT_SERVICE_TOKEN_MAX_LIFETIME`, the second checked against
+/// `lifetime`, the valid `MAX_TOKEN_LIFETIME` when there is one.
+fn caller_token_rule(
+    collector: &mut Collector,
+    args: &TokenArgs,
+    lifetime: Option<Duration>,
+) -> Option<CallerTokenRule> {
+    let audience = collector.collect(
+        "JWT_CALLER_AUDIENCE",
+        non_empty(args.caller_audience.as_deref(), "vilnacrm-iam"),
+    );
+    let max_lifetime = collector.collect(
+        "JWT_SERVICE_TOKEN_MAX_LIFETIME",
+        service_token_max_lifetime(args.service_token_max_lifetime.as_deref(), lifetime),
+    );
+    Some(CallerTokenRule::new(audience?, max_lifetime?))
+}
+
+/// `JWT_SERVICE_TOKEN_MAX_LIFETIME`: a duration of at least 1s, at most 3600s and at most
+/// `MAX_TOKEN_LIFETIME`.
+///
+/// When it is not set, 900 seconds or `MAX_TOKEN_LIFETIME` when that is shorter.
+fn service_token_max_lifetime(raw: Option<&str>, lifetime: Option<Duration>) -> Parsed<Duration> {
+    let default = lifetime.map_or(DEFAULT_SERVICE_TOKEN_MAX_LIFETIME, |lifetime| {
+        lifetime.min(DEFAULT_SERVICE_TOKEN_MAX_LIFETIME)
+    });
+    let value = duration(raw, default)?;
+    let within_lifetime = lifetime.is_none_or(|lifetime| value <= lifetime);
+    let bounded = (Duration::from_secs(1)..=MAX_SERVICE_TOKEN_LIFETIME).contains(&value);
+    if bounded && within_lifetime {
+        Ok(value)
+    } else {
+        Err(
+            "must be a duration of at least 1s, at most 3600s and at most MAX_TOKEN_LIFETIME"
+                .to_owned(),
+        )
+    }
 }
 
 /// `TOKEN_MEMO_CAPACITY` and `TOKEN_MEMO_MAX_TTL`, the second checked against `lifetime`, the

@@ -159,11 +159,14 @@ fn a_replaced_key_file_is_reloaded_and_a_broken_one_keeps_the_last_valid_set() {
     });
     assert!(accepted);
 
+    // The recorder is installed before the broken file exists: the watch thread may then reach
+    // the error callsite first, and a callsite registered while a dispatcher is being installed
+    // can keep a stale "never" interest, which would hide the reload failure of this thread.
+    let (recorder, guard) = LogRecorder::install();
     replace(
         &path,
         "-----BEGIN PUBLIC KEY-----\nbroken\n-----END PUBLIC KEY-----\n",
     );
-    let (recorder, guard) = LogRecorder::install();
     assert!(verifier.reload().is_err());
     drop(guard);
 

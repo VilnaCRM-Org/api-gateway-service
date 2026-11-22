@@ -19,6 +19,7 @@ use test_support::revocation::FakeRevocationRepository;
 use test_support::role::FakeRoleRepository;
 use test_support::security_audit::FakeSecurityAuditLog;
 use test_support::token::FakeTokenRepository;
+use test_support::user_role::FakeUserRoleRepository;
 
 use crate::bootstrap::{Adapters, event_bus, router};
 use crate::cli::ServeArgs;
@@ -63,6 +64,7 @@ fn adapters() -> Adapters {
         change_receipts: Arc::new(FakeChangeReceiptRepository::new()),
         idempotency_records: Arc::new(FakeIdempotencyRepository::new()),
         roles: Arc::new(FakeRoleRepository::new()),
+        user_roles: Arc::new(FakeUserRoleRepository::new()),
         access_tokens: Arc::new(FakeAccessTokenVerifier::new()),
         tokens: Arc::new(FakeTokenRepository::new()),
         revocations: Arc::new(FakeRevocationRepository::new()),
@@ -428,9 +430,12 @@ async fn no_response_is_compressed_and_no_other_protocol_is_advertised() {
     }
 }
 
-/// The types a handler parameter of this crate may have: their rejections are problems.
-const ALLOWED_EXTRACTORS: [&str; 5] = [
+/// The types a handler parameter of this crate may have: their rejections are problems, or they
+/// never reject (the optional principal that the authentication middleware puts into the request
+/// extensions).
+const ALLOWED_EXTRACTORS: [&str; 6] = [
     "State<ApiSchema>",
+    "Option<Extension<Principal>>",
     "ApiPath<",
     "ApiJson<",
     "ValidatedQuery<",
@@ -438,7 +443,8 @@ const ALLOWED_EXTRACTORS: [&str; 5] = [
 ];
 
 /// The handler sources of the crate: every file under `src/http` and `src/graphql` with a
-/// `pub async fn`, except the request id middleware, whose parameters are not extractors.
+/// `pub async fn`, except the request id and the authentication middleware, whose parameters are
+/// not extractors.
 const HANDLER_SOURCES: [(&str, &str); 3] = [
     ("http/docs.rs", include_str!("../docs.rs")),
     ("http/ping.rs", include_str!("../ping.rs")),
@@ -534,7 +540,10 @@ fn handlers_use_only_the_problem_aware_extractors() {
     let mut expected: Vec<String> = HANDLER_SOURCES
         .iter()
         .map(|(file, _)| (*file).to_owned())
-        .chain(std::iter::once("http/request_id.rs".to_owned()))
+        .chain([
+            "http/authentication.rs".to_owned(),
+            "http/request_id.rs".to_owned(),
+        ])
         .collect();
     expected.sort_unstable();
     let mut found = files_with_handlers("http");
@@ -559,4 +568,241 @@ fn the_extractor_check_accepts_the_allowed_extractors() {
         ValidatedJson(j): ValidatedJson<J>) -> Response {}";
 
     assert_eq!(disallowed_parameters(source), Vec::<String>::new());
+}
+
+mod iam_authentication {
+    use std::sync::Arc;
+    use std::time::{Duration, SystemTime};
+
+    use axum::Router;
+    use axum::body::Body;
+    use axum::extract::Extension;
+    use axum::http::{Method, Request, StatusCode, header};
+    use axum::routing::get;
+    use iam_application::Principal;
+    use iam_domain::{
+        AccessToken, AccessTokenParts, ServiceName, SessionId, SubjectId, TokenId, TokenIdentity,
+        TokenRejection,
+    };
+    use rstest::rstest;
+    use serde_json::Value;
+    use shared_domain::Uuid;
+    use test_support::log::LogRecorder;
+    use test_support::token::FakeTokenRepository;
+
+    use super::{Answer, adapters, config, request, send_to};
+    use crate::bootstrap::router_with_iam_routes;
+    use crate::http::AppState;
+    use crate::http::authentication::AUTH_COOKIE;
+    use crate::http::security_headers::DEFAULT_CONTENT_SECURITY_POLICY;
+
+    /// The test-local protected route on the IAM router layer: the IAM context exposes no
+    /// operation before Story 2.8.
+    const PROTECTED: &str = "/api/test-protected";
+    const USER: &str = "0190f2a8-7b3c-7d4e-8f10-1234567890ab";
+    const USER_TOKEN: &str = "user.token.signature";
+    const SERVICE_TOKEN: &str = "service.token.signature";
+    const FOREIGN_SERVICE_TOKEN: &str = "foreign-service.token.signature";
+    const LONG_SERVICE_TOKEN: &str = "long-service.token.signature";
+    const EXPIRED_TOKEN: &str = "expired.token.signature";
+    const REVOKED_TOKEN: &str = "revoked.token.signature";
+    const MALFORMED_TOKEN: &str = "not-a-jws";
+
+    fn identity(subject: SubjectId, audiences: &[&str], lifetime: u64) -> TokenIdentity {
+        let session = match subject {
+            SubjectId::User(_) => Some(SessionId::new("session-1").unwrap()),
+            SubjectId::Service(_) => None,
+        };
+        TokenIdentity::from(
+            &AccessToken::new(AccessTokenParts {
+                subject,
+                session,
+                token_id: TokenId::new("jti-1").unwrap(),
+                roles: Vec::new(),
+                issued_at: SystemTime::UNIX_EPOCH,
+                expires_at: SystemTime::UNIX_EPOCH
+                    .checked_add(Duration::from_secs(lifetime))
+                    .unwrap(),
+            })
+            .with_audiences(
+                audiences
+                    .iter()
+                    .map(|&audience| audience.to_owned())
+                    .collect(),
+            ),
+        )
+    }
+
+    fn service() -> SubjectId {
+        SubjectId::Service(ServiceName::new("billing").unwrap())
+    }
+
+    fn tokens() -> FakeTokenRepository {
+        let user = SubjectId::User(Uuid::parse(USER).unwrap());
+        FakeTokenRepository::new()
+            .accepting(USER_TOKEN, identity(user, &["vilnacrm-api"], 900))
+            .accepting(
+                SERVICE_TOKEN,
+                identity(service(), &["vilnacrm-api", "vilnacrm-iam"], 900),
+            )
+            .accepting(
+                FOREIGN_SERVICE_TOKEN,
+                identity(service(), &["vilnacrm-api"], 300),
+            )
+            .accepting(
+                LONG_SERVICE_TOKEN,
+                identity(service(), &["vilnacrm-iam"], 901),
+            )
+            .rejecting(EXPIRED_TOKEN, TokenRejection::Expired)
+            .rejecting(REVOKED_TOKEN, TokenRejection::Revoked)
+    }
+
+    async fn caller(Extension(principal): Extension<Principal>) -> String {
+        principal.subject().to_string()
+    }
+
+    fn app() -> Router {
+        let mut adapters = adapters();
+        adapters.tokens = Arc::new(tokens());
+        let routes: Router<AppState> = Router::new().route(PROTECTED, get(caller));
+        router_with_iam_routes(adapters, &config("test"), routes).unwrap()
+    }
+
+    async fn get_with(headers: &[(header::HeaderName, String)]) -> Answer {
+        let mut builder = Request::builder().method(Method::GET).uri(PROTECTED);
+        for (name, value) in headers {
+            builder = builder.header(name, value);
+        }
+        send_to(&app(), builder.body(Body::empty()).unwrap()).await
+    }
+
+    async fn bearer(token: &str) -> Answer {
+        get_with(&[(header::AUTHORIZATION, format!("Bearer {token}"))]).await
+    }
+
+    fn assert_unauthenticated(answer: &Answer) {
+        assert_eq!(answer.status, StatusCode::UNAUTHORIZED, "{}", answer.body);
+        assert_eq!(answer.headers[header::WWW_AUTHENTICATE], "Bearer");
+        assert_eq!(
+            answer.headers[header::CONTENT_TYPE],
+            "application/problem+json"
+        );
+        let problem: Value = serde_json::from_str(&answer.body).unwrap();
+        assert_eq!(problem["status"], 401);
+        assert_eq!(problem["detail"], "A valid bearer token is required.");
+    }
+
+    #[tokio::test]
+    async fn a_request_without_authorization_is_the_401_problem_inside_the_outer_layers() {
+        let answer = get_with(&[]).await;
+
+        assert_unauthenticated(&answer);
+        assert!(answer.headers.contains_key("x-request-id"));
+        assert_eq!(answer.headers["x-content-type-options"], "nosniff");
+        assert_eq!(
+            answer.headers["content-security-policy"],
+            DEFAULT_CONTENT_SECURITY_POLICY
+        );
+    }
+
+    #[rstest]
+    #[case::user(USER_TOKEN, USER)]
+    #[case::service_with_the_iam_audience(SERVICE_TOKEN, "billing")]
+    #[tokio::test]
+    async fn a_valid_token_reaches_the_route_with_its_principal(
+        #[case] token: &str,
+        #[case] who: &str,
+    ) {
+        let answer = bearer(token).await;
+
+        assert_eq!(answer.status, StatusCode::OK);
+        assert_eq!(answer.body, who);
+    }
+
+    #[rstest]
+    #[case::service_without_the_caller_audience(FOREIGN_SERVICE_TOKEN)]
+    #[case::service_living_longer_than_allowed(LONG_SERVICE_TOKEN)]
+    #[case::malformed(MALFORMED_TOKEN)]
+    #[case::expired(EXPIRED_TOKEN)]
+    #[case::revoked(REVOKED_TOKEN)]
+    #[tokio::test]
+    async fn every_refused_token_is_the_same_401_problem(#[case] token: &str) {
+        let refused = bearer(token).await;
+        let missing = get_with(&[]).await;
+
+        assert_unauthenticated(&refused);
+        assert_eq!(refused.body, missing.body);
+    }
+
+    #[tokio::test]
+    async fn a_valid_token_in_the_cookie_is_authenticated_like_a_bearer_token() {
+        let answer = get_with(&[(header::COOKIE, format!("{AUTH_COOKIE}={USER_TOKEN}"))]).await;
+
+        assert_eq!(answer.status, StatusCode::OK);
+        assert_eq!(answer.body, USER);
+    }
+
+    #[tokio::test]
+    async fn an_invalid_cookie_token_is_the_same_401_problem() {
+        let answer = get_with(&[(header::COOKIE, format!("{AUTH_COOKIE}={REVOKED_TOKEN}"))]).await;
+
+        assert_unauthenticated(&answer);
+    }
+
+    #[rstest]
+    #[case::ping("/ping", StatusCode::OK)]
+    #[case::health("/api/health", StatusCode::NO_CONTENT)]
+    #[case::docs("/api/docs", StatusCode::OK)]
+    #[case::openapi("/api/docs/openapi.json", StatusCode::OK)]
+    #[case::example_list("/api/example_api_resources", StatusCode::OK)]
+    #[tokio::test]
+    async fn the_template_routes_need_no_token(#[case] path: &str, #[case] status: StatusCode) {
+        let answer = send_to(&app(), request(Method::GET, path, None)).await;
+
+        assert_eq!(answer.status, status, "{path}");
+        assert!(!answer.headers.contains_key(header::WWW_AUTHENTICATE));
+    }
+
+    #[rstest]
+    #[case::without_a_token(None)]
+    #[case::with_a_valid_token(Some(USER_TOKEN))]
+    #[case::with_a_refused_token(Some(REVOKED_TOKEN))]
+    #[tokio::test]
+    async fn the_graphql_route_refuses_no_request(#[case] token: Option<&str>) {
+        let mut builder = Request::builder()
+            .method(Method::POST)
+            .uri("/api/graphql")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = token {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let body = Body::from(r#"{"query":"{ __typename }"}"#);
+
+        let answer = send_to(&app(), builder.body(body).unwrap()).await;
+
+        assert_eq!(answer.status, StatusCode::OK);
+        let body: Value = serde_json::from_str(&answer.body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "data": { "__typename": "Query" } })
+        );
+    }
+
+    #[tokio::test]
+    async fn the_authorization_value_never_reaches_a_span_or_a_log_line() {
+        let (recorder, _guard) = LogRecorder::install();
+
+        for token in [USER_TOKEN, REVOKED_TOKEN, MALFORMED_TOKEN] {
+            let _answer = bearer(token).await;
+        }
+
+        let lines = recorder.lines();
+        assert_ne!(lines, Vec::new());
+        for line in lines {
+            let printed = format!("{line:?}");
+            for token in [USER_TOKEN, REVOKED_TOKEN, MALFORMED_TOKEN] {
+                assert!(!printed.contains(token), "{printed}");
+            }
+        }
+    }
 }

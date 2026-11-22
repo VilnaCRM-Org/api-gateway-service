@@ -47,6 +47,13 @@ impl ExportError {
 /// The routes of each context are nested under `/api`.
 #[must_use]
 pub fn api_router() -> OpenApiRouter<AppState> {
+    template_api_router().merge(iam_api_router())
+}
+
+/// The REST operations of the template's contexts with the document metadata, without the IAM
+/// operations, which the router serves behind the authentication of IAM's callers.
+#[must_use]
+pub fn template_api_router() -> OpenApiRouter<AppState> {
     let mut document = ApiDoc::openapi();
     concat!(env!("CARGO_PKG_DESCRIPTION"), " API").clone_into(&mut document.info.title);
     document.info.description = Some(format!(
@@ -60,7 +67,12 @@ pub fn api_router() -> OpenApiRouter<AppState> {
     OpenApiRouter::with_openapi(document)
         .nest("/api", health_check_application::router())
         .nest("/api", some_module_application::http::router())
-        .nest("/api", iam_application::http::router())
+}
+
+/// The REST operations of the IAM context, nested under `/api`.
+#[must_use]
+pub fn iam_api_router() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new().nest("/api", iam_application::http::router())
 }
 
 /// The document.

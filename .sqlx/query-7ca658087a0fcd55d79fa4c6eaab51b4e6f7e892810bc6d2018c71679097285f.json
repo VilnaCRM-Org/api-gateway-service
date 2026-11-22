@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO iam_user_roles (id, subject_kind, subject_id, role_id, scope_kind, project_id,\n            expires_at, version, created_by, created_at, updated_at, revoked_at)\n        VALUES (($1::uuid[])[1], ($2::text[])[1], ($2::text[])[2], ($1::uuid[])[2],\n            ($2::text[])[3], ($1::uuid[])[3], $3, $4, ($2::text[])[4], ($5::timestamptz[])[1],\n            ($5::timestamptz[])[2], $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "TextArray",
+        "Timestamptz",
+        "Int8",
+        "TimestamptzArray",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7ca658087a0fcd55d79fa4c6eaab51b4e6f7e892810bc6d2018c71679097285f"
+}

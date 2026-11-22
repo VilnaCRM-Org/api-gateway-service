@@ -62,3 +62,54 @@ fn the_identity_holds_no_role() {
 
     assert!(!printed.contains("ROLE_"), "{printed}");
 }
+
+#[test]
+fn the_identity_keeps_the_audiences_of_the_token() {
+    let name = ServiceName::new("billing").unwrap();
+    let token = token(SubjectId::Service(name), None)
+        .with_audiences(vec!["vilnacrm-api".to_owned(), "vilnacrm-iam".to_owned()]);
+
+    let identity = TokenIdentity::from(&token);
+
+    assert_eq!(
+        identity.audiences(),
+        ["vilnacrm-api".to_owned(), "vilnacrm-iam".to_owned()]
+    );
+    assert!(identity.has_audience("vilnacrm-iam"));
+    assert!(identity.has_audience("vilnacrm-api"));
+    assert!(!identity.has_audience("vilnacrm"));
+}
+
+#[test]
+fn an_identity_without_audiences_has_none_of_them() {
+    let id = Uuid::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ab").unwrap();
+
+    let identity = TokenIdentity::from(&token(SubjectId::User(id), Some("s")));
+
+    assert_eq!(identity.audiences(), Vec::<String>::new());
+    assert!(!identity.has_audience("vilnacrm-api"));
+}
+
+#[test]
+fn the_lifetime_is_the_time_from_issue_to_expiry() {
+    let id = Uuid::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ab").unwrap();
+
+    let identity = TokenIdentity::from(&token(SubjectId::User(id), Some("s")));
+
+    assert_eq!(identity.lifetime(), Duration::from_mins(15));
+}
+
+#[test]
+fn an_expiry_before_the_issue_is_no_lifetime() {
+    let id = Uuid::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ab").unwrap();
+    let token = AccessToken::new(AccessTokenParts {
+        subject: SubjectId::User(id),
+        session: Some(SessionId::new("s").unwrap()),
+        token_id: TokenId::new("jti-8").unwrap(),
+        roles: Vec::new(),
+        issued_at: at(2_000),
+        expires_at: at(1_000),
+    });
+
+    assert_eq!(TokenIdentity::from(&token).lifetime(), Duration::ZERO);
+}

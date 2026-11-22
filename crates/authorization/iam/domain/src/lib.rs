@@ -6,11 +6,13 @@
 
 pub mod entity;
 pub mod error;
+pub mod graphql_spec;
 mod micros;
 pub mod policy;
 pub mod port;
 pub mod revocation;
 pub mod role;
+pub mod user_role;
 pub mod value_object;
 
 pub use entity::change_receipt::ChangeReceipt;
@@ -21,14 +23,28 @@ pub use entity::security_audit_event::{
     SecurityAuditEvent, SecurityAuditEventParts, StoredSecurityAuditEvent,
 };
 pub use error::{
-    InvalidEventEnvelope, InvalidIamValue, InvalidPermissionKey, InvalidRole, RoleChangeRefused,
-    VersionConflict,
+    InvalidAccessCheck, InvalidEventEnvelope, InvalidIamValue, InvalidPermissionKey, InvalidRole,
+    InvalidUserRole, RoleChangeRefused, UserRoleChangeRefused, VersionConflict,
 };
+pub use error::{InvalidSpec, SpecPosition, SpecTransitionRefused};
+pub use graphql_spec::event::{GraphQlSpecLoaded, GraphQlSpecRetired};
+pub use graphql_spec::{
+    GraphQlSpec, GraphQlSpecContent, GraphQlSpecParts, SpecActivation, SpecStamp,
+};
+pub use policy::caller_token_rule::CallerTokenRule;
+pub use policy::compiled_role_set::{CompiledRoleSet, GrantStatus};
+pub use policy::decision_policy::{
+    DecisionPolicy, DecisionRequest, RequiredKey, RoleAssignment, RoleSets,
+};
+pub use policy::spec_diff::{FlagDowngrade, RemovedGrant, RoleGrants, SpecDiff, WildcardGain};
 pub use policy::token_lifetime_rule::{TokenLifetimeRule, TokenTimes};
+pub use policy::wildcard_matcher::WildcardMatcher;
 pub use port::RepositoryError;
 pub use port::access_token_verifier::AccessTokenVerifier;
 pub use port::boot_clock::BootClock;
 pub use port::change_receipt_repository::ChangeReceiptRepository;
+pub use port::graphql_schema_parser::GraphQlSchemaParser;
+pub use port::graphql_spec_repository::{GraphQlSpecPageQuery, GraphQlSpecRepository};
 pub use port::iam_unit_of_work::IamUnitOfWork;
 pub use port::idempotency_repository::IdempotencyRepository;
 pub use port::policy_epoch_repository::PolicyEpochRepository;
@@ -39,6 +55,7 @@ pub use port::role_repository::{RolePageQuery, RoleRepository};
 pub use port::security_audit_log::SecurityAuditLog;
 pub use port::token_memo::{TokenMemo, Verification};
 pub use port::token_repository::TokenRepository;
+pub use port::user_role_repository::{UserRolePageQuery, UserRoleRepository};
 pub use revocation::global_token_cutoff::GlobalTokenCutoff;
 pub use revocation::inbound_event::{InboundEvent, InboundOutcome};
 pub use revocation::revocation_rule::{RevocationRule, RevocationStatus};
@@ -48,8 +65,19 @@ pub use revocation::user_token_cutoff::UserTokenCutoff;
 pub use role::event::{RoleCreated, RoleDeleted, RolePermissionsChanged, RoleUpdated};
 pub use role::statement::RoleStatement;
 pub use role::{Role, RoleDescriptionChange, RoleFields, RoleParts, RolePatch, RoleStamp};
+pub use user_role::event::{
+    AssignedRole, PrivilegedRoleAssigned, UserRoleAssigned, UserRoleRevoked, UserRoleUpdated,
+};
+pub use user_role::statement::UserRoleStatement;
+pub use user_role::{
+    PrivilegedGrants, RevocationCause, UserRole, UserRoleAssignment, UserRoleParts, UserRoleStamp,
+};
+pub use value_object::access_check::{
+    AccessCheck, AccessTarget, GraphQlTarget, PermissionsTarget, RestTarget,
+};
 pub use value_object::access_token::{AccessToken, AccessTokenParts};
 pub use value_object::actor_ref::{ActorRef, SystemComponent};
+pub use value_object::assignment_expiry::AssignmentExpiry;
 pub use value_object::assignment_scope::AssignmentScope;
 pub use value_object::audit_action::AuditAction;
 pub use value_object::audit_chain_head::AuditChainHead;
@@ -60,13 +88,20 @@ pub use value_object::audit_summary::AuditSummary;
 pub use value_object::audit_target::AuditTarget;
 pub use value_object::boot_instant::BootInstant;
 pub use value_object::change_statement::ChangeStatement;
+pub use value_object::content_hash::ContentHash;
+pub use value_object::coordinate_set::CoordinateSet;
 pub use value_object::credential::Credential;
 pub use value_object::credential_digest::CredentialDigest;
+pub use value_object::decision::Decision;
 pub use value_object::decision_effect::DecisionEffect;
+pub use value_object::decision_outcome::{DecisionOutcome, DecisionVerdict};
+pub use value_object::decision_reason::DecisionReason;
 pub use value_object::entity_version::EntityVersion;
 pub use value_object::event_data::{EventData, EventValue};
 pub use value_object::event_type::EventType;
 pub use value_object::gql_name::GqlName;
+pub use value_object::graphql_coordinate::GraphQlCoordinate;
+pub use value_object::graphql_type_graph::{GraphQlField, GraphQlTypeGraph};
 pub use value_object::http_method::HttpMethod;
 pub use value_object::idempotency_key::IdempotencyKey;
 pub use value_object::identifier::{
@@ -92,6 +127,7 @@ pub use value_object::role_name::RoleName;
 pub use value_object::scope_set::ScopeSet;
 pub use value_object::service_name::ServiceName;
 pub use value_object::session_id::SessionId;
+pub use value_object::spec_status::SpecStatus;
 pub use value_object::subject::{SubjectId, SubjectKind, SubjectRef};
 pub use value_object::token_id::TokenId;
 pub use value_object::token_identity::TokenIdentity;

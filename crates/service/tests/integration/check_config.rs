@@ -7,7 +7,7 @@ use test_support::access_token::DEVELOPMENT_PUBLIC_KEYS_FILE;
 
 use crate::support::{Scratch, VALID_ENVIRONMENT, stderr, stdout};
 
-const FULL_ENVIRONMENT: [(&str, &str); 26] = [
+const FULL_ENVIRONMENT: [(&str, &str); 28] = [
     ("APP_ENV", "dev"),
     ("APP_HOST", "127.0.0.1"),
     ("APP_PORT", "0"),
@@ -37,6 +37,8 @@ const FULL_ENVIRONMENT: [(&str, &str); 26] = [
     ("MAX_TOKEN_LIFETIME", "15m"),
     ("TOKEN_MEMO_CAPACITY", "200000"),
     ("TOKEN_MEMO_MAX_TTL", "900s"),
+    ("JWT_CALLER_AUDIENCE", "vilnacrm-iam"),
+    ("JWT_SERVICE_TOKEN_MAX_LIFETIME", "600s"),
 ];
 
 #[test]
@@ -444,6 +446,48 @@ fn token_memo_settings_within_their_bounds_are_accepted() {
             ("TOKEN_MEMO_CAPACITY", "1000"),
             ("MAX_TOKEN_LIFETIME", "900s"),
             ("TOKEN_MEMO_MAX_TTL", "900s"),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout(&output), "configuration OK\n");
+}
+
+#[rstest]
+#[case::above_one_hour("2h", "3601s")]
+#[case::above_max_token_lifetime("900s", "901s")]
+fn a_service_token_lifetime_out_of_bounds_exits_2_naming_the_variable(
+    #[case] max_token_lifetime: &str,
+    #[case] service_lifetime: &str,
+) {
+    let scratch = Scratch::new();
+
+    let output = check_config_with(
+        &scratch,
+        &[
+            ("MAX_TOKEN_LIFETIME", max_token_lifetime),
+            ("JWT_SERVICE_TOKEN_MAX_LIFETIME", service_lifetime),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(
+        stderr(&output),
+        "JWT_SERVICE_TOKEN_MAX_LIFETIME: must be a duration of at least 1s, at most 3600s and at \
+         most MAX_TOKEN_LIFETIME\n"
+    );
+}
+
+#[test]
+fn a_service_token_lifetime_of_one_hour_is_accepted() {
+    let scratch = Scratch::new();
+
+    let output = check_config_with(
+        &scratch,
+        &[
+            ("MAX_TOKEN_LIFETIME", "1h"),
+            ("JWT_SERVICE_TOKEN_MAX_LIFETIME", "3600s"),
         ],
     );
 

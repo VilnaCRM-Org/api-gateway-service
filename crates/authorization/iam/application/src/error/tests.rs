@@ -1,6 +1,6 @@
 use std::error::Error as _;
 
-use iam_domain::{EntityVersion, RepositoryError, VersionConflict};
+use iam_domain::{EntityVersion, RepositoryError, TokenRejection, VersionConflict};
 use rstest::rstest;
 use shared_application::http::{Problem, TYPE_BLANK, Violation};
 use test_support::log::LogRecorder;
@@ -144,4 +144,44 @@ fn a_stale_version_is_a_failed_precondition() {
 
     assert!(matches!(error, IamError::PreconditionFailed));
     assert!(error.source().is_none());
+}
+
+#[test]
+fn unauthenticated_is_the_401_problem_with_a_fixed_message_and_is_not_logged() {
+    let (recorder, _guard) = LogRecorder::install();
+
+    let problem = Problem::from(IamError::Unauthenticated);
+
+    assert_eq!(problem.status, 401);
+    assert_eq!(problem.title, "Unauthorized");
+    assert_eq!(problem.r#type, TYPE_BLANK);
+    assert_eq!(
+        problem.detail.as_deref(),
+        Some("A valid bearer token is required.")
+    );
+    assert_eq!(problem.violations, Vec::<Violation>::new());
+    assert_eq!(recorder.lines().len(), 0);
+}
+
+#[rstest]
+#[case::missing(TokenRejection::Missing)]
+#[case::invalid(TokenRejection::Invalid)]
+#[case::expired(TokenRejection::Expired)]
+#[case::revoked(TokenRejection::Revoked)]
+fn every_refused_credential_is_unauthenticated(#[case] rejection: TokenRejection) {
+    assert!(matches!(
+        IamError::from(rejection),
+        IamError::Unauthenticated
+    ));
+}
+
+#[test]
+fn an_unreadable_revocation_state_is_a_storage_failure() {
+    let error = IamError::from(TokenRejection::Unavailable);
+
+    assert!(matches!(error, IamError::Storage(_)));
+    assert_eq!(
+        error.source().map(ToString::to_string).as_deref(),
+        Some("the credential could not be checked")
+    );
 }
