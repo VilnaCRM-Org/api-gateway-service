@@ -7,25 +7,35 @@ use axum::http::{HeaderMap, Request, StatusCode, header};
 use health_check_domain::{Dependency, HealthProbe};
 use health_check_infrastructure::CacheProbe;
 use http_body_util::BodyExt as _;
-use iam_application::{GetPolicyEpochQuery, GetPolicyEpochQueryHandler};
-use iam_domain::PolicyEpochRepository;
+use iam_application::{
+    GetChangeReceiptQuery, GetIdempotentReplayQuery, GetPolicyEpochQuery,
+    GetPolicyEpochQueryHandler,
+};
+use iam_domain::{Credential, PolicyEpochRepository, TokenRejection};
 use serde_json::Value;
 use shared_domain::{EventBus, QueryBus};
 use shared_infrastructure::bus::{InMemoryCommandBus, InMemoryQueryBus};
 use some_module_application::{CreateExampleApiResourceHandler, GetExampleApiResourceHandler};
 use some_module_domain::ExampleApiResourceRepository;
+use test_support::access_token::{DEVELOPMENT_PUBLIC_KEYS_FILE, FakeAccessTokenVerifier};
 use test_support::bus::RecordingEventBus;
 use test_support::cache::StubCache;
+use test_support::change_receipt::{FakeChangeReceiptRepository, change_receipt};
 use test_support::clock::FixedClock;
 use test_support::id::SequenceUuidGenerator;
+use test_support::idempotency::{FakeIdempotencyRepository, idempotency_request};
 use test_support::log::LogRecorder;
 use test_support::policy_epoch::{FakePolicyEpochRepository, seeded_policy_epoch};
 use test_support::probe::StubProbe;
 use test_support::repository::InMemoryExampleApiResourceRepository;
 use test_support::security_audit::FakeSecurityAuditLog;
+use test_support::seed::TestRng;
 use tower::ServiceExt as _;
 
-use super::{Adapters, BootstrapError, event_bus, register_commands, register_queries, router};
+use super::{
+    Adapters, BootstrapError, access_token_verifier, event_bus, register_change_queries,
+    register_commands, register_queries, router,
+};
 use crate::cli::ServeArgs;
 use crate::config::Config;
 
@@ -50,6 +60,7 @@ fn config(app_env: &str) -> Config {
         ..ServeArgs::default()
     };
     args.database.url = Some("postgres://app:unused@127.0.0.1:1/app".to_owned());
+    args.tokens.public_keys_file = Some(DEVELOPMENT_PUBLIC_KEYS_FILE.to_owned());
     Config::from_args(args).unwrap()
 }
 
@@ -66,6 +77,9 @@ fn adapters() -> Adapters {
         repository: Arc::new(InMemoryExampleApiResourceRepository::new()),
         policy_epochs: Arc::new(FakePolicyEpochRepository::new()),
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
+        change_receipts: Arc::new(FakeChangeReceiptRepository::new()),
+        idempotency_records: Arc::new(FakeIdempotencyRepository::new()),
+        access_tokens: Arc::new(FakeAccessTokenVerifier::new()),
         probes: healthy_probes(),
         event_bus: event_bus(),
         clock: Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH)),
@@ -388,4 +402,120 @@ fn the_database_error_keeps_its_message_and_source() {
 
     assert_eq!(error.to_string(), "invalid database settings");
     assert!(std::error::Error::source(&error).is_some());
+}
+
+fn change_queries(
+    bus: InMemoryQueryBus,
+    adapters: &Adapters,
+) -> Result<InMemoryQueryBus, BootstrapError> {
+    register_change_queries(
+        bus,
+        &adapters.change_receipts,
+        &adapters.idempotency_records,
+        &adapters.clock,
+    )
+}
+
+#[tokio::test]
+async fn the_query_bus_answers_the_change_receipt_and_replay_queries_from_the_iam_adapters() {
+    let mut rng = TestRng::from_env();
+    let receipt = change_receipt(&mut rng);
+    let mut adapters = adapters();
+    adapters.change_receipts =
+        Arc::new(FakeChangeReceiptRepository::holding(vec![receipt.clone()]));
+    let bus = change_queries(InMemoryQueryBus::new(), &adapters).unwrap();
+    let queries: Arc<dyn QueryBus> = Arc::new(bus);
+
+    let found = queries
+        .ask(GetChangeReceiptQuery {
+            change_id: receipt.change_id(),
+        })
+        .await
+        .unwrap();
+    let replay = queries
+        .ask(GetIdempotentReplayQuery {
+            actor: receipt.actor().clone(),
+            request: idempotency_request(&mut rng),
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(found, receipt);
+    assert_eq!(replay, None);
+}
+
+#[test]
+fn a_second_change_receipt_handler_is_a_duplicate_that_names_the_query() {
+    let adapters = adapters();
+    let bus = change_queries(InMemoryQueryBus::new(), &adapters).unwrap();
+
+    let error = change_queries(bus, &adapters).unwrap_err();
+
+    assert!(
+        matches!(error, BootstrapError::DuplicateHandler(_)),
+        "{error:?}"
+    );
+    assert!(
+        error.to_string().contains("GetChangeReceiptQuery"),
+        "{error}"
+    );
+}
+
+fn verify(adapters: &Adapters, raw: &str) -> Result<iam_domain::AccessToken, TokenRejection> {
+    adapters
+        .access_tokens
+        .verify(&Credential::new(raw.to_owned()))
+}
+
+/// A configuration whose key file is a copy of the development key file that the test may change.
+fn config_with_own_key_file(name: &str) -> (Config, std::path::PathBuf) {
+    let path = std::env::temp_dir().join(format!(
+        "service-bootstrap-{}-{name}.pem",
+        std::process::id()
+    ));
+    std::fs::copy(DEVELOPMENT_PUBLIC_KEYS_FILE, &path).unwrap();
+    let mut config = config("test");
+    config.tokens.public_keys_file.clone_from(&path);
+    (config, path)
+}
+
+#[tokio::test]
+async fn connect_wires_the_jwt_verifier_of_the_configured_key_file() {
+    let adapters = Adapters::connect(&config("test")).await.unwrap();
+
+    assert_eq!(verify(&adapters, " "), Err(TokenRejection::Missing));
+    assert_eq!(verify(&adapters, "a.b.c"), Err(TokenRejection::Invalid));
+}
+
+#[test]
+fn the_jwt_verifier_checks_tokens_against_the_injected_clock_and_settings() {
+    let clock = Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH));
+
+    let verifier = access_token_verifier(&config("test"), clock).unwrap();
+
+    assert_eq!(
+        verifier.verify(&Credential::new(String::new())),
+        Err(TokenRejection::Missing)
+    );
+    assert_eq!(
+        verifier.verify(&Credential::new("not-a-token".to_owned())),
+        Err(TokenRejection::Invalid)
+    );
+}
+
+#[tokio::test]
+async fn connect_refuses_a_key_file_that_no_longer_holds_a_key_set() {
+    let (config, path) = config_with_own_key_file("emptied");
+    std::fs::write(&path, "").unwrap();
+
+    let error = Adapters::connect(&config).await.unwrap_err();
+
+    assert!(matches!(error, BootstrapError::KeyFile(_)), "{error:?}");
+    assert_eq!(error.to_string(), "invalid JWT_PUBLIC_KEYS_FILE");
+    assert!(std::error::Error::source(&error).is_some());
+}
+
+#[test]
+fn the_key_file_is_polled_every_five_seconds() {
+    assert_eq!(super::KEY_FILE_POLL_INTERVAL, Duration::from_secs(5));
 }

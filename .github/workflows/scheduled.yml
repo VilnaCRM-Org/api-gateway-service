@@ -237,6 +237,10 @@ jobs:
           tool: sqlx-cli@0.9.0
           fallback: cargo-binstall
 
+      # Every infrastructure mutant reruns the integration suite, whose krafka spike tests read the compose broker.
+      - name: Start the compose Kafka broker
+        run: make start-deps DEPS=kafka
+
       - name: Run the mutation shard
         id: mutation
         env:

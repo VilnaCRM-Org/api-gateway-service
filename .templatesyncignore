@@ -46,6 +46,7 @@ crates/service/tests/integration/bootstrap.rs
 crates/service/tests/integration/migrate.rs
 crates/service/tests/integration/serve.rs
 crates/service/tests/integration/panic.rs
+crates/service/tests/integration/main.rs
 crates/service/src/openapi.rs
 crates/service/src/openapi/
 crates/service/src/graphql/schema.rs
@@ -53,5 +54,9 @@ crates/service/src/graphql/schema/
 tests/support/
 tests/e2e/
 .github/workflows/template-sync-pat.yml
+.github/workflows/tests.yml
+.github/workflows/scheduled.yml
+docker-compose.yml
+docker-compose.override.yml
 .github/TEMPLATE_SYNC_PAT.md
 docs/extension-seams.md

@@ -84,5 +84,10 @@ uuid_identifier! {
     SecurityAuditEventId
 }
 
+uuid_identifier! {
+    /// The identifier of one session revocation, exposed by the management API.
+    SessionRevocationId
+}
+
 #[cfg(test)]
 mod tests;

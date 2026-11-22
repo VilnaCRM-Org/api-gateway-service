@@ -1,5 +1,6 @@
 //! Value objects of the IAM context.
 
+pub mod access_token;
 pub mod actor_ref;
 pub mod assignment_scope;
 pub mod audit_action;
@@ -11,6 +12,8 @@ pub mod audit_summary;
 pub mod audit_target;
 pub mod boot_instant;
 pub mod change_statement;
+pub mod credential;
+pub mod credential_digest;
 pub mod decision_effect;
 pub mod entity_version;
 pub mod event_data;
@@ -32,8 +35,15 @@ pub mod request_digest;
 pub mod request_id;
 pub mod reserved_permission;
 pub mod rest_template;
+pub mod role_description;
+pub mod role_kind;
+pub mod role_name;
 pub mod scope_set;
 pub mod service_name;
+pub mod session_id;
 pub mod subject;
 mod text;
+pub mod token_id;
+pub mod token_identity;
+pub mod token_rejection;
 pub mod wildcard_pattern;

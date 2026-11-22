@@ -7,8 +7,11 @@ use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use health_check_domain::{Dependency, HealthProbe};
 use http_body_util::BodyExt as _;
 use serde_json::Value;
+use test_support::access_token::{DEVELOPMENT_PUBLIC_KEYS_FILE, FakeAccessTokenVerifier};
+use test_support::change_receipt::FakeChangeReceiptRepository;
 use test_support::clock::FixedClock;
 use test_support::id::SequenceUuidGenerator;
+use test_support::idempotency::FakeIdempotencyRepository;
 use test_support::policy_epoch::FakePolicyEpochRepository;
 use test_support::probe::StubProbe;
 use test_support::repository::InMemoryExampleApiResourceRepository;
@@ -40,6 +43,7 @@ fn config(app_env: &str) -> Config {
         ..ServeArgs::default()
     };
     args.database.url = Some("postgres://app:unused@127.0.0.1:1/app".to_owned());
+    args.tokens.public_keys_file = Some(DEVELOPMENT_PUBLIC_KEYS_FILE.to_owned());
     Config::from_args(args).unwrap()
 }
 
@@ -53,6 +57,9 @@ fn adapters() -> Adapters {
         repository: Arc::new(InMemoryExampleApiResourceRepository::new()),
         policy_epochs: Arc::new(FakePolicyEpochRepository::new()),
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
+        change_receipts: Arc::new(FakeChangeReceiptRepository::new()),
+        idempotency_records: Arc::new(FakeIdempotencyRepository::new()),
+        access_tokens: Arc::new(FakeAccessTokenVerifier::new()),
         probes,
         event_bus: event_bus(),
         clock: Arc::new(FixedClock::at(std::time::SystemTime::UNIX_EPOCH)),

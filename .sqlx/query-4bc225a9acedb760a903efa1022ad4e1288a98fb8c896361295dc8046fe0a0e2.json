@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO iam_idempotency_keys (actor, idempotency_key, request_digest, change_id,\n            created_at)\n        VALUES ($1, $2, $3, $4, $5)\n        ON CONFLICT (actor, idempotency_key) DO UPDATE\n        SET request_digest = EXCLUDED.request_digest, change_id = EXCLUDED.change_id,\n            created_at = EXCLUDED.created_at\n        WHERE iam_idempotency_keys.created_at < $6",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Bytea",
+        "Uuid",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4bc225a9acedb760a903efa1022ad4e1288a98fb8c896361295dc8046fe0a0e2"
+}

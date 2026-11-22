@@ -1,8 +1,10 @@
-//! REST adapter of the IAM context: the state its handlers read and the router that registers
-//! them.
+//! REST adapter of the IAM context: the state its handlers read, the router that registers
+//! them, the header extractors of the writes and their response headers.
 
 pub mod dto;
+pub mod extract;
 pub mod handler;
+pub mod response;
 
 use std::sync::Arc;
 

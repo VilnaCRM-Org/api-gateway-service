@@ -3,9 +3,11 @@ use std::process::Stdio;
 
 use rstest::rstest;
 
+use test_support::access_token::DEVELOPMENT_PUBLIC_KEYS_FILE;
+
 use crate::support::{Scratch, VALID_ENVIRONMENT, stderr, stdout};
 
-const FULL_ENVIRONMENT: [(&str, &str); 19] = [
+const FULL_ENVIRONMENT: [(&str, &str); 24] = [
     ("APP_ENV", "dev"),
     ("APP_HOST", "127.0.0.1"),
     ("APP_PORT", "0"),
@@ -28,6 +30,11 @@ const FULL_ENVIRONMENT: [(&str, &str); 19] = [
     ("HTTP_REQUEST_TIMEOUT", "5s"),
     ("HTTP_MAX_BODY_BYTES", "2048"),
     ("SHUTDOWN_GRACE_PERIOD", "3s"),
+    ("JWT_PUBLIC_KEYS_FILE", DEVELOPMENT_PUBLIC_KEYS_FILE),
+    ("JWT_ISSUER", "vilnacrm-user-service"),
+    ("JWT_AUDIENCE", "vilnacrm-api"),
+    ("JWT_CLOCK_SKEW", "60s"),
+    ("MAX_TOKEN_LIFETIME", "15m"),
 ];
 
 #[test]
@@ -233,6 +240,11 @@ fn the_help_lists_every_flag_and_never_a_value() {
         "--http-request-timeout",
         "--http-max-body-bytes",
         "--shutdown-grace-period",
+        "--jwt-public-keys-file",
+        "--jwt-issuer",
+        "--jwt-audience",
+        "--jwt-clock-skew",
+        "--max-token-lifetime",
     ] {
         assert!(help.contains(flag), "{flag} is missing from the help");
     }
@@ -363,4 +375,87 @@ fn a_failed_write_of_the_help_exits_1() {
     let output = command.output().unwrap();
 
     assert_eq!(output.status.code(), Some(1));
+}
+
+/// Runs `check-config` with a valid environment plus `extra`.
+fn check_config_with(scratch: &Scratch, extra: &[(&str, &str)]) -> std::process::Output {
+    let mut variables = VALID_ENVIRONMENT.to_vec();
+    variables.extend_from_slice(extra);
+    scratch.run(&["check-config"], &variables)
+}
+
+#[test]
+fn a_clock_skew_above_sixty_seconds_exits_2_naming_the_variable() {
+    let scratch = Scratch::new();
+
+    let output = check_config_with(&scratch, &[("JWT_CLOCK_SKEW", "61s")]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(
+        stderr(&output),
+        "JWT_CLOCK_SKEW: must be a duration of at most 60s\n"
+    );
+}
+
+#[test]
+fn a_missing_key_file_variable_exits_2_naming_it() {
+    let scratch = Scratch::new();
+
+    let output = check_config_with(&scratch, &[("JWT_PUBLIC_KEYS_FILE", "")]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stderr(&output), "JWT_PUBLIC_KEYS_FILE: must not be empty\n");
+}
+
+fn development_key() -> String {
+    std::fs::read_to_string(DEVELOPMENT_PUBLIC_KEYS_FILE).unwrap()
+}
+
+#[rstest]
+#[case::no_key(String::new(), "the key file holds no PEM key")]
+#[case::four_keys(
+    development_key().repeat(4),
+    "the key file holds 4 keys, but at most 3 are allowed"
+)]
+#[case::unparsable(
+    "-----BEGIN PUBLIC KEY-----\nbm90IGEga2V5\n-----END PUBLIC KEY-----\n".to_owned(),
+    "key 1 of the key file is not a parsable RSA public key in PEM form"
+)]
+fn a_key_file_the_service_cannot_use_exits_2_naming_the_variable(
+    #[case] contents: String,
+    #[case] cause: &str,
+) {
+    let scratch = Scratch::new();
+    scratch.write("keys.pem", &contents);
+    let path = scratch.path().join("keys.pem");
+
+    let output = check_config_with(
+        &scratch,
+        &[("JWT_PUBLIC_KEYS_FILE", path.to_str().unwrap())],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    let errors = stderr(&output);
+    assert_eq!(
+        errors,
+        format!("JWT_PUBLIC_KEYS_FILE: must name a file of 1 to 3 PEM RSA public keys: {cause}\n")
+    );
+    assert!(!errors.contains(path.to_str().unwrap()));
+}
+
+#[test]
+fn a_key_file_of_three_keys_is_accepted() {
+    let scratch = Scratch::new();
+    scratch.write("keys.pem", &development_key().repeat(3));
+    let path = scratch.path().join("keys.pem");
+
+    let output = check_config_with(
+        &scratch,
+        &[("JWT_PUBLIC_KEYS_FILE", path.to_str().unwrap())],
+    );
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout(&output), "configuration OK\n");
 }

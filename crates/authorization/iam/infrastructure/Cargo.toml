@@ -11,12 +11,18 @@ repository.workspace = true
 [dependencies]
 async-trait.workspace = true
 iam-domain.workspace = true
+jsonwebtoken.workspace = true
+moka.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 shared-domain.workspace = true
 sqlx.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+aws-lc-rs.workspace = true
 rstest.workspace = true
 shared-infrastructure.workspace = true
 test-support.workspace = true

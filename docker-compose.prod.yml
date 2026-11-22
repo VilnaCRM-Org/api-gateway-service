@@ -12,6 +12,8 @@ services:
       AWS_ENDPOINT_URL_SQS: !reset null # real SQS through the default credential chain
       AWS_ACCESS_KEY_ID: !reset null
       AWS_SECRET_ACCESS_KEY: !reset null
+    volumes: !override
+      - ${JWT_PUBLIC_KEYS_HOST_FILE:?JWT_PUBLIC_KEYS_HOST_FILE is required}:/etc/service/jwt-public-keys.pem:ro
     deploy:
       resources:
         limits:

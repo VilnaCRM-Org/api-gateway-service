@@ -5,7 +5,12 @@
 //! application layer. SQL lives here and nowhere else.
 
 pub mod persistence;
+pub mod token;
 
 pub use persistence::PgPolicyEpochRepository;
+pub use persistence::change_receipt::PgChangeReceiptRepository;
+pub use persistence::idempotency::PgIdempotencyRepository;
 pub use persistence::security_audit_log::PgSecurityAuditLog;
 pub use persistence::unit_of_work::PgIamUnitOfWork;
+pub use token::jwt_access_token_verifier::{JwtAccessTokenVerifier, JwtSettings};
+pub use token::jwt_key_set::{JwtKeyFileError, JwtKeySet};

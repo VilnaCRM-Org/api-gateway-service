@@ -59,6 +59,12 @@ pub enum InvalidIamValue {
     /// An actor reference is not `user:<uuid>`, `service:<name>` or `system:<component>`.
     #[error("This value must be user:<uuid>, service:<name> or system:<component>.")]
     ActorFormat,
+    /// A revocation source is neither `user-service` nor `operator`.
+    #[error("This value must be user-service or operator.")]
+    RevocationSource,
+    /// An inbound event outcome is not `applied`, `ignored` or `dead_letter`.
+    #[error("This value must be applied, ignored or dead_letter.")]
+    InboundOutcome,
     /// An audit action is not made of dotted lower-case words of at most 100 characters.
     #[error("This value must be dotted lower-case words of at most 100 characters.")]
     AuditActionFormat,
@@ -114,8 +120,9 @@ impl InvalidIamValue {
             Self::ScopeProjectMissing | Self::ScopeProjectUnexpected => "scope.projectId",
             Self::GrantSetTooLarge => "permissions",
             Self::ActorFormat => "actor",
+            Self::RevocationSource => "source",
+            Self::InboundOutcome | Self::AuditOutcome => "outcome",
             Self::AuditActionFormat => "action",
-            Self::AuditOutcome => "outcome",
             Self::AuditTimestamp => "occurredAt",
             Self::AuditTargetType => "targetType",
             Self::AuditTargetId => "targetId",
@@ -145,9 +152,12 @@ impl InvalidIamValue {
             | Self::AuditSequence => "range",
             Self::Identifier | Self::SubjectUserId => "uuid",
             Self::ServiceNamePattern => "pattern",
-            Self::SubjectKind | Self::ScopeKind | Self::AuditOutcome | Self::ChangeAuditOutcome => {
-                "choice"
-            }
+            Self::SubjectKind
+            | Self::ScopeKind
+            | Self::AuditOutcome
+            | Self::ChangeAuditOutcome
+            | Self::RevocationSource
+            | Self::InboundOutcome => "choice",
             Self::RequestIdFormat
             | Self::IdempotencyKeyFormat
             | Self::ActorFormat
@@ -313,6 +323,76 @@ impl VersionConflict {
         match self {
             Self::Missing => "missing",
             Self::Stale { .. } => "stale",
+        }
+    }
+}
+
+/// A value that breaks an invariant of the `Role` aggregate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidRole {
+    /// The name has fewer than 1 or more than 100 characters.
+    #[error("This value must contain between 1 and 100 characters.")]
+    NameLength,
+    /// The name holds a control character.
+    #[error("This value must not contain a control character.")]
+    NameControlCharacter,
+    /// The description has more than 1,000 characters.
+    #[error("This value must contain 1000 characters or fewer.")]
+    DescriptionLength,
+    /// The kind is neither `system` nor `custom`.
+    #[error("This value must be system or custom.")]
+    Kind,
+}
+
+impl InvalidRole {
+    /// The property that carries the invalid value.
+    #[must_use]
+    pub const fn property_path(self) -> &'static str {
+        match self {
+            Self::NameLength | Self::NameControlCharacter => "name",
+            Self::DescriptionLength => "description",
+            Self::Kind => "kind",
+        }
+    }
+
+    /// The machine-readable violation code.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::NameLength | Self::DescriptionLength => "length",
+            Self::NameControlCharacter => "control_character",
+            Self::Kind => "choice",
+        }
+    }
+}
+
+/// The `Role` aggregate refuses a change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum RoleChangeRefused {
+    /// The role is a system role, which the API cannot rename, change or delete; the application
+    /// answers 403.
+    #[error("A system role cannot be changed or deleted.")]
+    SystemRole,
+    /// The role is deleted; the application answers 404.
+    #[error("The role was deleted.")]
+    Deleted,
+    /// The change names no version or a stale one; the application answers 428 or 412.
+    #[error(transparent)]
+    Version(#[from] VersionConflict),
+    /// The version of the role cannot be increased any more.
+    #[error(transparent)]
+    Invalid(#[from] InvalidIamValue),
+}
+
+impl RoleChangeRefused {
+    /// The machine-readable refusal code.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::SystemRole => "system_role",
+            Self::Deleted => "deleted",
+            Self::Version(conflict) => conflict.code(),
+            Self::Invalid(invalid) => invalid.code(),
         }
     }
 }

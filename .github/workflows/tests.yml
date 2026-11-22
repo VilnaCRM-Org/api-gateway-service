@@ -67,6 +67,8 @@ jobs:
         with:
           tool: sqlx-cli@0.9.0
           fallback: cargo-binstall
+      # The krafka spike tests of the integration suite read the compose broker (Story 1.2).
+      - run: make start-deps DEPS=kafka
       - id: run
         run: make tests-with-coverage doc-tests
       - if: ${{ !cancelled() }}
@@ -176,6 +178,8 @@ jobs:
         with:
           tool: sqlx-cli@0.9.0
           fallback: cargo-binstall
+      # Every infrastructure mutant reruns the integration suite, whose krafka spike tests read the compose broker.
+      - run: make start-deps DEPS=kafka
       - if: ${{ env.EVENT_NAME == 'pull_request' }}
         run: make mutation-tests-diff base_ref="origin/$BASE_REF" MUTANTS_SHARD="$SHARD"
       - if: ${{ env.EVENT_NAME != 'pull_request' }}

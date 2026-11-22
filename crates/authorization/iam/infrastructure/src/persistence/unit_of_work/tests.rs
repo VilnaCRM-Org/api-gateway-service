@@ -82,3 +82,58 @@ fn a_missing_row_is_unavailable() {
 fn the_events_topic_is_iam_events_v1() {
     assert_eq!(EVENTS_TOPIC, "iam.events.v1");
 }
+
+#[test]
+fn the_window_starts_24_hours_before_the_creation_time() {
+    assert_eq!(
+        window_start(timestamp(1_800_000_000_000_000).unwrap()),
+        timestamp(1_799_913_600_000_000).unwrap()
+    );
+}
+
+#[test]
+fn no_affected_row_is_a_duplicate_key() {
+    assert!(matches!(
+        inserted_or_replaced(0),
+        Err(RepositoryError::AlreadyExists)
+    ));
+}
+
+#[test]
+fn one_affected_row_is_a_written_key() {
+    assert!(inserted_or_replaced(1).is_ok());
+}
+
+#[test]
+fn the_window_starts_at_the_unix_epoch_within_24_hours_of_it() {
+    assert_eq!(
+        window_start(timestamp(3_600_000_000).unwrap()),
+        OffsetDateTime::UNIX_EPOCH
+    );
+}
+
+#[test]
+fn a_key_row_expires_records_created_24_hours_before_it() {
+    let change = test_support::unit_of_work::iam_change(
+        &mut test_support::seed::TestRng::from_seed(11),
+        iam_domain::DecisionEffect::Affected,
+        0,
+    );
+    let record = change.idempotency_record().unwrap();
+    let created_at = timestamp(1_800_000_000_000_000).unwrap();
+
+    let row = KeyRow::of(&record, created_at);
+
+    assert_eq!(row.created_at, created_at);
+    assert_eq!(
+        row.expired_before,
+        timestamp(1_799_913_600_000_000).unwrap()
+    );
+    assert_eq!(row.actor, record.actor().to_string());
+    assert_eq!(row.key, record.key().as_str());
+    assert_eq!(
+        row.request_digest,
+        record.request_digest().as_bytes().to_vec()
+    );
+    assert_eq!(row.change_id, record.change_id().as_uuid().as_uuid());
+}

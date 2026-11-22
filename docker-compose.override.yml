@@ -22,11 +22,15 @@ services:
       DB_PORT: '5432'
       LOCALSTACK_HOST: localstack
       LOCALSTACK_PORT: '4566'
+      # The compose broker of the krafka spike tests at its in-network listener (KAFKA_PORT of .env is the host port).
+      KAFKA_HOST: kafka
+      KAFKA_PORT: '19092'
       # Removed so that the binary reads .env and the test targets read .env.test.
       APP_ENV: !reset null
       LOG_LEVEL: !reset null
       DATABASE_URL: !reset null
       AWS_ENDPOINT_URL_SQS: !reset null
+      JWT_PUBLIC_KEYS_FILE: !reset null
     ports: !override
       - '127.0.0.1:${APP_PORT:-8081}:8081'
     healthcheck:

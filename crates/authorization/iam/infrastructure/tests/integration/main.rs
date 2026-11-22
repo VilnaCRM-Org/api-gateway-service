@@ -2,7 +2,11 @@
 //! database.
 
 #[cfg(test)]
+mod jwt_access_token_verifier;
+#[cfg(test)]
 mod migration;
+#[cfg(test)]
+mod replay;
 #[cfg(test)]
 mod repository;
 #[cfg(test)]

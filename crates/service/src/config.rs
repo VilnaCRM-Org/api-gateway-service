@@ -7,11 +7,14 @@
 use std::fmt::Display;
 use std::net::{IpAddr, Ipv4Addr};
 use std::ops::RangeInclusive;
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
 
 use axum::http::Uri;
 use axum::http::uri::Authority;
+use iam_domain::TokenLifetimeRule;
+use iam_infrastructure::{JwtKeySet, JwtSettings};
 use shared_infrastructure::messaging::SqsSettings;
 use shared_infrastructure::persistence::{
     MAX_STATEMENT_TIMEOUT, MIN_STATEMENT_TIMEOUT, PostgresSettings,
@@ -19,7 +22,10 @@ use shared_infrastructure::persistence::{
 use sqlx::postgres::PgConnectOptions;
 use tracing_subscriber::EnvFilter;
 
-use crate::cli::{DatabaseArgs, MigrateArgs, ServeArgs};
+use crate::cli::{DatabaseArgs, MigrateArgs, ServeArgs, TokenArgs};
+
+/// The largest accepted `JWT_CLOCK_SKEW`.
+const MAX_CLOCK_SKEW: Duration = Duration::from_mins(1);
 
 /// Deployment environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +84,17 @@ pub struct Config {
     pub max_body_bytes: usize,
     /// Time the in-flight requests get to finish after a termination signal.
     pub shutdown_grace_period: Duration,
+    /// Offline validation of User service access tokens.
+    pub tokens: TokenSettings,
+}
+
+/// The settings of the offline validation of User service access tokens.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenSettings {
+    /// `JWT_PUBLIC_KEYS_FILE`: 1 to 3 PEM RSA public keys, checked when the configuration is read.
+    pub public_keys_file: PathBuf,
+    /// Issuer, audience, `MAX_TOKEN_LIFETIME` and `JWT_CLOCK_SKEW`.
+    pub jwt: JwtSettings,
 }
 
 impl Config {
@@ -96,14 +113,15 @@ impl Config {
         let database = database(&mut collector, &args.database);
         let sqs = sqs(&mut collector, &args);
         let limits = limits(&mut collector, &args);
+        let tokens = tokens(&mut collector, &args.tokens);
         collector.cross_field_rules(
             database.as_ref().map(|settings| settings.acquire_timeout),
             sqs.as_ref().map(|settings| settings.operation_timeout),
             limits.as_ref().map(|limits| limits.health_probe_timeout),
             limits.as_ref().map(|limits| limits.request_timeout),
         );
-        match (server, database, sqs, limits) {
-            (Some(server), Some(database), Some(sqs), Some(limits))
+        match (server, database, sqs, limits, tokens) {
+            (Some(server), Some(database), Some(sqs), Some(limits), Some(tokens))
                 if collector.problems.is_empty() =>
             {
                 Ok(Self {
@@ -117,6 +135,7 @@ impl Config {
                     request_timeout: limits.request_timeout,
                     max_body_bytes: limits.max_body_bytes,
                     shutdown_grace_period: limits.shutdown_grace_period,
+                    tokens,
                 })
             }
             _ => Err(ConfigErrors(collector.problems)),
@@ -366,6 +385,70 @@ fn limits(collector: &mut Collector, args: &ServeArgs) -> Option<Limits> {
         max_body_bytes: body?,
         shutdown_grace_period: grace?,
     })
+}
+
+fn tokens(collector: &mut Collector, args: &TokenArgs) -> Option<TokenSettings> {
+    let file = collector.collect(
+        "JWT_PUBLIC_KEYS_FILE",
+        key_file(args.public_keys_file.as_deref()),
+    );
+    let issuer = collector.collect(
+        "JWT_ISSUER",
+        non_empty(args.issuer.as_deref(), "vilnacrm-user-service"),
+    );
+    let audience = collector.collect(
+        "JWT_AUDIENCE",
+        non_empty(args.audience.as_deref(), "vilnacrm-api"),
+    );
+    let skew = collector.collect("JWT_CLOCK_SKEW", clock_skew(args.clock_skew.as_deref()));
+    let lifetime = collector.collect(
+        "MAX_TOKEN_LIFETIME",
+        max_token_lifetime(args.max_token_lifetime.as_deref()),
+    );
+    Some(TokenSettings {
+        public_keys_file: file?,
+        jwt: JwtSettings {
+            issuer: issuer?,
+            audience: audience?,
+            lifetime: TokenLifetimeRule::new(lifetime?, skew?),
+        },
+    })
+}
+
+/// `JWT_PUBLIC_KEYS_FILE`: the file must hold 1 to 3 parsable PEM RSA public keys now, so that
+/// `check-config` refuses a key file the service could not start with.
+fn key_file(raw: Option<&str>) -> Parsed<PathBuf> {
+    let path = PathBuf::from(required(raw)?);
+    match JwtKeySet::load(&path) {
+        Ok(_keys) => Ok(path),
+        Err(error) => Err(format!(
+            "must name a file of 1 to 3 PEM RSA public keys: {error}"
+        )),
+    }
+}
+
+/// `JWT_CLOCK_SKEW`: a duration of at most 60 seconds.
+fn clock_skew(raw: Option<&str>) -> Parsed<Duration> {
+    let value = duration(raw, Duration::from_secs(30))?;
+    if value <= MAX_CLOCK_SKEW {
+        Ok(value)
+    } else {
+        Err("must be a duration of at most 60s".to_owned())
+    }
+}
+
+/// `MAX_TOKEN_LIFETIME`: a duration of at least one second.
+fn max_token_lifetime(raw: Option<&str>) -> Parsed<Duration> {
+    let value = duration(raw, Duration::from_mins(15))?;
+    if value >= Duration::from_secs(1) {
+        Ok(value)
+    } else {
+        Err("must be a duration of at least 1s".to_owned())
+    }
+}
+
+fn non_empty(raw: Option<&str>, default: &str) -> Parsed<String> {
+    raw.map_or_else(|| Ok(default.to_owned()), |value| required(Some(value)))
 }
 
 fn app_env(raw: Option<&str>) -> Parsed<AppEnv> {

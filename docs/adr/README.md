@@ -18,6 +18,7 @@ These records explain why the structure of the template is what it is. Each one 
 | [0012](0012-container-images.md) | Container images | DD-19, DD-20 |
 | [0013](0013-iam-bounded-context.md) | IAM bounded context `authorization/iam`, with the gateway as modules inside it | IAM architecture section 3, research section 2.5 (owner item D19) |
 | [0014](0014-postgresql-and-replicated-policy-snapshot.md) | PostgreSQL as system of record and an in-process replicated policy snapshot instead of DynamoDB and DAX | IAM architecture section 13, research section 5 |
+| [0016](0016-token-validation-without-persistence-or-liveness-calls.md) | Token validation at the gateway without token persistence or liveness calls | IAM architecture sections 4.2, 7 and 16.1, FR-15, FR-55, NFR-6, NFR-20 |
 | [0017](0017-policy-state-topic-transactional-outbox-and-fenced-relay.md) | Policy state topic, transactional outbox and fenced Kafka relay (draft) | IAM architecture sections 6.1, 9.1 to 9.3 and 15.1, FR-2, FR-46, FR-47, FR-70 |
 | [0019](0019-security-audit-log-and-access-decision-log.md) | Security audit log in PostgreSQL and access-decision log in Loki (draft) | IAM architecture sections 12.4 and 13, FR-49, FR-52 |
 | [0023](0023-allow-list-additions-for-the-gateway.md) | Allow-list additions for the gateway | IAM architecture section 3.1, NFR-6 |

@@ -158,6 +158,41 @@ pub struct ServeArgs {
         hide_env_values = true
     )]
     pub shutdown_grace_period: Option<String>,
+    /// Settings of the offline validation of User service access tokens.
+    #[command(flatten)]
+    pub tokens: TokenArgs,
+}
+
+/// Settings of the offline validation of User service access tokens.
+#[derive(Debug, Clone, Default, Args)]
+pub struct TokenArgs {
+    /// File of 1 to 3 PEM RSA public keys, newest last, reloaded when it changes (required).
+    #[arg(
+        long = "jwt-public-keys-file",
+        env = "JWT_PUBLIC_KEYS_FILE",
+        hide_env_values = true
+    )]
+    pub public_keys_file: Option<String>,
+    /// Required `iss` of every token (default `vilnacrm-user-service`).
+    #[arg(long = "jwt-issuer", env = "JWT_ISSUER", hide_env_values = true)]
+    pub issuer: Option<String>,
+    /// Audience every token's `aud` must contain (default `vilnacrm-api`).
+    #[arg(long = "jwt-audience", env = "JWT_AUDIENCE", hide_env_values = true)]
+    pub audience: Option<String>,
+    /// Tolerated clock difference to the token issuer, at most 60s (default 30s).
+    #[arg(
+        long = "jwt-clock-skew",
+        env = "JWT_CLOCK_SKEW",
+        hide_env_values = true
+    )]
+    pub clock_skew: Option<String>,
+    /// Longest accepted `exp - iat` of a token (default 900s).
+    #[arg(
+        long = "max-token-lifetime",
+        env = "MAX_TOKEN_LIFETIME",
+        hide_env_values = true
+    )]
+    pub max_token_lifetime: Option<String>,
 }
 
 /// Settings of `migrate` and `migrate revert`.

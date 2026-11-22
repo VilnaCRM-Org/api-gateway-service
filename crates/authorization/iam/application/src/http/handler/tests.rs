@@ -1,12 +1,14 @@
 use rstest::rstest;
 
 /// The extractor types a handler of this module may take.
-const ALLOWED_EXTRACTORS: [&str; 5] = [
+const ALLOWED_EXTRACTORS: [&str; 7] = [
     "State<IamState>",
     "ApiPath<",
     "ValidatedQuery<",
     "ValidatedJson<",
     "ApiJson<",
+    "IdempotencyKeyHeader",
+    "IfMatchHeader",
 ];
 
 /// Splits `text` at every `separator` that is not nested in brackets.
@@ -123,7 +125,9 @@ fn the_extractor_check_reports_a_planted_violation(#[case] parameter: &str) {
 fn the_extractor_check_accepts_the_allowed_extractors() {
     let source = "pub async fn ok(State(state): State<IamState>, \
         ApiPath(id): ApiPath<uuid::Uuid>, ValidatedQuery(q): ValidatedQuery<Q>, \
-        ValidatedJson(b): ValidatedJson<B>, ApiJson(j): ApiJson<J>) -> Result<(), Problem> {}";
+        ValidatedJson(b): ValidatedJson<B>, ApiJson(j): ApiJson<J>, \
+        IdempotencyKeyHeader(key): IdempotencyKeyHeader, IfMatchHeader(version): IfMatchHeader) \
+        -> Result<(), Problem> {}";
 
     assert_eq!(disallowed_parameters(source), Vec::<String>::new());
     assert_eq!(handler_parameters(source).len(), 1);

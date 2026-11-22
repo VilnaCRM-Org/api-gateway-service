@@ -109,6 +109,33 @@ fn the_credentials_are_accepted_as_hidden_flags() {
 }
 
 #[test]
+fn serve_takes_the_token_settings_as_flags() {
+    let cli = parse(&[
+        "serve",
+        "--jwt-public-keys-file",
+        "keys.pem",
+        "--jwt-issuer",
+        "issuer",
+        "--jwt-audience",
+        "audience",
+        "--jwt-clock-skew",
+        "10s",
+        "--max-token-lifetime",
+        "5m",
+    ])
+    .unwrap();
+
+    let Command::Serve(args) = cli.command else {
+        panic!("expected serve");
+    };
+    assert_eq!(args.tokens.public_keys_file.as_deref(), Some("keys.pem"));
+    assert_eq!(args.tokens.issuer.as_deref(), Some("issuer"));
+    assert_eq!(args.tokens.audience.as_deref(), Some("audience"));
+    assert_eq!(args.tokens.clock_skew.as_deref(), Some("10s"));
+    assert_eq!(args.tokens.max_token_lifetime.as_deref(), Some("5m"));
+}
+
+#[test]
 fn check_config_takes_the_arguments_of_serve() {
     let cli = parse(&["check-config", "--app-port", "9000"]).unwrap();
 
@@ -244,7 +271,12 @@ fn serve_declares_exactly_the_variables_of_the_configuration_table() {
         "HEALTH_PROBE_TIMEOUT",
         "HTTP_MAX_BODY_BYTES",
         "HTTP_REQUEST_TIMEOUT",
+        "JWT_AUDIENCE",
+        "JWT_CLOCK_SKEW",
+        "JWT_ISSUER",
+        "JWT_PUBLIC_KEYS_FILE",
         "LOG_LEVEL",
+        "MAX_TOKEN_LIFETIME",
         "SHUTDOWN_GRACE_PERIOD",
         "SQS_CONNECT_TIMEOUT",
         "SQS_MAX_ATTEMPTS",

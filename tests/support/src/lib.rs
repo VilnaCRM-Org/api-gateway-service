@@ -1,12 +1,15 @@
 //! Test doubles, fixtures and seeded random data shared by the unit, integration and end-to-end
 //! tests. This crate is test code: it is excluded from coverage and mutation by path.
 
+pub mod access_token;
 pub mod boot_clock;
 pub mod bus;
 pub mod cache;
+pub mod change_receipt;
 pub mod clock;
 pub mod fixture;
 pub mod id;
+pub mod idempotency;
 pub mod log;
 pub mod policy_epoch;
 pub mod probe;

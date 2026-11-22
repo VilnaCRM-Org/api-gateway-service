@@ -30,6 +30,11 @@ A service that adds variables for its own adapters adds their rows here. The syn
 | `HTTP_REQUEST_TIMEOUT` | duration | `10s` | no | `service` | none |
 | `HTTP_MAX_BODY_BYTES` | integer 1 024 to 10 485 760 | `65536` | no | `service` | none |
 | `SHUTDOWN_GRACE_PERIOD` | duration | `10s` | no | `service` | none |
+| `JWT_PUBLIC_KEYS_FILE` | path of a file of 1 to 3 PEM RSA public keys, newest last | none (`.env`: the development key file `config/jwt/dev-public-keys.pem`, whose private half is not committed) | yes for `serve`, `check-config` | `service`: `JwtAccessTokenVerifier` tries the keys newest first and reloads the file within 5 s of a change, keeping the last valid key set when a reload fails; `check-config` exits 2 for a file with no key, more than three keys or an unparsable key | none |
+| `JWT_ISSUER` | non-empty string | `vilnacrm-user-service` | no | `service`: the required `iss` of every access token | none |
+| `JWT_AUDIENCE` | non-empty string | `vilnacrm-api` | no | `service`: the value every access token's `aud` must contain | none |
+| `JWT_CLOCK_SKEW` | duration, at most `60s` | `30s` | no | `service`: tolerance of the `exp`, `nbf` and `iat` checks against the `Clock` port | none |
+| `MAX_TOKEN_LIFETIME` | duration, at least `1s` | `900s` | no | `service`: a token whose `exp - iat` exceeds it is `token_invalid` | none |
 
 Cross-field rules checked at start-up: `HEALTH_PROBE_TIMEOUT >= DATABASE_ACQUIRE_TIMEOUT`; `HEALTH_PROBE_TIMEOUT >= SQS_OPERATION_TIMEOUT`; `HTTP_REQUEST_TIMEOUT > HEALTH_PROBE_TIMEOUT`; the two AWS key variables are both set or both unset (the error names the missing one). A configuration problem never prints the value of a variable.
 
@@ -45,17 +50,21 @@ Cross-field rules checked at start-up: `HEALTH_PROBE_TIMEOUT >= DATABASE_ACQUIRE
 | `DB_PASSWORD` | string | `local-dev-only` | no | compose; `.env` interpolation | `DB_PASSWORD` |
 | `LOCALSTACK_HOST` | host name | `localhost` | no | `.env` interpolation; compose sets `localstack` inside containers | `AWS_SQS_ENDPOINT_BASE` |
 | `LOCALSTACK_PORT` | integer | `4566` | no | compose (the host port of `localstack`); `.env` interpolation; compose sets `4566`, the port inside the compose network, in the `app` container | `LOCALSTACK_PORT` |
+| `KAFKA_HOST` | host name | `localhost` | no | `.env` interpolation of `KAFKA_BOOTSTRAP_SERVERS`; compose sets `kafka` inside the `app` container | none |
+| `KAFKA_PORT` | integer | `9092` | no | compose (the host port of `kafka`, and the port its `PLAINTEXT` listener advertises); `.env` interpolation; compose sets `19092`, the in-network listener, in the `app` container | none |
 | `STRUCTURIZR_PORT` | integer | `8080` | no | compose | `STRUCTURIZR_PORT` |
+| `JWT_PUBLIC_KEYS_HOST_FILE` | path on the host | `./config/jwt/dev-public-keys.pem` (required by `docker-compose.prod.yml`) | no | compose: mounted read-only as the `JWT_PUBLIC_KEYS_FILE` of the `app` container built from the production image | none |
 | `GITHUB_TOKEN` | token | unset | no | compose: the source of the build secret `github_token` of the development image; raises the rate limit of the tool downloads | none |
 
 ## Test seeds
 
-The two seeds are test settings, not service settings. Cargo passes them to every test process from `[env]` of `.cargo/config.toml`, and a value set by the caller wins. `make` forwards both into the development container. The other two rows are build settings from the same `[env]` table.
+The two seeds are test settings, not service settings. Cargo passes them to every test process from `[env]` of `.cargo/config.toml`, and a value set by the caller wins. `make` forwards both into the development container. The other two rows are build settings from the same `[env]` table. `KAFKA_BOOTSTRAP_SERVERS` is a test setting of `.env.test`, which the test targets export.
 
 | Name | Type | Default | Required | Consumer | PHP name |
 | --- | --- | --- | --- | --- | --- |
 | `TEST_SEED` | unsigned 64-bit integer | `20261110`, the seed recorded in `.cargo/config.toml` | no | `test_support::seed::TestRng` | none (the PHP data was unseeded) |
 | `PROPTEST_RNG_SEED` | unsigned 64-bit integer | `20261110`, recorded in `.cargo/config.toml` | no | property tests (`proptest` reads it) | none |
+| `KAFKA_BOOTSTRAP_SERVERS` | `host:port` | `${KAFKA_HOST}:${KAFKA_PORT}` from `.env.test` | yes for the krafka spike tests | the spike tests of `crates/service/tests/integration/kafka_spike/` that run against the compose broker `kafka` (Story 1.2; removed with the spikes in Story 1.7) | none |
 | `SQLX_OFFLINE` | `true` | `true` from `.cargo/config.toml` | no | sqlx macros at build time | none |
 | `SWAGGER_UI_DOWNLOAD_URL` | `vendored-only` | `vendored-only` from `.cargo/config.toml` | no | the build script of `utoipa-swagger-ui`: with the `vendored` feature it uses the embedded assets and ignores the value; without the feature the build stops instead of downloading Swagger UI (FR8) | none |
 

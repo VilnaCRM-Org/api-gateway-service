@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT request_digest, change_id FROM iam_idempotency_keys\n            WHERE actor = $1 AND idempotency_key = $2 AND created_at >= $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "request_digest",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "iam_idempotency_keys",
+            "name": "request_digest"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "change_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "iam_idempotency_keys",
+            "name": "change_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "9b52c5461880d9e0e734fce5149387557b19fb6e426ab6803779c1b415697339"
+}

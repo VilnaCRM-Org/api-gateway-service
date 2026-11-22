@@ -1,0 +1,64 @@
+use std::time::{Duration, SystemTime};
+
+use shared_domain::Uuid;
+
+use super::TokenIdentity;
+use crate::value_object::access_token::{AccessToken, AccessTokenParts};
+use crate::value_object::service_name::ServiceName;
+use crate::value_object::session_id::SessionId;
+use crate::value_object::subject::{SubjectId, SubjectKind};
+use crate::value_object::token_id::TokenId;
+
+fn at(seconds: u64) -> SystemTime {
+    SystemTime::UNIX_EPOCH
+        .checked_add(Duration::from_secs(seconds))
+        .unwrap()
+}
+
+fn token(subject: SubjectId, session: Option<&str>) -> AccessToken {
+    AccessToken::new(AccessTokenParts {
+        subject,
+        session: session.map(|sid| SessionId::new(sid).unwrap()),
+        token_id: TokenId::new("jti-7").unwrap(),
+        roles: vec!["ROLE_USER".to_owned(), "ROLE_ADMIN".to_owned()],
+        issued_at: at(1_000),
+        expires_at: at(1_900),
+    })
+}
+
+#[test]
+fn the_identity_of_a_user_token_keeps_every_identity_claim() {
+    let id = Uuid::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ab").unwrap();
+
+    let identity = TokenIdentity::from(&token(SubjectId::User(id), Some("session-1")));
+
+    assert_eq!(identity.subject(), &SubjectId::User(id));
+    assert_eq!(identity.subject_kind(), SubjectKind::User);
+    assert_eq!(identity.session().map(SessionId::as_str), Some("session-1"));
+    assert_eq!(identity.token_id().as_str(), "jti-7");
+    assert_eq!(identity.issued_at(), at(1_000));
+    assert_eq!(identity.expires_at(), at(1_900));
+}
+
+#[test]
+fn the_identity_of_a_service_token_has_no_session() {
+    let name = ServiceName::new("billing").unwrap();
+
+    let identity = TokenIdentity::from(&token(SubjectId::Service(name.clone()), None));
+
+    assert_eq!(identity.subject(), &SubjectId::Service(name));
+    assert_eq!(identity.subject_kind(), SubjectKind::Service);
+    assert_eq!(identity.session(), None);
+}
+
+#[test]
+fn the_identity_holds_no_role() {
+    let id = Uuid::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ab").unwrap();
+
+    let printed = format!(
+        "{:?}",
+        TokenIdentity::from(&token(SubjectId::User(id), Some("s")))
+    );
+
+    assert!(!printed.contains("ROLE_"), "{printed}");
+}

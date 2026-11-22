@@ -3,6 +3,8 @@
 //! Until Story 7.2 the unit of work writes outbox event rows only; the state rows, the policy
 //! digest and the `__head` row follow there, and Story 7.4 adds the relay wake-up.
 
+use std::time::SystemTime;
+
 use iam_domain::{
     ChangeReceipt, ChangeStatement, EventEnvelope, IamChange, IamUnitOfWork, IdempotencyRecord,
     InvalidEventEnvelope, InvalidIamValue, LogEpoch, PolicyVersion, RepositoryError,
@@ -268,9 +270,12 @@ struct KeyRow {
     request_digest: Vec<u8>,
     change_id: SqlUuid,
     created_at: OffsetDateTime,
+    expired_before: OffsetDateTime,
 }
 
 impl KeyRow {
+    /// The row of `record` created at `created_at`; a stored record of the same key created
+    /// before `expired_before` is expired.
     fn of(record: &IdempotencyRecord, created_at: OffsetDateTime) -> Self {
         Self {
             actor: record.actor().to_string(),
@@ -278,29 +283,53 @@ impl KeyRow {
             request_digest: record.request_digest().as_bytes().to_vec(),
             change_id: record.change_id().as_uuid().as_uuid(),
             created_at,
+            expired_before: window_start(created_at),
         }
     }
 }
 
-/// Inserts the idempotency record; a key the actor already used is a duplicate.
+/// The oldest creation time of a record that still replays at `created_at`, by the domain rule
+/// [`IdempotencyRecord::window_start`].
+fn window_start(created_at: OffsetDateTime) -> OffsetDateTime {
+    OffsetDateTime::from(IdempotencyRecord::window_start(SystemTime::from(
+        created_at,
+    )))
+}
+
+/// Inserts the idempotency record, or replaces an expired record of the same key; a key the actor
+/// used within the replay window is a duplicate.
 async fn insert_idempotency(
     connection: &mut PgConnection,
     row: &KeyRow,
 ) -> Result<(), RepositoryError> {
-    sqlx::query!(
+    let written = sqlx::query!(
         "INSERT INTO iam_idempotency_keys (actor, idempotency_key, request_digest, change_id,
             created_at)
-        VALUES ($1, $2, $3, $4, $5)",
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (actor, idempotency_key) DO UPDATE
+        SET request_digest = EXCLUDED.request_digest, change_id = EXCLUDED.change_id,
+            created_at = EXCLUDED.created_at
+        WHERE iam_idempotency_keys.created_at < $6",
         row.actor,
         row.key,
         row.request_digest,
         row.change_id,
         row.created_at,
+        row.expired_before,
     )
     .execute(&mut *connection)
     .await
-    .map(|_done| ())
-    .map_err(translate)
+    .map_err(translate)?;
+    inserted_or_replaced(written.rows_affected())
+}
+
+/// No affected row means the key holds a record within the replay window: a duplicate.
+const fn inserted_or_replaced(rows_affected: u64) -> Result<(), RepositoryError> {
+    if rows_affected == 0 {
+        Err(RepositoryError::AlreadyExists)
+    } else {
+        Ok(())
+    }
 }
 
 /// The `timestamptz` value of a time in microseconds since 1970.

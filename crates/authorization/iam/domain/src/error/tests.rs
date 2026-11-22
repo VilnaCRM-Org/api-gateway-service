@@ -1,6 +1,9 @@
 use rstest::rstest;
 
-use super::{InvalidEventEnvelope, InvalidIamValue, InvalidPermissionKey, VersionConflict};
+use super::{
+    InvalidEventEnvelope, InvalidIamValue, InvalidPermissionKey, InvalidRole, RoleChangeRefused,
+    VersionConflict,
+};
 use crate::value_object::entity_version::EntityVersion;
 
 const NEGATIVE: &str = "This value must be 0 or greater.";
@@ -94,6 +97,18 @@ const DIGEST: &str = "This value must contain exactly 16 bytes.";
     "actor",
     "format",
     "This value must be user:<uuid>, service:<name> or system:<component>."
+)]
+#[case(
+    InvalidIamValue::RevocationSource,
+    "source",
+    "choice",
+    "This value must be user-service or operator."
+)]
+#[case(
+    InvalidIamValue::InboundOutcome,
+    "outcome",
+    "choice",
+    "This value must be applied, ignored or dead_letter."
 )]
 #[case(
     InvalidIamValue::AuditActionFormat,
@@ -312,5 +327,73 @@ fn a_missing_and_a_stale_version_are_told_apart() {
     assert_eq!(
         stale.to_string(),
         "The request names version 2, but the current version is 3."
+    );
+}
+
+#[rstest]
+#[case(
+    InvalidRole::NameLength,
+    "name",
+    "length",
+    "This value must contain between 1 and 100 characters."
+)]
+#[case(
+    InvalidRole::NameControlCharacter,
+    "name",
+    "control_character",
+    "This value must not contain a control character."
+)]
+#[case(
+    InvalidRole::DescriptionLength,
+    "description",
+    "length",
+    "This value must contain 1000 characters or fewer."
+)]
+#[case(
+    InvalidRole::Kind,
+    "kind",
+    "choice",
+    "This value must be system or custom."
+)]
+fn an_invalid_role_exposes_the_property_path_the_code_and_the_message(
+    #[case] invalid: InvalidRole,
+    #[case] path: &str,
+    #[case] code: &str,
+    #[case] message: &str,
+) {
+    assert_eq!(invalid.property_path(), path);
+    assert_eq!(invalid.code(), code);
+    assert_eq!(invalid.to_string(), message);
+}
+
+#[test]
+fn a_refused_role_change_names_its_cause() {
+    let stale = VersionConflict::Stale {
+        expected: EntityVersion::new(2).unwrap(),
+        current: EntityVersion::new(3).unwrap(),
+    };
+
+    assert_eq!(RoleChangeRefused::SystemRole.code(), "system_role");
+    assert_eq!(
+        RoleChangeRefused::SystemRole.to_string(),
+        "A system role cannot be changed or deleted."
+    );
+    assert_eq!(RoleChangeRefused::Deleted.code(), "deleted");
+    assert_eq!(
+        RoleChangeRefused::Deleted.to_string(),
+        "The role was deleted."
+    );
+    assert_eq!(RoleChangeRefused::from(stale).code(), "stale");
+    assert_eq!(
+        RoleChangeRefused::from(stale).to_string(),
+        stale.to_string()
+    );
+    assert_eq!(
+        RoleChangeRefused::from(InvalidIamValue::EntityVersionRange).code(),
+        "range"
+    );
+    assert_eq!(
+        RoleChangeRefused::from(InvalidIamValue::EntityVersionRange).to_string(),
+        InvalidIamValue::EntityVersionRange.to_string()
     );
 }

@@ -1,4 +1,7 @@
+use std::path::Path;
+
 use rstest::rstest;
+use test_support::access_token::DEVELOPMENT_PUBLIC_KEYS_FILE;
 
 use super::*;
 
@@ -9,8 +12,30 @@ fn valid() -> ServeArgs {
             ..DatabaseArgs::default()
         },
         aws_region: Some("us-east-1".to_owned()),
+        tokens: TokenArgs {
+            public_keys_file: Some(DEVELOPMENT_PUBLIC_KEYS_FILE.to_owned()),
+            ..TokenArgs::default()
+        },
         ..ServeArgs::default()
     }
+}
+
+/// Writes `text` to a key file of this test process and returns its path.
+fn key_file_with(name: &str, text: &str) -> String {
+    let path =
+        std::env::temp_dir().join(format!("service-config-{}-{name}.pem", std::process::id()));
+    std::fs::write(&path, text).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+fn development_key() -> String {
+    std::fs::read_to_string(DEVELOPMENT_PUBLIC_KEYS_FILE).unwrap()
+}
+
+fn with_key_file(path: String) -> ServeArgs {
+    let mut args = valid();
+    args.tokens.public_keys_file = Some(path);
+    args
 }
 
 fn some(value: &str) -> Option<String> {
@@ -57,6 +82,151 @@ fn the_defaults_are_the_documented_ones() {
     assert_eq!(config.request_timeout, Duration::from_secs(10));
     assert_eq!(config.max_body_bytes, 65_536);
     assert_eq!(config.shutdown_grace_period, Duration::from_secs(10));
+    assert_eq!(
+        config.tokens.public_keys_file,
+        Path::new(DEVELOPMENT_PUBLIC_KEYS_FILE)
+    );
+    assert_eq!(config.tokens.jwt.issuer, "vilnacrm-user-service");
+    assert_eq!(config.tokens.jwt.audience, "vilnacrm-api");
+    assert_eq!(
+        config.tokens.jwt.lifetime,
+        TokenLifetimeRule::new(Duration::from_mins(15), Duration::from_secs(30))
+    );
+}
+
+#[test]
+fn the_token_settings_accept_valid_values() {
+    let mut args = valid();
+    args.tokens.issuer = some("issuer");
+    args.tokens.audience = some("audience");
+    args.tokens.clock_skew = some("60s");
+    args.tokens.max_token_lifetime = some("1s");
+
+    let tokens = Config::from_args(args).unwrap().tokens;
+
+    assert_eq!(tokens.jwt.issuer, "issuer");
+    assert_eq!(tokens.jwt.audience, "audience");
+    assert_eq!(
+        tokens.jwt.lifetime,
+        TokenLifetimeRule::new(Duration::from_secs(1), Duration::from_secs(60))
+    );
+}
+
+#[test]
+fn the_key_file_is_required() {
+    let mut args = valid();
+    args.tokens.public_keys_file = None;
+
+    assert_eq!(
+        problems(args),
+        [("JWT_PUBLIC_KEYS_FILE", "is required".to_owned())]
+    );
+}
+
+#[test]
+fn a_clock_skew_above_sixty_seconds_is_rejected() {
+    let mut args = valid();
+    args.tokens.clock_skew = some("61s");
+
+    assert_eq!(
+        problems(args),
+        [(
+            "JWT_CLOCK_SKEW",
+            "must be a duration of at most 60s".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn a_max_token_lifetime_below_one_second_is_rejected() {
+    let mut args = valid();
+    args.tokens.max_token_lifetime = some("999ms");
+
+    assert_eq!(
+        problems(args),
+        [(
+            "MAX_TOKEN_LIFETIME",
+            "must be a duration of at least 1s".to_owned()
+        )]
+    );
+}
+
+#[rstest]
+#[case("issuer")]
+#[case("audience")]
+fn a_blank_issuer_or_audience_is_rejected(#[case] which: &str) {
+    let mut args = valid();
+    if which == "issuer" {
+        args.tokens.issuer = some(" ");
+    } else {
+        args.tokens.audience = some("");
+    }
+
+    let expected = if which == "issuer" {
+        "JWT_ISSUER"
+    } else {
+        "JWT_AUDIENCE"
+    };
+    assert_eq!(problems(args), [(expected, "must not be empty".to_owned())]);
+}
+
+#[test]
+fn a_key_file_with_up_to_three_keys_is_accepted() {
+    let key = development_key();
+    let path = key_file_with("three-keys", &key.repeat(3));
+
+    let tokens = Config::from_args(with_key_file(path.clone()))
+        .unwrap()
+        .tokens;
+
+    assert_eq!(tokens.public_keys_file, Path::new(&path));
+}
+
+#[rstest]
+#[case::no_key("no-key", String::new(), "the key file holds no PEM key")]
+#[case::four_keys(
+    "four-keys",
+    development_key().repeat(4),
+    "the key file holds 4 keys, but at most 3 are allowed"
+)]
+#[case::unparsable(
+    "unparsable",
+    "-----BEGIN PUBLIC KEY-----\nbm90IGEga2V5\n-----END PUBLIC KEY-----\n".to_owned(),
+    "key 1 of the key file is not a parsable RSA public key in PEM form"
+)]
+fn a_key_file_the_service_cannot_use_names_the_variable(
+    #[case] name: &str,
+    #[case] text: String,
+    #[case] cause: &str,
+) {
+    let path = key_file_with(name, &text);
+
+    assert_eq!(
+        problems(with_key_file(path)),
+        [(
+            "JWT_PUBLIC_KEYS_FILE",
+            format!("must name a file of 1 to 3 PEM RSA public keys: {cause}")
+        )]
+    );
+}
+
+#[test]
+fn a_missing_key_file_is_reported_without_its_path() {
+    let path = std::env::temp_dir()
+        .join("service-config-no-such-secret-file.pem")
+        .to_string_lossy()
+        .into_owned();
+
+    let reported = problems(with_key_file(path));
+
+    assert_eq!(
+        reported,
+        [(
+            "JWT_PUBLIC_KEYS_FILE",
+            "must name a file of 1 to 3 PEM RSA public keys: the key file cannot be read"
+                .to_owned()
+        )]
+    );
 }
 
 #[test]
@@ -83,6 +253,7 @@ fn every_variable_accepts_a_valid_value() {
         http_request_timeout: some("1m"),
         http_max_body_bytes: some("2048"),
         shutdown_grace_period: some("15s"),
+        tokens: valid().tokens,
     };
 
     let config = Config::from_args(args).unwrap();
@@ -681,6 +852,7 @@ fn every_problem_is_reported_in_one_run_in_the_order_of_the_table() {
         },
         aws_region: None,
         aws_access_key_id: some("key"),
+        tokens: valid().tokens,
         ..ServeArgs::default()
     };
 
@@ -716,7 +888,7 @@ type Mutator = fn(&mut ServeArgs);
 
 /// One row per variable of `ServeArgs`: the variable, a way to make it the only problem, and the
 /// variable that the problem names.
-const FIELDS: [(&str, Mutator, &str); 19] = [
+const FIELDS: [(&str, Mutator, &str); 24] = [
     ("APP_ENV", |a| a.app_env = some("x"), "APP_ENV"),
     ("APP_HOST", |a| a.app_host = some("x"), "APP_HOST"),
     ("APP_PORT", |a| a.app_port = some("x"), "APP_PORT"),
@@ -787,6 +959,27 @@ const FIELDS: [(&str, Mutator, &str); 19] = [
         "SHUTDOWN_GRACE_PERIOD",
         |a| a.shutdown_grace_period = some("x"),
         "SHUTDOWN_GRACE_PERIOD",
+    ),
+    (
+        "JWT_PUBLIC_KEYS_FILE",
+        |a| a.tokens.public_keys_file = None,
+        "JWT_PUBLIC_KEYS_FILE",
+    ),
+    ("JWT_ISSUER", |a| a.tokens.issuer = some(""), "JWT_ISSUER"),
+    (
+        "JWT_AUDIENCE",
+        |a| a.tokens.audience = some(""),
+        "JWT_AUDIENCE",
+    ),
+    (
+        "JWT_CLOCK_SKEW",
+        |a| a.tokens.clock_skew = some("x"),
+        "JWT_CLOCK_SKEW",
+    ),
+    (
+        "MAX_TOKEN_LIFETIME",
+        |a| a.tokens.max_token_lifetime = some("x"),
+        "MAX_TOKEN_LIFETIME",
     ),
 ];
 

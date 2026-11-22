@@ -1,7 +1,8 @@
 use shared_domain::Uuid;
 
 use super::{
-    ChangeId, DecisionId, PermissionId, ProjectId, RoleId, SecurityAuditEventId, SpecId, UserRoleId,
+    ChangeId, DecisionId, PermissionId, ProjectId, RoleId, SecurityAuditEventId,
+    SessionRevocationId, SpecId, UserRoleId,
 };
 use crate::error::InvalidIamValue;
 
@@ -34,6 +35,7 @@ identifier_cases! {
     a_change_id_wraps_a_uuid => ChangeId,
     a_project_id_wraps_a_uuid => ProjectId,
     a_security_audit_event_id_wraps_a_uuid => SecurityAuditEventId,
+    a_session_revocation_id_wraps_a_uuid => SessionRevocationId,
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use std::error::Error as _;
 
-use iam_domain::RepositoryError;
+use iam_domain::{EntityVersion, RepositoryError, VersionConflict};
 use rstest::rstest;
 use shared_application::http::{Problem, TYPE_BLANK, Violation};
 use test_support::log::LogRecorder;
@@ -86,4 +86,62 @@ fn an_unavailable_repository_is_a_storage_failure_that_keeps_the_chain() {
     let repository = error.source().unwrap();
     assert_eq!(repository.to_string(), "the repository is unavailable");
     assert_eq!(repository.source().unwrap().to_string(), "disk on fire");
+}
+
+#[rstest]
+#[case::idempotency_mismatch(
+    IamError::IdempotencyMismatch,
+    422,
+    "Unprocessable Entity",
+    "The idempotency key was already used for a different request."
+)]
+#[case::precondition_required(
+    IamError::PreconditionRequired,
+    428,
+    "Precondition Required",
+    "The request must name the version it changes."
+)]
+#[case::precondition_failed(
+    IamError::PreconditionFailed,
+    412,
+    "Precondition Failed",
+    "The request names a version that is not the current version."
+)]
+fn a_client_error_is_its_problem_with_its_message_and_is_not_logged(
+    #[case] error: IamError,
+    #[case] status: u16,
+    #[case] title: &str,
+    #[case] detail: &str,
+) {
+    let (recorder, _guard) = LogRecorder::install();
+
+    let problem = Problem::from(error);
+
+    assert_eq!(problem.status, status);
+    assert_eq!(problem.title, title);
+    assert_eq!(problem.r#type, TYPE_BLANK);
+    assert_eq!(problem.detail.as_deref(), Some(detail));
+    assert_eq!(problem.violations, Vec::<Violation>::new());
+    assert_eq!(recorder.lines().len(), 0);
+}
+
+#[test]
+fn a_missing_version_is_a_required_precondition() {
+    let error = IamError::from(VersionConflict::Missing);
+
+    assert!(matches!(error, IamError::PreconditionRequired));
+    assert!(error.source().is_none());
+}
+
+#[test]
+fn a_stale_version_is_a_failed_precondition() {
+    let conflict = VersionConflict::Stale {
+        expected: EntityVersion::new(3).unwrap(),
+        current: EntityVersion::new(4).unwrap(),
+    };
+
+    let error = IamError::from(conflict);
+
+    assert!(matches!(error, IamError::PreconditionFailed));
+    assert!(error.source().is_none());
 }

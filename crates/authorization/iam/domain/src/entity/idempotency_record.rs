@@ -1,5 +1,7 @@
 //! The record that lets a write be replayed safely for 24 hours (FR-2).
 
+use std::time::{Duration, SystemTime};
+
 use crate::value_object::actor_ref::ActorRef;
 use crate::value_object::idempotency_key::IdempotencyKey;
 use crate::value_object::identifier::ChangeId;
@@ -24,6 +26,28 @@ pub struct IdempotencyRecord {
 }
 
 impl IdempotencyRecord {
+    /// How long a key replays its change: 24 hours (FR-2).
+    pub const WINDOW: Duration = Duration::from_hours(24);
+
+    /// The oldest creation time of a record that still replays at `now` (by the `Clock` port):
+    /// [`Self::WINDOW`] before `now`, or the Unix epoch when `now` is closer to it than that. A
+    /// record created before this time is expired, and its key starts a new change.
+    #[must_use]
+    pub fn window_start(now: SystemTime) -> SystemTime {
+        now.checked_sub(Self::WINDOW)
+            .map_or(SystemTime::UNIX_EPOCH, |start| {
+                start.max(SystemTime::UNIX_EPOCH)
+            })
+    }
+
+    /// The change a repeat of the request with `request_digest` replays: the recorded change when
+    /// the digest is the recorded one, none when the repeat carries another request under the
+    /// same key.
+    #[must_use]
+    pub fn replay(&self, request_digest: RequestDigest) -> Option<ChangeId> {
+        (self.request.request_digest == request_digest).then_some(self.change_id)
+    }
+
     /// Records that `actor` sent `request`, which produced the change `change_id`.
     #[must_use]
     pub const fn new(actor: ActorRef, request: IdempotencyRequest, change_id: ChangeId) -> Self {

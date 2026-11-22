@@ -20,6 +20,7 @@ Index of the documents in this directory. The PHP-to-Rust mappings are part of t
 | [Architecture](architecture.md) | layers, crates and bounded contexts; request flow; error model; statelessness; deployment assumptions; link to the architecture model |
 | [Decision records](adr/README.md) | the architecture decision records, in the form context, decision, consequences |
 | [Extension seams](extension-seams.md) | where Redis, tracing and metrics, authentication and an outbox plug in |
+| [Phase-0 spikes](spikes/phase-0.md) | the client capabilities checked before the gateway depends on them: krafka's tail without a consumer group, with pass or fail per capability |
 
 ## Operations and project settings
 

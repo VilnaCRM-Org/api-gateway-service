@@ -17,8 +17,11 @@ use service::bootstrap::{Adapters, event_bus, router};
 use service::cli::{Cli, Command};
 use service::config::Config;
 use service::telemetry;
+use test_support::access_token::{DEVELOPMENT_PUBLIC_KEYS_FILE, FakeAccessTokenVerifier};
+use test_support::change_receipt::FakeChangeReceiptRepository;
 use test_support::clock::FixedClock;
 use test_support::id::SequenceUuidGenerator;
+use test_support::idempotency::FakeIdempotencyRepository;
 use test_support::policy_epoch::FakePolicyEpochRepository;
 use test_support::probe::StubProbe;
 use test_support::repository::InMemoryExampleApiResourceRepository;
@@ -51,6 +54,7 @@ fn config() -> Config {
     };
     args.aws_region = Some("us-east-1".to_owned());
     args.database.url = Some("postgres://app:unused@127.0.0.1:1/app".to_owned());
+    args.tokens.public_keys_file = Some(DEVELOPMENT_PUBLIC_KEYS_FILE.to_owned());
     Config::from_args(args).unwrap()
 }
 
@@ -63,6 +67,9 @@ async fn a_panic_is_one_json_line_with_the_request_id_and_a_500_problem() {
         repository: Arc::new(InMemoryExampleApiResourceRepository::new()),
         policy_epochs: Arc::new(FakePolicyEpochRepository::new()),
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
+        change_receipts: Arc::new(FakeChangeReceiptRepository::new()),
+        idempotency_records: Arc::new(FakeIdempotencyRepository::new()),
+        access_tokens: Arc::new(FakeAccessTokenVerifier::new()),
         probes: vec![Arc::new(StubProbe::panicking(Dependency::Database))],
         event_bus: event_bus(),
         clock: Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH)),

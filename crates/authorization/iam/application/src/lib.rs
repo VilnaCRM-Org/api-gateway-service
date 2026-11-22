@@ -14,4 +14,6 @@ pub mod query;
 pub mod subscriber;
 
 pub use error::IamError;
+pub use query::get_change_receipt::{GetChangeReceiptQuery, GetChangeReceiptQueryHandler};
+pub use query::get_idempotent_replay::{GetIdempotentReplayQuery, GetIdempotentReplayQueryHandler};
 pub use query::get_policy_epoch::{GetPolicyEpochQuery, GetPolicyEpochQueryHandler};

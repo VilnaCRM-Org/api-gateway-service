@@ -67,17 +67,17 @@ workspace "Service architecture" "C4 model of the service: system context, conta
                 }
                 group "Authorization/Iam" {
                     group "Authorization/Iam/Domain" {
-                        iamDomain = component "iam-domain" "Policy epoch and audit value objects, the security audit event, the change, event envelope, change receipt and idempotency records, the policy epoch repository, security audit log and unit of work ports and the IAM value errors." "Rust crate" {
+                        iamDomain = component "iam-domain" "Policy epoch and audit value objects, the security audit event, the change, event envelope, change receipt and idempotency records, the policy epoch repository, security audit log, unit of work, change receipt and idempotency repository ports, the access token, credential and token rejection value objects, the access token verifier port, the token lifetime rule and the IAM value errors." "Rust crate" {
                             tags "Domain"
                         }
                     }
                     group "Authorization/Iam/Application" {
-                        iamApplication = component "iam-application" "Policy epoch query, the IAM error and its problem mapping, the IAM REST router and GraphQL roots." "Rust crate" {
+                        iamApplication = component "iam-application" "Policy epoch, change receipt and idempotent replay queries, the IAM error and its problem and GraphQL error mapping, the If-Match and Idempotency-Key extractors, the write response headers, the IAM REST router and GraphQL roots." "Rust crate" {
                             tags "Application"
                         }
                     }
                     group "Authorization/Iam/Infrastructure" {
-                        iamInfrastructure = component "iam-infrastructure" "PostgreSQL policy epoch repository, hash-chained security audit log and unit of work adapters, and the JSON encoding of event envelopes." "Rust crate" {
+                        iamInfrastructure = component "iam-infrastructure" "PostgreSQL policy epoch, change receipt and idempotency repositories, hash-chained security audit log and unit of work adapters, the JSON encoding of event envelopes, and the RS256 JWT access token verifier over hot-reloaded public keys." "Rust crate" {
                             tags "Infrastructure"
                         }
                     }
@@ -91,9 +91,9 @@ workspace "Service architecture" "C4 model of the service: system context, conta
                 compositionRoot -> sharedDomain "Wires the bus, clock and UUID ports"
                 compositionRoot -> healthCheckDomain "Collects the probes behind the HealthProbe port"
                 compositionRoot -> someModuleDomain "Holds the repository behind the repository port"
-                compositionRoot -> iamApplication "Mounts the IAM router and registers the policy epoch query handler"
-                compositionRoot -> iamInfrastructure "Registers the policy epoch repository and the security audit log"
-                compositionRoot -> iamDomain "Holds the adapters behind the policy epoch repository and security audit log ports"
+                compositionRoot -> iamApplication "Mounts the IAM router and registers the policy epoch, change receipt and idempotent replay query handlers"
+                compositionRoot -> iamInfrastructure "Registers the policy epoch, change receipt and idempotency repositories and the security audit log"
+                compositionRoot -> iamDomain "Holds the adapters behind the policy epoch, change receipt and idempotency repository and security audit log ports"
                 sharedApplication -> sharedDomain "Uses bus errors"
                 sharedInfrastructure -> sharedDomain "Implements bus, cache, clock and UUID ports"
                 healthCheckDomain -> sharedDomain "Uses the shared error type"
@@ -109,15 +109,15 @@ workspace "Service architecture" "C4 model of the service: system context, conta
                 someModuleInfrastructure -> someModuleDomain "Implements the repository port"
                 someModuleInfrastructure -> sharedDomain "Uses shared value objects"
                 iamDomain -> sharedDomain "Uses the shared error type"
-                iamApplication -> iamDomain "Uses the policy epoch and its repository port"
+                iamApplication -> iamDomain "Uses the policy epoch, the change receipt and idempotency records and their repository ports"
                 iamApplication -> sharedDomain "Answers through the bus ports"
                 iamApplication -> sharedApplication "Returns problem documents"
-                iamInfrastructure -> iamDomain "Implements the policy epoch repository, security audit log and unit of work ports"
+                iamInfrastructure -> iamDomain "Implements the policy epoch, change receipt and idempotency repository, security audit log and unit of work ports"
                 iamInfrastructure -> sharedDomain "Uses the shared UUID value object"
                 sharedInfrastructure -> database "Opens the connection pool and applies migrations" "SQL over TCP"
                 healthCheckInfrastructure -> database "Runs SELECT 1" "SQL over TCP"
                 someModuleInfrastructure -> database "Reads and writes example_api_resources" "SQL over TCP"
-                iamInfrastructure -> database "Reads and versions iam_policy_epoch, appends to and reads the security audit chain, writes the outbox, change receipts and idempotency keys" "SQL over TCP"
+                iamInfrastructure -> database "Reads and versions iam_policy_epoch, appends to and reads the security audit chain, writes the outbox, writes and reads change receipts and idempotency keys" "SQL over TCP"
             }
         }
         apiClient -> system.service "Calls the REST and GraphQL API" "HTTP, JSON"

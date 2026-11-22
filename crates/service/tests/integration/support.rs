@@ -11,8 +11,10 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use serde_json::Value;
+use test_support::access_token::DEVELOPMENT_PUBLIC_KEYS_FILE;
 
-/// Every variable of a valid configuration that has no default: the database and the region.
+/// Every variable of a valid configuration that has no default: the database and the region
+/// (`JWT_PUBLIC_KEYS_FILE` is added by [`Scratch::service`]).
 pub(crate) const VALID_ENVIRONMENT: [(&str, &str); 2] = [
     (
         "DATABASE_URL",
@@ -54,12 +56,16 @@ impl Scratch {
 
     /// The binary with a cleared environment plus `variables`, and `LLVM_PROFILE_FILE` when the
     /// test process has it, so that coverage of the child is recorded.
+    ///
+    /// `JWT_PUBLIC_KEYS_FILE` names the committed development key file unless `variables` set it,
+    /// because a configuration without a key file is never valid.
     pub(crate) fn service(&self, arguments: &[&str], variables: &[(&str, &str)]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_service"));
         command.args(arguments).env_clear().current_dir(&self.path);
         if let Some(profile) = from_environment("LLVM_PROFILE_FILE") {
             command.env("LLVM_PROFILE_FILE", profile);
         }
+        command.env("JWT_PUBLIC_KEYS_FILE", DEVELOPMENT_PUBLIC_KEYS_FILE);
         command.envs(variables.iter().copied());
         command
     }

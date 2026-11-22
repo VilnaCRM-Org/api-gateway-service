@@ -26,6 +26,10 @@ services:
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test
       AWS_ENDPOINT_URL_SQS: http://localstack:4566
+      JWT_PUBLIC_KEYS_FILE: /etc/service/jwt-public-keys.pem
+    volumes:
+      # The development public key unless the caller names its own key file; the private half is never committed.
+      - ${JWT_PUBLIC_KEYS_HOST_FILE:-./config/jwt/dev-public-keys.pem}:/etc/service/jwt-public-keys.pem:ro
     ports:
       - '${APP_PORT:-8081}:8081'
     healthcheck:
@@ -90,6 +94,36 @@ services:
       timeout: 5s
       retries: 20
       start_period: 10s
+    restart: unless-stopped
+
+  kafka:
+    # Development and test only: the single-node KRaft broker of the krafka spikes (Story 1.2). No production
+    # code uses it. PLAINTEXT without ACLs: `localhost:${KAFKA_PORT}` from the host, `kafka:19092` inside the
+    # compose network.
+    image: apache/kafka:4.3.2@sha256:852a0d49fc4e656b022e7f23785411802c9a088c78a7c5e39f33969de9c227a7
+    environment:
+      KAFKA_NODE_ID: '1'
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,DOCKER://:19092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:${KAFKA_PORT:-9092},DOCKER://kafka:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,DOCKER:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: DOCKER
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: '1'
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: '1'
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: '1'
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: '0'
+      KAFKA_NUM_PARTITIONS: '1'
+    ports:
+      - '127.0.0.1:${KAFKA_PORT:-9092}:9092'
+    healthcheck:
+      test: ['CMD-SHELL', '/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:19092 > /dev/null']
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
+      start_interval: 2s
     restart: unless-stopped
 
 volumes:
