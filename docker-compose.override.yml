@@ -22,7 +22,7 @@ services:
       DB_PORT: '5432'
       LOCALSTACK_HOST: localstack
       LOCALSTACK_PORT: '4566'
-      # The compose broker of the krafka spike tests at its in-network listener (KAFKA_PORT of .env is the host port).
+      # The compose broker at its in-network listener (KAFKA_PORT of .env is the host port).
       KAFKA_HOST: kafka
       KAFKA_PORT: '19092'
       KAFKA_SASL_SSL_PORT: '19094' # its in-network SASL_SSL listener (Story 1.5)

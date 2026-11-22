@@ -97,9 +97,9 @@ services:
     restart: unless-stopped
 
   kafka:
-    # Development and test only: the single-node KRaft broker of the krafka spikes (Story 1.2). No production
-    # code uses it. PLAINTEXT as a super user: `localhost:${KAFKA_PORT}` from the host, `kafka:19092` inside the
-    # compose network.
+    # Development and test only: the single-node KRaft broker of the krafka spikes (Stories 1.2 to 1.5, removed in
+    # Story 1.7), kept for the Kafka adapter tests of Epic 7. No production code uses it. PLAINTEXT as a super
+    # user: `localhost:${KAFKA_PORT}` from the host, `kafka:19092` inside the compose network.
     image: apache/kafka:4.3.2@sha256:852a0d49fc4e656b022e7f23785411802c9a088c78a7c5e39f33969de9c227a7
     environment:
       KAFKA_NODE_ID: '1'
@@ -160,9 +160,9 @@ services:
     restart: 'no'
 
   # The 3-broker profile `kafka-cluster` (Story 1.3), development only and outside `make ci`: three combined
-  # KRaft nodes for the leader-change observation of the krafka spike, reachable only inside the compose
-  # network at `kafka-cluster-<n>:19092`. Started and stopped by hand as `docs/spikes/phase-0.md` describes;
-  # no make target and no other service starts it.
+  # KRaft nodes for the leader-change observation of the krafka spike (restored from history to run it, since
+  # Story 1.7 removed it), reachable only inside the compose network at `kafka-cluster-<n>:19092`. Started and
+  # stopped by hand as `docs/spikes/phase-0.md` describes; no make target and no other service starts it.
   kafka-cluster-1: &kafka-cluster
     profiles: [kafka-cluster]
     image: apache/kafka:4.3.2@sha256:852a0d49fc4e656b022e7f23785411802c9a088c78a7c5e39f33969de9c227a7

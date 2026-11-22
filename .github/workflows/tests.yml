@@ -67,7 +67,7 @@ jobs:
         with:
           tool: sqlx-cli@0.9.0
           fallback: cargo-binstall
-      # The krafka spike tests of the integration suite read the compose broker (Story 1.2).
+      # The compose broker: no test reads it since Story 1.7 removed the krafka spike tests; kept for Epic 7.
       - run: make start-deps DEPS=kafka
       - id: run
         run: make tests-with-coverage doc-tests
@@ -178,12 +178,15 @@ jobs:
         with:
           tool: sqlx-cli@0.9.0
           fallback: cargo-binstall
-      # Every infrastructure mutant reruns the integration suite, whose krafka spike tests read the compose broker.
+      # The compose broker for the integration suite: no test reads it since Story 1.7; kept for Epic 7.
       - run: make start-deps DEPS=kafka
       - if: ${{ env.EVENT_NAME == 'pull_request' }}
         run: make mutation-tests-diff base_ref="origin/$BASE_REF" MUTANTS_SHARD="$SHARD"
+      # A push judges the code its last commit changed (Story 1.8, NFR-2): every mutant reruns its crate's whole test
+      # suite, so a run over the whole workspace no longer fits the 45-minute shards. The scheduled workflow keeps the
+      # full run. mutation-plan.sh still counts the whole workspace on a push, an over-estimate capped at 8 shards.
       - if: ${{ env.EVENT_NAME != 'pull_request' }}
-        run: make mutation-tests MUTANTS_SHARD="$SHARD"
+        run: make mutation-tests-diff base_ref=HEAD~1 MUTANTS_SHARD="$SHARD"
       - if: ${{ always() }}
         run: |
           # NFR40: compile units of third-party crates in this shard's cargo-mutants builds, 0 on a warm rerun.

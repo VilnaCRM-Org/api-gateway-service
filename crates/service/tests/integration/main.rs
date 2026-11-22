@@ -9,8 +9,6 @@ mod export;
 #[cfg(test)]
 mod healthcheck;
 #[cfg(test)]
-mod kafka_spike;
-#[cfg(test)]
 mod migrate;
 #[cfg(test)]
 mod panic;

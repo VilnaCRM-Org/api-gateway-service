@@ -44,7 +44,6 @@ aws-lc-rs.workspace = true
 criterion.workspace = true
 http-body-util.workspace = true
 jsonwebtoken.workspace = true
-krafka.workspace = true
 pem.workspace = true
 rstest.workspace = true
 test-support.workspace = true

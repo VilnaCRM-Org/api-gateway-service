@@ -1,28 +1,32 @@
 # Phase-0 spikes
 
-The phase-0 spikes check, before any gateway code depends on them, the client capabilities that the replication design of issue #8 rests on. Each spike story adds integration tests under `crates/service/tests/integration/` and records its results here. No production crate depends on a spike crate; the spike modules leave in Story 1.7, which also records the Kafka client decision (ADR 0026).
+The phase-0 spikes check, before any gateway code depends on them, the client capabilities that the replication design of issue #8 rests on. Each spike story added integration tests to the `crates/service` integration suite and recorded its results here. No production crate depends on a spike crate. Story 1.7 recorded the outcome and the Kafka client decision in [ADR 0026](../adr/0026-krafka-as-the-kafka-client.md) and removed the spike module `kafka_spike` of that suite together with the krafka dev-dependency; the last commit that holds the module is 136aa9e (Story 1.6), from which it can be restored to re-run a spike.
+
+## Outcome
+
+Every must-pass capability (1 to 6 and 9) passed, and so did capabilities 7, 8 and 10; capability 11 was not measured and capability 12 is recorded only. The serialized verify step of the implementation round ran every spike test through `make integration-tests` on 2026-11-22: 261 tests passed, and the 2 ignored ones are the hand-run compose-host observations of capabilities 3 and 11. ADR 0026 is accepted, and Epic 7 may start.
 
 ## Kafka client
 
 | Item | Value |
 | --- | --- |
-| Client | `krafka` 0.32.0, a dev-dependency of `crates/service` only, with the `test-broker` feature and without default features |
+| Client | `krafka` 0.32.0, during the spikes a dev-dependency of `crates/service` only, with the `test-broker` feature and without default features; removed from the workspace in Story 1.7 until Epic 7 adds it to the infrastructure layer (ADR 0023, ADR 0026) |
 | Compose broker | `apache/kafka` 4.3.2, the single-node KRaft service `kafka` of `docker-compose.yml`, PLAINTEXT, development and test only |
-| How to run | `make start-deps DEPS=kafka`, then `make integration-tests`; the tests read `KAFKA_BOOTSTRAP_SERVERS` from `.env.test` |
+| How to run | the spike tests no longer exist in the working tree; restored from commit 136aa9e they ran with `make start-deps DEPS=kafka`, then `make integration-tests`, and read `KAFKA_BOOTSTRAP_SERVERS` from `.env.test` |
 
 ## Story 1.2: tail without a consumer group
 
-Tests: `crates/service/tests/integration/kafka_spike/`. Capabilities (1), (2) and (10) of `architecture.md` section 20.4 of the planning bundle. The tests against the compose broker prove what a real broker does; the fault tests use krafka's in-process `test-broker` (`krafka::testing::FakeBroker`), which speaks the Kafka wire protocol and injects errors, silences and dropped connections per API.
+Tests: the module `kafka_spike` of the `crates/service` integration suite (removed in Story 1.7). Capabilities (1), (2) and (10) of `architecture.md` section 20.4 of the planning bundle. The tests against the compose broker prove what a real broker does; the fault tests use krafka's in-process `test-broker` (`krafka::testing::FakeBroker`), which speaks the Kafka wire protocol and injects errors, silences and dropped connections per API.
 
-The verdicts below come from the tests and from reading the krafka 0.32.0 source. The serialized verify step of the implementation round runs `make integration-tests` and confirms them; a test that fails there turns its verdict into fail, and the result of that run replaces the "verify step" column.
+The verdicts below come from the tests and from reading the krafka 0.32.0 source. The serialized verify step of the implementation round ran `make integration-tests` on 2026-11-22 and confirmed every verdict; its result is the "verify step" column.
 
 | Capability | Test | Verdict | Verify step |
 | --- | --- | --- | --- |
-| (1) Headers on a null-value record: the eight `iam-*` framing headers of a tombstone come back byte-identical (values with a zero byte and bytes that are not UTF-8) and the value is reported as null | `headers.rs`, compose broker | pass | pending |
-| (2) `assign` of partition 0 without a group, `read_committed`: with an open transaction of `iam-relay` the tail returns only the committed record, the broker and the client's lag both report the last stable offset at the first open record, and the open records arrive in order once the transaction commits | `read_committed.rs`, `test-broker` | pass | pending |
-| (2) Out-of-range detection: a position below the log start offset (after `DeleteRecords`) fails the poll with `KrafkaError::NoOffset` naming the partition, the position stays where it was on every further poll, and a reseek to the log start reads the retained records | `out_of_range.rs`, compose broker | pass | pending |
-| (2) Reseek after reconnect: the broker connection is dropped while the tail is in progress (`FakeBroker::crash`, then `restart`); the tail reseeks to its in-memory position and reads every record exactly once, in order | `reconnect.rs`, `test-broker` | pass | pending |
-| (10) Fault injection: `OFFSET_OUT_OF_RANGE`, `NOT_LEADER_OR_FOLLOWER` and a request timeout each reach the reader as a distinguishable typed error | `typed_errors.rs`, `test-broker` | pass, with the limit below | pending |
+| (1) Headers on a null-value record: the eight `iam-*` framing headers of a tombstone come back byte-identical (values with a zero byte and bytes that are not UTF-8) and the value is reported as null | `headers.rs`, compose broker | pass | pass |
+| (2) `assign` of partition 0 without a group, `read_committed`: with an open transaction of `iam-relay` the tail returns only the committed record, the broker and the client's lag both report the last stable offset at the first open record, and the open records arrive in order once the transaction commits | `read_committed.rs`, `test-broker` | pass | pass |
+| (2) Out-of-range detection: a position below the log start offset (after `DeleteRecords`) fails the poll with `KrafkaError::NoOffset` naming the partition, the position stays where it was on every further poll, and a reseek to the log start reads the retained records | `out_of_range.rs`, compose broker | pass | pass |
+| (2) Reseek after reconnect: the broker connection is dropped while the tail is in progress (`FakeBroker::crash`, then `restart`); the tail reseeks to its in-memory position and reads every record exactly once, in order | `reconnect.rs`, `test-broker` | pass | pass |
+| (10) Fault injection: `OFFSET_OUT_OF_RANGE`, `NOT_LEADER_OR_FOLLOWER` and a request timeout each reach the reader as a distinguishable typed error | `typed_errors.rs`, `test-broker` | pass, with the limit below | pass |
 
 ### Findings that shape the design
 
@@ -37,25 +41,26 @@ Section 19 of the architecture budgets 15 s for the integration suite of `crates
 
 | Suite | Budget | Measured in CI |
 | --- | --- | --- |
-| `crates/service` integration tests, with the spike module | 15 s | pending |
+| `crates/service` integration tests, with the spike module (Stories 1.2 to 1.6) | 15 s | not measured; the three slowest spike tests alone took 16.2 s, 13.3 s and 8.4 s in the verify step |
+| `crates/service` integration tests, without the spike module (from Story 1.7) | 15 s | pending |
 
 ## Story 1.3: metadata, leader epochs and configuration reads
 
-Tests: `broker_metadata.rs`, `leader_epoch.rs`, `configuration.rs` and `multi_broker.rs` under `crates/service/tests/integration/kafka_spike/`. Capabilities (3), (4) and (5) of `architecture.md` section 20.4 of the planning bundle (FR-72, FR-73, NFR-36). The compose broker `kafka` now runs the KRaft ACL authorizer `org.apache.kafka.metadata.authorizer.StandardAuthorizer` (the successor of the `simple` authorizer, which Kafka 4 no longer ships) with `allow.everyone.if.no.acl.found=false`; the anonymous PLAINTEXT principal is its only super user. A broker container started before this change keeps running without the authorizer, because `make start-deps` never recreates a running service: recreate it once with `docker compose up --detach --wait --force-recreate kafka`.
+Tests: `broker_metadata.rs`, `leader_epoch.rs`, `configuration.rs` and `multi_broker.rs` of the module `kafka_spike` (removed in Story 1.7). Capabilities (3), (4) and (5) of `architecture.md` section 20.4 of the planning bundle (FR-72, FR-73, NFR-36). The compose broker `kafka` now runs the KRaft ACL authorizer `org.apache.kafka.metadata.authorizer.StandardAuthorizer` (the successor of the `simple` authorizer, which Kafka 4 no longer ships) with `allow.everyone.if.no.acl.found=false`; the anonymous PLAINTEXT principal is its only super user. A broker container started before this change keeps running without the authorizer, because `make start-deps` never recreates a running service: recreate it once with `docker compose up --detach --wait --force-recreate kafka`.
 
-As for Story 1.2, the verdicts come from the tests and from reading the krafka 0.32.0 source; the serialized verify step runs `make integration-tests`, and its result replaces the "verify step" column.
+As for Story 1.2, the verdicts come from the tests and from reading the krafka 0.32.0 source; the serialized verify step ran `make integration-tests` on 2026-11-22, and its result is the "verify step" column.
 
 | Capability | Test | Verdict | Verify step |
 | --- | --- | --- | --- |
-| (3) A Metadata request addressed to the compose broker names the leader (node 1), a leader epoch and the partition count (1) of a new topic | `broker_metadata.rs`, compose broker | pass | pending |
-| (3) Addressing a chosen broker: a client seeded with one broker of a 3-node cluster sends its Metadata request to that broker only, and its answer matches the cluster's leader and epoch | `broker_metadata.rs`, `test-broker` | pass, with the limit below | pending |
-| (3) After a leader change, each of the three brokers asked on its own reports the new leader and the epoch one higher | `broker_metadata.rs`, `test-broker` | pass | pending |
-| (4) `ListOffsets` with the current leader epoch returns the log start and the high watermark, on the `test-broker` and on the compose broker | `leader_epoch.rs` | pass | pending |
-| (4) A stale epoch (the broker moved past the client's cached epoch) surfaces as `KrafkaError::Broker` with `ErrorCode::FencedLeaderEpoch`, a future epoch (the broker behind the client) as `ErrorCode::UnknownLeaderEpoch`, an injected `OFFSET_NOT_AVAILABLE` as `ErrorCode::OffsetNotAvailable`; the three codes are distinct and retriable; after a stale epoch the next lookup succeeds, while a future epoch persists (the refresh keeps the newer cached epoch, KIP-320) until the broker catches up, and the next lookup then succeeds | `leader_epoch.rs`, `test-broker` | pass | pending |
-| (5) `DescribeConfigs` on a topic created with `cleanup.policy=compact`, `min.insync.replicas=2`, `unclean.leader.election.enable=false` and `message.timestamp.type=LogAppendTime` returns each value; `DescribeTopics` returns the partition count and the replication factor | `configuration.rs`, compose broker | pass | pending |
-| (5) `DescribeConfigs` on the broker returns its configuration, `authorizer.class.name` included | `configuration.rs`, compose broker | pass | pending |
-| (5) `DescribeAcls` lists the write ACL of `User:iam-control` on a topic after `CreateAcls` | `configuration.rs`, compose broker | pass | pending |
-| (5) `allow.everyone.if.no.acl.found` from `DescribeConfigs` on the broker: never readable as `true`; expected not returned as a value (see below) | `configuration.rs`, compose broker | not returned as a value; fallback chosen | pending |
+| (3) A Metadata request addressed to the compose broker names the leader (node 1), a leader epoch and the partition count (1) of a new topic | `broker_metadata.rs`, compose broker | pass | pass |
+| (3) Addressing a chosen broker: a client seeded with one broker of a 3-node cluster sends its Metadata request to that broker only, and its answer matches the cluster's leader and epoch | `broker_metadata.rs`, `test-broker` | pass, with the limit below | pass |
+| (3) After a leader change, each of the three brokers asked on its own reports the new leader and the epoch one higher | `broker_metadata.rs`, `test-broker` | pass | pass |
+| (4) `ListOffsets` with the current leader epoch returns the log start and the high watermark, on the `test-broker` and on the compose broker | `leader_epoch.rs` | pass | pass |
+| (4) A stale epoch (the broker moved past the client's cached epoch) surfaces as `KrafkaError::Broker` with `ErrorCode::FencedLeaderEpoch`, a future epoch (the broker behind the client) as `ErrorCode::UnknownLeaderEpoch`, an injected `OFFSET_NOT_AVAILABLE` as `ErrorCode::OffsetNotAvailable`; the three codes are distinct and retriable; after a stale epoch the next lookup succeeds, while a future epoch persists (the refresh keeps the newer cached epoch, KIP-320) until the broker catches up, and the next lookup then succeeds | `leader_epoch.rs`, `test-broker` | pass | pass |
+| (5) `DescribeConfigs` on a topic created with `cleanup.policy=compact`, `min.insync.replicas=2`, `unclean.leader.election.enable=false` and `message.timestamp.type=LogAppendTime` returns each value; `DescribeTopics` returns the partition count and the replication factor | `configuration.rs`, compose broker | pass | pass |
+| (5) `DescribeConfigs` on the broker returns its configuration, `authorizer.class.name` included | `configuration.rs`, compose broker | pass | pass |
+| (5) `DescribeAcls` lists the write ACL of `User:iam-control` on a topic after `CreateAcls` | `configuration.rs`, compose broker | pass | pass |
+| (5) `allow.everyone.if.no.acl.found` from `DescribeConfigs` on the broker: never readable as `true`; expected not returned as a value (see below) | `configuration.rs`, compose broker | not returned as a value; fallback chosen | not returned as a value; fallback chosen |
 
 ### The authorizer setting and its fallback
 
@@ -75,7 +80,7 @@ If the verify step shows the value as readable `false`, the gate reads it direct
 
 ### The 3-broker compose profile (outside `make ci`)
 
-The profile `kafka-cluster` of `docker-compose.yml` runs three combined KRaft nodes, `kafka-cluster-1` to `kafka-cluster-3`, reachable only inside the compose network. No make target starts it. Run by hand, from the checkout, with the development stack up:
+The profile `kafka-cluster` of `docker-compose.yml` runs three combined KRaft nodes, `kafka-cluster-1` to `kafka-cluster-3`, reachable only inside the compose network. No make target starts it. The observation test `after_the_leader_stops` left with the spike module in Story 1.7; to run the observation, restore the module from commit 136aa9e first (for example with `git restore --source=136aa9e` on its directory and its module line), then run by hand, from the checkout, with the development stack up:
 
 1. `docker compose --profile kafka-cluster up --detach --wait kafka-cluster-1 kafka-cluster-2 kafka-cluster-3`
 2. `docker compose exec -T app scripts/with-env.sh .env .env.test -- cargo nextest run -p service --test integration --no-run` (build first, so that the next step starts at once)
@@ -87,24 +92,24 @@ Whether a broker's Metadata answer was older than the leader epoch its own repli
 
 | Observation (compose host only, not a gate value) | Result |
 | --- | --- |
-| At least 2 of 3 brokers report the same new leader and epoch after broker 1 stops | pending: not yet run on the compose host |
-| A reachable broker still named the old leader or epoch after the quorum agreed | pending: not yet run on the compose host |
+| At least 2 of 3 brokers report the same new leader and epoch after broker 1 stops | not run on the compose host before Story 1.7 removed the test; not a gate value (ADR 0026) |
+| A reachable broker still named the old leader or epoch after the quorum agreed | not run on the compose host before Story 1.7 removed the test; not a gate value (ADR 0026) |
 | A broker's Metadata answer older than its replica fetcher's epoch | not observable through krafka |
 
 ## Story 1.4: idempotent and transactional producing
 
-Tests: `idempotent.rs`, `fencing.rs`, `aborted.rs` and `stable_offset.rs` under `crates/service/tests/integration/kafka_spike/`. Capabilities (6) and (7) of `architecture.md` section 20.4 of the planning bundle (FR-46). The relay's producer is configured with `acks=all`, idempotence on, lz4 compression, an explicit partition 0 and the `iam-*` framing headers; the transactional producer uses the transactional id `iam-relay` (on the compose broker a unique `iam-relay-<topic>` id, because that broker outlives the run and tests run beside each other).
+Tests: `idempotent.rs`, `fencing.rs`, `aborted.rs` and `stable_offset.rs` of the module `kafka_spike` (removed in Story 1.7). Capabilities (6) and (7) of `architecture.md` section 20.4 of the planning bundle (FR-46). The relay's producer is configured with `acks=all`, idempotence on, lz4 compression, an explicit partition 0 and the `iam-*` framing headers; the transactional producer uses the transactional id `iam-relay` (on the compose broker a unique `iam-relay-<topic>` id, because that broker outlives the run and tests run beside each other).
 
-As for Story 1.2, the verdicts come from the tests and from reading the krafka 0.32.0 source; the serialized verify step runs `make integration-tests`, and its result replaces the "verify step" column.
+As for Story 1.2, the verdicts come from the tests and from reading the krafka 0.32.0 source; the serialized verify step ran `make integration-tests` on 2026-11-22, and its result is the "verify step" column.
 
 | Capability | Test | Verdict | Verify step |
 | --- | --- | --- | --- |
-| (6) Idempotent producing: 10,000 records to partition 0 with every fifth `Produce` request faulted (an applied write whose answer is lost, `NOT_LEADER_OR_FOLLOWER`, an applied write answered with `REQUEST_TIMED_OUT`) land exactly once and in order, the returned offsets are contiguous from 0, the `iam-seq` header of every record survives, and every stored batch carries the lz4 codec | `idempotent.rs`, `test-broker` | pass | pending |
-| (6) lz4 batches of the idempotent producer with headers are accepted and returned by a real broker, at consecutive offsets | `idempotent.rs`, compose broker | pass | pending |
-| (7) Fencing: a second producer that initialises `iam-relay` while the first has an open transaction gets the same producer id with a higher epoch; the first producer's commit fails with a fatal fencing error (`KrafkaError::Fenced`, or `PRODUCER_FENCED` / `INVALID_PRODUCER_EPOCH`), and a `read_committed` reader returns only the successor's record | `fencing.rs`, `test-broker` and compose broker | pass | pending |
-| (7) Aborted transaction: a `read_committed` reader returns the records committed before and after an aborted transaction and none of the aborted ones | `aborted.rs`, `test-broker` and compose broker | pass | pending |
-| (7) `ListOffsets` with `READ_COMMITTED`: with a transaction open the answer is the offset of its first record (the last stable offset), while the high watermark lies beyond its last record; after the commit the answer lies beyond its last record | `stable_offset.rs`, compose broker | pass | pending |
-| (7) Transaction timeout: a relay with `transaction.timeout.ms` 10 s that stops without committing has its transaction aborted by the broker; its records never become visible and its late commit fails | `stable_offset.rs`, compose broker | pass, with the bound below | pending |
+| (6) Idempotent producing: 10,000 records to partition 0 with every fifth `Produce` request faulted (an applied write whose answer is lost, `NOT_LEADER_OR_FOLLOWER`, an applied write answered with `REQUEST_TIMED_OUT`) land exactly once and in order, the returned offsets are contiguous from 0, the `iam-seq` header of every record survives, and every stored batch carries the lz4 codec | `idempotent.rs`, `test-broker` | pass | pass |
+| (6) lz4 batches of the idempotent producer with headers are accepted and returned by a real broker, at consecutive offsets | `idempotent.rs`, compose broker | pass | pass |
+| (7) Fencing: a second producer that initialises `iam-relay` while the first has an open transaction gets the same producer id with a higher epoch; the first producer's commit fails with a fatal fencing error (`KrafkaError::Fenced`, or `PRODUCER_FENCED` / `INVALID_PRODUCER_EPOCH`), and a `read_committed` reader returns only the successor's record | `fencing.rs`, `test-broker` and compose broker | pass | pass |
+| (7) Aborted transaction: a `read_committed` reader returns the records committed before and after an aborted transaction and none of the aborted ones | `aborted.rs`, `test-broker` and compose broker | pass | pass |
+| (7) `ListOffsets` with `READ_COMMITTED`: with a transaction open the answer is the offset of its first record (the last stable offset), while the high watermark lies beyond its last record; after the commit the answer lies beyond its last record | `stable_offset.rs`, compose broker | pass | pass |
+| (7) Transaction timeout: a relay with `transaction.timeout.ms` 10 s that stops without committing has its transaction aborted by the broker; its records never become visible and its late commit fails | `stable_offset.rs`, compose broker | pass, with the bound below | pass |
 
 ### Findings that shape the design
 
@@ -116,22 +121,22 @@ As for Story 1.2, the verdicts come from the tests and from reading the krafka 0
 
 ## Story 1.5: consumer group, SCRAM over TLS with a custom CA, and bootstrap read rate
 
-Tests: `consumer_group.rs`, `sasl_ssl.rs` and `read_rate.rs` under `crates/service/tests/integration/kafka_spike/`. Capabilities (8), (9), (11) and (12) of `architecture.md` section 20.4 of the planning bundle (FR-18, NFR-37).
+Tests: `consumer_group.rs`, `sasl_ssl.rs` and `read_rate.rs` of the module `kafka_spike` (removed in Story 1.7). Capabilities (8), (9), (11) and (12) of `architecture.md` section 20.4 of the planning bundle (FR-18, NFR-37).
 
 The SCRAM listeners are two SASL_SSL listeners of the compose broker, `SCRAM_HOST` (`localhost:${KAFKA_SASL_SSL_PORT}`, 9094) and `SCRAM_DOCKER` (`kafka:19094` inside the compose network), both with the mechanism SCRAM-SHA-512. Their TLS material comes from `scripts/kafka-tls-fixture.sh`, which the one-shot compose service `kafka-tls` runs as the host user before the broker starts: a root CA standing in for the Strimzi cluster CA, a broker certificate it signs for `localhost`, `kafka` and 127.0.0.1, and an unrelated CA for the untrusted case, all under the git-ignored `target/kafka-tls/` (`KAFKA_TLS_DIR` of `.env.test`). No key or password is committed: the fixture generates the keys, and the test creates its SCRAM user with a password generated for the run (`AlterUserScramCredentials` through the PLAINTEXT super-user listener, the salted password computed with `aws-lc-rs`). The fixture keeps a set that is still valid for a day; once it regenerates the set (for example after `target/` was deleted), the running broker must be recreated with `docker compose up --detach --force-recreate kafka` to load the new certificate.
 
-As for the earlier stories, the verdicts come from the tests and from reading the krafka 0.32.0 source; the serialized verify step runs `make integration-tests`, and its result replaces the "verify step" column.
+As for the earlier stories, the verdicts come from the tests and from reading the krafka 0.32.0 source; the serialized verify step ran `make integration-tests` on 2026-11-22, and its result is the "verify step" column.
 
 | Capability | Test | Verdict | Verify step |
 | --- | --- | --- | --- |
-| (8) Consumer group with a manual commit after processing: two members of one group (KIP-848 protocol, `GroupProtocol::Consumer`, auto-commit off) split a three-partition topic and each record is delivered once; when member B leaves (`close`, which leaves the group without committing) after processing records it did not commit, member A is given B's partitions, both rebalance callbacks report the move, and A receives exactly B's uncommitted records again, each once, and no committed record | `consumer_group.rs`, compose broker | pass | pending |
-| (9) SASL SCRAM-SHA-512 over TLS trusting a custom root CA (`TlsConfig::with_ca_cert`, the CA file only): the right password connects and reads the cluster metadata; a wrong password fails with `KrafkaError::Auth` carrying the broker's `SaslAuthenticationFailed` and no cause; an untrusted CA fails the TLS handshake with `KrafkaError::Auth` whose cause is the TLS error (an `InvalidData` I/O error), so the two failures are told apart by type and cause | `sasl_ssl.rs`, compose broker | pass | pending |
+| (8) Consumer group with a manual commit after processing: two members of one group (KIP-848 protocol, `GroupProtocol::Consumer`, auto-commit off) split a three-partition topic and each record is delivered once; when member B leaves (`close`, which leaves the group without committing) after processing records it did not commit, member A is given B's partitions, both rebalance callbacks report the move, and A receives exactly B's uncommitted records again, each once, and no committed record | `consumer_group.rs`, compose broker | pass | pass |
+| (9) SASL SCRAM-SHA-512 over TLS trusting a custom root CA (`TlsConfig::with_ca_cert`, the CA file only): the right password connects and reads the cluster metadata; a wrong password fails with `KrafkaError::Auth` carrying the broker's `SaslAuthenticationFailed` and no cause; an untrusted CA fails the TLS handshake with `KrafkaError::Auth` whose cause is the TLS error (an `InvalidData` I/O error), so the two failures are told apart by type and cause | `sasl_ssl.rs`, compose broker | pass | pass |
 | (11) Bootstrap read rate: a reader without a group reads a 200 MiB one-partition topic from offset 0 | `read_rate.rs`, compose broker, ignored by `make ci` | recorded below, not a gate | not run by the verify step |
 | (12) Follower fetching (KIP-392) | none (recorded only) | available in the client API (`ConsumerBuilder::client_rack` sends the rack in every `Fetch`, and the fetcher follows a preferred read replica the broker names); not exercised, because it needs several brokers with racks and `replica.selector.class`; a later phase | not applicable |
 
 ### Bootstrap read rate (compose host, not a gate)
 
-The measurement runs outside `make ci`, by hand, against the compose broker:
+The measurement ran outside `make ci`, by hand, against the compose broker. The test left with the spike module in Story 1.7; restored from commit 136aa9e, it runs as:
 
 ```sh
 make start-deps DEPS=kafka
@@ -143,7 +148,7 @@ The test prints the rate in MB/s (10^6 bytes per second) with the bytes read and
 
 | Item | Target | Measured on the compose host |
 | --- | --- | --- |
-| Read of 200 MiB (12,800 records of 16 KiB, no compression) from offset 0, no group, `read_committed`, one partition | ≥ 100 MB/s (NFR-37), not a gate | pending: not yet run on a recorded host |
+| Read of 200 MiB (12,800 records of 16 KiB, no compression) from offset 0, no group, `read_committed`, one partition | ≥ 100 MB/s (NFR-37), not a gate | not measured on a recorded host before Story 1.7 removed the test; recorded only, not a gate (ADR 0026) |
 
 ### Findings that shape the design
 
