@@ -2,6 +2,7 @@
 //! (FR-34, FR-38).
 
 pub mod event;
+pub mod statement;
 
 use std::time::SystemTime;
 

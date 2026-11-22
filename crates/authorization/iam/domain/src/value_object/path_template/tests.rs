@@ -44,3 +44,24 @@ fn paths_that_differ_only_in_parameter_names_are_equal() {
 fn rejects_a_path_that_is_not_a_template(#[case] path: &str) {
     assert_eq!(PathTemplate::from_openapi_path(path), None);
 }
+
+#[rstest]
+#[case("/")]
+#[case("/api/roles")]
+#[case("/api/roles/{}")]
+#[case("/projects/{}/members/{}")]
+fn a_stored_template_is_restored_as_it_is(#[case] stored: &str) {
+    assert_eq!(PathTemplate::from_stored(stored).unwrap().as_str(), stored);
+}
+
+#[rstest]
+#[case("")]
+#[case("users")]
+#[case("/users/")]
+#[case("/users/{id}")]
+#[case("/users/{")]
+#[case("/users/*")]
+#[case("//")]
+fn a_stored_template_that_is_not_normalised_is_refused(#[case] stored: &str) {
+    assert_eq!(PathTemplate::from_stored(stored), None);
+}

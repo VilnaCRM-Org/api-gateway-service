@@ -25,6 +25,14 @@ impl PathTemplate {
         RestTemplate::parse(template).map(Self)
     }
 
+    /// Restores a template that the storage holds; `None` unless the text is exactly what
+    /// [`Self::from_openapi_path`] would produce, that is, normalised already.
+    #[must_use]
+    pub fn from_stored(value: &str) -> Option<Self> {
+        Self::from_openapi_path(&value.replace("{}", "{p}"))
+            .filter(|template| template.as_str() == value)
+    }
+
     /// The template.
     #[must_use]
     pub fn as_str(&self) -> &str {
