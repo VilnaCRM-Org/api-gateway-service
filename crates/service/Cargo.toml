@@ -39,11 +39,21 @@ utoipa-axum.workspace = true
 utoipa-swagger-ui.workspace = true
 
 [dev-dependencies]
+async-graphql-parser.workspace = true
+aws-lc-rs.workspace = true
+criterion.workspace = true
 http-body-util.workspace = true
+jsonwebtoken.workspace = true
 krafka.workspace = true
+pem.workspace = true
 rstest.workspace = true
 test-support.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+
+# Phase-0 spike benches (Story 1.6), run by `make bench-spikes` and never by `make ci`.
+[[bench]]
+name = "spikes"
+harness = false
 
 [lints]
 workspace = true

@@ -52,19 +52,22 @@ Cross-field rules checked at start-up: `HEALTH_PROBE_TIMEOUT >= DATABASE_ACQUIRE
 | `LOCALSTACK_PORT` | integer | `4566` | no | compose (the host port of `localstack`); `.env` interpolation; compose sets `4566`, the port inside the compose network, in the `app` container | `LOCALSTACK_PORT` |
 | `KAFKA_HOST` | host name | `localhost` | no | `.env` interpolation of `KAFKA_BOOTSTRAP_SERVERS`; compose sets `kafka` inside the `app` container | none |
 | `KAFKA_PORT` | integer | `9092` | no | compose (the host port of `kafka`, and the port its `PLAINTEXT` listener advertises); `.env` interpolation; compose sets `19092`, the in-network listener, in the `app` container | none |
+| `KAFKA_SASL_SSL_PORT` | integer | `9094` | no | compose (the host port of the `SCRAM_HOST` listener of `kafka`, SASL SCRAM-SHA-512 over TLS, and the port it advertises); `.env` interpolation of `KAFKA_SASL_SSL_BOOTSTRAP_SERVERS`; compose sets `19094`, the in-network `SCRAM_DOCKER` listener, in the `app` container | none |
 | `STRUCTURIZR_PORT` | integer | `8080` | no | compose | `STRUCTURIZR_PORT` |
 | `JWT_PUBLIC_KEYS_HOST_FILE` | path on the host | `./config/jwt/dev-public-keys.pem` (required by `docker-compose.prod.yml`) | no | compose: mounted read-only as the `JWT_PUBLIC_KEYS_FILE` of the `app` container built from the production image | none |
 | `GITHUB_TOKEN` | token | unset | no | compose: the source of the build secret `github_token` of the development image; raises the rate limit of the tool downloads | none |
 
 ## Test seeds
 
-The two seeds are test settings, not service settings. Cargo passes them to every test process from `[env]` of `.cargo/config.toml`, and a value set by the caller wins. `make` forwards both into the development container. The other two rows are build settings from the same `[env]` table. `KAFKA_BOOTSTRAP_SERVERS` is a test setting of `.env.test`, which the test targets export.
+The two seeds are test settings, not service settings. Cargo passes them to every test process from `[env]` of `.cargo/config.toml`, and a value set by the caller wins. `make` forwards both into the development container. The other two rows are build settings from the same `[env]` table. `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_SASL_SSL_BOOTSTRAP_SERVERS` and `KAFKA_TLS_DIR` are test settings of `.env.test`, which the test targets export.
 
 | Name | Type | Default | Required | Consumer | PHP name |
 | --- | --- | --- | --- | --- | --- |
 | `TEST_SEED` | unsigned 64-bit integer | `20261110`, the seed recorded in `.cargo/config.toml` | no | `test_support::seed::TestRng` | none (the PHP data was unseeded) |
 | `PROPTEST_RNG_SEED` | unsigned 64-bit integer | `20261110`, recorded in `.cargo/config.toml` | no | property tests (`proptest` reads it) | none |
 | `KAFKA_BOOTSTRAP_SERVERS` | `host:port` | `${KAFKA_HOST}:${KAFKA_PORT}` from `.env.test` | yes for the krafka spike tests | the spike tests of `crates/service/tests/integration/kafka_spike/` that run against the compose broker `kafka` (Story 1.2; removed with the spikes in Story 1.7) | none |
+| `KAFKA_SASL_SSL_BOOTSTRAP_SERVERS` | `host:port` | `${KAFKA_HOST}:${KAFKA_SASL_SSL_PORT}` from `.env.test` | yes for the SCRAM spike test | `kafka_spike/sasl_ssl.rs`, against the SASL_SSL listener of the compose broker (Story 1.5; removed with the spikes in Story 1.7) | none |
+| `KAFKA_TLS_DIR` | absolute path | `${PWD}/target/kafka-tls` from `.env.test` | yes for the SCRAM spike test | `kafka_spike/sasl_ssl.rs` reads `ca.pem` and `untrusted-ca.pem` there, which the compose service `kafka-tls` generates with `scripts/kafka-tls-fixture.sh` before the broker starts (Story 1.5) | none |
 | `SQLX_OFFLINE` | `true` | `true` from `.cargo/config.toml` | no | sqlx macros at build time | none |
 | `SWAGGER_UI_DOWNLOAD_URL` | `vendored-only` | `vendored-only` from `.cargo/config.toml` | no | the build script of `utoipa-swagger-ui`: with the `vendored` feature it uses the embedded assets and ignores the value; without the feature the build stops instead of downloading Swagger UI (FR8) | none |
 
