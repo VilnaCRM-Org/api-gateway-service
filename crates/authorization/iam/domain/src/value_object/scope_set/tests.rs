@@ -54,3 +54,35 @@ fn all_stays_all_when_a_project_is_added() {
 
     assert_eq!(set, ScopeSet::All);
 }
+
+#[test]
+fn all_is_the_identity_of_the_intersection() {
+    let projects = ScopeSet::empty()
+        .with(AssignmentScope::Project(project(1)))
+        .with(AssignmentScope::Project(project(2)));
+
+    assert_eq!(ScopeSet::All.intersect(&ScopeSet::All), ScopeSet::All);
+    assert_eq!(ScopeSet::All.intersect(&projects), projects);
+    assert_eq!(projects.clone().intersect(&ScopeSet::All), projects);
+}
+
+#[test]
+fn the_intersection_of_project_sets_keeps_the_common_projects() {
+    let left = ScopeSet::empty()
+        .with(AssignmentScope::Project(project(1)))
+        .with(AssignmentScope::Project(project(2)));
+    let right = ScopeSet::empty()
+        .with(AssignmentScope::Project(project(2)))
+        .with(AssignmentScope::Project(project(3)));
+
+    assert_eq!(
+        left.intersect(&right),
+        ScopeSet::Projects(BTreeSet::from([project(2)]))
+    );
+    assert!(
+        ScopeSet::empty()
+            .with(AssignmentScope::Project(project(1)))
+            .intersect(&ScopeSet::empty())
+            .is_empty()
+    );
+}

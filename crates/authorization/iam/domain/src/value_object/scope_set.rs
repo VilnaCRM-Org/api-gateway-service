@@ -39,6 +39,20 @@ impl ScopeSet {
         }
     }
 
+    /// The projects both sets cover: [`ScopeSet::All`] is the identity.
+    #[must_use]
+    pub fn intersect(self, other: &Self) -> Self {
+        match (self, other) {
+            (Self::All, Self::All) => Self::All,
+            (Self::All, Self::Projects(projects)) => Self::Projects(projects.clone()),
+            (Self::Projects(projects), Self::All) => Self::Projects(projects),
+            (Self::Projects(mut projects), Self::Projects(others)) => {
+                projects.retain(|project_id| others.contains(project_id));
+                Self::Projects(projects)
+            }
+        }
+    }
+
     /// Whether the set covers the project.
     #[must_use]
     pub fn covers(&self, project_id: ProjectId) -> bool {
