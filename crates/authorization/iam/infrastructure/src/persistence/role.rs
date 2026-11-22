@@ -255,7 +255,7 @@ async fn update_role(
 }
 
 /// No affected row means the stored role is unknown, deleted or at another version: a conflict.
-const fn updated(rows_affected: u64) -> Result<(), RepositoryError> {
+pub(crate) const fn updated(rows_affected: u64) -> Result<(), RepositoryError> {
     if rows_affected == 0 {
         Err(RepositoryError::Conflict)
     } else {
@@ -369,7 +369,7 @@ fn restore_grants(keys: &[String]) -> Result<PermissionGrantSet, RepositoryError
 
 /// A unique violation (a stored id or a name in use) is a duplicate; everything else is an
 /// unavailable repository.
-fn translate(error: sqlx::Error) -> RepositoryError {
+pub(crate) fn translate(error: sqlx::Error) -> RepositoryError {
     let duplicate = error
         .as_database_error()
         .is_some_and(sqlx::error::DatabaseError::is_unique_violation);

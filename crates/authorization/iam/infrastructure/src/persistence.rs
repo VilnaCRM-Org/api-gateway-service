@@ -9,6 +9,7 @@ pub mod revocation_view;
 pub mod role;
 pub mod security_audit_log;
 pub mod unit_of_work;
+pub mod user_role;
 
 use iam_domain::{
     InvalidIamValue, LogEpoch, PolicyDigestValue, PolicyEpoch, PolicyEpochRepository,

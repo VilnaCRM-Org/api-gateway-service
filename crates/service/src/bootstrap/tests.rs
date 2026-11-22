@@ -33,6 +33,7 @@ use test_support::role::FakeRoleRepository;
 use test_support::security_audit::FakeSecurityAuditLog;
 use test_support::seed::TestRng;
 use test_support::token::FakeTokenRepository;
+use test_support::user_role::FakeUserRoleRepository;
 use tower::ServiceExt as _;
 
 use super::{
@@ -83,6 +84,7 @@ fn adapters() -> Adapters {
         change_receipts: Arc::new(FakeChangeReceiptRepository::new()),
         idempotency_records: Arc::new(FakeIdempotencyRepository::new()),
         roles: Arc::new(FakeRoleRepository::new()),
+        user_roles: Arc::new(FakeUserRoleRepository::new()),
         access_tokens: Arc::new(FakeAccessTokenVerifier::new()),
         tokens: Arc::new(FakeTokenRepository::new()),
         revocations: Arc::new(FakeRevocationRepository::new()),

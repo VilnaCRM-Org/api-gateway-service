@@ -29,6 +29,7 @@ use test_support::revocation::FakeRevocationRepository;
 use test_support::role::FakeRoleRepository;
 use test_support::security_audit::FakeSecurityAuditLog;
 use test_support::token::FakeTokenRepository;
+use test_support::user_role::FakeUserRoleRepository;
 use tower::ServiceExt as _;
 
 const REQUEST_ID: &str = "panic-test-1";
@@ -73,6 +74,7 @@ async fn a_panic_is_one_json_line_with_the_request_id_and_a_500_problem() {
         change_receipts: Arc::new(FakeChangeReceiptRepository::new()),
         idempotency_records: Arc::new(FakeIdempotencyRepository::new()),
         roles: Arc::new(FakeRoleRepository::new()),
+        user_roles: Arc::new(FakeUserRoleRepository::new()),
         access_tokens: Arc::new(FakeAccessTokenVerifier::new()),
         tokens: Arc::new(FakeTokenRepository::new()),
         revocations: Arc::new(FakeRevocationRepository::new()),

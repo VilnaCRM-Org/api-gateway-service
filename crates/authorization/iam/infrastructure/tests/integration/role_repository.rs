@@ -487,9 +487,12 @@ async fn the_length_checks_refuse_a_long_name_and_a_long_description(pool: PgPoo
 
 #[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
 async fn the_down_migration_removes_both_tables(pool: PgPool) {
+    let newer =
+        include_str!("../../../../../../migrations/20261122205127_create_iam_user_roles.down.sql");
     let down = include_str!(
         "../../../../../../migrations/20261122192547_create_iam_roles_and_permissions.down.sql"
     );
+    sqlx::raw_sql(newer).execute(&pool).await.unwrap();
 
     sqlx::raw_sql(down).execute(&pool).await.unwrap();
 

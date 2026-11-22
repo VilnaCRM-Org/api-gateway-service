@@ -1,7 +1,9 @@
 //! Value objects of the IAM context.
 
+pub mod access_check;
 pub mod access_token;
 pub mod actor_ref;
+pub mod assignment_expiry;
 pub mod assignment_scope;
 pub mod audit_action;
 pub mod audit_chain_head;
@@ -12,13 +14,20 @@ pub mod audit_summary;
 pub mod audit_target;
 pub mod boot_instant;
 pub mod change_statement;
+pub mod content_hash;
+pub mod coordinate_set;
 pub mod credential;
 pub mod credential_digest;
+pub mod decision;
 pub mod decision_effect;
+pub mod decision_outcome;
+pub mod decision_reason;
 pub mod entity_version;
 pub mod event_data;
 pub mod event_type;
 pub mod gql_name;
+pub mod graphql_coordinate;
+pub mod graphql_type_graph;
 pub mod http_method;
 pub mod idempotency_key;
 pub mod identifier;
@@ -41,6 +50,7 @@ pub mod role_name;
 pub mod scope_set;
 pub mod service_name;
 pub mod session_id;
+pub mod spec_status;
 pub mod subject;
 mod text;
 pub mod token_id;

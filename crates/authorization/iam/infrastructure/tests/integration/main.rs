@@ -23,3 +23,5 @@ mod token_resolution;
 mod unit_of_work;
 #[cfg(test)]
 mod unit_of_work_migration;
+#[cfg(test)]
+mod user_role_repository;

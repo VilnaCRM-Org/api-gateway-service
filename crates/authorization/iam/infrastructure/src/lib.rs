@@ -15,6 +15,7 @@ pub use persistence::revocation_view::PgRevocationView;
 pub use persistence::role::PgRoleRepository;
 pub use persistence::security_audit_log::PgSecurityAuditLog;
 pub use persistence::unit_of_work::PgIamUnitOfWork;
+pub use persistence::user_role::PgUserRoleRepository;
 pub use token::caching_token_repository::CachingTokenRepository;
 pub use token::jwt_access_token_verifier::{JwtAccessTokenVerifier, JwtSettings};
 pub use token::jwt_key_set::{JwtKeyFileError, JwtKeySet};

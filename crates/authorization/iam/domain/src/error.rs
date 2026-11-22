@@ -1,5 +1,9 @@
 //! Domain errors of the IAM context.
 
+mod spec;
+
+pub use spec::{InvalidSpec, SpecPosition, SpecTransitionRefused};
+
 use crate::value_object::entity_version::EntityVersion;
 
 /// A value that breaks an invariant of a shared identity, name, scope or version value object of IAM.
@@ -393,6 +397,88 @@ impl RoleChangeRefused {
             Self::Deleted => "deleted",
             Self::Version(conflict) => conflict.code(),
             Self::Invalid(invalid) => invalid.code(),
+        }
+    }
+}
+
+/// A value that breaks an invariant of the `UserRole` aggregate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidUserRole {
+    /// The expiry is not later than the current time of the `Clock` port.
+    #[error("This value must be a time in the future.")]
+    ExpiryNotInFuture,
+}
+
+impl InvalidUserRole {
+    /// The property that carries the invalid value.
+    #[must_use]
+    pub const fn property_path(self) -> &'static str {
+        match self {
+            Self::ExpiryNotInFuture => "expiresAt",
+        }
+    }
+
+    /// The machine-readable violation code.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::ExpiryNotInFuture => "future",
+        }
+    }
+}
+
+/// The `UserRole` aggregate refuses a change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum UserRoleChangeRefused {
+    /// The assignment is revoked; the application answers 404.
+    #[error("The role assignment was revoked.")]
+    Revoked,
+    /// The change names no version or a stale one; the application answers 428 or 412.
+    #[error(transparent)]
+    Version(#[from] VersionConflict),
+    /// The version of the assignment cannot be increased any more.
+    #[error(transparent)]
+    Range(#[from] InvalidIamValue),
+    /// The new value breaks an invariant of the assignment; the application answers 422.
+    #[error(transparent)]
+    Invalid(#[from] InvalidUserRole),
+}
+
+impl UserRoleChangeRefused {
+    /// The machine-readable refusal code.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Revoked => "revoked",
+            Self::Version(conflict) => conflict.code(),
+            Self::Range(invalid) => invalid.code(),
+            Self::Invalid(invalid) => invalid.code(),
+        }
+    }
+}
+
+/// An access check whose shape breaks a limit of FR-6 or FR-9.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidAccessCheck {
+    /// A permissions check names fewer than 1 or more than 100 keys.
+    #[error("This collection must contain between 1 and 100 elements.")]
+    PermissionCount,
+}
+
+impl InvalidAccessCheck {
+    /// The property that carries the invalid value.
+    #[must_use]
+    pub const fn property_path(self) -> &'static str {
+        match self {
+            Self::PermissionCount => "permissions",
+        }
+    }
+
+    /// The machine-readable violation code.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::PermissionCount => "count",
         }
     }
 }

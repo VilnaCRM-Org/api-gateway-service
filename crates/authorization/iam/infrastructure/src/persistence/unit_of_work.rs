@@ -17,6 +17,7 @@ use sqlx::types::time::OffsetDateTime;
 use crate::persistence::event_encoding::encode;
 use crate::persistence::role::save_within;
 use crate::persistence::security_audit_log::{PgSecurityAuditLog, emit};
+use crate::persistence::user_role;
 
 /// The topic of the IAM domain events.
 pub const EVENTS_TOPIC: &str = "iam.events.v1";
@@ -28,7 +29,7 @@ const NANOS_PER_MICRO: i128 = 1_000;
 ///
 /// It writes the `iam_policy_epoch`, `iam_outbox`, `iam_security_audit_events`,
 /// `iam_change_receipts` and `iam_idempotency_keys` tables, and runs the role statements against
-/// `iam_roles` and `iam_role_permissions`.
+/// `iam_roles` and `iam_role_permissions` and the assignment statements against `iam_user_roles`.
 #[derive(Debug)]
 pub struct PgIamUnitOfWork {
     pool: sqlx::PgPool,
@@ -163,6 +164,9 @@ async fn run(
         match statement {
             ChangeStatement::ExpectPolicyVersion(_) => {}
             ChangeStatement::SaveRole(role) => save_within(connection, role).await?,
+            ChangeStatement::SaveUserRole(assignment) => {
+                user_role::save_within(connection, assignment).await?;
+            }
         }
     }
     Ok(())

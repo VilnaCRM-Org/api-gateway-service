@@ -1,7 +1,7 @@
 //! One grant of a role: a key or a wildcard pattern.
 
 use crate::error::InvalidPermissionKey;
-use crate::value_object::permission_key::PermissionKey;
+use crate::value_object::permission_key::{PermissionKey, PermissionKeyKind};
 use crate::value_object::service_name::ServiceName;
 use crate::value_object::wildcard_pattern::WildcardPattern;
 
@@ -32,6 +32,16 @@ impl PermissionGrant {
     #[must_use]
     pub const fn is_wildcard(&self) -> bool {
         matches!(self, Self::Wildcard(_))
+    }
+
+    /// Whether the grant is privileged: a wildcard pattern or a reserved `iam:` key. Assigning a
+    /// role that holds one records `iam.privileged_role.assigned` as a security alert.
+    #[must_use]
+    pub const fn is_privileged(&self) -> bool {
+        match self {
+            Self::Key(key) => matches!(key.kind(), PermissionKeyKind::Reserved),
+            Self::Wildcard(_) => true,
+        }
     }
 
     /// The service of the key or pattern.

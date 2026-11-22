@@ -21,6 +21,7 @@ pub mod security_audit;
 pub mod seed;
 pub mod token;
 pub mod unit_of_work;
+pub mod user_role;
 
 /// Runs a future that completes without waiting for anything, such as the doubles of this crate.
 #[cfg(test)]

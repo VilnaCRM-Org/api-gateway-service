@@ -60,3 +60,17 @@ fn a_grant_names_the_service_of_its_key_or_pattern(#[case] text: &str, #[case] n
 fn a_malformed_grant_is_rejected(#[case] text: &str, #[case] error: InvalidPermissionKey) {
     assert_eq!(PermissionGrant::parse(text), Err(error));
 }
+
+#[rstest]
+#[case("rest:core:GET /api/items", false)]
+#[case("gql:core:Query.items", false)]
+#[case("iam:audit:read", true)]
+#[case("iam:grant:*", true)]
+#[case("rest:core:*", true)]
+#[case("gql:core:Query.*", true)]
+fn a_wildcard_or_a_reserved_key_is_privileged(#[case] text: &str, #[case] privileged: bool) {
+    assert_eq!(
+        PermissionGrant::parse(text).unwrap().is_privileged(),
+        privileged
+    );
+}

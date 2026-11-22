@@ -1,8 +1,8 @@
 use rstest::rstest;
 
 use super::{
-    InvalidEventEnvelope, InvalidIamValue, InvalidPermissionKey, InvalidRole, RoleChangeRefused,
-    VersionConflict,
+    InvalidEventEnvelope, InvalidIamValue, InvalidPermissionKey, InvalidRole, InvalidUserRole,
+    RoleChangeRefused, UserRoleChangeRefused, VersionConflict,
 };
 use crate::value_object::entity_version::EntityVersion;
 
@@ -395,5 +395,64 @@ fn a_refused_role_change_names_its_cause() {
     assert_eq!(
         RoleChangeRefused::from(InvalidIamValue::EntityVersionRange).to_string(),
         InvalidIamValue::EntityVersionRange.to_string()
+    );
+}
+
+#[test]
+fn an_expiry_that_is_not_in_the_future_names_expires_at() {
+    let invalid = InvalidUserRole::ExpiryNotInFuture;
+
+    assert_eq!(invalid.property_path(), "expiresAt");
+    assert_eq!(invalid.code(), "future");
+    assert_eq!(
+        invalid.to_string(),
+        "This value must be a time in the future."
+    );
+}
+
+#[test]
+fn a_refused_user_role_change_names_its_cause() {
+    let stale = VersionConflict::Stale {
+        expected: EntityVersion::new(2).unwrap(),
+        current: EntityVersion::new(3).unwrap(),
+    };
+    let expiry = InvalidUserRole::ExpiryNotInFuture;
+    let range = InvalidIamValue::EntityVersionRange;
+
+    assert_eq!(UserRoleChangeRefused::Revoked.code(), "revoked");
+    assert_eq!(
+        UserRoleChangeRefused::Revoked.to_string(),
+        "The role assignment was revoked."
+    );
+    assert_eq!(UserRoleChangeRefused::from(stale).code(), "stale");
+    assert_eq!(
+        UserRoleChangeRefused::from(stale).to_string(),
+        stale.to_string()
+    );
+    assert_eq!(
+        UserRoleChangeRefused::from(VersionConflict::Missing).code(),
+        "missing"
+    );
+    assert_eq!(UserRoleChangeRefused::from(range).code(), "range");
+    assert_eq!(
+        UserRoleChangeRefused::from(range).to_string(),
+        range.to_string()
+    );
+    assert_eq!(UserRoleChangeRefused::from(expiry).code(), "future");
+    assert_eq!(
+        UserRoleChangeRefused::from(expiry).to_string(),
+        expiry.to_string()
+    );
+}
+
+#[test]
+fn an_invalid_access_check_exposes_the_property_path_the_code_and_the_message() {
+    let invalid = super::InvalidAccessCheck::PermissionCount;
+
+    assert_eq!(invalid.property_path(), "permissions");
+    assert_eq!(invalid.code(), "count");
+    assert_eq!(
+        invalid.to_string(),
+        "This collection must contain between 1 and 100 elements."
     );
 }

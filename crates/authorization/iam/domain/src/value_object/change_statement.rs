@@ -1,6 +1,7 @@
 //! The statements and guards that a change runs inside its transaction.
 
 use crate::role::statement::RoleStatement;
+use crate::user_role::statement::UserRoleStatement;
 use crate::value_object::policy_version::PolicyVersion;
 
 /// One aggregate statement or guard of a change, described for the unit of work to execute.
@@ -18,6 +19,12 @@ pub enum ChangeStatement {
     /// Insert a new role, or update a stored role at the expected version; a duplicate name or id
     /// refuses the change as a duplicate and a stale or deleted stored role as a conflict.
     SaveRole(Box<RoleStatement>),
+    /// Insert a new assignment, or update a stored assignment at the expected version.
+    ///
+    /// A duplicate id, or an assignment that is not revoked with the same subject, role and scope,
+    /// refuses the change as a duplicate; a stale or revoked stored assignment refuses it as a
+    /// conflict.
+    SaveUserRole(Box<UserRoleStatement>),
 }
 
 impl ChangeStatement {
@@ -27,7 +34,7 @@ impl ChangeStatement {
     pub fn holds(&self, locked: PolicyVersion) -> bool {
         match self {
             Self::ExpectPolicyVersion(expected) => *expected == locked,
-            Self::SaveRole(_) => true,
+            Self::SaveRole(_) | Self::SaveUserRole(_) => true,
         }
     }
 }
