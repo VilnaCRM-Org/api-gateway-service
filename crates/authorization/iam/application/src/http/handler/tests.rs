@@ -14,6 +14,7 @@ use shared_domain::{CommandBus, QueryBus, Uuid};
 use test_support::bus::{FakeCommandBus, FakeQueryBus};
 use test_support::clock::FixedClock;
 use test_support::id::SequenceUuidGenerator;
+use test_support::request_digester::FakeRequestDigester;
 use tower::ServiceExt as _;
 
 use crate::error::IamError;
@@ -22,8 +23,9 @@ use crate::principal::Principal;
 use crate::query::resolve_subject_token::{ResolveSubjectTokenQuery, TokenResolution};
 
 /// The extractor types a handler of this module may take.
-const ALLOWED_EXTRACTORS: [&str; 7] = [
+const ALLOWED_EXTRACTORS: [&str; 8] = [
     "State<IamState>",
+    "CallerPrincipal",
     "ApiPath<",
     "ValidatedQuery<",
     "ValidatedJson<",
@@ -114,14 +116,22 @@ fn disallowed_parameters(source: &str) -> Vec<String> {
 /// problem-aware extractors only. The list of names grows with every handler that is added.
 #[test]
 fn handlers_use_only_the_problem_aware_extractors() {
-    let source = include_str!("../handler.rs");
+    let sources = [
+        (include_str!("../handler.rs"), vec!["resolve"]),
+        (
+            include_str!("../role.rs"),
+            vec!["create", "get_one", "list"],
+        ),
+    ];
 
-    assert_eq!(disallowed_parameters(source), Vec::<String>::new());
-    let names: Vec<String> = handler_parameters(source)
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect();
-    assert_eq!(names, ["resolve".to_owned()]);
+    for (source, expected) in sources {
+        assert_eq!(disallowed_parameters(source), Vec::<String>::new());
+        let names: Vec<String> = handler_parameters(source)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(names, expected);
+    }
 }
 
 #[rstest]
@@ -147,6 +157,7 @@ fn the_extractor_check_accepts_the_allowed_extractors() {
     let source = "pub async fn ok(State(state): State<IamState>, \
         ApiPath(id): ApiPath<uuid::Uuid>, ValidatedQuery(q): ValidatedQuery<Q>, \
         ValidatedJson(b): ValidatedJson<B>, ApiJson(j): ApiJson<J>, \
+        CallerPrincipal(caller): CallerPrincipal, \
         IdempotencyKeyHeader(key): IdempotencyKeyHeader, IfMatchHeader(version): IfMatchHeader) \
         -> Result<(), Problem> {}";
 
@@ -176,6 +187,7 @@ fn app(bus: FakeQueryBus) -> (Router, Arc<FakeQueryBus>) {
         query_bus,
         uuid_generator: Arc::new(SequenceUuidGenerator::starting_at(1)),
         clock: Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH)),
+        request_digester: Arc::new(FakeRequestDigester),
     };
     let (routes, _document) = router::<IamState>().split_for_parts();
     (routes.with_state(state), bus)

@@ -6,17 +6,20 @@ pub mod extract;
 pub mod handler;
 pub mod openapi_document_parser;
 pub mod response;
+pub mod role;
 
 use std::sync::Arc;
 
 use axum::extract::FromRef;
+use iam_domain::RequestDigester;
 use shared_domain::{Clock, CommandBus, QueryBus, UuidGenerator};
 use utoipa_axum::router::OpenApiRouter;
 
 pub use openapi_document_parser::JsonOpenApiDocumentParser;
 use utoipa_axum::routes;
 
-/// What the handlers of the IAM context need: the two buses, the identifier source and the clock.
+/// What the handlers of the IAM context need: the two buses, the identifier source, the clock and
+/// the request digester.
 #[derive(Debug, Clone)]
 pub struct IamState {
     /// Dispatches the commands.
@@ -27,6 +30,8 @@ pub struct IamState {
     pub uuid_generator: Arc<dyn UuidGenerator>,
     /// Tells the current time.
     pub clock: Arc<dyn Clock>,
+    /// Digests the request of an idempotent write.
+    pub request_digester: Arc<dyn RequestDigester>,
 }
 
 /// The routes of the IAM context, to be nested under `/api`.
@@ -36,7 +41,10 @@ where
     S: Clone + Send + Sync + 'static,
     IamState: FromRef<S>,
 {
-    OpenApiRouter::new().routes(routes!(handler::resolve))
+    OpenApiRouter::new()
+        .routes(routes!(handler::resolve))
+        .routes(routes!(role::create, role::list))
+        .routes(routes!(role::get_one))
 }
 
 #[cfg(test)]

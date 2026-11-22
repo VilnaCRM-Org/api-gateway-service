@@ -23,6 +23,12 @@ impl RequestDigest {
             .map_err(|_error| InvalidIamValue::RequestDigestLength)
     }
 
+    /// Wraps the 32 bytes that a digest function produced, which cannot have another length.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; Self::LENGTH]) -> Self {
+        Self(bytes)
+    }
+
     /// The bytes of the digest.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; Self::LENGTH] {

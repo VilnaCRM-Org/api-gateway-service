@@ -6,7 +6,10 @@ use shared_domain::{AggregateRoot as _, DomainEvent, Uuid};
 
 use super::event::{RoleCreated, RoleDeleted, RolePermissionsChanged, RoleUpdated};
 use super::{Role, RoleDescriptionChange, RoleFields, RoleParts, RolePatch, RoleStamp};
-use crate::error::{InvalidIamValue, InvalidRole, RoleChangeRefused, VersionConflict};
+use crate::entity::event_envelope::EventEnvelope;
+use crate::error::{
+    InvalidEventEnvelope, InvalidIamValue, InvalidRole, RoleChangeRefused, VersionConflict,
+};
 use crate::value_object::actor_ref::ActorRef;
 use crate::value_object::entity_version::EntityVersion;
 use crate::value_object::identifier::RoleId;
@@ -446,4 +449,89 @@ fn the_largest_version_cannot_be_increased(#[case] change: Change) {
     );
     assert_eq!(role.parts(), &parts(RoleKind::Custom, i64::MAX));
     assert!(role.pull_domain_events().is_empty());
+}
+
+/// An event that is not one of the four events of a role.
+#[derive(Debug)]
+struct Foreign;
+
+impl DomainEvent for Foreign {
+    fn event_id(&self) -> Uuid {
+        Uuid::parse(EVENT).unwrap()
+    }
+
+    fn aggregate_id(&self) -> Uuid {
+        Uuid::parse(ROLE).unwrap()
+    }
+
+    fn occurred_at(&self) -> SystemTime {
+        at(1)
+    }
+
+    fn event_name(&self) -> &'static str {
+        "iam.foreign.happened"
+    }
+}
+
+#[test]
+fn the_events_of_each_change_are_pulled_as_envelopes_in_recording_order() {
+    let mut role = stored(RoleKind::Custom, 1);
+    role.update(
+        Some(version(1)),
+        RolePatch {
+            name: Some(name("Finance")),
+            description: RoleDescriptionChange::Keep,
+        },
+        stamp(30),
+    )
+    .unwrap();
+    role.replace_permissions(
+        Some(version(2)),
+        grants(&["rest:billing:GET /invoices"]),
+        stamp(40),
+    )
+    .unwrap();
+    role.delete(Some(version(3)), 2, stamp(50)).unwrap();
+
+    let envelopes = role.pull_envelopes().unwrap();
+
+    let types: Vec<&str> = envelopes
+        .iter()
+        .map(|envelope| envelope.parts().event_type.as_str())
+        .collect();
+    assert_eq!(
+        types,
+        [
+            "iam.role.updated",
+            "iam.role_permissions.changed",
+            "iam.role.deleted"
+        ]
+    );
+    assert_eq!(role.pull_envelopes().unwrap(), Vec::<EventEnvelope>::new());
+}
+
+#[test]
+fn a_created_role_is_pulled_as_one_created_envelope_of_its_aggregate() {
+    let fields = RoleFields::new("Billing".to_owned(), None).unwrap();
+    let mut role = Role::create(role_id(), fields, stamp(100));
+
+    let envelopes = role.pull_envelopes().unwrap();
+
+    assert_eq!(envelopes.len(), 1);
+    let parts = envelopes[0].parts();
+    assert_eq!(parts.event_type.as_str(), "iam.role.created");
+    assert_eq!(parts.id, stamp(100).event_id);
+    assert_eq!(parts.aggregate_id, role_id().as_uuid());
+    assert_eq!(parts.entity_version, Some(EntityVersion::INITIAL));
+    assert_eq!(parts.actor, stamp(100).actor);
+}
+
+#[test]
+fn an_event_that_a_role_does_not_record_is_refused() {
+    let mut role = stored(RoleKind::Custom, 1);
+    role.recorded_events().record(Foreign);
+
+    let refused = role.pull_envelopes();
+
+    assert_eq!(refused, Err(InvalidEventEnvelope::EventType));
 }

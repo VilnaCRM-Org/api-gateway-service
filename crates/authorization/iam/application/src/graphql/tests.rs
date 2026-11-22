@@ -14,6 +14,7 @@ use shared_domain::{CommandBus, QueryBus, Uuid};
 use test_support::bus::{FakeCommandBus, FakeQueryBus};
 use test_support::clock::FixedClock;
 use test_support::id::SequenceUuidGenerator;
+use test_support::request_digester::FakeRequestDigester;
 
 use super::{
     IamMutation, IamQuery, ResolveTokenInput, expected_version, iam_problem_to_graphql_error,
@@ -22,6 +23,8 @@ use crate::error::IamError;
 use crate::http::IamState;
 use crate::principal::Principal;
 use crate::query::resolve_subject_token::{ResolveSubjectTokenQuery, TokenResolution};
+
+mod roles;
 
 fn default_of<T: Default>() -> T {
     T::default()
@@ -198,6 +201,7 @@ fn state(queries: FakeQueryBus) -> IamState {
         query_bus,
         uuid_generator: Arc::new(SequenceUuidGenerator::starting_at(1)),
         clock: Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH)),
+        request_digester: Arc::new(FakeRequestDigester),
     }
 }
 

@@ -76,3 +76,53 @@ Content-Type: application/json
   "query": "query ($credential: String!) { resolveToken(input: { credential: $credential }) { resolved reason subjectId subjectKind sessionId roles expiresAt } }",
   "variables": { "credential": "<token to resolve>" }
 }
+
+### Create a role over REST: 201 with Location, ETag, the id and version 1; 409 for a duplicate name; 422 for an invalid name or a reused Idempotency-Key; 401 without a valid bearer token
+# A repeated Idempotency-Key with the same body within 24 hours returns the original result and creates nothing again.
+POST {{baseUrl}}/api/roles
+Authorization: Bearer <caller token>
+Idempotency-Key: create-billing-administrator
+Content-Type: application/json
+
+{
+  "name": "Billing administrator",
+  "description": "Manages invoices and refunds."
+}
+
+### Create a role over GraphQL: the same data as the REST operation; the error codes CONFLICT, VALIDATION_FAILED and UNAUTHENTICATED
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: CreateRoleInput!) { createRole(input: $input) { id name description kind grantCount version createdAt updatedAt } }",
+  "variables": { "input": { "name": "Billing administrator", "description": "Manages invoices and refunds.", "idempotencyKey": "create-billing-administrator" } }
+}
+
+### Get a role over REST: 200 with its ETag, 404 for an unknown id, 422 for an id that is not a UUID
+GET {{baseUrl}}/api/roles/01a1c6b5-cb86-7134-868a-7608036facfe
+Authorization: Bearer <caller token>
+
+### Get a role over GraphQL: null for an unknown id
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($id: ID!) { role(id: $id) { id name description kind grantCount version createdAt updatedAt } }",
+  "variables": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe" }
+}
+
+### List roles over REST: a page of 1 to 100 roles with the nextCursor of the next page, filtered by namePrefix (without regard to case) and kind (system or custom)
+GET {{baseUrl}}/api/roles?limit=30&namePrefix=bill&kind=custom
+Authorization: Bearer <caller token>
+
+### List roles over GraphQL: the same page; pass the nextCursor as after for the next page
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($first: Int, $after: String, $filter: RoleFilter) { roles(first: $first, after: $after, filter: $filter) { items { id name kind grantCount version createdAt updatedAt } nextCursor } }",
+  "variables": { "first": 30, "filter": { "namePrefix": "bill", "kind": "custom" } }
+}

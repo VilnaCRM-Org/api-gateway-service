@@ -13,9 +13,13 @@ use iam_domain::{
 const SENSITIVE_DIRECTIVE: &str = "iamSensitive";
 const AUDIT_ALWAYS_DIRECTIVE: &str = "iamAuditAlways";
 
+/// The deepest nesting of `[`, `{` and `(` the recursive parser is given; deeper input is refused
+/// before parsing, because the size limit alone does not bound the parser's stack depth.
+const MAX_NESTING: usize = 64;
+
 /// Parses SDL with the parser of `async-graphql`.
 ///
-/// The size limit is checked before the parser sees the document, the type limit while the
+/// The size and nesting limits are checked before the parser sees the document, the type limit while the
 /// definitions are walked and the field limit by [`GraphQlTypeGraph::new`].
 #[derive(Debug, Default, Clone, Copy)]
 pub struct AsyncGraphQlSchemaParser;
@@ -27,6 +31,7 @@ impl GraphQlSchemaParser for AsyncGraphQlSchemaParser {
                 limit: GraphQlSpec::MAX_SDL_BYTES,
             });
         }
+        check_nesting(sdl)?;
         let document = parse_schema(sdl).map_err(|error| {
             let position = error
                 .positions()
@@ -79,6 +84,30 @@ impl RootNames {
         }
     }
 
+    /// Whether `name` is one of the names `Query`, `Mutation` or `Subscription` while the root of
+    /// that name was renamed and `name` is no root at all: its coordinates would read as a root's.
+    fn takes_a_root_name(&self, name: &str) -> bool {
+        let renamed = [
+            ("Query", &self.query),
+            ("Mutation", &self.mutation),
+            ("Subscription", &self.subscription),
+        ]
+        .iter()
+        .any(|(canonical, root)| name == *canonical && root.as_str() != *canonical);
+        renamed && self.coordinate_type(name) == name
+    }
+
+    /// The type name of a coordinate, refusing a type that takes a renamed root's name.
+    fn graph_type(&self, name: &str, pos: Pos) -> Result<GqlName, InvalidSpec> {
+        if self.takes_a_root_name(name) {
+            return Err(malformed(
+                format!("The type {name} has the name of a renamed root type."),
+                pos,
+            ));
+        }
+        graph_name(self.coordinate_type(name), pos)
+    }
+
     /// The name a type has in a coordinate: `Query`, `Mutation` or `Subscription` for a root.
     fn coordinate_type<'a>(&self, name: &'a str) -> &'a str {
         if name == self.query {
@@ -108,7 +137,7 @@ impl Collector {
     ) -> Result<(), InvalidSpec> {
         let node = &definition.node;
         if !node.extend {
-            self.declared_types += 1;
+            self.declared_types = self.declared_types.saturating_add(1);
             if self.declared_types > GraphQlTypeGraph::MAX_TYPES {
                 return Err(InvalidSpec::TooManyTypes {
                     limit: GraphQlTypeGraph::MAX_TYPES,
@@ -117,25 +146,23 @@ impl Collector {
         }
         match &node.kind {
             TypeKind::Object(object) => {
-                let type_name = graph_name(
-                    roots.coordinate_type(node.name.node.as_str()),
-                    node.name.pos,
-                )?;
+                let type_name = roots.graph_type(node.name.node.as_str(), node.name.pos)?;
                 for interface in &object.implements {
-                    let interface_name = graph_name(interface.node.as_str(), interface.pos)?;
+                    let interface_name =
+                        roots.graph_type(interface.node.as_str(), interface.pos)?;
                     self.possible_types
                         .push((interface_name, type_name.clone()));
                 }
-                self.add_fields(&type_name, &object.fields)
+                self.add_fields(&type_name, &object.fields, roots)
             }
             TypeKind::Interface(interface) => {
-                let type_name = graph_name(node.name.node.as_str(), node.name.pos)?;
-                self.add_fields(&type_name, &interface.fields)
+                let type_name = roots.graph_type(node.name.node.as_str(), node.name.pos)?;
+                self.add_fields(&type_name, &interface.fields, roots)
             }
             TypeKind::Union(union) => {
-                let type_name = graph_name(node.name.node.as_str(), node.name.pos)?;
+                let type_name = roots.graph_type(node.name.node.as_str(), node.name.pos)?;
                 for member in &union.members {
-                    let member_name = graph_name(member.node.as_str(), member.pos)?;
+                    let member_name = roots.graph_type(member.node.as_str(), member.pos)?;
                     self.possible_types.push((type_name.clone(), member_name));
                 }
                 Ok(())
@@ -148,11 +175,12 @@ impl Collector {
         &mut self,
         type_name: &GqlName,
         fields: &[Positioned<FieldDefinition>],
+        roots: &RootNames,
     ) -> Result<(), InvalidSpec> {
         for field in fields {
             let node = &field.node;
             let name = graph_name(node.name.node.as_str(), node.name.pos)?;
-            let return_type = graph_name(named_type(&node.ty.node), node.ty.pos)?;
+            let return_type = roots.graph_type(named_type(&node.ty.node), node.ty.pos)?;
             self.fields.push((
                 GraphQlCoordinate::new(type_name.clone(), name),
                 GraphQlField {
@@ -162,6 +190,98 @@ impl Collector {
             ));
         }
         Ok(())
+    }
+}
+
+/// Refuses SDL whose `[`, `{` or `(` nesting outside strings and comments exceeds
+/// [`MAX_NESTING`], at the opener that crosses it.
+fn check_nesting(sdl: &str) -> Result<(), InvalidSpec> {
+    let bytes = sdl.as_bytes();
+    let mut depth = 0_usize;
+    let mut index = 0_usize;
+    while let Some(byte) = bytes.get(index) {
+        index = match byte {
+            b'#' => skip_comment(bytes, index),
+            b'"' => skip_string(bytes, index),
+            b'[' | b'{' | b'(' => {
+                depth = depth.saturating_add(1);
+                if depth > MAX_NESTING {
+                    return Err(malformed(
+                        format!("The document nests deeper than {MAX_NESTING} levels."),
+                        position_of(sdl, index),
+                    ));
+                }
+                index.saturating_add(1)
+            }
+            b']' | b'}' | b')' => {
+                depth = depth.saturating_sub(1);
+                index.saturating_add(1)
+            }
+            _ => index.saturating_add(1),
+        };
+    }
+    Ok(())
+}
+
+/// The bytes from `start` on, empty past the end.
+fn rest_of(bytes: &[u8], start: usize) -> &[u8] {
+    bytes.get(start..).unwrap_or_default()
+}
+
+/// The index after the comment that starts at `start`.
+fn skip_comment(bytes: &[u8], start: usize) -> usize {
+    rest_of(bytes, start)
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map_or(bytes.len(), |offset| {
+            start.saturating_add(offset).saturating_add(1)
+        })
+}
+
+/// The index after the string or block string that starts at `start`.
+fn skip_string(bytes: &[u8], start: usize) -> usize {
+    if rest_of(bytes, start).starts_with(b"\"\"\"") {
+        skip_block_string(bytes, start.saturating_add(3))
+    } else {
+        skip_line_string(bytes, start.saturating_add(1))
+    }
+}
+
+/// The index after the closing `"""`; `\"""` is an escaped quote run.
+fn skip_block_string(bytes: &[u8], mut index: usize) -> usize {
+    while index < bytes.len() {
+        let rest = rest_of(bytes, index);
+        if rest.starts_with(b"\\\"\"\"") {
+            index = index.saturating_add(4);
+        } else if rest.starts_with(b"\"\"\"") {
+            return index.saturating_add(3);
+        } else {
+            index = index.saturating_add(1);
+        }
+    }
+    bytes.len()
+}
+
+/// The index after the closing `"` or the end of the line of an unterminated string.
+fn skip_line_string(bytes: &[u8], mut index: usize) -> usize {
+    while let Some(byte) = bytes.get(index) {
+        match byte {
+            b'\\' => index = index.saturating_add(2),
+            b'"' | b'\n' => return index.saturating_add(1),
+            _ => index = index.saturating_add(1),
+        }
+    }
+    bytes.len()
+}
+
+/// The one-based line and column of a byte index.
+fn position_of(sdl: &str, index: usize) -> Pos {
+    let before = sdl.as_bytes().get(..index).unwrap_or(sdl.as_bytes());
+    let mut lines = before.split(|byte| *byte == b'\n');
+    let current_line = lines.next_back().unwrap_or_default();
+    Pos {
+        line: lines.count().saturating_add(1),
+        column: current_line.len().saturating_add(1),
     }
 }
 

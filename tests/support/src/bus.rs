@@ -83,7 +83,7 @@ impl CommandBus for FakeCommandBus {
 
 /// Query bus that answers with a closure and records the names of the asked queries.
 pub struct FakeQueryBus {
-    answer: Option<(TypeId, QueryAnswer)>,
+    answers: Vec<(TypeId, QueryAnswer)>,
     asked: Mutex<Vec<&'static str>>,
 }
 
@@ -101,6 +101,17 @@ impl FakeQueryBus {
         Q: Query,
         F: Fn(Q) -> Result<Q::Output, Q::Error> + Send + Sync + 'static,
     {
+        Self::unregistered().and_answering(answer)
+    }
+
+    /// Also answers every `Q` with the closure's result; a query of another type is answered as
+    /// before.
+    #[must_use]
+    pub fn and_answering<Q, F>(mut self, answer: F) -> Self
+    where
+        Q: Query,
+        F: Fn(Q) -> Result<Q::Output, Q::Error> + Send + Sync + 'static,
+    {
         let erased: QueryAnswer = Box::new(move |message| {
             let query = message
                 .downcast::<Q>()
@@ -110,17 +121,15 @@ impl FakeQueryBus {
                 Err(error) => Err(ErasedBusError::Handler(Box::new(error))),
             }
         });
-        Self {
-            answer: Some((TypeId::of::<Q>(), erased)),
-            asked: Mutex::new(Vec::new()),
-        }
+        self.answers.push((TypeId::of::<Q>(), erased));
+        self
     }
 
     /// Has no handler: every query answers `NotRegistered`.
     #[must_use]
     pub const fn unregistered() -> Self {
         Self {
-            answer: None,
+            answers: Vec::new(),
             asked: Mutex::new(Vec::new()),
         }
     }
@@ -141,9 +150,9 @@ impl QueryBus for FakeQueryBus {
         query: ErasedMessage,
     ) -> Result<ErasedMessage, ErasedBusError> {
         locked(&self.asked).push(name);
-        match &self.answer {
-            Some((asked, answer)) if *asked == query_type => answer(query),
-            _ => Err(ErasedBusError::NotRegistered { message: name }),
+        match self.answers.iter().find(|(asked, _)| *asked == query_type) {
+            Some((_asked, answer)) => answer(query),
+            None => Err(ErasedBusError::NotRegistered { message: name }),
         }
     }
 }

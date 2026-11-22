@@ -3,13 +3,17 @@
 pub mod access_token_verifier;
 pub mod boot_clock;
 pub mod change_receipt_repository;
+pub mod graphql_permission_repository;
 pub mod graphql_schema_parser;
 pub mod graphql_spec_repository;
 pub mod iam_unit_of_work;
 pub mod idempotency_repository;
 pub mod openapi_document_parser;
 pub mod openapi_spec_repository;
+pub mod permission_page_query;
 pub mod policy_epoch_repository;
+pub mod request_digester;
+pub mod rest_permission_repository;
 pub mod revocation_repository;
 pub mod revocation_view;
 pub mod rng;

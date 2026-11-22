@@ -1,11 +1,11 @@
 use iam_domain::{
-    GqlName, GraphQlCoordinate, GraphQlSchemaParser, GraphQlSpec, GraphQlTypeGraph, InvalidSpec,
-    SpecPosition,
+    GqlName, GraphQlCoordinate, GraphQlSchemaParser as _, GraphQlSpec, GraphQlTypeGraph,
+    InvalidSpec, SpecPosition,
 };
 
 use super::AsyncGraphQlSchemaParser;
 
-const SDL: &str = r#"
+const SDL: &str = "
 directive @iamSensitive on FIELD_DEFINITION
 directive @iamAuditAlways on FIELD_DEFINITION
 
@@ -42,7 +42,7 @@ union SearchResult = User | Team
 enum Role { ADMIN }
 input UserInput { name: String }
 scalar Date
-"#;
+";
 
 fn name(value: &str) -> GqlName {
     GqlName::parse(value).unwrap()
@@ -100,7 +100,7 @@ fn the_possible_types_of_interfaces_and_unions_are_recorded() {
 
     assert_eq!(possible(&graph, "Node"), ["Team", "User"]);
     assert_eq!(possible(&graph, "SearchResult"), ["Team", "User"]);
-    assert!(possible(&graph, "User").is_empty());
+    assert_eq!(possible(&graph, "User"), Vec::<String>::new());
 }
 
 #[test]
@@ -230,7 +230,8 @@ fn a_document_of_exactly_the_size_limit_is_parsed() {
 fn types(count: usize) -> String {
     (0..count)
         .map(|index| format!("type T{index} {{ a: Int }}\n"))
-        .collect()
+        .collect::<Vec<_>>()
+        .concat()
 }
 
 #[test]
@@ -247,9 +248,10 @@ fn more_types_than_the_limit_are_refused() {
 
 #[test]
 fn more_scalars_than_the_type_limit_are_refused() {
-    let sdl: String = (0..=GraphQlTypeGraph::MAX_TYPES)
+    let sdl = (0..=GraphQlTypeGraph::MAX_TYPES)
         .map(|index| format!("scalar S{index}\n"))
-        .collect();
+        .collect::<Vec<_>>()
+        .concat();
 
     assert_eq!(
         parse(&sdl).unwrap_err(),
@@ -269,12 +271,14 @@ fn exactly_the_type_limit_is_accepted() {
 fn fields(types: usize, per_type: usize) -> String {
     (0..types)
         .map(|type_index| {
-            let body: String = (0..per_type)
+            let body = (0..per_type)
                 .map(|field| format!("f{field}: Int\n"))
-                .collect();
+                .collect::<Vec<_>>()
+                .concat();
             format!("type T{type_index} {{\n{body}}}\n")
         })
-        .collect()
+        .collect::<Vec<_>>()
+        .concat()
 }
 
 #[test]
@@ -298,9 +302,115 @@ fn exactly_the_field_limit_is_accepted() {
 
 #[test]
 fn the_parser_is_default_copy_and_debug() {
-    let parser = AsyncGraphQlSchemaParser::default();
+    let parser = AsyncGraphQlSchemaParser;
     let copy = parser;
 
     assert_eq!(format!("{parser:?}"), "AsyncGraphQlSchemaParser");
     assert_eq!(format!("{copy:?}"), "AsyncGraphQlSchemaParser");
+}
+
+#[test]
+fn a_type_that_takes_a_renamed_root_name_is_malformed() {
+    let error = parse(
+        "schema { query: Root }
+         type Root { a: Int }
+         type Query { secret: Int }",
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        InvalidSpec::Malformed {
+            position: SpecPosition::LineColumn { line: 3, .. },
+            ..
+        }
+    ));
+}
+
+#[test]
+fn a_root_may_take_the_name_of_another_renamed_root() {
+    let graph = parse(
+        "schema { query: Root mutation: Query }
+         type Root { a: Int }
+         type Query { b: Int }",
+    )
+    .unwrap();
+
+    let coordinates: Vec<String> = graph.fields().map(|(key, _)| key.to_string()).collect();
+    assert_eq!(coordinates, ["Mutation.b", "Query.a"]);
+}
+
+#[test]
+fn return_types_and_union_members_use_the_root_coordinates() {
+    let graph = parse(
+        "schema { query: Root }
+         type Root { self: Root }
+         union Any = Root",
+    )
+    .unwrap();
+
+    let (_, field) = graph.fields().next().unwrap();
+    assert_eq!(field.return_type, name("Query"));
+    assert_eq!(possible(&graph, "Any"), ["Query"]);
+}
+
+#[test]
+fn nesting_deeper_than_the_limit_is_refused_before_parsing() {
+    let deep = format!(
+        "type Query {{ a: {}Int{} }}",
+        "[".repeat(65),
+        "]".repeat(65)
+    );
+    let shallow = format!(
+        "type Query {{ a: {}Int{} }}",
+        "[".repeat(63),
+        "]".repeat(63)
+    );
+
+    let error = parse(&deep).unwrap_err();
+
+    assert!(matches!(
+        error,
+        InvalidSpec::Malformed {
+            position: SpecPosition::LineColumn {
+                line: 1,
+                column: 80
+            },
+            ..
+        }
+    ));
+    assert!(parse(&shallow).is_ok());
+}
+
+#[test]
+fn brackets_inside_strings_and_comments_do_not_count_as_nesting() {
+    let noise = "[".repeat(100);
+    let sdl = format!(
+        "# {noise}\n\"{noise}\"\ntype A {{ a: Int }}\n\"\"\"{noise} \\\"\"\" {noise}\"\"\"\ntype Query {{ a: Int }}"
+    );
+
+    parse(&sdl).unwrap();
+}
+
+#[test]
+fn an_escaped_quote_does_not_end_a_line_string() {
+    let noise = "[".repeat(100);
+    let sdl = format!("\"\\\" {noise}\"\ntype Query {{ a: Int }}");
+
+    parse(&sdl).unwrap();
+}
+
+#[rstest::rstest]
+#[case::block_string("type Query { a: Int }\n\"\"\"unterminated")]
+#[case::line_string("type Query { a: Int }\n\"unterminated")]
+fn an_unterminated_string_passes_the_nesting_check_and_is_malformed(#[case] sdl: &str) {
+    assert!(matches!(parse(sdl), Err(InvalidSpec::Malformed { .. })));
+}
+
+#[test]
+fn another_directive_sets_no_flag() {
+    let graph = parse("type Query { a: Int @deprecated }").unwrap();
+
+    let (_, field) = graph.fields().next().unwrap();
+    assert!(!field.flags.is_sensitive() && !field.flags.is_audit_always());
 }

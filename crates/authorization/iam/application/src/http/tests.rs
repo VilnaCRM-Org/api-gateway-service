@@ -10,6 +10,7 @@ use test_support::bus::{FakeCommandBus, FakeQueryBus};
 use test_support::clock::FixedClock;
 use test_support::id::SequenceUuidGenerator;
 use test_support::policy_epoch::seeded_policy_epoch;
+use test_support::request_digester::FakeRequestDigester;
 use tower::ServiceExt as _;
 
 use super::{IamState, router};
@@ -37,6 +38,7 @@ fn state() -> IamState {
         query_bus,
         uuid_generator: Arc::new(SequenceUuidGenerator::starting_at(1)),
         clock: Arc::new(FixedClock::at(fixed_time())),
+        request_digester: Arc::new(FakeRequestDigester),
     }
 }
 
@@ -84,7 +86,32 @@ fn the_router_documents_the_token_resolution_operation_under_the_iam_tag() {
         Some(["iam".to_owned()].as_slice())
     );
     assert!(operation.security.is_some());
-    assert_eq!(document.paths.paths.len(), 1);
+}
+
+#[test]
+fn the_router_documents_the_role_operations_under_the_iam_tag_behind_the_bearer_scheme() {
+    let (_routes, document) = router::<ApplicationState>().split_for_parts();
+
+    let collection = &document.paths.paths["/roles"];
+    let item = &document.paths.paths["/roles/{id}"];
+    let operations = [
+        (collection.post.as_ref().unwrap(), "api_roles_post"),
+        (collection.get.as_ref().unwrap(), "api_roles_get"),
+        (item.get.as_ref().unwrap(), "api_roles_id_get"),
+    ];
+    for (operation, operation_id) in operations {
+        assert_eq!(operation.operation_id.as_deref(), Some(operation_id));
+        assert_eq!(
+            operation.tags.as_deref(),
+            Some(["iam".to_owned()].as_slice())
+        );
+        assert!(operation.security.is_some(), "{operation_id}");
+    }
+    assert!(collection.put.is_none() && collection.delete.is_none() && collection.patch.is_none());
+    assert!(
+        item.post.is_none() && item.put.is_none() && item.delete.is_none() && item.patch.is_none()
+    );
+    assert_eq!(document.paths.paths.len(), 3);
 }
 
 #[tokio::test]

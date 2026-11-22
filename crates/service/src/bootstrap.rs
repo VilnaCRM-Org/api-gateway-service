@@ -13,19 +13,23 @@ use health_check_application::HealthService;
 use health_check_domain::HealthProbe;
 use health_check_infrastructure::{CacheProbe, PostgresProbe, SqsProbe};
 use iam_application::http::IamState;
+use iam_application::{CreateRoleCommandHandler, GetRoleQueryHandler, ListRolesQueryHandler};
 use iam_application::{
     GetChangeReceiptQueryHandler, GetIdempotentReplayQueryHandler, GetPolicyEpochQueryHandler,
 };
 use iam_application::{ResolveSubjectTokenQueryHandler, ResolveTokenQueryHandler};
 use iam_domain::GraphQlSpecRepository;
+use iam_domain::OpenApiSpecRepository;
 use iam_domain::RoleRepository;
 use iam_domain::UserRoleRepository;
 use iam_domain::{
     AccessTokenVerifier, ChangeReceiptRepository, IdempotencyRepository, PolicyEpochRepository,
     SecurityAuditLog,
 };
+use iam_domain::{IamUnitOfWork, RequestDigester};
 use iam_domain::{RevocationRepository, RevocationView, TokenMemo, TokenRepository};
 use iam_infrastructure::PgGraphQlSpecRepository;
+use iam_infrastructure::PgOpenApiSpecRepository;
 use iam_infrastructure::PgRoleRepository;
 use iam_infrastructure::PgUserRoleRepository;
 use iam_infrastructure::{
@@ -35,6 +39,7 @@ use iam_infrastructure::{
     JwtAccessTokenVerifier, JwtKeyFileError, PgChangeReceiptRepository, PgIdempotencyRepository,
     PgPolicyEpochRepository, PgSecurityAuditLog,
 };
+use iam_infrastructure::{PgIamUnitOfWork, Sha256RequestDigester};
 use shared_domain::{Clock, CommandBus, EventBus, QueryBus, UuidGenerator};
 use shared_infrastructure::bus::{
     DuplicateHandler, InMemoryCommandBus, InMemoryEventBus, InMemoryQueryBus,
@@ -72,10 +77,16 @@ pub struct Adapters {
     pub idempotency_records: Arc<dyn IdempotencyRepository>,
     /// Reader of the IAM roles.
     pub roles: Arc<dyn RoleRepository>,
+    /// Commits an administrative IAM change atomically.
+    pub unit_of_work: Arc<dyn IamUnitOfWork>,
+    /// Digests the request of an idempotent IAM write.
+    pub request_digester: Arc<dyn RequestDigester>,
     /// Reader of the IAM role assignments.
     pub user_roles: Arc<dyn UserRoleRepository>,
     /// Reader of the stored GraphQL specification versions.
     pub graphql_specs: Arc<dyn GraphQlSpecRepository>,
+    /// Reader of the stored `OpenAPI` specification versions.
+    pub openapi_specs: Arc<dyn OpenApiSpecRepository>,
     /// Offline verifier of User service access tokens.
     pub access_tokens: Arc<dyn AccessTokenVerifier>,
     /// Resolver of bearer credentials: memoized verification and the revocation check.
@@ -133,8 +144,11 @@ impl Adapters {
             change_receipts: Arc::new(PgChangeReceiptRepository::new(pool.clone())),
             idempotency_records: Arc::new(PgIdempotencyRepository::new(pool.clone())),
             roles: Arc::new(PgRoleRepository::new(pool.clone())),
+            unit_of_work: Arc::new(PgIamUnitOfWork::new(pool.clone())),
+            request_digester: Arc::new(Sha256RequestDigester),
             user_roles: Arc::new(PgUserRoleRepository::new(pool.clone())),
             graphql_specs: Arc::new(PgGraphQlSpecRepository::new(pool.clone())),
+            openapi_specs: Arc::new(PgOpenApiSpecRepository::new(pool.clone())),
             tokens: token_repository(config, Arc::clone(&access_tokens), &clock, &pool),
             revocations: Arc::new(PgRevocationRepository::new(pool.clone())),
             access_tokens,
@@ -225,6 +239,31 @@ fn register_queries(
     Ok(bus.register(get)?.register(list)?.register(policy_epoch)?)
 }
 
+/// Registers the command handler of the IAM roles.
+fn register_role_commands(
+    bus: InMemoryCommandBus,
+    unit_of_work: &Arc<dyn IamUnitOfWork>,
+    clock: &Arc<dyn Clock>,
+    uuid_generator: &Arc<dyn UuidGenerator>,
+) -> Result<InMemoryCommandBus, BootstrapError> {
+    let create = CreateRoleCommandHandler::new(
+        Arc::clone(unit_of_work),
+        Arc::clone(clock),
+        Arc::clone(uuid_generator),
+    );
+    Ok(bus.register(create)?)
+}
+
+/// Registers the query handlers of the IAM roles.
+fn register_role_queries(
+    bus: InMemoryQueryBus,
+    roles: &Arc<dyn RoleRepository>,
+) -> Result<InMemoryQueryBus, BootstrapError> {
+    let get = GetRoleQueryHandler::new(Arc::clone(roles));
+    let list = ListRolesQueryHandler::new(Arc::clone(roles));
+    Ok(bus.register(get)?.register(list)?)
+}
+
 /// Registers the query handlers that read the result of an IAM write: its change receipt and the
 /// idempotent replay of a repeated write.
 fn register_change_queries(
@@ -257,6 +296,29 @@ fn register_token_queries(
     Ok(bus.register(resolve)?.register(subject)?)
 }
 
+/// The command bus and the query bus of the service.
+type Buses = (Arc<dyn CommandBus>, Arc<dyn QueryBus>);
+
+/// The command bus and the query bus with every handler registered.
+fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, BootstrapError> {
+    let create = CreateExampleApiResourceHandler::new(
+        Arc::clone(&adapters.repository),
+        Arc::clone(&adapters.event_bus),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    let commands = register_commands(InMemoryCommandBus::new(), create)?;
+    let (unit_of_work, ids) = (&adapters.unit_of_work, &adapters.uuid_generator);
+    let commands = register_role_commands(commands, unit_of_work, &adapters.clock, ids)?;
+    let queries = InMemoryQueryBus::new();
+    let queries = register_queries(queries, &adapters.repository, &adapters.policy_epochs)?;
+    let (receipts, keys) = (&adapters.change_receipts, &adapters.idempotency_records);
+    let queries = register_change_queries(queries, receipts, keys, &adapters.clock)?;
+    let queries = register_role_queries(queries, &adapters.roles)?;
+    let queries = register_token_queries(queries, &adapters.tokens, config)?;
+    Ok((Arc::new(commands), Arc::new(queries)))
+}
+
 /// Registers every handler, builds the command and query buses, the state, the `GraphQL` schema
 /// and the router with its middleware.
 ///
@@ -281,20 +343,7 @@ pub fn router_with_iam_routes(
     config: &Config,
     iam_routes: Router<AppState>,
 ) -> Result<Router, BootstrapError> {
-    let create = CreateExampleApiResourceHandler::new(
-        Arc::clone(&adapters.repository),
-        adapters.event_bus,
-        Arc::clone(&adapters.clock),
-        Arc::clone(&adapters.uuid_generator),
-    );
-    let command_bus = register_commands(InMemoryCommandBus::new(), create)?;
-    let bus = InMemoryQueryBus::new();
-    let bus = register_queries(bus, &adapters.repository, &adapters.policy_epochs)?;
-    let (receipts, keys) = (&adapters.change_receipts, &adapters.idempotency_records);
-    let bus = register_change_queries(bus, receipts, keys, &adapters.clock)?;
-    let query_bus = register_token_queries(bus, &adapters.tokens, config)?;
-    let commands: Arc<dyn CommandBus> = Arc::new(command_bus);
-    let queries: Arc<dyn QueryBus> = Arc::new(query_bus);
+    let (commands, queries) = register_buses(&adapters, config)?;
     let some_module = SomeModuleState {
         command_bus: Arc::clone(&commands),
         query_bus: Arc::clone(&queries),
@@ -305,6 +354,7 @@ pub fn router_with_iam_routes(
         query_bus: queries,
         uuid_generator: adapters.uuid_generator,
         clock: adapters.clock,
+        request_digester: adapters.request_digester,
     };
     let service = HealthService::new(adapters.probes, config.health_probe_timeout);
     let health_check = HealthCheckState {

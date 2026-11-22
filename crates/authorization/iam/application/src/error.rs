@@ -1,8 +1,11 @@
 //! Application error of the IAM context and its conversion to a problem document.
 
 use axum::http::StatusCode;
-use iam_domain::{RepositoryError, TokenRejection, VersionConflict};
-use shared_application::http::Problem;
+use iam_domain::{
+    InvalidEventEnvelope, InvalidIamValue, InvalidRole, RepositoryError, TokenRejection,
+    VersionConflict,
+};
+use shared_application::http::{Problem, Violation};
 use shared_domain::BoxError;
 
 /// What can go wrong in a command or a query of the IAM context; `architecture.md` section 5.5
@@ -29,9 +32,45 @@ pub enum IamError {
     /// An update or a delete names an entity version that is not the current one.
     #[error("The request names a version that is not the current version.")]
     PreconditionFailed,
+    /// The request holds values that break the rules of the record; each violation names its
+    /// property.
+    #[error("The request holds invalid values.")]
+    Invalid(Vec<Violation>),
     /// The storage failed.
     #[error("the IAM storage is unavailable")]
     Storage(#[source] BoxError),
+    /// A value that the use case itself produced breaks an invariant of the domain; a defect, never
+    /// a mistake of the client.
+    #[error("the IAM use case produced an invalid value")]
+    Internal(#[source] BoxError),
+}
+
+impl From<Vec<InvalidRole>> for IamError {
+    /// Every violation of a role, as the `property_path` and `code` of the domain give them.
+    fn from(violations: Vec<InvalidRole>) -> Self {
+        Self::Invalid(
+            violations
+                .into_iter()
+                .map(|violation| Violation {
+                    property_path: violation.property_path().to_owned(),
+                    message: violation.to_string(),
+                    code: violation.code().to_owned(),
+                })
+                .collect(),
+        )
+    }
+}
+
+impl From<InvalidIamValue> for IamError {
+    fn from(error: InvalidIamValue) -> Self {
+        Self::Internal(Box::new(error))
+    }
+}
+
+impl From<InvalidEventEnvelope> for IamError {
+    fn from(error: InvalidEventEnvelope) -> Self {
+        Self::Internal(Box::new(error))
+    }
 }
 
 impl From<RepositoryError> for IamError {
@@ -76,7 +115,8 @@ impl From<IamError> for Problem {
             IamError::IdempotencyMismatch => StatusCode::UNPROCESSABLE_ENTITY,
             IamError::PreconditionRequired => StatusCode::PRECONDITION_REQUIRED,
             IamError::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
-            IamError::Storage(_) => return Self::internal(&error),
+            IamError::Invalid(violations) => return Self::validation_failed(violations.clone()),
+            IamError::Storage(_) | IamError::Internal(_) => return Self::internal(&error),
         };
         Self::new(status).with_detail(error.to_string())
     }

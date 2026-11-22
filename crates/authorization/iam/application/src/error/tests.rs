@@ -1,6 +1,9 @@
 use std::error::Error as _;
 
-use iam_domain::{EntityVersion, RepositoryError, TokenRejection, VersionConflict};
+use iam_domain::{
+    EntityVersion, InvalidEventEnvelope, InvalidIamValue, InvalidRole, RepositoryError,
+    TokenRejection, VersionConflict,
+};
 use rstest::rstest;
 use shared_application::http::{Problem, TYPE_BLANK, Violation};
 use test_support::log::LogRecorder;
@@ -183,5 +186,69 @@ fn an_unreadable_revocation_state_is_a_storage_failure() {
     assert_eq!(
         error.source().map(ToString::to_string).as_deref(),
         Some("the credential could not be checked")
+    );
+}
+
+#[test]
+fn invalid_role_values_are_the_422_problem_with_one_violation_each_sorted_by_property() {
+    let (recorder, _guard) = LogRecorder::install();
+
+    let error = IamError::from(vec![
+        InvalidRole::DescriptionLength,
+        InvalidRole::NameLength,
+    ]);
+    let problem = Problem::from(error);
+
+    assert_eq!(problem.status, 422);
+    assert_eq!(problem.r#type, "/problems/validation-failed");
+    assert_eq!(
+        problem.violations,
+        vec![
+            Violation {
+                property_path: "description".to_owned(),
+                message: "This value must contain 1000 characters or fewer.".to_owned(),
+                code: "length".to_owned(),
+            },
+            Violation {
+                property_path: "name".to_owned(),
+                message: "This value must contain between 1 and 100 characters.".to_owned(),
+                code: "length".to_owned(),
+            },
+        ]
+    );
+    assert_eq!(recorder.lines().len(), 0);
+}
+
+#[test]
+fn the_message_of_invalid_values_is_fixed() {
+    assert_eq!(
+        IamError::Invalid(Vec::new()).to_string(),
+        "The request holds invalid values."
+    );
+}
+
+#[test]
+fn a_value_that_the_use_case_produced_wrongly_is_the_internal_problem_and_is_logged_once() {
+    let (recorder, _guard) = LogRecorder::install();
+
+    let problem = Problem::from(IamError::from(InvalidIamValue::AuditTimestamp));
+
+    assert_eq!(problem.status, 500);
+    assert_eq!(problem.detail, None);
+    assert_eq!(recorder.lines().len(), 1);
+}
+
+#[test]
+fn an_invalid_envelope_is_an_internal_failure_that_names_its_cause() {
+    let error = IamError::from(InvalidEventEnvelope::EventType);
+
+    assert!(matches!(error, IamError::Internal(_)));
+    assert_eq!(
+        error.to_string(),
+        "the IAM use case produced an invalid value"
+    );
+    assert_eq!(
+        error.source().map(ToString::to_string),
+        Some(InvalidEventEnvelope::EventType.to_string())
     );
 }

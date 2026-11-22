@@ -4,18 +4,22 @@
 //! This crate is framework-free. It depends on domain crates only: its own context and the shared
 //! kernel, never another bounded context.
 
+pub mod catalogue_event;
 pub mod entity;
 pub mod error;
+pub mod graphql_permission;
 pub mod graphql_spec;
 mod micros;
 pub mod openapi_spec;
 pub mod policy;
 pub mod port;
+pub mod rest_permission;
 pub mod revocation;
 pub mod role;
 pub mod user_role;
 pub mod value_object;
 
+pub use catalogue_event::{GraphQlPermissionsCreated, PermissionsOrphaned, RestPermissionsCreated};
 pub use entity::change_receipt::ChangeReceipt;
 pub use entity::event_envelope::{EventEnvelope, EventEnvelopeParts, IamDomainEvent};
 pub use entity::iam_change::{IamChange, IamChangeParts};
@@ -27,19 +31,27 @@ pub use error::{
     InvalidAccessCheck, InvalidEventEnvelope, InvalidIamValue, InvalidPermissionKey, InvalidRole,
     InvalidUserRole, RoleChangeRefused, UserRoleChangeRefused, VersionConflict,
 };
+pub use error::{InvalidCatalogueEntry, RenameRefused};
 pub use error::{InvalidSpec, SpecPosition, SpecTransitionRefused};
+pub use graphql_permission::{GraphQlPermission, GraphQlPermissionParts};
 pub use graphql_spec::event::{GraphQlSpecLoaded, GraphQlSpecRetired};
 pub use graphql_spec::statement::GraphQlSpecStatement;
 pub use graphql_spec::{
     GraphQlSpec, GraphQlSpecContent, GraphQlSpecParts, SpecActivation, SpecStamp,
 };
 pub use openapi_spec::event::{OpenApiSpecLoaded, OpenApiSpecRetired};
+pub use openapi_spec::statement::OpenApiSpecStatement;
 pub use openapi_spec::{OpenApiSpec, OpenApiSpecContent, OpenApiSpecParts};
 pub use policy::caller_token_rule::CallerTokenRule;
+pub use policy::catalogue_activation::{
+    CatalogueActivation, FlagChange, GrantRecord, KeyRename, OrphanedGrant,
+};
 pub use policy::compiled_role_set::{CompiledRoleSet, GrantStatus};
 pub use policy::decision_policy::{
     DecisionPolicy, DecisionRequest, RequiredKey, RoleAssignment, RoleSets,
 };
+pub use policy::orphan_policy::{OrphanPolicy, RenameMap};
+pub use policy::permission_catalogue::PermissionCatalogue;
 pub use policy::spec_diff::{FlagDowngrade, RemovedGrant, RoleGrants, SpecDiff, WildcardGain};
 pub use policy::token_lifetime_rule::{TokenLifetimeRule, TokenTimes};
 pub use policy::wildcard_matcher::WildcardMatcher;
@@ -47,13 +59,17 @@ pub use port::RepositoryError;
 pub use port::access_token_verifier::AccessTokenVerifier;
 pub use port::boot_clock::BootClock;
 pub use port::change_receipt_repository::ChangeReceiptRepository;
+pub use port::graphql_permission_repository::GraphQlPermissionRepository;
 pub use port::graphql_schema_parser::GraphQlSchemaParser;
 pub use port::graphql_spec_repository::{GraphQlSpecPageQuery, GraphQlSpecRepository};
 pub use port::iam_unit_of_work::IamUnitOfWork;
 pub use port::idempotency_repository::IdempotencyRepository;
 pub use port::openapi_document_parser::OpenApiDocumentParser;
 pub use port::openapi_spec_repository::{OpenApiSpecPageQuery, OpenApiSpecRepository};
+pub use port::permission_page_query::PermissionPageQuery;
 pub use port::policy_epoch_repository::PolicyEpochRepository;
+pub use port::request_digester::RequestDigester;
+pub use port::rest_permission_repository::RestPermissionRepository;
 pub use port::revocation_repository::RevocationRepository;
 pub use port::revocation_view::RevocationView;
 pub use port::rng::Rng;
@@ -62,6 +78,7 @@ pub use port::security_audit_log::SecurityAuditLog;
 pub use port::token_memo::{TokenMemo, Verification};
 pub use port::token_repository::TokenRepository;
 pub use port::user_role_repository::{UserRolePageQuery, UserRoleRepository};
+pub use rest_permission::{RestPermission, RestPermissionParts};
 pub use revocation::global_token_cutoff::GlobalTokenCutoff;
 pub use revocation::inbound_event::{InboundEvent, InboundOutcome};
 pub use revocation::revocation_rule::{RevocationRule, RevocationStatus};

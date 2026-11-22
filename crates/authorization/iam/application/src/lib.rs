@@ -8,17 +8,22 @@
 
 pub mod command;
 pub mod error;
+#[cfg(test)]
+mod fixtures;
 pub mod graphql;
 pub mod http;
 pub mod principal;
 pub mod query;
 pub mod subscriber;
 
+pub use command::create_role::{CreateRoleCommand, CreateRoleCommandHandler};
 pub use error::IamError;
 pub use principal::Principal;
 pub use query::get_change_receipt::{GetChangeReceiptQuery, GetChangeReceiptQueryHandler};
 pub use query::get_idempotent_replay::{GetIdempotentReplayQuery, GetIdempotentReplayQueryHandler};
 pub use query::get_policy_epoch::{GetPolicyEpochQuery, GetPolicyEpochQueryHandler};
+pub use query::get_role::{GetRoleQuery, GetRoleQueryHandler};
+pub use query::list_roles::{ListRolesQuery, ListRolesQueryHandler, RolePage};
 pub use query::resolve_subject_token::{
     ResolveSubjectTokenQuery, ResolveSubjectTokenQueryHandler, TokenResolution,
 };

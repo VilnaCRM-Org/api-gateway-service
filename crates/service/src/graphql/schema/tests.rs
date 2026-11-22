@@ -9,6 +9,7 @@ use shared_domain::{CommandBus, QueryBus, Uuid};
 use test_support::bus::{FakeCommandBus, FakeQueryBus};
 use test_support::clock::FixedClock;
 use test_support::id::SequenceUuidGenerator;
+use test_support::request_digester::FakeRequestDigester;
 
 use super::*;
 
@@ -17,6 +18,16 @@ input CreateExampleApiResourceInput {
   "Description."
   description: String!
   "Name."
+  name: String!
+}
+
+"Input of the role-creation mutation."
+input CreateRoleInput {
+  "What the role is for, at most 1,000 characters."
+  description: String
+  "Makes the creation safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+  "The name of the role: 1 to 100 characters, unique without regard to case among the roles that are not deleted."
   name: String!
 }
 
@@ -34,6 +45,8 @@ type ExampleApiResource {
 type Mutation {
   "Creates an example API resource."
   createExampleApiResource(input: CreateExampleApiResourceInput!): ExampleApiResource!
+  "Creates a custom role without grants at version 1 and records `iam.role.created`."
+  createRole(input: CreateRoleInput!): Role!
 }
 
 "Query root."
@@ -49,12 +62,59 @@ type Query {
   ): [ExampleApiResource!]!
   "Resolves a User service token into its subject, or says why it is refused."
   resolveToken(input: ResolveTokenInput!): TokenResolution!
+  "Retrieves a role by id; null when it is unknown or deleted."
+  role(id: ID!): Role
+  "Retrieves one page of roles in a stable order, filtered by name prefix and kind."
+  roles(
+    "The nextCursor of the previous page."
+    after: String,
+    "Only roles that match the filter."
+    filter: RoleFilter,
+    "Page size, from 1 to 100."
+    first: Int = 30
+  ): RolePage!
 }
 
 "Input of the token-resolution query."
 input ResolveTokenInput {
   "The User service token to resolve; an empty one resolves as `token_missing`."
   credential: String!
+}
+
+"A role."
+type Role {
+  "When the role was created, as an RFC 3339 UTC time."
+  createdAt: String!
+  "What the role is for."
+  description: String
+  "The number of permission grants of the role."
+  grantCount: Int!
+  "The identifier of the role."
+  id: ID!
+  "`system` for a role that IAM manages, `custom` for one that an administrator manages."
+  kind: String!
+  "The name of the role."
+  name: String!
+  "When the role was last changed, as an RFC 3339 UTC time."
+  updatedAt: String!
+  "The version of the role."
+  version: Int!
+}
+
+"Filters of the role list."
+input RoleFilter {
+  "Only roles of this kind: `system` or `custom`."
+  kind: String
+  "Only roles whose name starts with this text, without regard to case."
+  namePrefix: String
+}
+
+"One page of roles."
+type RolePage {
+  "The roles of the page."
+  items: [Role!]!
+  "The `after` value of the next page; null on the last page."
+  nextCursor: String
 }
 
 "The resolution of a credential: the subject and its token claims, or the reason it is refused."
@@ -91,18 +151,23 @@ fn the_sdl_is_the_documented_schema() {
 }
 
 #[test]
-fn the_sdl_has_the_four_operations_and_nothing_else_to_call() {
+fn the_sdl_has_the_template_and_iam_operations_and_nothing_else_to_call() {
     let text = sdl();
 
     assert!(text.contains("resolveToken(input: ResolveTokenInput!): TokenResolution!"));
     assert!(text.contains("exampleApiResource(id: ID!)"));
     assert!(text.contains("exampleApiResources("));
     assert!(text.contains("createExampleApiResource(input: CreateExampleApiResourceInput!)"));
+    assert!(text.contains("createRole(input: CreateRoleInput!): Role!"));
+    assert!(text.contains("role(id: ID!): Role"));
+    assert!(text.contains("roles("));
     for absent in [
         "node",
         "Connection",
-        "update",
-        "delete",
+        "updateRole",
+        "deleteRole",
+        "updateExampleApiResource",
+        "deleteExampleApiResource",
         "type Subscription",
     ] {
         assert!(!text.contains(absent), "the SDL contains `{absent}`");
@@ -161,6 +226,7 @@ fn iam_state() -> IamState {
         query_bus,
         uuid_generator: Arc::new(SequenceUuidGenerator::starting_at(1)),
         clock: Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH)),
+        request_digester: Arc::new(FakeRequestDigester),
     }
 }
 
@@ -205,4 +271,43 @@ async fn resolve_token_without_the_iam_state_in_the_schema_data_is_an_internal_e
             "INTERNAL_SERVER_ERROR".to_owned()
         ))
     );
+}
+
+fn error_code(response: &async_graphql::Response) -> Option<async_graphql::Value> {
+    response
+        .errors
+        .first()
+        .and_then(|error| error.extensions.as_ref())
+        .and_then(|extensions| extensions.get("code"))
+        .cloned()
+}
+
+#[tokio::test]
+async fn create_role_is_merged_into_the_mutation_root_and_needs_an_authenticated_caller() {
+    let schema: ApiSchema = builder().data(iam_state()).finish();
+    let request = Request::new("mutation { createRole(input: { name: \"Billing\" }) { id } }");
+
+    let response = schema.execute(request).await;
+
+    assert_eq!(
+        error_code(&response),
+        Some(async_graphql::Value::String("UNAUTHENTICATED".to_owned()))
+    );
+}
+
+#[tokio::test]
+async fn the_role_queries_are_merged_into_the_query_root_and_need_an_authenticated_caller() {
+    let schema: ApiSchema = builder().data(iam_state()).finish();
+    let single = Request::new("{ role(id: \"0190f2a8-7b3c-7d4e-8f10-1234567890cd\") { id } }");
+    let page = Request::new("{ roles { items { id } } }");
+
+    let single = schema.execute(single).await;
+    let page = schema.execute(page).await;
+
+    for response in [single, page] {
+        assert_eq!(
+            error_code(&response),
+            Some(async_graphql::Value::String("UNAUTHENTICATED".to_owned()))
+        );
+    }
 }

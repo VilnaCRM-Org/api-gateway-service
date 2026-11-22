@@ -1,8 +1,8 @@
 use std::time::{Duration, SystemTime};
 
 use iam_domain::{
-    AccessToken, AccessTokenParts, ServiceName, SessionId, SubjectId, SubjectKind, TokenId,
-    TokenIdentity,
+    AccessToken, AccessTokenParts, ActorRef, ServiceName, SessionId, SubjectId, SubjectKind,
+    TokenId, TokenIdentity,
 };
 use shared_domain::Uuid;
 
@@ -86,4 +86,22 @@ fn a_printed_principal_names_its_subject_and_token_but_no_role() {
     assert!(printed.starts_with("Principal {"), "{printed}");
     assert!(printed.contains("session-1"), "{printed}");
     assert!(printed.contains("jti-3"), "{printed}");
+}
+
+#[test]
+fn the_actor_of_a_user_is_the_user() {
+    let id = Uuid::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ab").unwrap();
+
+    let principal = Principal::from(identity(SubjectId::User(id), Some("s")));
+
+    assert_eq!(principal.actor(), ActorRef::User(id));
+}
+
+#[test]
+fn the_actor_of_a_service_principal_is_the_service() {
+    let name = ServiceName::new("billing").unwrap();
+
+    let principal = Principal::from(identity(SubjectId::Service(name.clone()), None));
+
+    assert_eq!(principal.actor(), ActorRef::Service(name));
 }

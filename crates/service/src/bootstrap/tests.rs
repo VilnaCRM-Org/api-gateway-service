@@ -26,14 +26,17 @@ use test_support::graphql_spec::FakeGraphQlSpecRepository;
 use test_support::id::SequenceUuidGenerator;
 use test_support::idempotency::{FakeIdempotencyRepository, idempotency_request};
 use test_support::log::LogRecorder;
+use test_support::openapi_spec::FakeOpenApiSpecRepository;
 use test_support::policy_epoch::{FakePolicyEpochRepository, seeded_policy_epoch};
 use test_support::probe::StubProbe;
 use test_support::repository::InMemoryExampleApiResourceRepository;
+use test_support::request_digester::FakeRequestDigester;
 use test_support::revocation::FakeRevocationRepository;
 use test_support::role::FakeRoleRepository;
 use test_support::security_audit::FakeSecurityAuditLog;
 use test_support::seed::TestRng;
 use test_support::token::FakeTokenRepository;
+use test_support::unit_of_work::FakeIamUnitOfWork;
 use test_support::user_role::FakeUserRoleRepository;
 use tower::ServiceExt as _;
 
@@ -85,8 +88,11 @@ fn adapters() -> Adapters {
         change_receipts: Arc::new(FakeChangeReceiptRepository::new()),
         idempotency_records: Arc::new(FakeIdempotencyRepository::new()),
         roles: Arc::new(FakeRoleRepository::new()),
+        unit_of_work: Arc::new(FakeIamUnitOfWork::new()),
+        request_digester: Arc::new(FakeRequestDigester),
         user_roles: Arc::new(FakeUserRoleRepository::new()),
         graphql_specs: Arc::new(FakeGraphQlSpecRepository::new()),
+        openapi_specs: Arc::new(FakeOpenApiSpecRepository::new()),
         access_tokens: Arc::new(FakeAccessTokenVerifier::new()),
         tokens: Arc::new(FakeTokenRepository::new()),
         revocations: Arc::new(FakeRevocationRepository::new()),

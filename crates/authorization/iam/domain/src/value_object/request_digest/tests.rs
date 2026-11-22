@@ -22,3 +22,13 @@ fn rejects_any_other_length(#[case] length: usize) {
         Err(InvalidIamValue::RequestDigestLength)
     );
 }
+
+#[test]
+fn a_digest_built_from_an_array_equals_the_one_built_from_a_slice() {
+    let bytes: [u8; 32] = std::array::from_fn(|index| u8::try_from(index).unwrap());
+
+    assert_eq!(
+        RequestDigest::from_bytes(bytes),
+        RequestDigest::new(&bytes).unwrap()
+    );
+}

@@ -5,7 +5,7 @@
 )]
 
 use async_graphql::{EmptySubscription, MergedObject, SDLExportOptions, Schema, SchemaBuilder};
-use iam_application::graphql::IamQuery;
+use iam_application::graphql::{IamMutation, IamQuery};
 use some_module_application::graphql::{ExampleApiResourceMutation, ExampleApiResourceQuery};
 
 /// Query root.
@@ -14,7 +14,7 @@ pub struct Query(ExampleApiResourceQuery, IamQuery);
 
 /// Mutation root.
 #[derive(Debug, MergedObject, Default)]
-pub struct Mutation(ExampleApiResourceMutation);
+pub struct Mutation(ExampleApiResourceMutation, IamMutation);
 
 /// The schema type of the service: no subscription.
 pub type ApiSchema = Schema<Query, Mutation, EmptySubscription>;

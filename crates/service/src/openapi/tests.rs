@@ -70,7 +70,7 @@ fn documents_every_operation(
 }
 
 #[test]
-fn documents_exactly_the_five_operations() {
+fn documents_exactly_the_eight_operations() {
     let json = json_document();
     let mut operations = Vec::new();
     for (path, item) in json["paths"].as_object().unwrap() {
@@ -86,6 +86,9 @@ fn documents_exactly_the_five_operations() {
             "post /api/example_api_resources",
             "get /api/example_api_resources/{id}",
             "get /api/health",
+            "get /api/roles",
+            "post /api/roles",
+            "get /api/roles/{id}",
             "post /api/token-resolutions",
         ]
     );
@@ -179,6 +182,121 @@ fn documents_the_token_resolution_with_the_bearer_requirement_and_the_iam_tag() 
 }
 
 #[test]
+fn documents_the_role_operations_with_the_bearer_requirement_and_the_iam_tag() {
+    let json = json_document();
+    let cases = [
+        (
+            "/api/roles",
+            "post",
+            "api_roles_post",
+            ["201", "400", "401", "409", "413", "415", "422", "default"].as_slice(),
+        ),
+        (
+            "/api/roles",
+            "get",
+            "api_roles_get",
+            ["200", "400", "401", "422", "default"].as_slice(),
+        ),
+        (
+            "/api/roles/{id}",
+            "get",
+            "api_roles_id_get",
+            ["200", "400", "401", "404", "422", "default"].as_slice(),
+        ),
+    ];
+
+    for (path, method, operation_id, statuses) in cases {
+        let operation = &json["paths"][path][method];
+        assert_eq!(operation["operationId"], operation_id);
+        assert_eq!(operation["tags"], json!(["iam"]), "{operation_id}");
+        assert_eq!(
+            operation["security"],
+            json!([{ "bearerAuth": [] }]),
+            "{operation_id}"
+        );
+        let mut documented: Vec<&str> = operation["responses"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        documented.sort_unstable();
+        assert_eq!(documented, statuses, "{operation_id}");
+        for status in statuses
+            .iter()
+            .filter(|status| **status != "200" && **status != "201")
+        {
+            assert_eq!(
+                operation["responses"][status]["content"]["application/problem+json"]["schema"]["$ref"],
+                "#/components/schemas/Problem",
+                "{operation_id} {status}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_role_creation_documents_its_request_headers_and_schemas() {
+    let json = json_document();
+    let operation = &json["paths"]["/api/roles"]["post"];
+
+    assert_eq!(
+        operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/CreateRoleRequest"
+    );
+    assert_eq!(
+        operation["responses"]["201"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/Role"
+    );
+    let headers: Vec<&str> = operation["responses"]["201"]["headers"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(headers, ["etag", "location"]);
+    let parameters = operation["parameters"].as_array().unwrap();
+    assert_eq!(parameters.len(), 1);
+    assert_eq!(parameters[0]["name"], "Idempotency-Key");
+    assert_eq!(parameters[0]["in"], "header");
+    let schemas = &json["components"]["schemas"];
+    assert_eq!(schemas["CreateRoleRequest"]["additionalProperties"], false);
+    assert_eq!(schemas["CreateRoleRequest"]["required"], json!(["name"]));
+    assert_eq!(
+        schemas["CreateRoleRequest"]["properties"]["name"]["maxLength"],
+        100
+    );
+    assert_eq!(
+        schemas["CreateRoleRequest"]["properties"]["description"]["maxLength"],
+        1000
+    );
+    assert!(
+        schemas["RolePage"]["properties"]
+            .get("nextCursor")
+            .is_some()
+    );
+}
+
+#[test]
+fn the_role_list_documents_its_query_parameters() {
+    let json = json_document();
+    let operation = &json["paths"]["/api/roles"]["get"];
+
+    let mut names: Vec<&str> = operation["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|parameter| parameter["name"].as_str().unwrap())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(names, ["after", "kind", "limit", "namePrefix"]);
+    assert_eq!(
+        json["paths"]["/api/roles/{id}"]["get"]["parameters"][0]["in"],
+        "path"
+    );
+}
+
+#[test]
 fn the_bearer_scheme_is_an_http_bearer_jwt_scheme() {
     let json = json_document();
 
@@ -239,7 +357,7 @@ fn carries_the_server_the_tags_and_only_the_bearer_scheme() {
 }
 
 #[test]
-fn defines_exactly_the_seven_schemas() {
+fn defines_exactly_the_ten_schemas() {
     let json = json_document();
     let schemas = json["components"]["schemas"].as_object().unwrap();
 
@@ -248,9 +366,12 @@ fn defines_exactly_the_seven_schemas() {
         names,
         [
             "CreateExampleApiResourceRequest",
+            "CreateRoleRequest",
             "DependencyFailure",
             "ExampleApiResource",
             "Problem",
+            "Role",
+            "RolePage",
             "TokenResolution",
             "TokenResolutionRequest",
             "Violation"

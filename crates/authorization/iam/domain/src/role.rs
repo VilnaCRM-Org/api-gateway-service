@@ -3,11 +3,13 @@
 pub mod event;
 pub mod statement;
 
+use std::any::Any;
 use std::time::SystemTime;
 
-use shared_domain::{AggregateRoot, RecordedEvents, Uuid};
+use shared_domain::{AggregateRoot, DomainEvent, RecordedEvents, Uuid};
 
-use crate::error::{InvalidRole, RoleChangeRefused};
+use crate::entity::event_envelope::{EventEnvelope, IamDomainEvent};
+use crate::error::{InvalidEventEnvelope, InvalidRole, RoleChangeRefused};
 use crate::value_object::actor_ref::ActorRef;
 use crate::value_object::entity_version::EntityVersion;
 use crate::value_object::identifier::RoleId;
@@ -265,6 +267,21 @@ impl Role {
         Ok(())
     }
 
+    /// Drains the recorded events as envelopes of `iam.events.v1`, in recording order, for the
+    /// change that commits them.
+    ///
+    /// # Errors
+    ///
+    /// The [`InvalidEventEnvelope`] of the first event that cannot be enveloped:
+    /// [`InvalidEventEnvelope::EventType`] for an event that is not one of the four events of a
+    /// role, which a role never records itself.
+    pub fn pull_envelopes(&mut self) -> Result<Vec<EventEnvelope>, InvalidEventEnvelope> {
+        self.pull_domain_events()
+            .iter()
+            .map(|event| envelope_of(event.as_ref()))
+            .collect()
+    }
+
     /// The version after a change that a system role refuses.
     fn next_custom_version(
         &self,
@@ -299,6 +316,35 @@ impl AggregateRoot for Role {
     fn recorded_events(&mut self) -> &mut RecordedEvents {
         &mut self.events
     }
+}
+
+/// The envelope of an event of one type, when the event has that type.
+type Enveloper = fn(&dyn Any) -> Option<Result<EventEnvelope, InvalidEventEnvelope>>;
+
+/// The envelope of `event` when it is an `E`.
+fn envelope_as<E: IamDomainEvent>(
+    event: &dyn Any,
+) -> Option<Result<EventEnvelope, InvalidEventEnvelope>> {
+    event
+        .downcast_ref::<E>()
+        .map(|event| EventEnvelope::of(event))
+}
+
+/// The four events of a role, each with its way to an envelope.
+const ENVELOPERS: [Enveloper; 4] = [
+    envelope_as::<RoleCreated>,
+    envelope_as::<RoleUpdated>,
+    envelope_as::<RoleDeleted>,
+    envelope_as::<RolePermissionsChanged>,
+];
+
+/// The envelope of one of the four events of a role.
+fn envelope_of(event: &dyn DomainEvent) -> Result<EventEnvelope, InvalidEventEnvelope> {
+    let event: &dyn Any = event;
+    ENVELOPERS
+        .iter()
+        .find_map(|enveloper| enveloper(event))
+        .unwrap_or(Err(InvalidEventEnvelope::EventType))
 }
 
 /// The grants of `left` that `right` does not hold, in order.

@@ -2,7 +2,7 @@
 
 use std::time::SystemTime;
 
-use iam_domain::{SessionId, SubjectId, SubjectKind, TokenId, TokenIdentity};
+use iam_domain::{ActorRef, SessionId, SubjectId, SubjectKind, TokenId, TokenIdentity};
 
 /// Who called IAM, as its resolved bearer token proves.
 ///
@@ -40,6 +40,15 @@ impl Principal {
     #[must_use]
     pub const fn subject_kind(&self) -> SubjectKind {
         self.subject.kind()
+    }
+
+    /// The actor that the audit log and the events of the caller's changes name.
+    #[must_use]
+    pub fn actor(&self) -> ActorRef {
+        match &self.subject {
+            SubjectId::User(id) => ActorRef::User(*id),
+            SubjectId::Service(name) => ActorRef::Service(name.clone()),
+        }
     }
 
     /// The session of the token, when it names one.

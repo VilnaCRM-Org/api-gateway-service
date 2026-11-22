@@ -42,6 +42,9 @@ const ID_TOKEN: &str = "{id}";
 /// The token that stands for the subject credential of the scenario.
 const SUBJECT_TOKEN: &str = "{token}";
 
+/// The token that stands for the remembered page cursor.
+const CURSOR_TOKEN: &str = "{cursor}";
+
 /// How long a session revocation recorded by a step is kept before it may be pruned.
 const REVOCATION_RETENTION: Duration = Duration::from_hours(24);
 
@@ -73,6 +76,8 @@ pub(crate) struct AppWorld {
     key_file: Option<PathBuf>,
     caller_token: Option<String>,
     subject_token: Option<String>,
+    idempotency_key: Option<String>,
+    cursor: Option<String>,
 }
 
 /// The configuration as the binary reads it from the environment.
@@ -164,9 +169,41 @@ impl AppWorld {
             .remembered
             .as_deref()
             .map_or_else(|| text.to_owned(), |id| text.replace(ID_TOKEN, id));
+        let text = self
+            .cursor
+            .as_deref()
+            .map_or_else(|| text.clone(), |cursor| text.replace(CURSOR_TOKEN, cursor));
         self.subject_token
             .as_deref()
             .map_or_else(|| text.clone(), |token| text.replace(SUBJECT_TOKEN, token))
+    }
+
+    /// Makes the following requests carry this `Idempotency-Key` header.
+    pub(crate) fn set_idempotency_key(&mut self, key: String) {
+        self.idempotency_key = Some(key);
+    }
+
+    /// Sets the page cursor that `{cursor}` stands for.
+    pub(crate) fn set_cursor(&mut self, cursor: String) {
+        self.cursor = Some(cursor);
+    }
+
+    /// The number the statement counts, with `value` bound to its only parameter, in the scenario
+    /// database.
+    pub(crate) async fn count(&mut self, statement: &'static str, value: &str) -> i64 {
+        let url = self.database_url().await;
+        let options = PgConnectOptions::from_str(&url).expect("valid database URL");
+        let mut connection = options
+            .connect()
+            .await
+            .expect("connect to the scenario database");
+        let count = sqlx::query_scalar::<_, i64>(statement)
+            .bind(value.to_owned())
+            .fetch_one(&mut connection)
+            .await
+            .expect("count the rows");
+        connection.close().await.expect("close");
+        count
     }
 
     /// The subject token of the scenario; `None` before a step signed one.
@@ -309,6 +346,9 @@ impl AppWorld {
         if let Some(token) = &self.caller_token {
             request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
         }
+        if let Some(key) = &self.idempotency_key {
+            request = request.header("idempotency-key", key);
+        }
         let request = request
             .body(Body::from(self.substitute(body)))
             .expect("valid request");
@@ -342,6 +382,7 @@ impl AppWorld {
             json.get("id")
         } else {
             json.pointer("/data/createExampleApiResource/id")
+                .or_else(|| json.pointer("/data/createRole/id"))
         };
         if let Some(id) = created.and_then(Value::as_str) {
             self.created.push(id.to_owned());

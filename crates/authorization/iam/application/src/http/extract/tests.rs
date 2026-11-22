@@ -1,11 +1,17 @@
+use std::time::{Duration, SystemTime};
+
 use axum::extract::FromRequestParts as _;
 use axum::http::request::Parts;
 use axum::http::{HeaderValue, Request};
-use iam_domain::{EntityVersion, IdempotencyKey};
+use iam_domain::{
+    AccessToken, AccessTokenParts, EntityVersion, IdempotencyKey, SubjectId, TokenId, TokenIdentity,
+};
 use rstest::rstest;
 use shared_application::http::{TYPE_BLANK, TYPE_VALIDATION_FAILED, Violation};
+use shared_domain::Uuid;
 
-use super::{IDEMPOTENCY_KEY, IdempotencyKeyHeader, IfMatchHeader};
+use super::{CallerPrincipal, IDEMPOTENCY_KEY, IdempotencyKeyHeader, IfMatchHeader};
+use crate::principal::Principal;
 
 fn parts(headers: &[(&str, HeaderValue)]) -> Parts {
     let mut builder = Request::builder();
@@ -139,5 +145,46 @@ async fn an_if_match_that_is_no_version_etag_is_the_412_problem(#[case] value: H
     assert_eq!(
         problem.detail.as_deref(),
         Some("The request names a version that is not the current version.")
+    );
+}
+
+fn principal() -> Principal {
+    Principal::from(TokenIdentity::from(&AccessToken::new(AccessTokenParts {
+        subject: SubjectId::User(Uuid::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ab").unwrap()),
+        session: None,
+        token_id: TokenId::new("jti-1").unwrap(),
+        roles: Vec::new(),
+        issued_at: SystemTime::UNIX_EPOCH,
+        expires_at: SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_mins(15))
+            .unwrap(),
+    })))
+}
+
+#[tokio::test]
+async fn the_principal_of_the_request_is_the_caller() {
+    let mut parts = parts(&[]);
+    parts.extensions.insert(principal());
+
+    let caller = CallerPrincipal::from_request_parts(&mut parts, &())
+        .await
+        .unwrap();
+
+    assert_eq!(caller, CallerPrincipal(principal()));
+}
+
+#[tokio::test]
+async fn a_request_without_a_principal_is_the_401_problem() {
+    let mut parts = parts(&[]);
+
+    let problem = CallerPrincipal::from_request_parts(&mut parts, &())
+        .await
+        .unwrap_err();
+
+    assert_eq!(problem.status, 401);
+    assert_eq!(problem.r#type, TYPE_BLANK);
+    assert_eq!(
+        problem.detail.as_deref(),
+        Some("A valid bearer token is required.")
     );
 }

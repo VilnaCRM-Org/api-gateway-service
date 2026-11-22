@@ -167,6 +167,18 @@ fn the_query_bus_does_not_know_a_query_of_another_type() {
 }
 
 #[test]
+fn the_query_bus_answers_each_registered_type_with_its_own_closure() {
+    let fake = FakeQueryBus::answering(|query: Lookup| Ok(format!("item {}", query.0)))
+        .and_answering(|_query: OtherQuery| Ok("other".to_owned()));
+
+    let bus: &dyn QueryBus = &fake;
+
+    assert_eq!(block_on(bus.ask(Lookup(3))).unwrap(), "item 3");
+    assert_eq!(block_on(bus.ask(OtherQuery)).unwrap(), "other");
+    assert_eq!(fake.asked(), ["Lookup", "OtherQuery"]);
+}
+
+#[test]
 fn the_unregistered_query_bus_answers_not_registered() {
     let fake = FakeQueryBus::unregistered();
 

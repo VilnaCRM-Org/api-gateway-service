@@ -12,6 +12,7 @@ repository.workspace = true
 async-graphql.workspace = true
 async-trait.workspace = true
 axum.workspace = true
+humantime.workspace = true
 iam-domain.workspace = true
 serde.workspace = true
 shared-application.workspace = true

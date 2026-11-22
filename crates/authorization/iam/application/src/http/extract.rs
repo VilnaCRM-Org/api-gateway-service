@@ -1,4 +1,5 @@
-//! The header extractors of the IAM writes (FR-2); their rejections are problem documents.
+//! The extractors of the IAM handlers: the caller and the header extractors of the writes (FR-2);
+//! their rejections are problem documents.
 
 use axum::extract::FromRequestParts;
 use axum::http::header::IF_MATCH;
@@ -8,6 +9,41 @@ use iam_domain::{EntityVersion, IdempotencyKey, InvalidIamValue};
 use shared_application::http::{Problem, Violation};
 
 use crate::error::IamError;
+use crate::principal::Principal;
+
+/// The authenticated caller of the request.
+///
+/// The authentication middleware of the composition root puts the [`Principal`] of a valid bearer
+/// token into the request extensions; a request that reaches a handler without one is rejected
+/// with the 401 problem ([`IamError::Unauthenticated`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallerPrincipal(pub Principal);
+
+impl<S> FromRequestParts<S> for CallerPrincipal
+where
+    S: Send + Sync,
+{
+    type Rejection = Problem;
+
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
+        std::future::ready(Self::extract(parts))
+    }
+}
+
+impl CallerPrincipal {
+    /// Reads the principal of the request.
+    fn extract(parts: &Parts) -> Result<Self, Problem> {
+        parts
+            .extensions
+            .get::<Principal>()
+            .cloned()
+            .map(Self)
+            .ok_or_else(|| Problem::from(IamError::Unauthenticated))
+    }
+}
 
 /// The request header that carries the idempotency key of a write.
 pub const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
