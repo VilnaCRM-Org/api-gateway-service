@@ -28,8 +28,11 @@ use test_support::log::LogRecorder;
 use test_support::policy_epoch::{FakePolicyEpochRepository, seeded_policy_epoch};
 use test_support::probe::StubProbe;
 use test_support::repository::InMemoryExampleApiResourceRepository;
+use test_support::revocation::FakeRevocationRepository;
+use test_support::role::FakeRoleRepository;
 use test_support::security_audit::FakeSecurityAuditLog;
 use test_support::seed::TestRng;
+use test_support::token::FakeTokenRepository;
 use tower::ServiceExt as _;
 
 use super::{
@@ -79,7 +82,10 @@ fn adapters() -> Adapters {
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
         change_receipts: Arc::new(FakeChangeReceiptRepository::new()),
         idempotency_records: Arc::new(FakeIdempotencyRepository::new()),
+        roles: Arc::new(FakeRoleRepository::new()),
         access_tokens: Arc::new(FakeAccessTokenVerifier::new()),
+        tokens: Arc::new(FakeTokenRepository::new()),
+        revocations: Arc::new(FakeRevocationRepository::new()),
         probes: healthy_probes(),
         event_bus: event_bus(),
         clock: Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH)),
@@ -518,4 +524,21 @@ async fn connect_refuses_a_key_file_that_no_longer_holds_a_key_set() {
 #[test]
 fn the_key_file_is_polled_every_five_seconds() {
     assert_eq!(super::KEY_FILE_POLL_INTERVAL, Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn connect_wires_a_token_repository_that_refuses_before_reading_the_revocation_state() {
+    let adapters = Adapters::connect(&config("test")).await.unwrap();
+
+    for (raw, rejection) in [
+        (" ", TokenRejection::Missing),
+        ("a.b.c", TokenRejection::Invalid),
+        ("a.b.c", TokenRejection::Invalid),
+    ] {
+        let outcome = adapters
+            .tokens
+            .resolve(&Credential::new(raw.to_owned()))
+            .await;
+        assert_eq!(outcome, Err(rejection));
+    }
 }

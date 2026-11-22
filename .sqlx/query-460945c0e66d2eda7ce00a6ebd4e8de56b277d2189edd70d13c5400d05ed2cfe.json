@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO iam_role_permissions (role_id, permission_key, key_kind, service, is_wildcard,\n            active, granted_by, granted_at)\n        SELECT role.id, grant_row.permission_key, grant_row.key_kind, grant_row.service,\n            grant_row.is_wildcard, TRUE, $6, role.updated_at\n        FROM iam_roles role,\n            UNNEST($2::text[], $3::text[], $4::text[], $5::bool[])\n                AS grant_row (permission_key, key_kind, service, is_wildcard)\n        WHERE role.id = $1\n        ON CONFLICT (role_id, permission_key) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "BoolArray",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "460945c0e66d2eda7ce00a6ebd4e8de56b277d2189edd70d13c5400d05ed2cfe"
+}

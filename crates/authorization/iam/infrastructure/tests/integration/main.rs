@@ -10,9 +10,15 @@ mod replay;
 #[cfg(test)]
 mod repository;
 #[cfg(test)]
+mod revocation_repository;
+#[cfg(test)]
+mod role_repository;
+#[cfg(test)]
 mod security_audit_log;
 #[cfg(test)]
 mod security_audit_migration;
+#[cfg(test)]
+mod token_resolution;
 #[cfg(test)]
 mod unit_of_work;
 #[cfg(test)]

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO iam_inbound_events\n                (event_id, topic, partition, \"offset\", event_type, outcome, error, processed_at)\n            VALUES ($1, ($2::text[])[1], ($3::bigint[])[1], ($3::bigint[])[2], ($2::text[])[2],\n                ($2::text[])[3], $4, $5)\n            ON CONFLICT (event_id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "Int8Array",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ade7bdf81af41ea99c6f20bac02d08069e776b59c1843006798e51840904fe63"
+}

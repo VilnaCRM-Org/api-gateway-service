@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO iam_global_token_cutoff (id, tokens_valid_after, set_by, set_at)\n            VALUES (1, $1, $2, $3)\n            ON CONFLICT (id) DO UPDATE SET\n                tokens_valid_after = EXCLUDED.tokens_valid_after,\n                set_by = EXCLUDED.set_by,\n                set_at = EXCLUDED.set_at\n            WHERE EXCLUDED.tokens_valid_after > iam_global_token_cutoff.tokens_valid_after",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d7bb30f5b94856f8859ff42b5eea9f73ec7d41a24ab00e53e3baf2e791f332d1"
+}

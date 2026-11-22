@@ -46,6 +46,7 @@ pub use revocation::revocation_source::RevocationSource;
 pub use revocation::session_revocation::SessionRevocation;
 pub use revocation::user_token_cutoff::UserTokenCutoff;
 pub use role::event::{RoleCreated, RoleDeleted, RolePermissionsChanged, RoleUpdated};
+pub use role::statement::RoleStatement;
 pub use role::{Role, RoleDescriptionChange, RoleFields, RoleParts, RolePatch, RoleStamp};
 pub use value_object::access_token::{AccessToken, AccessTokenParts};
 pub use value_object::actor_ref::{ActorRef, SystemComponent};

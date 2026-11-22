@@ -16,9 +16,15 @@ use iam_application::http::IamState;
 use iam_application::{
     GetChangeReceiptQueryHandler, GetIdempotentReplayQueryHandler, GetPolicyEpochQueryHandler,
 };
+use iam_domain::RoleRepository;
 use iam_domain::{
     AccessTokenVerifier, ChangeReceiptRepository, IdempotencyRepository, PolicyEpochRepository,
     SecurityAuditLog,
+};
+use iam_domain::{RevocationRepository, RevocationView, TokenMemo, TokenRepository};
+use iam_infrastructure::PgRoleRepository;
+use iam_infrastructure::{
+    CachingTokenRepository, MokaTokenMemo, PgRevocationRepository, PgRevocationView,
 };
 use iam_infrastructure::{
     JwtAccessTokenVerifier, JwtKeyFileError, PgChangeReceiptRepository, PgIdempotencyRepository,
@@ -59,8 +65,14 @@ pub struct Adapters {
     pub change_receipts: Arc<dyn ChangeReceiptRepository>,
     /// Reader of the idempotency records of IAM writes.
     pub idempotency_records: Arc<dyn IdempotencyRepository>,
+    /// Reader of the IAM roles.
+    pub roles: Arc<dyn RoleRepository>,
     /// Offline verifier of User service access tokens.
     pub access_tokens: Arc<dyn AccessTokenVerifier>,
+    /// Resolver of bearer credentials: memoized verification and the revocation check.
+    pub tokens: Arc<dyn TokenRepository>,
+    /// Writer and reader of session revocations, cut-offs and consumed User service events.
+    pub revocations: Arc<dyn RevocationRepository>,
     /// Health probes in the order database, cache, message broker.
     pub probes: Vec<Arc<dyn HealthProbe>>,
     /// Bus the command handlers publish domain events to.
@@ -111,6 +123,9 @@ impl Adapters {
             security_audit_log: Arc::new(PgSecurityAuditLog::new(pool.clone())),
             change_receipts: Arc::new(PgChangeReceiptRepository::new(pool.clone())),
             idempotency_records: Arc::new(PgIdempotencyRepository::new(pool.clone())),
+            roles: Arc::new(PgRoleRepository::new(pool.clone())),
+            tokens: token_repository(config, Arc::clone(&access_tokens), &clock, &pool),
+            revocations: Arc::new(PgRevocationRepository::new(pool.clone())),
             access_tokens,
             probes: vec![
                 Arc::new(PostgresProbe::new(pool)),
@@ -156,6 +171,21 @@ pub fn access_token_verifier(
     )?);
     drop(verifier.watch(KEY_FILE_POLL_INTERVAL));
     Ok(verifier)
+}
+
+/// The token repository over `verifier`: a memo sized by `TOKEN_MEMO_CAPACITY` and
+/// `TOKEN_MEMO_MAX_TTL` on the `Clock` port, and the revocation state read from PostgreSQL.
+#[must_use]
+pub fn token_repository(
+    config: &Config,
+    verifier: Arc<dyn AccessTokenVerifier>,
+    clock: &Arc<dyn Clock>,
+    pool: &sqlx::PgPool,
+) -> Arc<dyn TokenRepository> {
+    let memo: Arc<dyn TokenMemo> =
+        Arc::new(MokaTokenMemo::new(config.tokens.memo, Arc::clone(clock)));
+    let revocations: Arc<dyn RevocationView> = Arc::new(PgRevocationView::new(pool.clone()));
+    Arc::new(CachingTokenRepository::new(verifier, memo, revocations))
 }
 
 /// The in-process event bus with every subscriber registered.

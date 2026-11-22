@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE iam_roles SET name = $2, description = $3, grant_count = ($4::bigint[])[1],\n            version = ($4::bigint[])[2], updated_at = $5, deleted_at = $6\n        WHERE id = $1 AND version = ($4::bigint[])[3] AND deleted_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Int8Array",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c7955af1907a2244d31afa94917525a21b38cae691004facaff294420c71d6be"
+}

@@ -1,5 +1,6 @@
 //! The statements and guards that a change runs inside its transaction.
 
+use crate::role::statement::RoleStatement;
 use crate::value_object::policy_version::PolicyVersion;
 
 /// One aggregate statement or guard of a change, described for the unit of work to execute.
@@ -14,15 +15,19 @@ pub enum ChangeStatement {
     /// Refuse the change with a conflict when the policy version locked by the transaction differs
     /// from the version the change was decided against.
     ExpectPolicyVersion(PolicyVersion),
+    /// Insert a new role, or update a stored role at the expected version; a duplicate name or id
+    /// refuses the change as a duplicate and a stale or deleted stored role as a conflict.
+    SaveRole(Box<RoleStatement>),
 }
 
 impl ChangeStatement {
     /// Whether the statement holds under `locked`, the policy version that the transaction locked
-    /// before any increment.
+    /// before any increment. An aggregate write holds here: the storage checks it when it runs.
     #[must_use]
     pub fn holds(&self, locked: PolicyVersion) -> bool {
         match self {
             Self::ExpectPolicyVersion(expected) => *expected == locked,
+            Self::SaveRole(_) => true,
         }
     }
 }

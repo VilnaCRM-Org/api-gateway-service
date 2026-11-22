@@ -15,6 +15,7 @@ use sqlx::types::Uuid as SqlUuid;
 use sqlx::types::time::OffsetDateTime;
 
 use crate::persistence::event_encoding::encode;
+use crate::persistence::role::save_within;
 use crate::persistence::security_audit_log::{PgSecurityAuditLog, emit};
 
 /// The topic of the IAM domain events.
@@ -23,8 +24,11 @@ pub const EVENTS_TOPIC: &str = "iam.events.v1";
 /// The number of nanoseconds in one microsecond.
 const NANOS_PER_MICRO: i128 = 1_000;
 
-/// Commits administrative changes through the `iam_policy_epoch`, `iam_outbox`,
-/// `iam_security_audit_events`, `iam_change_receipts` and `iam_idempotency_keys` tables.
+/// Commits administrative changes in one transaction.
+///
+/// It writes the `iam_policy_epoch`, `iam_outbox`, `iam_security_audit_events`,
+/// `iam_change_receipts` and `iam_idempotency_keys` tables, and runs the role statements against
+/// `iam_roles` and `iam_role_permissions`.
 #[derive(Debug)]
 pub struct PgIamUnitOfWork {
     pool: sqlx::PgPool,
@@ -68,6 +72,7 @@ async fn write(
     let locked = lock_epoch(connection).await?;
     let version = next_version(connection, change, &locked, changed_at).await?;
     check(&change.parts().statements, locked.version)?;
+    run(connection, &change.parts().statements).await?;
     let stored = write_records(connection, change, version, locked.log_epoch, changed_at).await?;
     Ok((version, stored))
 }
@@ -147,6 +152,20 @@ fn check(statements: &[ChangeStatement], locked: PolicyVersion) -> Result<(), Re
     } else {
         Err(RepositoryError::Conflict)
     }
+}
+
+/// Runs the aggregate writes of the statements, in order; a guard writes nothing.
+async fn run(
+    connection: &mut PgConnection,
+    statements: &[ChangeStatement],
+) -> Result<(), RepositoryError> {
+    for statement in statements {
+        match statement {
+            ChangeStatement::ExpectPolicyVersion(_) => {}
+            ChangeStatement::SaveRole(role) => save_within(connection, role).await?,
+        }
+    }
+    Ok(())
 }
 
 /// The column values of one outbox event row; they never leave this module.

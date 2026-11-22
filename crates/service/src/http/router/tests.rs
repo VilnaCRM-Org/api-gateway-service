@@ -15,7 +15,10 @@ use test_support::idempotency::FakeIdempotencyRepository;
 use test_support::policy_epoch::FakePolicyEpochRepository;
 use test_support::probe::StubProbe;
 use test_support::repository::InMemoryExampleApiResourceRepository;
+use test_support::revocation::FakeRevocationRepository;
+use test_support::role::FakeRoleRepository;
 use test_support::security_audit::FakeSecurityAuditLog;
+use test_support::token::FakeTokenRepository;
 
 use crate::bootstrap::{Adapters, event_bus, router};
 use crate::cli::ServeArgs;
@@ -59,7 +62,10 @@ fn adapters() -> Adapters {
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
         change_receipts: Arc::new(FakeChangeReceiptRepository::new()),
         idempotency_records: Arc::new(FakeIdempotencyRepository::new()),
+        roles: Arc::new(FakeRoleRepository::new()),
         access_tokens: Arc::new(FakeAccessTokenVerifier::new()),
+        tokens: Arc::new(FakeTokenRepository::new()),
+        revocations: Arc::new(FakeRevocationRepository::new()),
         probes,
         event_bus: event_bus(),
         clock: Arc::new(FixedClock::at(std::time::SystemTime::UNIX_EPOCH)),

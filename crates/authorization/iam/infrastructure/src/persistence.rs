@@ -4,6 +4,9 @@
 pub mod change_receipt;
 pub mod event_encoding;
 pub mod idempotency;
+pub mod revocation;
+pub mod revocation_view;
+pub mod role;
 pub mod security_audit_log;
 pub mod unit_of_work;
 

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO iam_user_token_validity\n                (user_id, tokens_valid_after, source, updated_at, prune_after)\n            VALUES ($1, $2, $3, $4, $5)\n            ON CONFLICT (user_id) DO UPDATE SET\n                tokens_valid_after = EXCLUDED.tokens_valid_after,\n                source = EXCLUDED.source,\n                updated_at = EXCLUDED.updated_at,\n                prune_after = GREATEST(iam_user_token_validity.prune_after, EXCLUDED.prune_after)\n            WHERE EXCLUDED.tokens_valid_after > iam_user_token_validity.tokens_valid_after",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Text",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "88c51b4eed4ec2d6349e3c9fa97a91f79f34bc05c9eea638f09111b0bbd0374a"
+}

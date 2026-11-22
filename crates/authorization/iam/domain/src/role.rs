@@ -1,6 +1,7 @@
 //! The `Role` aggregate (board name `Role`): a named set of permission grants (FR-20 to FR-24).
 
 pub mod event;
+pub mod statement;
 
 use std::time::SystemTime;
 

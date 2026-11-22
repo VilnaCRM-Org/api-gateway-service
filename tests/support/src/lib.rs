@@ -14,9 +14,12 @@ pub mod log;
 pub mod policy_epoch;
 pub mod probe;
 pub mod repository;
+pub mod revocation;
 pub mod rng;
+pub mod role;
 pub mod security_audit;
 pub mod seed;
+pub mod token;
 pub mod unit_of_work;
 
 /// Runs a future that completes without waiting for anything, such as the doubles of this crate.

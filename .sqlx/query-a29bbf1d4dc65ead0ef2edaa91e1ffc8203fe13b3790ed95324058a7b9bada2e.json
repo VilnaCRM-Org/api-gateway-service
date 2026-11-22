@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT tokens_valid_after, set_by, set_at FROM iam_global_token_cutoff WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tokens_valid_after",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "iam_global_token_cutoff",
+            "name": "tokens_valid_after"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "set_by",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "iam_global_token_cutoff",
+            "name": "set_by"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "set_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "iam_global_token_cutoff",
+            "name": "set_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "a29bbf1d4dc65ead0ef2edaa91e1ffc8203fe13b3790ed95324058a7b9bada2e"
+}
