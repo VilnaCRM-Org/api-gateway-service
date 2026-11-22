@@ -1,0 +1,34 @@
+//! Value objects of the IAM context.
+
+pub mod actor_ref;
+pub mod assignment_scope;
+pub mod audit_action;
+pub mod audit_chain_head;
+pub mod audit_hash;
+pub mod audit_outcome;
+pub mod audit_reason;
+pub mod audit_summary;
+pub mod audit_target;
+pub mod boot_instant;
+pub mod entity_version;
+pub mod gql_name;
+pub mod http_method;
+pub mod idempotency_key;
+pub mod identifier;
+pub mod log_epoch;
+pub mod permission_flags;
+pub mod permission_grant;
+pub mod permission_grant_set;
+pub mod permission_key;
+pub mod policy_digest_value;
+pub mod policy_epoch;
+pub mod policy_version;
+pub mod relay_epoch;
+pub mod request_id;
+pub mod reserved_permission;
+pub mod rest_template;
+pub mod scope_set;
+pub mod service_name;
+pub mod subject;
+mod text;
+pub mod wildcard_pattern;
