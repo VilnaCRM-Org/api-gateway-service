@@ -6,11 +6,12 @@
 //! leader stopped.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use iam_domain::{LeaderBatch, Leadership, SingletonLeadership, SingletonTask};
 use shared_domain::{BoxError, Clock};
 use tokio::sync::watch;
+use tracing::Instrument as _;
 
 /// The longest interval at which a replica without the lock retries.
 pub const MAX_SINGLETON_INTERVAL: Duration = Duration::from_secs(10);
@@ -59,6 +60,18 @@ pub trait SingletonWork: std::fmt::Debug + Send + Sync {
     ///
     /// Any error of the work; the batch is rolled back.
     async fn run(&self, batch: &mut dyn LeaderBatch) -> Result<(), BoxError>;
+
+    /// Whether a batch that this replica leads at `now` has work to do. A batch whose work is not
+    /// due ends without running the work and without recording a run, so a task whose own
+    /// period is longer than the retry interval is polled at the retry interval and runs once per
+    /// period. Every batch is due unless the work says otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Any error of the check; the batch is rolled back.
+    async fn is_due(&self, _now: SystemTime) -> Result<bool, BoxError> {
+        Ok(true)
+    }
 }
 
 /// How one attempt at a batch ended.
@@ -66,7 +79,8 @@ pub trait SingletonWork: std::fmt::Debug + Send + Sync {
 pub enum BatchOutcome {
     /// This replica led the batch and committed it.
     Committed,
-    /// Another replica leads: the batch was skipped.
+    /// Another replica leads, or this one leads and the work is not due yet: the batch was
+    /// skipped.
     Skipped,
     /// This replica led the batch, but the work or the record of the run failed: rolled back.
     RolledBack,
@@ -109,6 +123,13 @@ impl SingletonLoop {
         self.task.name()
     }
 
+    /// How often the loop polls: the interval of its batches and of the retries of a replica
+    /// without the lock.
+    #[must_use]
+    pub const fn interval(&self) -> SingletonInterval {
+        self.interval
+    }
+
     /// Tries one batch: leads and runs it when the lock is free, skips it otherwise.
     pub async fn run_batch(&self) -> BatchOutcome {
         match self.leadership.begin(&self.task).await {
@@ -122,14 +143,22 @@ impl SingletonLoop {
     }
 
     /// Runs batches until the stop flag is set or its sender is gone. A batch in flight when the
-    /// flag is set ends first, by a commit or a rollback.
+    /// flag is set ends first, by a commit or a rollback. Every batch runs inside a
+    /// `singleton.batch` span that names the task, so its log lines are told apart from those of a
+    /// request.
     pub async fn run(self, mut shutdown: watch::Receiver<bool>) {
         while !*shutdown.borrow() {
-            self.run_batch().await;
+            self.run_traced_batch().await;
             if !self.pause(&mut shutdown).await {
                 break;
             }
         }
+    }
+
+    /// Runs one batch inside its `singleton.batch` span.
+    async fn run_traced_batch(&self) -> BatchOutcome {
+        let span = tracing::info_span!("singleton.batch", task = self.task.name());
+        self.run_batch().instrument(span).await
     }
 
     /// Waits for the interval; `false` when the service is stopping instead.
@@ -144,6 +173,17 @@ impl SingletonLoop {
     }
 
     async fn lead(&self, mut batch: Box<dyn LeaderBatch>) -> BatchOutcome {
+        match self.work.is_due(self.clock.now()).await {
+            Ok(true) => {}
+            Ok(false) => {
+                self.rollback(batch).await;
+                return BatchOutcome::Skipped;
+            }
+            Err(error) => {
+                log_rolled_back(self.task.name(), &error);
+                return self.rollback(batch).await;
+            }
+        }
         match self.work_and_record(batch.as_mut()).await {
             Ok(()) => self.commit(batch).await,
             Err(error) => {

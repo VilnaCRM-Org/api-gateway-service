@@ -367,3 +367,18 @@ async fn a_failing_dependency_keeps_the_subject_it_already_resolved() {
     assert_eq!(outcome.subject(), Some(&user()));
     assert_eq!(outcome.policy_version(), None);
 }
+
+#[tokio::test]
+async fn the_unavailable_outcome_is_a_deny_with_a_new_identifier_and_no_facts() {
+    let service = service_over(tokens(), repository(None));
+
+    let first = service.unavailable();
+    let second = service.unavailable();
+
+    assert_eq!(first.decision(), Decision::Deny);
+    assert_eq!(first.reason(), DecisionReason::Unavailable);
+    assert_eq!(first.denied(), Vec::<String>::new());
+    assert_eq!(first.subject(), None);
+    assert_eq!(first.policy_version(), None);
+    assert_ne!(first.decision_id(), second.decision_id());
+}

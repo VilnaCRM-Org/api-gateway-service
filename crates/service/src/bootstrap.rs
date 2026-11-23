@@ -12,9 +12,11 @@ use health_check_application::HealthCheckState;
 use health_check_application::HealthService;
 use health_check_domain::HealthProbe;
 use health_check_infrastructure::{CacheProbe, PostgresProbe, SqsProbe};
+use iam_application::MaintenanceSettings;
 use iam_application::graphql::AsyncGraphQlSchemaParser;
 use iam_application::http::IamState;
 use iam_application::http::JsonOpenApiDocumentParser;
+use iam_application::{AccessDecisionService, ServiceCatalogLoader, ValidateAccessQueryHandler};
 use iam_application::{
     ActivationReads, CreateGraphQlPermissionsCommandHandler,
     GetGraphQlPermissionsCreatedQueryHandler,
@@ -67,6 +69,7 @@ use iam_domain::{
     PolicyReadRepository, SecurityAuditLog,
 };
 use iam_domain::{IamUnitOfWork, OWN_SPECIFICATIONS_LOCK, RepositoryError, RequestDigester};
+use iam_domain::{MaintenanceStore, TaskStateRepository};
 use iam_domain::{RevocationRepository, RevocationView, TokenMemo, TokenRepository};
 use iam_infrastructure::KrafkaTopicInspector;
 use iam_infrastructure::PgGraphQlPermissionRepository;
@@ -84,6 +87,7 @@ use iam_infrastructure::{
     JwtAccessTokenVerifier, JwtKeyFileError, PgChangeReceiptRepository, PgIdempotencyRepository,
     PgPolicyEpochRepository, PgPolicyReadRepository, PgSecurityAuditLog,
 };
+use iam_infrastructure::{PgMaintenanceStore, PgTaskStateRepository};
 use shared_domain::{Clock, CommandBus, CommandHandler as _, EventBus, QueryBus, UuidGenerator};
 use shared_infrastructure::bus::{
     DuplicateHandler, InMemoryCommandBus, InMemoryEventBus, InMemoryQueryBus,
@@ -126,6 +130,12 @@ pub struct Adapters {
     pub startup_lock: Arc<dyn StartupLock>,
     /// Fences each batch of a singleton task to one replica with an advisory lock.
     pub singleton_leadership: Arc<dyn SingletonLeadership>,
+    /// Finds and removes what the maintenance task keeps small, and anchors the audit chain.
+    pub maintenance_store: Arc<dyn MaintenanceStore>,
+    /// Reader of what the committed batches of singleton tasks recorded.
+    pub task_states: Arc<dyn TaskStateRepository>,
+    /// How often the maintenance task runs and how long orphaned grants are kept.
+    pub maintenance: MaintenanceSettings,
     /// Reader of the receipts of committed IAM changes.
     pub change_receipts: Arc<dyn ChangeReceiptRepository>,
     /// Reader of the idempotency records of IAM writes.
@@ -212,6 +222,9 @@ impl Adapters {
             security_audit_log: Arc::new(PgSecurityAuditLog::new(pool.clone())),
             startup_lock: Arc::new(PgStartupLock::new(pool.clone())),
             singleton_leadership: Arc::new(AdvisoryLockLeadership::new(pool.clone())),
+            maintenance_store: Arc::new(PgMaintenanceStore::new(pool.clone())),
+            task_states: Arc::new(PgTaskStateRepository::new(pool.clone())),
+            maintenance: config.maintenance,
             change_receipts: Arc::new(PgChangeReceiptRepository::new(pool.clone())),
             idempotency_records: Arc::new(PgIdempotencyRepository::new(pool.clone())),
             roles: Arc::new(PgRoleRepository::new(pool.clone())),
@@ -396,6 +409,28 @@ fn register_token_queries(
     let resolve = ResolveTokenQueryHandler::new(Arc::clone(tokens), config.tokens.callers.clone());
     let subject = ResolveSubjectTokenQueryHandler::new(Arc::clone(tokens));
     Ok(bus.register(resolve)?.register(subject)?)
+}
+
+/// Registers the handler behind the access-validation operation.
+///
+/// The decision path reads the subject's token through the token repository and the catalogue and
+/// the policy of the subject through the policy read repository, with the `Clock` and
+/// `UuidGenerator` ports of the application; the handler reads the policy epoch for a
+/// `minPolicyVersion`.
+fn register_access_validation_queries(
+    bus: InMemoryQueryBus,
+    adapters: &Adapters,
+) -> Result<InMemoryQueryBus, BootstrapError> {
+    let decisions = AccessDecisionService::new(
+        Arc::clone(&adapters.tokens),
+        ServiceCatalogLoader::new(Arc::clone(&adapters.policy_reads)),
+        Arc::clone(&adapters.policy_reads),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    let validate =
+        ValidateAccessQueryHandler::new(Arc::new(decisions), Arc::clone(&adapters.policy_epochs));
+    Ok(bus.register(validate)?)
 }
 
 /// Registers the command handler that loads GraphQL specifications.
@@ -660,6 +695,7 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
     let queries = register_rest_permission_queries(queries, adapters)?;
     let queries = register_user_role_queries(queries, adapters)?;
     let queries = register_token_queries(queries, &adapters.tokens, config)?;
+    let queries = register_access_validation_queries(queries, adapters)?;
     Ok((Arc::new(commands), Arc::new(queries)))
 }
 

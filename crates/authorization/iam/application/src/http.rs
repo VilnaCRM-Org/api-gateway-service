@@ -1,6 +1,7 @@
 //! REST adapter of the IAM context: the state its handlers read, the router that registers
 //! them, the header extractors of the writes and their response headers.
 
+pub mod access_validation;
 pub mod dto;
 pub mod extract;
 pub mod graphql_activation;
@@ -52,6 +53,7 @@ where
 {
     OpenApiRouter::new()
         .routes(routes!(handler::resolve))
+        .routes(routes!(access_validation::validate))
         .routes(routes!(role::create, role::list))
         .routes(routes!(role::get_one, role::update, role::delete))
         .merge(graphql_permission_router())

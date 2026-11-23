@@ -7,6 +7,7 @@ use axum::http::{HeaderMap, Request, StatusCode, header};
 use health_check_domain::{Dependency, HealthProbe};
 use health_check_infrastructure::CacheProbe;
 use http_body_util::BodyExt as _;
+use iam_application::MaintenanceSettings;
 use iam_application::{
     GetChangeReceiptQuery, GetIdempotentReplayQuery, GetPolicyEpochQuery,
     GetPolicyEpochQueryHandler,
@@ -27,6 +28,7 @@ use test_support::graphql_spec::FakeGraphQlSpecRepository;
 use test_support::id::SequenceUuidGenerator;
 use test_support::idempotency::{FakeIdempotencyRepository, idempotency_request};
 use test_support::log::LogRecorder;
+use test_support::maintenance_store::FakeMaintenanceStore;
 use test_support::openapi_spec::FakeOpenApiSpecRepository;
 use test_support::policy_epoch::{FakePolicyEpochRepository, seeded_policy_epoch};
 use test_support::policy_read::FakePolicyReadRepository;
@@ -40,6 +42,7 @@ use test_support::security_audit::FakeSecurityAuditLog;
 use test_support::seed::TestRng;
 use test_support::singleton_leadership::FakeSingletonLeadership;
 use test_support::startup_lock::FakeStartupLock;
+use test_support::task_state::FakeTaskStateRepository;
 use test_support::token::FakeTokenRepository;
 use test_support::unit_of_work::FakeIamUnitOfWork;
 use test_support::user_role::FakeUserRoleRepository;
@@ -100,6 +103,9 @@ fn adapters() -> Adapters {
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
         startup_lock: Arc::new(FakeStartupLock::new()),
         singleton_leadership: Arc::new(FakeSingletonLeadership::leading()),
+        maintenance_store: Arc::new(FakeMaintenanceStore::new()),
+        task_states: Arc::new(FakeTaskStateRepository::new()),
+        maintenance: MaintenanceSettings::default(),
         change_receipts: Arc::new(FakeChangeReceiptRepository::new()),
         idempotency_records: Arc::new(FakeIdempotencyRepository::new()),
         roles: Arc::new(FakeRoleRepository::new()),
@@ -703,13 +709,15 @@ async fn a_lock_that_cannot_be_taken_fails_the_registration_before_anything_is_w
 }
 
 #[tokio::test]
-async fn the_serve_mode_registers_the_singleton_set_and_it_is_empty_until_a_story_adds_a_task() {
+async fn the_serve_mode_registers_the_singleton_set_with_the_maintenance_task() {
     let (stop, stopping) = watch::channel(false);
 
     let supervisor = start_tasks(&adapters(), TaskMode::Serve, stopping);
 
-    assert!(supervisor.is_empty());
-    assert!(singleton_set(&adapters()).is_empty());
+    assert_eq!(supervisor.len(), 1);
+    let set = singleton_set(&adapters());
+    assert_eq!(set.len(), 1);
+    assert_eq!(set[0].name(), "policy-maintenance");
     stop.send_replace(true);
     assert_eq!(
         supervisor.stop(Duration::from_secs(1)).await,
@@ -717,8 +725,16 @@ async fn the_serve_mode_registers_the_singleton_set_and_it_is_empty_until_a_stor
     );
 }
 
+#[test]
+fn a_zero_maintenance_interval_registers_no_task() {
+    let mut adapters = adapters();
+    adapters.maintenance.interval = Duration::ZERO;
+
+    assert!(singleton_set(&adapters).is_empty());
+}
+
 #[tokio::test]
-async fn the_supervisor_starts_without_a_task_and_stops_at_once() {
+async fn the_test_mode_starts_no_singleton_task_and_stops_at_once() {
     let (stop, stopping) = watch::channel(false);
 
     let supervisor = start_tasks(&adapters(), TaskMode::Test, stopping);
@@ -729,4 +745,238 @@ async fn the_supervisor_starts_without_a_task_and_stops_at_once() {
         supervisor.stop(Duration::from_secs(1)).await,
         super::TaskStop::Drained
     );
+}
+
+/// The access-validation operation through the assembled router over doubles: the matching of
+/// concrete paths against the templates of the active version, the failing database and the
+/// policy version that IAM has not issued.
+mod access_validation {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, header};
+    use iam_domain::{
+        AssignmentScope, CompiledRoleSet, GrantStatus, HttpMethod, PathTemplate, PermissionFlags,
+        PermissionGrant, RestOperation, RestOperationSet, RoleAssignment, RoleId, ServiceCatalog,
+        ServiceName, SubjectPolicy, SubjectRef,
+    };
+    use serde_json::{Value, json};
+    use test_support::policy_epoch::{FakePolicyEpochRepository, seeded_policy_epoch};
+    use test_support::policy_read::FakePolicyReadRepository;
+    use test_support::token::FakeTokenRepository;
+
+    use super::{Answer, adapters, app, send, user_identity};
+
+    const SUBJECT: &str = "0190f2a8-7b3c-7d4e-8f10-1234567890ab";
+
+    fn operation(path: &str) -> RestOperation {
+        RestOperation {
+            method: HttpMethod::Get,
+            template: PathTemplate::from_openapi_path(path).unwrap(),
+            label: None,
+            flags: PermissionFlags::NONE,
+        }
+    }
+
+    /// The active version of `orders`: a templated operation and a literal one that wins over it.
+    fn catalog() -> ServiceCatalog {
+        let mut operations = RestOperationSet::new();
+        operations.insert(operation("/api/orders/{id}")).unwrap();
+        operations.insert(operation("/api/orders/latest")).unwrap();
+        ServiceCatalog::new(
+            ServiceName::new("orders").unwrap(),
+            seeded_policy_epoch(),
+            vec![operations],
+            Vec::new(),
+        )
+    }
+
+    /// A subject that holds the templated operation globally and nothing else.
+    fn holding_policy() -> FakePolicyReadRepository {
+        let role = RoleId::parse("00000000-0000-7000-8000-000000000101").unwrap();
+        let grants = [(
+            PermissionGrant::parse("rest:orders:GET /api/orders/{}").unwrap(),
+            GrantStatus::Active,
+        )];
+        let policy = SubjectPolicy::new(
+            seeded_policy_epoch(),
+            vec![RoleAssignment::new(role, AssignmentScope::Global, None)],
+            BTreeMap::from([(role, CompiledRoleSet::compile(grants))]),
+        );
+        let subject = SubjectRef::user(shared_domain::Uuid::parse(SUBJECT).unwrap());
+        FakePolicyReadRepository::new()
+            .with_catalog(catalog())
+            .with_subject(subject, policy)
+    }
+
+    fn wiring(policy: FakePolicyReadRepository, epochs: FakePolicyEpochRepository) -> Router {
+        let tokens = FakeTokenRepository::new()
+            .accepting(
+                "caller-token",
+                user_identity("caller-session", &["vilnacrm-api"]),
+            )
+            .accepting(
+                "subject-token",
+                user_identity("subject-session", &["vilnacrm-api"]),
+            );
+        let mut wired = adapters();
+        wired.tokens = Arc::new(tokens);
+        wired.policy_reads = Arc::new(policy);
+        wired.policy_epochs = Arc::new(epochs);
+        app(wired)
+    }
+
+    fn post(path: &str, bearer: Option<&str>, body: String) -> Request<Body> {
+        let mut request = Request::post(path).header(header::CONTENT_TYPE, "application/json");
+        if let Some(token) = bearer {
+            request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        request.body(Body::from(body)).unwrap()
+    }
+
+    fn rest(bearer: Option<&str>, target: &Value, minimum: Option<i64>) -> Request<Body> {
+        let mut body = json!({
+            "credential": "subject-token",
+            "service": "orders",
+            "requestId": "req-1"
+        });
+        for (name, value) in target.as_object().unwrap() {
+            body[name] = value.clone();
+        }
+        if let Some(minimum) = minimum {
+            body["minPolicyVersion"] = json!(minimum);
+        }
+        post("/api/access-validations", bearer, body.to_string())
+    }
+
+    fn get_order(path: &str) -> Value {
+        json!({"rest": {"method": "GET", "path": path}})
+    }
+
+    async fn graphql(app: &Router, input: &str) -> Answer {
+        let query = format!(
+            "{{ validateAccess(input: {{credential: \"subject-token\", service: \"orders\", {input}, \
+             requestId: \"req-1\"}}) {{ decision reason denied scopes {{ all }} }} }}"
+        );
+        let body = json!({ "query": query }).to_string();
+        send(app, post("/api/graphql", Some("caller-token"), body)).await
+    }
+
+    #[tokio::test]
+    async fn concrete_paths_are_matched_against_the_templates_of_the_active_version() {
+        let app = wiring(holding_policy(), FakePolicyEpochRepository::new());
+        let cases = [
+            ("/api/orders/42", "allow", "allowed", json!([])),
+            (
+                "/api/orders/latest",
+                "deny",
+                "permission_missing",
+                json!(["rest:orders:GET /api/orders/latest"]),
+            ),
+            (
+                "/api/orders/42/items",
+                "deny",
+                "unknown_operation",
+                json!([]),
+            ),
+            (
+                "/api/orders/../42",
+                "deny",
+                "malformed_operation",
+                json!([]),
+            ),
+        ];
+
+        for (path, decision, reason, denied) in cases {
+            let answer = send(&app, rest(Some("caller-token"), &get_order(path), None)).await;
+
+            assert_eq!(answer.status, StatusCode::OK, "{path}");
+            assert_eq!(answer.json()["decision"], decision, "{path}");
+            assert_eq!(answer.json()["reason"], reason, "{path}");
+            assert_eq!(answer.json()["denied"], denied, "{path}");
+            assert_eq!(answer.json()["requestId"], "req-1", "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failing_database_is_a_200_deny_with_unavailable_over_rest_and_graphql() {
+        let app = wiring(
+            FakePolicyReadRepository::failing(),
+            FakePolicyEpochRepository::new(),
+        );
+
+        let over_rest = send(
+            &app,
+            rest(Some("caller-token"), &get_order("/api/orders/42"), None),
+        )
+        .await;
+        let over_graphql = graphql(&app, "rest: {method: \"GET\", path: \"/api/orders/42\"}").await;
+
+        assert_eq!(over_rest.status, StatusCode::OK);
+        assert_eq!(over_rest.json()["decision"], "deny");
+        assert_eq!(over_rest.json()["reason"], "unavailable");
+        assert_eq!(over_graphql.status, StatusCode::OK);
+        assert_eq!(
+            over_graphql.json()["data"]["validateAccess"]["reason"],
+            "unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_policy_epoch_under_a_minimum_version_is_a_200_deny_with_unavailable() {
+        let app = wiring(holding_policy(), FakePolicyEpochRepository::failing());
+
+        let answer = send(
+            &app,
+            rest(Some("caller-token"), &get_order("/api/orders/42"), Some(1)),
+        )
+        .await;
+
+        assert_eq!(answer.status, StatusCode::OK);
+        assert_eq!(answer.json()["reason"], "unavailable");
+    }
+
+    #[tokio::test]
+    async fn a_minimum_version_above_the_current_one_is_a_422_and_validation_failed() {
+        let app = wiring(holding_policy(), FakePolicyEpochRepository::new());
+
+        let over_rest = send(
+            &app,
+            rest(Some("caller-token"), &get_order("/api/orders/42"), Some(1)),
+        )
+        .await;
+        let current = send(
+            &app,
+            rest(Some("caller-token"), &get_order("/api/orders/42"), Some(0)),
+        )
+        .await;
+        let over_graphql = graphql(
+            &app,
+            "rest: {method: \"GET\", path: \"/api/orders/42\"}, minPolicyVersion: 1",
+        )
+        .await;
+
+        assert_eq!(over_rest.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            over_rest.json()["violations"][0]["propertyPath"],
+            "minPolicyVersion"
+        );
+        assert_eq!(current.status, StatusCode::OK);
+        assert_eq!(
+            over_graphql.json()["errors"][0]["extensions"]["code"],
+            "VALIDATION_FAILED"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_without_a_bearer_token_is_unauthenticated() {
+        let app = wiring(holding_policy(), FakePolicyEpochRepository::new());
+
+        let answer = send(&app, rest(None, &get_order("/api/orders/42"), None)).await;
+
+        assert_eq!(answer.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(answer.headers[header::WWW_AUTHENTICATE], "Bearer");
+    }
 }

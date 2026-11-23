@@ -214,6 +214,26 @@ impl AppWorld {
         self.if_match = Some(value);
     }
 
+    /// The digest that the newest `__head` state row of the outbox ends with, in the scenario
+    /// database.
+    pub(crate) async fn latest_head_digest(&mut self) -> Vec<u8> {
+        let url = self.database_url().await;
+        let options = PgConnectOptions::from_str(&url).expect("valid database URL");
+        let mut connection = options
+            .connect()
+            .await
+            .expect("connect to the scenario database");
+        let digest = sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT digest_after FROM iam_outbox WHERE kind = 'state' AND record_key = '__head' \
+             ORDER BY position DESC LIMIT 1",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .expect("the newest head row");
+        connection.close().await.expect("close");
+        digest
+    }
+
     /// Stores a system role named `name` at version 1 in the scenario database, as a fixture,
     /// and remembers its id for `{id}`.
     pub(crate) async fn seed_system_role(&mut self, name: &str) {

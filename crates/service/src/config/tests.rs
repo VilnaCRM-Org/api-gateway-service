@@ -5,6 +5,8 @@ use test_support::access_token::DEVELOPMENT_PUBLIC_KEYS_FILE;
 
 use super::*;
 
+mod endpoints;
+
 fn valid() -> ServeArgs {
     ServeArgs {
         database: DatabaseArgs {
@@ -430,6 +432,7 @@ fn every_variable_accepts_a_valid_value() {
         shutdown_grace_period: some("15s"),
         tokens: valid().tokens,
         kafka: valid().kafka,
+        maintenance: valid().maintenance,
     };
 
     let config = Config::from_args(args).unwrap();
@@ -1065,7 +1068,7 @@ type Mutator = fn(&mut ServeArgs);
 
 /// One row per variable of `ServeArgs`: the variable, a way to make it the only problem, and the
 /// variable that the problem names.
-const FIELDS: [(&str, Mutator, &str); 41] = [
+const FIELDS: [(&str, Mutator, &str); 43] = [
     ("APP_ENV", |a| a.app_env = some("x"), "APP_ENV"),
     ("APP_HOST", |a| a.app_host = some("x"), "APP_HOST"),
     ("APP_PORT", |a| a.app_port = some("x"), "APP_PORT"),
@@ -1227,6 +1230,16 @@ const FIELDS: [(&str, Mutator, &str); 41] = [
         "KAFKA_RETRY_DELAY",
         |a| a.kafka.retry_delay = some("x"),
         "KAFKA_RETRY_DELAY",
+    ),
+    (
+        "MAINTENANCE_INTERVAL",
+        |a| a.maintenance.interval = some("x"),
+        "MAINTENANCE_INTERVAL",
+    ),
+    (
+        "ORPHANED_GRANT_RETENTION",
+        |a| a.maintenance.orphaned_grant_retention = some("x"),
+        "ORPHANED_GRANT_RETENTION",
     ),
     (
         "KAFKA_CONFIG_GATES",
@@ -1735,5 +1748,77 @@ fn an_empty_pod_name_and_an_invalid_environment_are_refused() {
     assert_eq!(
         gateway_variables(&args),
         vec!["APP_ENV", "POD_NAME", "POD_NAMESPACE"]
+    );
+}
+
+#[test]
+fn the_maintenance_defaults_are_ten_minutes_and_ninety_days() {
+    let config = Config::from_args(valid()).unwrap();
+
+    assert_eq!(config.maintenance.interval, Duration::from_mins(10));
+    assert_eq!(
+        config.maintenance.orphaned_grant_retention,
+        Duration::from_hours(2_160)
+    );
+}
+
+#[test]
+fn the_maintenance_variables_accept_positive_durations() {
+    let args = ServeArgs {
+        maintenance: MaintenanceArgs {
+            interval: some("30s"),
+            orphaned_grant_retention: some("30d"),
+        },
+        ..valid()
+    };
+
+    let config = Config::from_args(args).unwrap();
+
+    assert_eq!(config.maintenance.interval, Duration::from_secs(30));
+    assert_eq!(
+        config.maintenance.orphaned_grant_retention,
+        Duration::from_hours(720)
+    );
+}
+
+#[rstest]
+#[case("soon", "must be a duration such as 500ms, 2s or 1m")]
+#[case("0s", "must be a positive duration such as 10m or 90d")]
+fn a_maintenance_interval_that_is_no_positive_duration_names_its_variable(
+    #[case] raw: &str,
+    #[case] reason: &str,
+) {
+    let args = ServeArgs {
+        maintenance: MaintenanceArgs {
+            interval: some(raw),
+            ..MaintenanceArgs::default()
+        },
+        ..valid()
+    };
+
+    assert_eq!(
+        problems(args),
+        [("MAINTENANCE_INTERVAL", reason.to_owned())]
+    );
+}
+
+#[rstest]
+#[case("later", "must be a duration such as 500ms, 2s or 1m")]
+#[case("0d", "must be a positive duration such as 10m or 90d")]
+fn an_orphaned_grant_retention_that_is_no_positive_duration_names_its_variable(
+    #[case] raw: &str,
+    #[case] reason: &str,
+) {
+    let args = ServeArgs {
+        maintenance: MaintenanceArgs {
+            orphaned_grant_retention: some(raw),
+            ..MaintenanceArgs::default()
+        },
+        ..valid()
+    };
+
+    assert_eq!(
+        problems(args),
+        [("ORPHANED_GRANT_RETENTION", reason.to_owned())]
     );
 }

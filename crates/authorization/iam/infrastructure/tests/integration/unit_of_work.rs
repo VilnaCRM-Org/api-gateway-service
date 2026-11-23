@@ -36,7 +36,7 @@ struct Counts {
 async fn counts(pool: &PgPool) -> Counts {
     let (version, outbox, audit, receipts, keys): (i64, i64, i64, i64, i64) = sqlx::query_as(
         "SELECT (SELECT version FROM iam_policy_epoch WHERE id = 1), \
-         (SELECT count(*) FROM iam_outbox), (SELECT count(*) FROM iam_security_audit_events), \
+         (SELECT count(*) FROM iam_outbox WHERE kind = 'event'), (SELECT count(*) FROM iam_security_audit_events), \
          (SELECT count(*) FROM iam_change_receipts), (SELECT count(*) FROM iam_idempotency_keys)",
     )
     .fetch_one(pool)
@@ -397,11 +397,12 @@ async fn a_hundred_changes_from_four_connections_take_consecutive_versions(pool:
         assert_eq!(audit_policy_version(&pool, change).await, Some(version));
         assert_eq!(stored_receipt(&pool, change).await.4, Some(version));
     }
-    let by_position: Vec<i64> =
-        sqlx::query_scalar("SELECT policy_version FROM iam_outbox ORDER BY position")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
+    let by_position: Vec<i64> = sqlx::query_scalar(
+        "SELECT policy_version FROM iam_outbox WHERE kind = 'event' ORDER BY position",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
     assert_eq!(by_position.len(), 200);
     assert!(by_position.windows(2).all(|pair| pair[0] <= pair[1]));
     assert_eq!(
@@ -551,7 +552,7 @@ async fn the_partial_index_covers_unpublished_event_rows_only(pool: PgPool) {
     .await
     .unwrap();
     let unpublished: Vec<SqlUuid> = sqlx::query_scalar(
-        "SELECT id FROM iam_outbox WHERE published_at IS NULL ORDER BY position",
+        "SELECT id FROM iam_outbox WHERE published_at IS NULL AND kind = 'event' ORDER BY position",
     )
     .fetch_all(&mut *connection)
     .await
@@ -607,7 +608,7 @@ async fn a_missing_or_unusable_policy_epoch_row_is_unavailable(pool: PgPool) {
 
 async fn counts_without_epoch(pool: &PgPool) -> (i64, i64, i64, i64) {
     sqlx::query_as(
-        "SELECT (SELECT count(*) FROM iam_outbox), (SELECT count(*) FROM iam_security_audit_events), \
+        "SELECT (SELECT count(*) FROM iam_outbox WHERE kind = 'event'), (SELECT count(*) FROM iam_security_audit_events), \
          (SELECT count(*) FROM iam_change_receipts), (SELECT count(*) FROM iam_idempotency_keys)",
     )
     .fetch_one(pool)

@@ -7,8 +7,12 @@
 //! problem mapping; only `http` and `graphql` may use them freely.
 
 pub mod access_decision_service;
+#[cfg(test)]
+mod access_validation_fixtures;
 pub mod administrator_safeguard;
 pub mod command;
+pub mod endpoint_directory;
+pub mod endpoint_watcher;
 pub mod error;
 #[cfg(test)]
 mod fixtures;
@@ -22,6 +26,7 @@ mod graphql_spec_fixtures;
 pub mod http;
 #[cfg(test)]
 mod openapi_spec_fixtures;
+pub mod policy_maintenance;
 pub mod principal;
 pub mod query;
 pub mod required_key_resolver;
@@ -59,12 +64,16 @@ pub use command::retire_openapi_spec::{RetireOpenApiSpecCommand, RetireOpenApiSp
 pub use command::revoke_user_role::{
     RevokeUserRoleCommand, RevokeUserRoleCommandHandler, RevokeUserRoleReads,
 };
+pub use command::run_maintenance::{RunMaintenanceCommand, RunMaintenanceCommandHandler};
 pub use command::set_role_permissions::{
     SetRolePermissionsCommand, SetRolePermissionsCommandHandler, SetRolePermissionsReads,
 };
 pub use command::update_role::{DescriptionUpdate, UpdateRoleCommand, UpdateRoleCommandHandler};
 pub use command::update_user_role::{UpdateUserRoleCommand, UpdateUserRoleCommandHandler};
+pub use endpoint_directory::{EndpointDirectory, EndpointView, ZoneSource};
+pub use endpoint_watcher::{EndpointWatcher, WatcherSettings};
 pub use error::IamError;
+pub use policy_maintenance::{MaintenanceSettings, PolicyMaintenance};
 pub use principal::Principal;
 pub use query::find_graphql_spec::{FindGraphQlSpecQuery, FindGraphQlSpecQueryHandler};
 pub use query::find_openapi_spec::{FindOpenApiSpecQuery, FindOpenApiSpecQueryHandler};
@@ -114,6 +123,7 @@ pub use query::resolve_subject_token::{
     ResolveSubjectTokenQuery, ResolveSubjectTokenQueryHandler, TokenResolution,
 };
 pub use query::resolve_token::{ResolveTokenQuery, ResolveTokenQueryHandler};
+pub use query::validate_access::{ValidateAccessQuery, ValidateAccessQueryHandler};
 pub use required_key_resolver::RequiredKeyResolver;
 pub use service_catalog_loader::ServiceCatalogLoader;
 pub use singleton_loop::{

@@ -13,10 +13,15 @@ async fn policy_epoch_should_be_the_one_of_the_startup_registration(world: &mut 
     let seeded = seeded_policy_epoch();
     let epoch = world.policy_epoch().await;
     // The activations of IAM's own OpenAPI and GraphQL specifications each take a policy version
-    // and change the catalogue; nothing else moves from the seeded epoch.
+    // and change the catalogue, and their state rows move the digest to the one of the newest
+    // `__head` row; nothing else moves from the seeded epoch.
     assert_eq!(epoch.version().value(), 2);
     assert_eq!(epoch.catalog_epoch(), 2);
-    assert_eq!(epoch.digest(), seeded.digest());
+    assert_ne!(epoch.digest(), seeded.digest());
+    assert_eq!(
+        epoch.digest().as_bytes().to_vec(),
+        world.latest_head_digest().await
+    );
     assert_eq!(epoch.log_epoch(), seeded.log_epoch());
     assert_eq!(epoch.relay_epoch(), seeded.relay_epoch());
 }

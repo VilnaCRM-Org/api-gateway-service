@@ -14,6 +14,75 @@ servers:
 - url: /
   description: Current host
 paths:
+  /api/access-validations:
+    post:
+      tags:
+      - iam
+      summary: Validates whether a subject may perform an operation or hold permission keys.
+      description: 'Decides one check for the bearer of `credential` on the target `service`: a REST request (`rest`) or a list of permission keys (`permissions`), exactly one of them. A valid request always returns 200 with a decision body: `allow`, or `deny` with the `reason` and the `denied` keys. A `minPolicyVersion` above the current policy version is refused with 422. The credential is never echoed.'
+      operationId: api_access_validations_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidateAccessRequest'
+        required: true
+      responses:
+        '200':
+          description: The decision.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessValidation'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller may not validate access.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
   /api/example_api_resources:
     get:
       tags:
@@ -2657,6 +2726,103 @@ paths:
       - bearerAuth: []
 components:
   schemas:
+    AccessScopes:
+      oneOf:
+      - $ref: '#/components/schemas/AllProjects'
+        description: A global assignment holds every required key.
+      - type: array
+        items:
+          type: string
+        description: Only these projects hold every required key; empty for a deny.
+      description: 'The projects in which an allow holds: `all`, or the project ids.'
+    AccessSubject:
+      type: object
+      description: The subject that a decision was made for.
+      required:
+      - id
+      - kind
+      properties:
+        id:
+          type: string
+          description: The user id, or the service name of a service principal.
+        kind:
+          type: string
+          description: '`user` or `service`.'
+          example: user
+    AccessValidation:
+      type: object
+      description: The decision body of the access-validation operation.
+      required:
+      - decision
+      - reason
+      - denied
+      - scopes
+      - decisionId
+      - requestId
+      properties:
+        decision:
+          type: string
+          description: '`allow` or `deny`.'
+          example: deny
+        decisionId:
+          type: string
+          format: uuid
+          description: The identifier of this decision.
+        denied:
+          type: array
+          items:
+            type: string
+          description: The keys or coordinates that are denied; empty for an allow.
+        policyVersion:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: The policy version that the decision reflects; absent when no policy was read.
+          minimum: 0
+        reason:
+          type: string
+          description: |-
+            `allowed`, `token_missing`, `token_invalid`, `token_expired`, `token_revoked`,
+            `unknown_service`, `unknown_operation`, `malformed_operation`, `permission_missing`,
+            `scope_missing`, `limits_exceeded` or `unavailable`.
+          example: permission_missing
+        requestId:
+          type: string
+          description: The request id of the caller, as sent.
+        scopes:
+          $ref: '#/components/schemas/AccessScopes'
+          description: 'The projects in which an allow holds: `all` or a list of project ids; empty for a deny.'
+        subject:
+          oneOf:
+          - $ref: '#/components/schemas/AccessSubject'
+            description: The subject of the token; absent when no token resolved.
+          - type: 'null'
+    AccessValidationRestTarget:
+      type: object
+      description: The REST request that a check names.
+      required:
+      - method
+      - path
+      properties:
+        method:
+          type: string
+          description: |-
+            The HTTP method, in upper case: `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE` or
+            `OPTIONS`.
+          example: GET
+        path:
+          type: string
+          description: |-
+            The path of the request as received; IAM normalises it and matches it against the
+            operation templates of the active `OpenAPI` versions of the service.
+          example: /api/invoices/42
+      additionalProperties: false
+    AllProjects:
+      type: string
+      description: The marker of a decision that holds in every project.
+      enum:
+      - all
     AssignUserRoleRequest:
       type: object
       description: Body of the assignment operation.
@@ -3985,6 +4151,70 @@ components:
           - 'null'
           format: uuid
           description: The `after` value of the next page; absent on the last page.
+    ValidateAccessRequest:
+      type: object
+      description: |-
+        Body of the access-validation operation: who asks, about which service, and what is checked.
+
+        Its `Debug` output never shows the credential.
+      required:
+      - credential
+      - service
+      - requestId
+      properties:
+        credential:
+          type: string
+          description: |-
+            The subject's access token as the caller received it; an empty one is decided as
+            `token_missing`.
+          example: eyJhbGciOiJSUzI1NiJ9.e30.c2lnbmF0dXJl
+          maxLength: 8192
+        minPolicyVersion:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: |-
+            The policy version that the decision must reflect at least; a version that IAM has not
+            issued yet is refused with 422.
+          minimum: 0
+        permissions:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+          description: The permission keys to check, 1 to 100; exactly one of `rest` and `permissions` is given.
+          maxItems: 100
+          minItems: 1
+        projectId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: |-
+            The project in which the check is made; without it, project assignments contribute their
+            projects to `scopes`.
+        requestId:
+          type: string
+          description: |-
+            An opaque identifier of the caller's request, 1 to 128 visible ASCII characters; the
+            response echoes it.
+          example: req-0190f2a8
+          maxLength: 128
+          minLength: 1
+        rest:
+          oneOf:
+          - $ref: '#/components/schemas/AccessValidationRestTarget'
+            description: A REST request to check; exactly one of `rest` and `permissions` is given.
+          - type: 'null'
+        service:
+          type: string
+          description: The target service, as registered in IAM.
+          example: billing
+          maxLength: 63
+          minLength: 1
+      additionalProperties: false
     Violation:
       type: object
       description: One violated constraint.

@@ -130,7 +130,7 @@ fn the_router_documents_the_role_operations_under_the_iam_tag_behind_the_bearer_
             "{retirement}"
         );
     }
-    assert_eq!(document.paths.paths.len(), 14);
+    assert_eq!(document.paths.paths.len(), 15);
 }
 
 #[test]

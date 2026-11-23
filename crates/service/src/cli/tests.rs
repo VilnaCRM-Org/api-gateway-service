@@ -389,7 +389,9 @@ fn serve_declares_exactly_the_variables_of_the_configuration_table() {
         "KAFKA_SECURITY_PROTOCOL",
         "POLICY_TOPIC",
         "LOG_LEVEL",
+        "MAINTENANCE_INTERVAL",
         "MAX_TOKEN_LIFETIME",
+        "ORPHANED_GRANT_RETENTION",
         "SHUTDOWN_GRACE_PERIOD",
         "SQS_CONNECT_TIMEOUT",
         "SQS_MAX_ATTEMPTS",
@@ -489,4 +491,54 @@ fn iam_bootstrap_takes_the_service_settings_and_one_subject_option() {
 fn iam_bootstrap_accepts_neither_or_both_options_because_the_command_reports_them() {
     assert!(parse(&["iam-bootstrap"]).is_ok());
     assert!(parse(&["iam-bootstrap", "--admin-user", "x", "--admin-service", "y"]).is_ok());
+}
+
+#[test]
+fn the_endpoint_discovery_settings_are_bound_to_their_variables_and_hide_their_values() {
+    let command = Cli::command();
+    let gateway = command.find_subcommand("gateway").unwrap();
+
+    for (id, variable) in [
+        ("upstream_discovery", "UPSTREAM_DISCOVERY"),
+        (
+            "upstream_static_endpoints_file",
+            "UPSTREAM_STATIC_ENDPOINTS_FILE",
+        ),
+        ("upstream_zone_aware", "UPSTREAM_ZONE_AWARE"),
+        ("gateway_zone", "GATEWAY_ZONE"),
+    ] {
+        let argument = gateway
+            .get_arguments()
+            .find(|argument| argument.get_id() == id)
+            .unwrap();
+        assert_eq!(argument.get_env().unwrap(), variable);
+        assert!(argument.is_hide_env_values_set());
+    }
+}
+
+#[test]
+fn the_gateway_parses_the_endpoint_discovery_flags() {
+    let cli = parse(&[
+        "gateway",
+        "--upstream-discovery",
+        "static",
+        "--upstream-static-endpoints-file",
+        "endpoints.json",
+        "--upstream-zone-aware",
+        "false",
+        "--gateway-zone",
+        "zone-a",
+    ])
+    .unwrap();
+
+    let Command::Gateway(args) = cli.command else {
+        panic!("expected gateway");
+    };
+    assert_eq!(args.upstream_discovery.as_deref(), Some("static"));
+    assert_eq!(
+        args.upstream_static_endpoints_file.as_deref(),
+        Some("endpoints.json")
+    );
+    assert_eq!(args.upstream_zone_aware.as_deref(), Some("false"));
+    assert_eq!(args.gateway_zone.as_deref(), Some("zone-a"));
 }

@@ -8,6 +8,7 @@
 //! transports apply one set of rules; every failure becomes a problem first and a GraphQL error
 //! second.
 
+pub mod access_validation;
 pub mod document_analyzer;
 pub mod graphql_activation;
 pub mod graphql_permission;
@@ -44,6 +45,7 @@ use crate::http::handler::resolve_credential;
 use crate::http::role::{create_role, find_role, list_roles, parse_role_id, update_role};
 use crate::principal::Principal;
 
+use access_validation::{AccessValidationObject, ValidateAccessInput, validate_access_field};
 use graphql_activation::{
     CreateGraphQlPermissionsInput, GraphQlPermissionsActivationObject,
     create_graphql_permissions_field,
@@ -651,6 +653,17 @@ impl IamQuery {
         >,
     ) -> async_graphql::Result<RestPermissionPageObject> {
         rest_permissions_field(ctx, first, after, filter.unwrap_or_default())
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Decides whether a subject may perform a REST operation or hold permission keys; a valid request always gets a decision.
+    async fn validate_access(
+        &self,
+        ctx: &Context<'_>,
+        input: ValidateAccessInput,
+    ) -> async_graphql::Result<AccessValidationObject> {
+        validate_access_field(ctx, input)
             .await
             .map_err(iam_problem_to_graphql_error)
     }

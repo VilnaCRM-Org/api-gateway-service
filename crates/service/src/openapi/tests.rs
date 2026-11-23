@@ -83,6 +83,7 @@ fn documents_exactly_the_twenty_four_operations() {
     assert_eq!(
         operations,
         [
+            "post /api/access-validations",
             "get /api/example_api_resources",
             "post /api/example_api_resources",
             "get /api/example_api_resources/{id}",
@@ -1070,6 +1071,11 @@ fn defines_exactly_the_documented_schemas() {
     assert_eq!(
         names,
         [
+            "AccessScopes",
+            "AccessSubject",
+            "AccessValidation",
+            "AccessValidationRestTarget",
+            "AllProjects",
             "AssignUserRoleRequest",
             "AssignmentScope",
             "AssignmentSubject",
@@ -1118,6 +1124,7 @@ fn defines_exactly_the_documented_schemas() {
             "UpdateUserRoleRequest",
             "UserRole",
             "UserRolePage",
+            "ValidateAccessRequest",
             "Violation",
             "WildcardGain",
         ]

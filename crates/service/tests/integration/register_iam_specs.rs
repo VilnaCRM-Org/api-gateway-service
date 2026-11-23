@@ -275,11 +275,16 @@ fn bare_supervisor(stopping: watch::Receiver<bool>) -> service::bootstrap::TaskS
 }
 
 #[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
-async fn the_supervisor_of_the_production_wiring_starts_without_tasks(pool: PgPool) {
+async fn the_supervisor_of_the_production_wiring_starts_the_maintenance_task(pool: PgPool) {
     let adapters = instance(&pool).await;
-    let (_stop, stopping) = watch::channel(false);
+    let (stop, stopping) = watch::channel(false);
 
     let supervisor = start_tasks(&adapters, TaskMode::Serve, stopping);
 
-    assert!(supervisor.is_empty());
+    assert_eq!(supervisor.len(), 1);
+    stop.send_replace(true);
+    assert_eq!(
+        supervisor.stop(Duration::from_secs(5)).await,
+        TaskStop::Drained
+    );
 }

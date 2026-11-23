@@ -24,3 +24,4 @@ pub mod list_roles;
 pub mod list_user_roles;
 pub mod resolve_subject_token;
 pub mod resolve_token;
+pub mod validate_access;

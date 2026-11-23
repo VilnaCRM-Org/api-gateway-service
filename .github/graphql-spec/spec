@@ -1,3 +1,47 @@
+"The REST request that a check names."
+input AccessRestTargetInput {
+  "The HTTP method, in upper case: `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE` or `OPTIONS`."
+  method: String!
+  "The path of the request as received; IAM normalises it and matches it against the operation templates of the active `OpenAPI` versions of the service."
+  path: String!
+}
+
+"The projects in which an allow holds."
+type AccessScopes {
+  "Whether a global assignment holds every required key, so that the allow holds in every project."
+  all: Boolean!
+  "The projects that hold every required key when `all` is false; empty for a deny and for `all`."
+  projects: [String!]!
+}
+
+"The subject that a decision was made for."
+type AccessSubject {
+  "The user id, or the service name of a service principal."
+  id: String!
+  "`user` or `service`."
+  kind: String!
+}
+
+"The decision of an access check."
+type AccessValidation {
+  "`allow` or `deny`."
+  decision: String!
+  "The identifier of this decision."
+  decisionId: ID!
+  "The keys or coordinates that are denied; empty for an allow."
+  denied: [String!]!
+  "The policy version that the decision reflects; null when no policy was read."
+  policyVersion: Int
+  "`allowed`, `token_missing`, `token_invalid`, `token_expired`, `token_revoked`, `unknown_service`, `unknown_operation`, `malformed_operation`, `permission_missing`, `scope_missing`, `limits_exceeded` or `unavailable`."
+  reason: String!
+  "The request id of the caller, as sent."
+  requestId: String!
+  "The projects in which an allow holds; empty for a deny."
+  scopes: AccessScopes!
+  "The subject of the token; null when no token resolved."
+  subject: AccessSubject
+}
+
 "Input of the assignment mutation."
 input AssignUserRoleInput {
   "When the assignment expires, as an RFC 3339 UTC time in the future; null for an assignment that never expires."
@@ -473,6 +517,8 @@ type Query {
     "Page size, from 1 to 100."
     first: Int = 30
   ): UserRolePage!
+  "Decides whether a subject may perform a REST operation or hold permission keys; a valid request always gets a decision."
+  validateAccess(input: ValidateAccessInput!): AccessValidation!
 }
 
 "A removed coordinate that roles grant by its exact key."
@@ -757,6 +803,24 @@ type UserRolePage {
   items: [UserRole!]!
   "The `after` value of the next page; null on the last page."
   nextCursor: String
+}
+
+"Input of the access-validation query."
+input ValidateAccessInput {
+  "The subject's access token as the caller received it; an empty one is decided as `token_missing`."
+  credential: String!
+  "The policy version that the decision must reflect at least; a version that IAM has not issued yet fails with `VALIDATION_FAILED`."
+  minPolicyVersion: Int
+  "The permission keys to check, 1 to 100; exactly one of `rest` and `permissions` is given."
+  permissions: [String!]
+  "The project in which the check is made; without it, project assignments contribute their projects to `scopes`."
+  projectId: String
+  "An opaque identifier of the caller's request, 1 to 128 visible ASCII characters; the response echoes it."
+  requestId: String!
+  "A REST request to check; exactly one of `rest` and `permissions` is given."
+  rest: AccessRestTargetInput
+  "The target service, as registered in IAM."
+  service: String!
 }
 
 "A wildcard grant that would cover added coordinates."

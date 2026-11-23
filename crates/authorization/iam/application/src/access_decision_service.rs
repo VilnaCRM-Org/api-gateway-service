@@ -90,6 +90,21 @@ impl AccessDecisionService {
         )
     }
 
+    /// The outcome of a check that could not be decided: the deny `unavailable` with a new decision
+    /// id, no subject and no policy version. A caller that fails before the decision path uses it,
+    /// so that the failure still answers with a decision.
+    #[must_use]
+    pub fn unavailable(&self) -> DecisionOutcome {
+        let decision_id = DecisionId::from_uuid(self.ids.generate());
+        let decided = Decided::unavailable(None);
+        DecisionOutcome::new(
+            decided.verdict,
+            decision_id,
+            decided.subject,
+            decided.policy_version,
+        )
+    }
+
     async fn decide_check(&self, credential: &Credential, check: &AccessCheck) -> Decided {
         match self.tokens.resolve(credential).await {
             Ok(identity) => self.decide_subject(subject_of(&identity), check).await,
