@@ -105,7 +105,7 @@ async fn a_request_sequence_is_logged_as_json_with_the_request_id(pool: PgPool) 
             .unwrap()
             .starts_with("127.0.0.1:")
     );
-    assert_eq!(listening["env"], "prod");
+    assert_eq!(listening["env"], "test");
     assert_eq!(listening["version"], env!("CARGO_PKG_VERSION"));
     for line in &finished.lines {
         for key in ["timestamp", "level", "message"] {
@@ -131,7 +131,19 @@ async fn a_request_sequence_is_logged_as_json_with_the_request_id(pool: PgPool) 
 async fn the_start_up_entry_names_the_mode(pool: PgPool) {
     for mode in ["dev", "test", "prod"] {
         let scratch = Scratch::new();
-        let server = live_server(&scratch, &pool, &[("APP_ENV", mode)]).await;
+        // `prod` refuses the PLAINTEXT listener and the relaxed gates of the compose broker; the
+        // connection is lazy, so the secured settings need no reachable cluster to start.
+        let secured = [
+            ("APP_ENV", mode),
+            ("KAFKA_SECURITY_PROTOCOL", "SASL_SSL"),
+            ("KAFKA_CONFIG_GATES", "enforce"),
+        ];
+        let extra = if mode == "prod" {
+            &secured[..]
+        } else {
+            &secured[..1]
+        };
+        let server = live_server(&scratch, &pool, extra).await;
 
         let finished = server.terminate();
 
@@ -401,7 +413,9 @@ async fn entries_inside_nested_spans_carry_the_request_id(pool: PgPool) {
     let scratch = Scratch::new();
     let url = database_url(&pool).await;
     let mut owned = stack_with(&url);
-    owned.push(("LOG_LEVEL", "debug".to_owned()));
+    // The Kafka client writes its connection entries from tasks of its own, outside any span of
+    // the service; only the service's entries are this test's subject.
+    owned.push(("LOG_LEVEL", "debug,krafka=warn".to_owned()));
     let server = serve(&scratch, &as_pairs(&owned));
 
     let health = server.request("GET", "/api/health", &[("x-request-id", REQUEST_ID)], "");

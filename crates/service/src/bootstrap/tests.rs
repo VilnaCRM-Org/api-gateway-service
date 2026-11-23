@@ -38,6 +38,7 @@ use test_support::revocation::FakeRevocationRepository;
 use test_support::role::FakeRoleRepository;
 use test_support::security_audit::FakeSecurityAuditLog;
 use test_support::seed::TestRng;
+use test_support::singleton_leadership::FakeSingletonLeadership;
 use test_support::startup_lock::FakeStartupLock;
 use test_support::token::FakeTokenRepository;
 use test_support::unit_of_work::FakeIamUnitOfWork;
@@ -47,9 +48,9 @@ use tower::ServiceExt as _;
 
 use super::{
     Adapters, BootstrapError, TaskMode, access_token_verifier, event_bus, register_change_queries,
-    register_commands, register_iam_specs, register_queries, router, start_tasks,
+    register_commands, register_iam_specs, register_queries, router, singleton_set, start_tasks,
 };
-use crate::cli::ServeArgs;
+use crate::cli::{KafkaArgs, ServeArgs};
 use crate::config::Config;
 
 const FIRST_ID: &str = "00000000-0000-7000-8000-000000000001";
@@ -74,6 +75,12 @@ fn config(app_env: &str) -> Config {
     };
     args.database.url = Some("postgres://app:unused@127.0.0.1:1/app".to_owned());
     args.tokens.public_keys_file = Some(DEVELOPMENT_PUBLIC_KEYS_FILE.to_owned());
+    args.kafka = KafkaArgs {
+        bootstrap_servers: Some("127.0.0.1:1".to_owned()),
+        sasl_username: Some("iam-control".to_owned()),
+        sasl_password: Some("unused".to_owned()),
+        ..KafkaArgs::default()
+    };
     Config::from_args(args).unwrap()
 }
 
@@ -92,6 +99,7 @@ fn adapters() -> Adapters {
         policy_reads: Arc::new(FakePolicyReadRepository::new()),
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
         startup_lock: Arc::new(FakeStartupLock::new()),
+        singleton_leadership: Arc::new(FakeSingletonLeadership::leading()),
         change_receipts: Arc::new(FakeChangeReceiptRepository::new()),
         idempotency_records: Arc::new(FakeIdempotencyRepository::new()),
         roles: Arc::new(FakeRoleRepository::new()),
@@ -692,6 +700,21 @@ async fn a_lock_that_cannot_be_taken_fails_the_registration_before_anything_is_w
     let outcome = register_iam_specs(&adapters).await;
 
     assert!(matches!(outcome, Err(BootstrapError::Lock(_))));
+}
+
+#[tokio::test]
+async fn the_serve_mode_registers_the_singleton_set_and_it_is_empty_until_a_story_adds_a_task() {
+    let (stop, stopping) = watch::channel(false);
+
+    let supervisor = start_tasks(&adapters(), TaskMode::Serve, stopping);
+
+    assert!(supervisor.is_empty());
+    assert!(singleton_set(&adapters()).is_empty());
+    stop.send_replace(true);
+    assert_eq!(
+        supervisor.stop(Duration::from_secs(1)).await,
+        super::TaskStop::Drained
+    );
 }
 
 #[tokio::test]

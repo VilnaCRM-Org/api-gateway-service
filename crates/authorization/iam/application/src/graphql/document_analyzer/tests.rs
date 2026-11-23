@@ -377,3 +377,41 @@ fn does_not_expand_fragments_exponentially() {
 
     assert_eq!(coordinates(&analyzed), ["Query.me", "User.name"]);
 }
+
+/// A chain of `count` fragments on `Query`, each nesting `inline` field-less inline fragments
+/// around the spread of the next one; the last selects `me { id }`.
+fn fragment_chain(count: usize, inline: usize) -> String {
+    let mut document = String::from("query { ...F0 }\n");
+    for (index, next) in (0..count).zip(1_usize..) {
+        let inner = if next == count {
+            String::from("me { id }")
+        } else {
+            format!("...F{next}")
+        };
+        writeln!(
+            document,
+            "fragment F{index} on Query {{ {}{inner}{} }}",
+            "... { ".repeat(inline),
+            " }".repeat(inline)
+        )
+        .unwrap();
+    }
+    document
+}
+
+#[test]
+fn refuses_inline_fragment_nesting_across_a_fragment_chain_before_it_can_exhaust_the_stack() {
+    let document = fragment_chain(100, 40);
+
+    assert_eq!(analyze(&document), limits_exceeded(LimitKind::Depth));
+}
+
+#[test]
+fn accepts_a_short_fragment_chain_with_inline_fragments() {
+    let document = fragment_chain(3, 10);
+
+    assert_eq!(
+        coordinates(&analyze(&document).unwrap()),
+        ["Query.me", "User.id"]
+    );
+}

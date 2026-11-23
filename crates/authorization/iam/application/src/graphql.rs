@@ -30,7 +30,9 @@ use shared_application::http::{Problem, Violation};
 use validator::Validate as _;
 
 use crate::command::update_role::DescriptionUpdate;
-use crate::error::{IamError, TYPE_FLAG_DOWNGRADE_CONFIRMATION, TYPE_ORPHAN_CONFIRMATION};
+use crate::error::{
+    IamError, TYPE_FLAG_DOWNGRADE_CONFIRMATION, TYPE_LAST_ADMINISTRATOR, TYPE_ORPHAN_CONFIRMATION,
+};
 use crate::http::IamState;
 use crate::http::dto::{
     CreateRoleRequest, DEFAULT_PAGE_SIZE, DescriptionPatch, ListRolesParams, RolePageResponse,
@@ -667,6 +669,7 @@ fn confirmation_code(problem_type: &str) -> Option<&'static str> {
     match problem_type {
         TYPE_FLAG_DOWNGRADE_CONFIRMATION => Some("FLAG_DOWNGRADE_CONFIRMATION_REQUIRED"),
         TYPE_ORPHAN_CONFIRMATION => Some("ORPHAN_CONFIRMATION_REQUIRED"),
+        TYPE_LAST_ADMINISTRATOR => Some("LAST_ADMINISTRATOR"),
         _ => None,
     }
 }

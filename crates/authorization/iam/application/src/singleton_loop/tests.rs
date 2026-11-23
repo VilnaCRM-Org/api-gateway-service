@@ -1,0 +1,227 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, UNIX_EPOCH};
+
+use iam_domain::{LeaderBatch, SingletonLeadership, SingletonTask};
+use shared_domain::BoxError;
+use test_support::clock::FixedClock;
+use test_support::singleton_leadership::{Event, FakeSingletonLeadership, Step};
+use tokio::sync::watch;
+
+use super::{
+    BatchOutcome, InvalidSingletonInterval, MAX_SINGLETON_INTERVAL, SingletonInterval,
+    SingletonLoop, SingletonWork,
+};
+
+const TASK: SingletonTask = SingletonTask::new("test-task", 42);
+const INTERVAL: Duration = Duration::from_secs(2);
+
+/// Work that counts its batches and fails when told to.
+#[derive(Debug, Default)]
+struct CountingWork {
+    runs: AtomicUsize,
+    fail: bool,
+}
+
+#[async_trait::async_trait]
+impl SingletonWork for CountingWork {
+    async fn run(&self, _batch: &mut dyn LeaderBatch) -> Result<(), BoxError> {
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        if self.fail {
+            return Err("the work failed".into());
+        }
+        Ok(())
+    }
+}
+
+fn interval() -> SingletonInterval {
+    SingletonInterval::new(INTERVAL).unwrap()
+}
+
+fn singleton(leadership: &Arc<FakeSingletonLeadership>, work: &Arc<CountingWork>) -> SingletonLoop {
+    let leadership: Arc<dyn SingletonLeadership> =
+        Arc::<FakeSingletonLeadership>::clone(leadership);
+    let work: Arc<dyn SingletonWork> = Arc::<CountingWork>::clone(work);
+    SingletonLoop::new(
+        TASK,
+        interval(),
+        leadership,
+        Arc::new(FixedClock::at(UNIX_EPOCH)),
+        work,
+    )
+}
+
+#[test]
+fn an_interval_between_zero_and_ten_seconds_is_accepted() {
+    assert_eq!(
+        SingletonInterval::new(MAX_SINGLETON_INTERVAL)
+            .unwrap()
+            .get(),
+        MAX_SINGLETON_INTERVAL
+    );
+    assert_eq!(
+        SingletonInterval::new(Duration::from_millis(1))
+            .unwrap()
+            .get(),
+        Duration::from_millis(1)
+    );
+}
+
+#[test]
+fn a_zero_interval_or_one_above_ten_seconds_is_refused() {
+    let too_long = MAX_SINGLETON_INTERVAL + Duration::from_nanos(1);
+
+    assert_eq!(
+        SingletonInterval::new(Duration::ZERO),
+        Err(InvalidSingletonInterval {
+            requested: Duration::ZERO
+        })
+    );
+    assert_eq!(
+        SingletonInterval::new(too_long),
+        Err(InvalidSingletonInterval {
+            requested: too_long
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_led_batch_runs_the_work_records_the_run_and_commits() {
+    let leadership = Arc::new(FakeSingletonLeadership::leading());
+    let work = Arc::new(CountingWork::default());
+
+    let outcome = singleton(&leadership, &work).run_batch().await;
+
+    assert_eq!(outcome, BatchOutcome::Committed);
+    assert_eq!(work.runs.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        leadership.events(),
+        [
+            Event::Begun("test-task".to_owned()),
+            Event::Recorded(UNIX_EPOCH),
+            Event::Committed,
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_batch_without_the_lock_is_skipped_and_its_work_never_runs() {
+    let leadership = Arc::new(FakeSingletonLeadership::new(&[], Step::Follow));
+    let work = Arc::new(CountingWork::default());
+
+    let outcome = singleton(&leadership, &work).run_batch().await;
+
+    assert_eq!(outcome, BatchOutcome::Skipped);
+    assert_eq!(work.runs.load(Ordering::SeqCst), 0);
+    assert_eq!(leadership.events(), [Event::Begun("test-task".to_owned())]);
+}
+
+#[tokio::test]
+async fn failing_work_rolls_the_batch_back_without_recording_a_run() {
+    let leadership = Arc::new(FakeSingletonLeadership::leading());
+    let work = Arc::new(CountingWork {
+        fail: true,
+        ..CountingWork::default()
+    });
+
+    let outcome = singleton(&leadership, &work).run_batch().await;
+
+    assert_eq!(outcome, BatchOutcome::RolledBack);
+    assert_eq!(
+        leadership.events(),
+        [Event::Begun("test-task".to_owned()), Event::RolledBack]
+    );
+}
+
+#[tokio::test]
+async fn a_run_that_cannot_be_recorded_rolls_the_batch_back() {
+    let leadership = Arc::new(FakeSingletonLeadership::new(
+        &[Step::LeadFailingRecord],
+        Step::Lead,
+    ));
+    let work = Arc::new(CountingWork::default());
+
+    let outcome = singleton(&leadership, &work).run_batch().await;
+
+    assert_eq!(outcome, BatchOutcome::RolledBack);
+    assert_eq!(leadership.events().last(), Some(&Event::RolledBack));
+}
+
+#[tokio::test]
+async fn a_commit_that_fails_is_a_failed_batch() {
+    let leadership = Arc::new(FakeSingletonLeadership::new(
+        &[Step::LeadFailingCommit],
+        Step::Lead,
+    ));
+    let work = Arc::new(CountingWork::default());
+
+    let outcome = singleton(&leadership, &work).run_batch().await;
+
+    assert_eq!(outcome, BatchOutcome::Failed);
+}
+
+#[tokio::test]
+async fn an_unavailable_storage_is_a_failed_batch_without_work() {
+    let leadership = Arc::new(FakeSingletonLeadership::new(&[], Step::Fail));
+    let work = Arc::new(CountingWork::default());
+
+    let outcome = singleton(&leadership, &work).run_batch().await;
+
+    assert_eq!(outcome, BatchOutcome::Failed);
+    assert_eq!(work.runs.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_loop_retries_at_its_interval_and_takes_over_when_the_lock_frees() {
+    let leadership = Arc::new(FakeSingletonLeadership::new(
+        &[Step::Follow, Step::Follow],
+        Step::Lead,
+    ));
+    let work = Arc::new(CountingWork::default());
+    let (stop, stopping) = watch::channel(false);
+    let handle = tokio::spawn(singleton(&leadership, &work).run(stopping));
+
+    tokio::time::sleep(INTERVAL * 2 + Duration::from_millis(500)).await;
+    stop.send_replace(true);
+    handle.await.unwrap();
+
+    assert_eq!(work.runs.load(Ordering::SeqCst), 1);
+    assert_eq!(leadership.events().last(), Some(&Event::Committed));
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_loop_ends_when_the_stop_flag_is_set_during_the_pause() {
+    let leadership = Arc::new(FakeSingletonLeadership::leading());
+    let work = Arc::new(CountingWork::default());
+    let (stop, stopping) = watch::channel(false);
+    let handle = tokio::spawn(singleton(&leadership, &work).run(stopping));
+    tokio::task::yield_now().await;
+
+    stop.send_replace(true);
+    handle.await.unwrap();
+
+    assert_eq!(work.runs.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn the_loop_runs_no_batch_when_it_starts_stopped() {
+    let leadership = Arc::new(FakeSingletonLeadership::leading());
+    let work = Arc::new(CountingWork::default());
+    let (_stop, stopping) = watch::channel(true);
+
+    singleton(&leadership, &work).run(stopping).await;
+
+    assert_eq!(work.runs.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn the_loop_ends_when_the_stop_flag_has_no_sender_left() {
+    let leadership = Arc::new(FakeSingletonLeadership::leading());
+    let work = Arc::new(CountingWork::default());
+    let (stop, stopping) = watch::channel(false);
+    drop(stop);
+
+    singleton(&leadership, &work).run(stopping).await;
+
+    assert_eq!(work.runs.load(Ordering::SeqCst), 1);
+}

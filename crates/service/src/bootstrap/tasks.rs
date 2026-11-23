@@ -1,12 +1,16 @@
 //! The per-replica background tasks of the service and the supervisor that stops them (FR-45).
 //!
-//! Every replica runs its own copy of each task. [`start_tasks`] builds the supervisor with no
-//! task yet: the stories that add a task register it in [`start_tasks`]. A task takes the stop
+//! Every replica runs its own copy of each per-replica task. A singleton task is a
+//! [`SingletonLoop`]: every replica runs the loop, and the advisory lock of its leadership lets
+//! exactly one of them run each batch. [`start_tasks`] builds the supervisor and, under
+//! `service serve`, starts the singleton set ([`singleton_set`]); the stories that add a task
+//! register it there. A task takes the stop
 //! flag of the service and ends when it is set; [`TaskSupervisor::stop`] waits for every task for
 //! the grace period and aborts what is left.
 
 use std::time::Duration;
 
+use iam_application::SingletonLoop;
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
@@ -62,6 +66,19 @@ impl TaskSupervisor {
         self.tasks.spawn(task(self.shutdown.clone()));
     }
 
+    /// Starts a singleton task: its loop runs on this replica, and its leadership decides which
+    /// replica runs each batch.
+    pub fn spawn_singleton(&mut self, singleton: SingletonLoop) {
+        self.spawn(singleton.name(), |shutdown| singleton.run(shutdown));
+    }
+
+    /// Starts every task of `singletons`.
+    pub fn spawn_singletons(&mut self, singletons: Vec<SingletonLoop>) {
+        for singleton in singletons {
+            self.spawn_singleton(singleton);
+        }
+    }
+
     /// The number of tasks that run.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -108,18 +125,33 @@ fn log_failed(error: &tokio::task::JoinError) {
     tracing::error!(error = %error, "task failed");
 }
 
-/// Starts the per-replica tasks of the service. No story has registered one yet.
+/// The singleton tasks that `service serve` runs. No story has registered one yet; there is no
+/// `service worker` mode, so the set runs inside `serve`.
+#[must_use]
+pub const fn singleton_set(_adapters: &Adapters) -> Vec<SingletonLoop> {
+    Vec::new()
+}
+
+/// Starts the tasks of the service: the singleton set under `service serve`. No other story has
+/// registered a task yet.
 ///
 /// `shutdown` is the stop flag of the service: tasks end when it is set.
 #[must_use]
 pub fn start_tasks(
-    _adapters: &Adapters,
+    adapters: &Adapters,
     mode: TaskMode,
     shutdown: watch::Receiver<bool>,
 ) -> TaskSupervisor {
-    let supervisor = TaskSupervisor::new(mode, shutdown);
-    tracing::debug!(?mode, tasks = supervisor.len(), "tasks started");
+    let mut supervisor = TaskSupervisor::new(mode, shutdown);
+    if mode == TaskMode::Serve {
+        supervisor.spawn_singletons(singleton_set(adapters));
+    }
+    log_started(mode, supervisor.len());
     supervisor
+}
+
+fn log_started(mode: TaskMode, tasks: usize) {
+    tracing::debug!(?mode, tasks, "tasks started");
 }
 
 #[cfg(test)]

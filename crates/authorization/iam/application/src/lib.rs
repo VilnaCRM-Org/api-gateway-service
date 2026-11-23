@@ -7,6 +7,7 @@
 //! problem mapping; only `http` and `graphql` may use them freely.
 
 pub mod access_decision_service;
+pub mod administrator_safeguard;
 pub mod command;
 pub mod error;
 #[cfg(test)]
@@ -31,12 +32,15 @@ mod rest_permission_fixtures;
 #[cfg(test)]
 mod role_permission_fixtures;
 pub mod service_catalog_loader;
+pub mod singleton_loop;
 pub mod subscriber;
 #[cfg(test)]
 mod user_role_fixtures;
 
 pub use access_decision_service::AccessDecisionService;
+pub use administrator_safeguard::{AdministratorSafeguard, Admission, SafeguardPorts};
 pub use command::assign_user_role::{AssignUserRoleCommand, AssignUserRoleCommandHandler};
+pub use command::bootstrap_iam::{BootstrapIamCommand, BootstrapIamCommandHandler};
 pub use command::create_graphql_permissions::{
     ActivationReads, CreateGraphQlPermissionsCommand, CreateGraphQlPermissionsCommandHandler,
 };
@@ -48,7 +52,9 @@ pub use command::delete_role::{DeleteRoleCommand, DeleteRoleCommandHandler};
 pub use command::load_graphql_spec::{LoadGraphQlSpecCommand, LoadGraphQlSpecCommandHandler};
 pub use command::load_openapi_spec::{LoadOpenApiSpecCommand, LoadOpenApiSpecCommandHandler};
 pub use command::register_own_specs::{RegisterOwnSpecsCommand, RegisterOwnSpecsCommandHandler};
-pub use command::revoke_user_role::{RevokeUserRoleCommand, RevokeUserRoleCommandHandler};
+pub use command::revoke_user_role::{
+    RevokeUserRoleCommand, RevokeUserRoleCommandHandler, RevokeUserRoleReads,
+};
 pub use command::set_role_permissions::{
     SetRolePermissionsCommand, SetRolePermissionsCommandHandler, SetRolePermissionsReads,
 };
@@ -106,3 +112,7 @@ pub use query::resolve_subject_token::{
 pub use query::resolve_token::{ResolveTokenQuery, ResolveTokenQueryHandler};
 pub use required_key_resolver::RequiredKeyResolver;
 pub use service_catalog_loader::ServiceCatalogLoader;
+pub use singleton_loop::{
+    BatchOutcome, InvalidSingletonInterval, MAX_SINGLETON_INTERVAL, SingletonInterval,
+    SingletonLoop, SingletonWork,
+};

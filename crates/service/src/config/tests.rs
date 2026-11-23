@@ -16,6 +16,12 @@ fn valid() -> ServeArgs {
             public_keys_file: Some(DEVELOPMENT_PUBLIC_KEYS_FILE.to_owned()),
             ..TokenArgs::default()
         },
+        kafka: KafkaArgs {
+            bootstrap_servers: Some("kafka-1:9094,kafka-2:9094".to_owned()),
+            sasl_username: Some("iam-control".to_owned()),
+            sasl_password: Some("secret-password".to_owned()),
+            ..KafkaArgs::default()
+        },
         ..ServeArgs::default()
     }
 }
@@ -423,6 +429,7 @@ fn every_variable_accepts_a_valid_value() {
         http_max_body_bytes: some("2048"),
         shutdown_grace_period: some("15s"),
         tokens: valid().tokens,
+        kafka: valid().kafka,
     };
 
     let config = Config::from_args(args).unwrap();
@@ -1022,6 +1029,7 @@ fn every_problem_is_reported_in_one_run_in_the_order_of_the_table() {
         aws_region: None,
         aws_access_key_id: some("key"),
         tokens: valid().tokens,
+        kafka: valid().kafka,
         ..ServeArgs::default()
     };
 
@@ -1057,7 +1065,7 @@ type Mutator = fn(&mut ServeArgs);
 
 /// One row per variable of `ServeArgs`: the variable, a way to make it the only problem, and the
 /// variable that the problem names.
-const FIELDS: [(&str, Mutator, &str); 28] = [
+const FIELDS: [(&str, Mutator, &str); 41] = [
     ("APP_ENV", |a| a.app_env = some("x"), "APP_ENV"),
     ("APP_HOST", |a| a.app_host = some("x"), "APP_HOST"),
     ("APP_PORT", |a| a.app_port = some("x"), "APP_PORT"),
@@ -1170,6 +1178,71 @@ const FIELDS: [(&str, Mutator, &str); 28] = [
         |a| a.tokens.service_token_max_lifetime = some("x"),
         "JWT_SERVICE_TOKEN_MAX_LIFETIME",
     ),
+    (
+        "KAFKA_BOOTSTRAP_SERVERS",
+        |a| a.kafka.bootstrap_servers = None,
+        "KAFKA_BOOTSTRAP_SERVERS",
+    ),
+    (
+        "KAFKA_SECURITY_PROTOCOL",
+        |a| a.kafka.security_protocol = some("x"),
+        "KAFKA_SECURITY_PROTOCOL",
+    ),
+    (
+        "KAFKA_SASL_MECHANISM",
+        |a| a.kafka.sasl_mechanism = some("x"),
+        "KAFKA_SASL_MECHANISM",
+    ),
+    (
+        "KAFKA_SASL_USERNAME",
+        |a| a.kafka.sasl_username = None,
+        "KAFKA_SASL_USERNAME",
+    ),
+    (
+        "KAFKA_SASL_PASSWORD",
+        |a| a.kafka.sasl_password = None,
+        "KAFKA_SASL_PASSWORD",
+    ),
+    (
+        "KAFKA_CA_FILE",
+        |a| a.kafka.ca_file = some(""),
+        "KAFKA_CA_FILE",
+    ),
+    (
+        "KAFKA_CLIENT_ID",
+        |a| a.kafka.client_id = some(""),
+        "KAFKA_CLIENT_ID",
+    ),
+    (
+        "KAFKA_CONNECT_TIMEOUT",
+        |a| a.kafka.connect_timeout = some("x"),
+        "KAFKA_CONNECT_TIMEOUT",
+    ),
+    (
+        "KAFKA_REQUEST_TIMEOUT",
+        |a| a.kafka.request_timeout = some("x"),
+        "KAFKA_REQUEST_TIMEOUT",
+    ),
+    (
+        "KAFKA_RETRY_DELAY",
+        |a| a.kafka.retry_delay = some("x"),
+        "KAFKA_RETRY_DELAY",
+    ),
+    (
+        "KAFKA_CONFIG_GATES",
+        |a| a.kafka.config_gates = some("x"),
+        "KAFKA_CONFIG_GATES",
+    ),
+    (
+        "POLICY_TOPIC",
+        |a| a.kafka.policy_topic = some("x y"),
+        "POLICY_TOPIC",
+    ),
+    (
+        "EVENTS_TOPIC",
+        |a| a.kafka.events_topic = some("x y"),
+        "EVENTS_TOPIC",
+    ),
 ];
 
 #[test]
@@ -1192,4 +1265,213 @@ fn every_field_of_serve_args_is_consumed_by_from_args() {
         mutate(&mut args);
         assert_eq!(variables(args), [reported], "{variable} is not consumed");
     }
+}
+
+#[test]
+fn the_kafka_defaults_are_the_documented_ones() {
+    let kafka = Config::from_args(valid()).unwrap().kafka;
+
+    assert_eq!(kafka.bootstrap_servers, "kafka-1:9094,kafka-2:9094");
+    assert_eq!(
+        kafka.security,
+        KafkaSecurity::SaslSsl {
+            mechanism: SaslMechanism::ScramSha512,
+            username: "iam-control".to_owned(),
+            password: KafkaSecret::new("secret-password".to_owned()),
+            ca_file: None,
+        }
+    );
+    assert_eq!(kafka.client_id, "iam-control");
+    assert_eq!(kafka.connect_timeout, Duration::from_secs(1));
+    assert_eq!(kafka.request_timeout, Duration::from_secs(2));
+    assert_eq!(kafka.retry_delay, Duration::from_millis(100));
+    assert_eq!(kafka.gates, ConfigGates::Enforce);
+    assert_eq!(kafka.policy_topic, "iam.policy.state.v1");
+    assert_eq!(kafka.events_topic, "iam.events.v1");
+}
+
+#[test]
+fn every_kafka_setting_accepts_a_valid_value() {
+    let mut args = valid();
+    args.app_env = some("dev");
+    args.kafka = KafkaArgs {
+        bootstrap_servers: some("localhost:9092"),
+        security_protocol: some("SASL_SSL"),
+        sasl_mechanism: some("SCRAM-SHA-256"),
+        sasl_username: some("user"),
+        sasl_password: some("password"),
+        ca_file: some("/etc/kafka/ca.pem"),
+        client_id: some("client"),
+        connect_timeout: some("500ms"),
+        request_timeout: some("1s"),
+        retry_delay: some("50ms"),
+        config_gates: some("relaxed"),
+        policy_topic: some("state"),
+        events_topic: some("events"),
+    };
+
+    let kafka = Config::from_args(args).unwrap().kafka;
+
+    assert_eq!(
+        kafka.security,
+        KafkaSecurity::SaslSsl {
+            mechanism: SaslMechanism::ScramSha256,
+            username: "user".to_owned(),
+            password: KafkaSecret::new("password".to_owned()),
+            ca_file: Some("/etc/kafka/ca.pem".to_owned()),
+        }
+    );
+    assert_eq!(kafka.gates, ConfigGates::Relaxed);
+    assert_eq!(kafka.client_id, "client");
+    assert_eq!(kafka.connect_timeout, Duration::from_millis(500));
+    assert_eq!(kafka.request_timeout, Duration::from_secs(1));
+    assert_eq!(kafka.retry_delay, Duration::from_millis(50));
+    assert_eq!(
+        (kafka.policy_topic.as_str(), kafka.events_topic.as_str()),
+        ("state", "events")
+    );
+}
+
+#[rstest]
+#[case::dev("dev")]
+#[case::test("test")]
+fn plaintext_needs_no_credentials_and_relaxed_gates_pass_in_dev_and_test(
+    #[case] environment: &str,
+) {
+    let mut args = valid();
+    args.app_env = some(environment);
+    args.kafka = KafkaArgs {
+        bootstrap_servers: some("localhost:9092"),
+        security_protocol: some("PLAINTEXT"),
+        config_gates: some("relaxed"),
+        ..KafkaArgs::default()
+    };
+
+    let kafka = Config::from_args(args).unwrap().kafka;
+
+    assert_eq!(kafka.security, KafkaSecurity::Plaintext);
+    assert_eq!(kafka.gates, ConfigGates::Relaxed);
+}
+
+#[test]
+fn plaintext_and_relaxed_gates_are_refused_in_prod_and_without_an_environment() {
+    for environment in [None, some("prod")] {
+        let mut args = valid();
+        args.app_env = environment;
+        args.kafka.security_protocol = some("PLAINTEXT");
+        args.kafka.config_gates = some("relaxed");
+
+        assert_eq!(
+            problems(args),
+            [
+                (
+                    "KAFKA_SECURITY_PROTOCOL",
+                    "must be SASL_SSL unless APP_ENV is dev or test".to_owned()
+                ),
+                (
+                    "KAFKA_CONFIG_GATES",
+                    "must be enforce unless APP_ENV is dev or test".to_owned()
+                ),
+            ]
+        );
+    }
+}
+
+#[test]
+fn an_invalid_environment_does_not_add_kafka_environment_problems() {
+    let mut args = valid();
+    args.app_env = some("staging");
+    args.kafka.security_protocol = some("PLAINTEXT");
+    args.kafka.config_gates = some("relaxed");
+
+    assert_eq!(variables(args), ["APP_ENV"]);
+}
+
+#[test]
+fn the_sasl_settings_are_only_read_with_sasl_ssl() {
+    let mut args = valid();
+    args.app_env = some("dev");
+    args.kafka.security_protocol = some("PLAINTEXT");
+    args.kafka.sasl_mechanism = some("PLAIN");
+    args.kafka.sasl_username = None;
+    args.kafka.sasl_password = None;
+    args.kafka.ca_file = some("");
+
+    assert!(Config::from_args(args).is_ok());
+}
+
+#[rstest]
+#[case::no_port("kafka-1")]
+#[case::port_zero("kafka-1:0")]
+#[case::port_too_large("kafka-1:65536")]
+#[case::empty_host(":9092")]
+#[case::empty_entry("kafka-1:9092,")]
+#[case::a_space_in_the_host("kafka 1:9092")]
+#[case::a_scheme("http://kafka-1:9092")]
+fn a_bootstrap_list_that_is_not_host_port_pairs_is_rejected(#[case] list: &str) {
+    let mut args = valid();
+    args.kafka.bootstrap_servers = some(list);
+
+    assert_eq!(
+        problems(args),
+        [(
+            "KAFKA_BOOTSTRAP_SERVERS",
+            "must be comma-separated host:port pairs".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn a_request_timeout_shorter_than_the_connect_timeout_is_rejected() {
+    let mut args = valid();
+    args.kafka.connect_timeout = some("3s");
+    args.kafka.request_timeout = some("2s");
+
+    assert_eq!(
+        problems(args),
+        [(
+            "KAFKA_REQUEST_TIMEOUT",
+            "must not be shorter than KAFKA_CONNECT_TIMEOUT".to_owned()
+        )]
+    );
+}
+
+#[rstest]
+#[case::dot(".")]
+#[case::dot_dot("..")]
+#[case::a_slash("a/b")]
+#[case::too_long(&"a".repeat(250))]
+fn an_invalid_topic_name_is_rejected(#[case] name: &str) {
+    let mut args = valid();
+    args.kafka.policy_topic = some(name);
+
+    assert_eq!(variables(args), ["POLICY_TOPIC"]);
+}
+
+#[test]
+fn the_two_topics_must_differ() {
+    let mut args = valid();
+    args.kafka.policy_topic = some("topic");
+    args.kafka.events_topic = some("topic");
+
+    assert_eq!(
+        problems(args),
+        [("EVENTS_TOPIC", "must differ from POLICY_TOPIC".to_owned())]
+    );
+}
+
+#[test]
+fn a_kafka_problem_never_contains_the_password() {
+    let mut args = valid();
+    args.kafka.sasl_password = some("hunter2-kafka");
+    args.kafka.sasl_mechanism = some("PLAIN");
+
+    let errors = Config::from_args(args).unwrap_err();
+
+    assert!(
+        errors
+            .problems()
+            .iter()
+            .all(|problem| !problem.reason.contains("hunter2-kafka"))
+    );
 }

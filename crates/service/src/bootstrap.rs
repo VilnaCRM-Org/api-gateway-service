@@ -19,6 +19,7 @@ use iam_application::{
     ActivationReads, CreateGraphQlPermissionsCommandHandler,
     GetGraphQlPermissionsCreatedQueryHandler,
 };
+use iam_application::{AdministratorSafeguard, RevokeUserRoleReads, SafeguardPorts};
 use iam_application::{
     AssignUserRoleCommandHandler, GetUserRoleQueryHandler, ListUserRolesQueryHandler,
     RevokeUserRoleCommandHandler, UpdateUserRoleCommandHandler,
@@ -57,6 +58,7 @@ use iam_domain::GraphQlSpecRepository;
 use iam_domain::OpenApiSpecRepository;
 use iam_domain::RestPermissionRepository;
 use iam_domain::RoleRepository;
+use iam_domain::SingletonLeadership;
 use iam_domain::StartupLock;
 use iam_domain::UserRoleRepository;
 use iam_domain::{
@@ -65,12 +67,15 @@ use iam_domain::{
 };
 use iam_domain::{IamUnitOfWork, OWN_SPECIFICATIONS_LOCK, RepositoryError, RequestDigester};
 use iam_domain::{RevocationRepository, RevocationView, TokenMemo, TokenRepository};
+use iam_infrastructure::KrafkaTopicInspector;
 use iam_infrastructure::PgGraphQlPermissionRepository;
 use iam_infrastructure::PgGraphQlSpecRepository;
 use iam_infrastructure::PgOpenApiSpecRepository;
 use iam_infrastructure::PgRestPermissionRepository;
 use iam_infrastructure::PgRoleRepository;
 use iam_infrastructure::PgUserRoleRepository;
+use iam_infrastructure::Sha256RequestDigester;
+use iam_infrastructure::{AdvisoryLockLeadership, PgIamUnitOfWork, PgStartupLock};
 use iam_infrastructure::{
     CachingTokenRepository, MokaTokenMemo, PgRevocationRepository, PgRevocationView,
 };
@@ -78,7 +83,6 @@ use iam_infrastructure::{
     JwtAccessTokenVerifier, JwtKeyFileError, PgChangeReceiptRepository, PgIdempotencyRepository,
     PgPolicyEpochRepository, PgPolicyReadRepository, PgSecurityAuditLog,
 };
-use iam_infrastructure::{PgIamUnitOfWork, PgStartupLock, Sha256RequestDigester};
 use shared_domain::{Clock, CommandBus, CommandHandler as _, EventBus, QueryBus, UuidGenerator};
 use shared_infrastructure::bus::{
     DuplicateHandler, InMemoryCommandBus, InMemoryEventBus, InMemoryQueryBus,
@@ -102,7 +106,9 @@ use crate::http::AppState;
 use crate::http::router::assemble_with_iam_routes;
 use crate::openapi::{self, ExportError};
 
-pub use tasks::{TaskMode, TaskStop, TaskSupervisor, start_tasks};
+pub use administrator::{AdministratorError, bootstrap_administrator};
+pub use kafka_probe::KafkaProbe;
+pub use tasks::{TaskMode, TaskStop, TaskSupervisor, singleton_set, start_tasks};
 
 /// Every driven port of the application.
 #[derive(Debug)]
@@ -117,6 +123,8 @@ pub struct Adapters {
     pub security_audit_log: Arc<dyn SecurityAuditLog>,
     /// The cross-instance lock that serializes the startup registration of IAM's specifications.
     pub startup_lock: Arc<dyn StartupLock>,
+    /// Fences each batch of a singleton task to one replica with an advisory lock.
+    pub singleton_leadership: Arc<dyn SingletonLeadership>,
     /// Reader of the receipts of committed IAM changes.
     pub change_receipts: Arc<dyn ChangeReceiptRepository>,
     /// Reader of the idempotency records of IAM writes.
@@ -143,7 +151,7 @@ pub struct Adapters {
     pub tokens: Arc<dyn TokenRepository>,
     /// Writer and reader of session revocations, cut-offs and consumed User service events.
     pub revocations: Arc<dyn RevocationRepository>,
-    /// Health probes in the order database, cache, message broker.
+    /// Health probes in the order database, cache, message broker, Kafka.
     pub probes: Vec<Arc<dyn HealthProbe>>,
     /// Bus the command handlers publish domain events to.
     pub event_bus: Arc<dyn EventBus>,
@@ -202,6 +210,7 @@ impl Adapters {
             policy_reads: Arc::new(PgPolicyReadRepository::new(pool.clone())),
             security_audit_log: Arc::new(PgSecurityAuditLog::new(pool.clone())),
             startup_lock: Arc::new(PgStartupLock::new(pool.clone())),
+            singleton_leadership: Arc::new(AdvisoryLockLeadership::new(pool.clone())),
             change_receipts: Arc::new(PgChangeReceiptRepository::new(pool.clone())),
             idempotency_records: Arc::new(PgIdempotencyRepository::new(pool.clone())),
             roles: Arc::new(PgRoleRepository::new(pool.clone())),
@@ -219,6 +228,9 @@ impl Adapters {
                 Arc::new(PostgresProbe::new(pool)),
                 Arc::new(CacheProbe::new(cache)),
                 Arc::new(SqsProbe::new(sqs)),
+                Arc::new(KafkaProbe::new(Arc::new(KrafkaTopicInspector::new(
+                    &config.kafka,
+                )))),
             ],
             event_bus: event_bus(),
             clock,
@@ -557,16 +569,30 @@ fn register_user_role_commands(
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
+    let safeguard = Arc::new(AdministratorSafeguard::new(
+        SafeguardPorts {
+            roles: Arc::clone(&adapters.roles),
+            user_roles: Arc::clone(&adapters.user_roles),
+            audit_log: Arc::clone(&adapters.security_audit_log),
+            startup_lock: Arc::clone(&adapters.startup_lock),
+        },
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    ));
     let update = UpdateUserRoleCommandHandler::new(
         Arc::clone(&adapters.user_roles),
         Arc::clone(&adapters.unit_of_work),
+        Arc::clone(&safeguard),
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
     let revoke = RevokeUserRoleCommandHandler::new(
-        Arc::clone(&adapters.user_roles),
-        Arc::clone(&adapters.roles),
+        RevokeUserRoleReads {
+            user_roles: Arc::clone(&adapters.user_roles),
+            roles: Arc::clone(&adapters.roles),
+        },
         Arc::clone(&adapters.unit_of_work),
+        safeguard,
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
@@ -746,6 +772,8 @@ pub fn router_with_iam_routes(
     Ok(assemble_with_iam_routes(state, schema, config, iam_routes))
 }
 
+mod administrator;
+mod kafka_probe;
 mod tasks;
 
 #[cfg(test)]
