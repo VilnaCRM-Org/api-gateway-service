@@ -10,11 +10,19 @@ repository.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+bytes.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-rustls.workspace = true
+hyper-util.workspace = true
 iam-domain.workspace = true
 jsonwebtoken.workspace = true
 krafka.workspace = true
 moka.workspace = true
 rand.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -25,6 +33,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 aws-lc-rs.workspace = true
+hyper = { workspace = true, features = ["server"] }
 rstest.workspace = true
 shared-infrastructure.workspace = true
 test-support.workspace = true

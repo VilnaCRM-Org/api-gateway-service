@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 use test_support::access_token::DEVELOPMENT_PUBLIC_KEYS_FILE;
+use test_support::endpoint_watch::DEVELOPMENT_ENDPOINTS_FILE;
 
 /// Every variable of a valid configuration that has no default: the database and the region
 /// (`JWT_PUBLIC_KEYS_FILE` is added by [`Scratch::service`]).
@@ -313,6 +314,8 @@ fn port_of(entry: &Value, field: &str) -> u16 {
 pub(crate) fn gateway(scratch: &Scratch, variables: &[(&str, &str)]) -> (Server, GatewayPorts) {
     let mut all = vec![
         ("APP_ENV", "test"),
+        ("UPSTREAM_DISCOVERY", "static"),
+        ("UPSTREAM_STATIC_ENDPOINTS_FILE", DEVELOPMENT_ENDPOINTS_FILE),
         ("GATEWAY_LISTEN", "127.0.0.1:0"),
         ("GATEWAY_INTERNAL_LISTEN", "127.0.0.1:0"),
         ("GATEWAY_PROBE_LISTEN", "127.0.0.1:0"),

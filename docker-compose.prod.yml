@@ -43,6 +43,7 @@ services:
       GATEWAY_TLS_KEY_FILE: ${GATEWAY_TLS_KEY_FILE:-/etc/service/tls/tls.key}
     volumes: !override
       - ${JWT_PUBLIC_KEYS_HOST_FILE:?JWT_PUBLIC_KEYS_HOST_FILE is required}:/etc/service/jwt-public-keys.pem:ro
+      - ${UPSTREAM_ENDPOINTS_HOST_FILE:?UPSTREAM_ENDPOINTS_HOST_FILE is required}:/etc/service/upstream-endpoints.json:ro
       - ${GATEWAY_TLS_HOST_DIR:?GATEWAY_TLS_HOST_DIR is required}:/etc/service/tls:ro
     deploy:
       resources:

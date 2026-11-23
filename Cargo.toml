@@ -60,10 +60,20 @@ aws-sdk-sqs = { version = "1.120.0", default-features = false, features = [
     "default-https-client",
 ] }
 axum = { version = "0.8.9", features = ["macros", "http2"] }
+bytes = "1.12.1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 dotenvy = "0.15.7"
 futures-util = { version = "0.3.34", default-features = false, features = ["alloc"] }
+http = "1.5.0"
+http-body-util = "0.1.5"
 humantime = "2.4.0"
+hyper = { version = "1.12.0", default-features = false, features = ["client", "http1"] }
+hyper-rustls = { version = "0.27.10", default-features = false, features = ["http1", "tls12"] }
+hyper-util = { version = "0.1.21", default-features = false, features = [
+    "client-legacy",
+    "http1",
+    "tokio",
+] }
 jsonwebtoken = { version = "10.4.0", default-features = false, features = [
     "aws_lc_rs",
     "use_pem",
@@ -113,7 +123,6 @@ aws-smithy-mocks = "0.3.0"
 criterion = { version = "0.7.0", default-features = false, features = ["cargo_bench_support"] }
 cucumber = "0.23.0"
 fake = { version = "5.1.0", features = ["uuid"] }
-http-body-util = "0.1.5"
 pem = "3.0.6"
 proptest = "1.12.0"
 rstest = "0.28.0"

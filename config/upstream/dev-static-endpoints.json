@@ -1,0 +1,5 @@
+{
+  "iam-control": [
+    { "address": "app", "port": 8081, "zone": "local", "pod": "app" }
+  ]
+}

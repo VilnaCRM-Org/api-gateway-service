@@ -6,15 +6,18 @@
 
 use std::sync::Arc;
 
+use iam_application::{EndpointWatcher, WatcherSettings};
 use iam_domain::Rng;
 use iam_infrastructure::{JwtKeyFileError, JwtKeySet, SeededRng};
 use shared_domain::Clock;
 use shared_infrastructure::clock::SystemClock;
 use tokio::sync::watch;
 
+use self::endpoints::{EndpointAdapters, EndpointSetupError};
 use super::{TaskMode, TaskSupervisor};
 use crate::config::GatewayConfig;
 
+pub mod endpoints;
 pub mod internal;
 pub mod listener;
 pub mod probe;
@@ -27,20 +30,36 @@ pub struct GatewayAdapters {
     pub clock: Arc<dyn Clock>,
     /// The public keys that verify access tokens, parsed at start.
     pub keys: JwtKeySet,
+    /// The discovery of the upstream endpoints and the zone of this pod.
+    pub endpoints: EndpointAdapters,
+}
+
+/// The adapters of the gateway cannot be wired.
+#[derive(Debug, thiserror::Error)]
+pub enum GatewayAdapterError {
+    /// The key file cannot be read or parsed.
+    #[error(transparent)]
+    Keys(#[from] JwtKeyFileError),
+    /// The endpoint discovery cannot be set up.
+    #[error(transparent)]
+    Endpoints(#[from] EndpointSetupError),
 }
 
 impl GatewayAdapters {
-    /// Wires the production adapters: the random source is seeded from the operating system and
-    /// the key file is parsed now, so that a gateway that cannot verify a token does not start.
+    /// Wires the production adapters: the random source is seeded from the operating system, the
+    /// key file is parsed now, so that a gateway that cannot verify a token does not start, and the
+    /// endpoint discovery is set up the same way.
     ///
     /// # Errors
     ///
-    /// Returns the error of reading or parsing `JWT_PUBLIC_KEYS_FILE`.
-    pub fn from_config(config: &GatewayConfig) -> Result<Self, JwtKeyFileError> {
+    /// Returns the error of reading or parsing `JWT_PUBLIC_KEYS_FILE` or of setting up the
+    /// endpoint discovery.
+    pub fn from_config(config: &GatewayConfig) -> Result<Self, GatewayAdapterError> {
         Ok(Self {
             rng: Arc::new(SeededRng::from_os()),
             clock: Arc::new(SystemClock),
             keys: JwtKeySet::load(&config.tokens.public_keys_file)?,
+            endpoints: EndpointAdapters::from_config(config)?,
         })
     }
 }
@@ -51,17 +70,30 @@ impl std::fmt::Debug for GatewayAdapters {
             .debug_struct("GatewayAdapters")
             .field("rng", &self.rng)
             .field("clock", &self.clock)
+            .field("endpoints", &self.endpoints)
             .finish_non_exhaustive()
     }
 }
 
-/// The per-replica tasks of the gateway. No story has registered one yet: Story 9.3 adds the
-/// first, so the set is empty and the supervisor only waits for what the composition root adds.
+/// The per-replica tasks of the gateway: the `EndpointWatcher`, when there is a Service to watch.
 ///
 /// `shutdown` is the stop flag of the service: tasks end when it is set.
 #[must_use]
-pub fn start_tasks(_adapters: &GatewayAdapters, shutdown: watch::Receiver<bool>) -> TaskSupervisor {
-    TaskSupervisor::new(TaskMode::Serve, shutdown)
+pub fn start_tasks(adapters: &GatewayAdapters, shutdown: watch::Receiver<bool>) -> TaskSupervisor {
+    let mut supervisor = TaskSupervisor::new(TaskMode::Serve, shutdown);
+    let endpoints = &adapters.endpoints;
+    if !endpoints.targets.is_empty() {
+        let watcher = EndpointWatcher::new(
+            Arc::clone(&endpoints.watch),
+            Arc::clone(&endpoints.directory),
+            endpoints.targets.clone(),
+            WatcherSettings::default(),
+        );
+        supervisor.spawn(EndpointWatcher::name(), move |stopping| {
+            watcher.run(stopping)
+        });
+    }
+    supervisor
 }
 
 #[cfg(test)]
