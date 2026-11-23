@@ -5,14 +5,17 @@
 use iam_domain::{
     CatalogueStatementParts, EntryFlags, EntryInsert, HttpMethod, InvalidCatalogueEntry,
     InvalidPermissionKey, PermissionFlags, PermissionId, PermissionKey, PermissionPageQuery,
-    RepositoryError, RestPermission, RestPermissionParts, RestPermissionRepository, ServiceName,
+    RepositoryError, RestPermission, RestPermissionParts, RestPermissionRepository,
+    RestPermissionsCreated, ServiceName, SpecId,
 };
 use shared_domain::Uuid;
 use sqlx::PgConnection;
 use sqlx::types::Uuid as SqlUuid;
 use sqlx::types::time::OffsetDateTime;
 
-use crate::persistence::catalogue::{expect_rows, state_filter, translate_entry};
+use crate::persistence::catalogue::{
+    expect_rows, select_created_keys, state_filter, translate_entry,
+};
 use crate::persistence::openapi_spec::transition_within;
 use crate::persistence::role::translate;
 
@@ -346,6 +349,13 @@ impl RestPermissionRepository for PgRestPermissionRepository {
         query: &PermissionPageQuery,
     ) -> Result<Vec<RestPermission>, RepositoryError> {
         self.select_page(query).await
+    }
+
+    async fn find_created_keys(
+        &self,
+        spec_id: SpecId,
+    ) -> Result<Option<Vec<PermissionKey>>, RepositoryError> {
+        select_created_keys(&self.pool, RestPermissionsCreated::NAME, spec_id).await
     }
 }
 

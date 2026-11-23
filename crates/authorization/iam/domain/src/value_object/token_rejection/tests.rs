@@ -1,6 +1,7 @@
 use rstest::rstest;
 
 use super::TokenRejection;
+use crate::value_object::decision_reason::DecisionReason;
 
 #[rstest]
 #[case(
@@ -23,4 +24,18 @@ fn exposes_its_reason_code_and_message(
 ) {
     assert_eq!(rejection.code(), code);
     assert_eq!(rejection.to_string(), message);
+}
+
+#[rstest]
+#[case(TokenRejection::Missing, DecisionReason::TokenMissing)]
+#[case(TokenRejection::Invalid, DecisionReason::TokenInvalid)]
+#[case(TokenRejection::Expired, DecisionReason::TokenExpired)]
+#[case(TokenRejection::Revoked, DecisionReason::TokenRevoked)]
+#[case(TokenRejection::Unavailable, DecisionReason::Unavailable)]
+fn maps_to_the_decision_reason_with_the_same_code(
+    #[case] rejection: TokenRejection,
+    #[case] reason: DecisionReason,
+) {
+    assert_eq!(DecisionReason::from(rejection), reason);
+    assert_eq!(reason.as_str(), rejection.code());
 }

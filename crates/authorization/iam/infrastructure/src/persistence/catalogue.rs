@@ -4,12 +4,12 @@
 //! key and the catalogue epoch, all inside the transaction of the change.
 
 use iam_domain::{
-    CatalogueStatement, CatalogueStatementParts, KeyRename, OrphanedGrant, PermissionKeyKind,
-    RepositoryError,
+    CatalogueStatement, CatalogueStatementParts, InvalidPermissionKey, KeyRename, OrphanedGrant,
+    PermissionKey, PermissionKeyKind, RepositoryError, SpecId,
 };
-use sqlx::PgConnection;
 use sqlx::types::Uuid as SqlUuid;
 use sqlx::types::time::OffsetDateTime;
+use sqlx::{PgConnection, PgPool, Row as _};
 
 use crate::persistence::role::translate;
 use crate::persistence::{graphql_permission, rest_permission};
@@ -38,6 +38,71 @@ pub async fn apply_within(
     orphan_grants(connection, parts).await?;
     rename_grants(connection, parts).await?;
     bump_catalog_epoch(connection, OffsetDateTime::from(parts.at)).await
+}
+
+/// A stored event payload that does not hold `data.createdKeys` as a list of permission keys is
+/// unusable data.
+#[derive(Debug, thiserror::Error)]
+enum UnusablePayload {
+    /// The payload is not JSON.
+    #[error("a stored event payload is not JSON")]
+    Json(#[source] serde_json::Error),
+    /// The payload has no list of created keys.
+    #[error("a stored event payload has no list of created keys")]
+    Shape,
+    /// A created key is not a permission key.
+    #[error("a stored created key is invalid")]
+    Key(#[source] InvalidPermissionKey),
+}
+
+/// The `createdKeys` of the first event of type `event_type` that the outbox holds for the
+/// version `spec_id`: `iam.graphql_permissions.created` or `iam.rest_permissions.created`. The
+/// statement is checked at run time, so the offline metadata does not hold it.
+///
+/// # Errors
+///
+/// [`RepositoryError::Unavailable`] when the storage fails or the payload is unusable.
+pub(crate) async fn select_created_keys(
+    pool: &PgPool,
+    event_type: &str,
+    spec_id: SpecId,
+) -> Result<Option<Vec<PermissionKey>>, RepositoryError> {
+    let row = sqlx::query(
+        "SELECT payload FROM iam_outbox
+        WHERE kind = 'event' AND event_type = $1 AND aggregate_id = $2
+        ORDER BY position LIMIT 1",
+    )
+    .bind(event_type)
+    .bind(spec_id.to_string())
+    .fetch_optional(pool)
+    .await
+    .map_err(translate)?;
+    row.as_ref()
+        .map(|row| row.try_get::<String, _>("payload").map_err(translate))
+        .transpose()?
+        .map(|payload| created_keys(&payload))
+        .transpose()
+}
+
+/// The keys that `payload`, the envelope of a catalogue creation event, lists.
+pub(crate) fn created_keys(payload: &str) -> Result<Vec<PermissionKey>, RepositoryError> {
+    let unusable = |error: UnusablePayload| RepositoryError::Unavailable(Box::new(error));
+    let envelope: serde_json::Value =
+        serde_json::from_str(payload).map_err(|error| unusable(UnusablePayload::Json(error)))?;
+    envelope
+        .get("data")
+        .and_then(|data| data.get("createdKeys"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| unusable(UnusablePayload::Shape))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or(UnusablePayload::Shape)
+                .and_then(|text| PermissionKey::parse(text).map_err(UnusablePayload::Key))
+                .map_err(unusable)
+        })
+        .collect()
 }
 
 /// The number of affected rows must be the number the change expects; a stored row that is

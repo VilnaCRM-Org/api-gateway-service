@@ -5,6 +5,7 @@ use iam_domain::{
 use sqlx::types::Uuid as SqlUuid;
 
 use super::{Activity, EntryColumns, FlagColumns, PermissionRow, restore, restore_all};
+use crate::persistence::catalogue::created_keys;
 
 const ID_A: &str = "0b7e5d3c-2a19-4f8e-8d6c-5b4a39281706";
 const ID_B: &str = "7f1c2a4e-1d0b-4f5e-9a3c-2b6d8e0f1a2b";
@@ -141,4 +142,17 @@ fn flag_changes_become_parallel_columns() {
     assert_eq!(columns.keys, vec!["rest:billing:GET /invoices"]);
     assert_eq!(columns.sensitive, vec![true]);
     assert_eq!(columns.audit_always, vec![true]);
+}
+
+#[test]
+fn the_created_keys_of_a_stored_rest_event_payload_are_read_in_order() {
+    let payload = r#"{"id":"1","type":"iam.rest_permissions.created","occurredAt":"x","data":{"createdKeys":["rest:billing:GET /invoices","rest:billing:POST /invoices/{}/pay"],"renamed":[]}}"#;
+
+    assert_eq!(
+        created_keys(payload).unwrap(),
+        vec![
+            key("rest:billing:GET /invoices"),
+            key("rest:billing:POST /invoices/{}/pay")
+        ]
+    );
 }

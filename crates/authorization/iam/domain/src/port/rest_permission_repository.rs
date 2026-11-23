@@ -3,7 +3,7 @@
 use crate::port::RepositoryError;
 use crate::port::permission_page_query::PermissionPageQuery;
 use crate::rest_permission::RestPermission;
-use crate::value_object::identifier::PermissionId;
+use crate::value_object::identifier::{PermissionId, SpecId};
 use crate::value_object::permission_key::PermissionKey;
 use crate::value_object::service_name::ServiceName;
 
@@ -50,4 +50,15 @@ pub trait RestPermissionRepository: std::fmt::Debug + Send + Sync {
         &self,
         query: &PermissionPageQuery,
     ) -> Result<Vec<RestPermission>, RepositoryError>;
+
+    /// The keys that the activation of the version created, as the activation recorded them in
+    /// `iam.rest_permissions.created`; `None` when the version has no such record.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when the storage fails or holds unusable data.
+    async fn find_created_keys(
+        &self,
+        spec_id: SpecId,
+    ) -> Result<Option<Vec<PermissionKey>>, RepositoryError>;
 }

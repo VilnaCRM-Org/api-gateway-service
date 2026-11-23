@@ -4,9 +4,8 @@ use iam_domain::{
 };
 use sqlx::types::Uuid as SqlUuid;
 
-use super::{
-    Activity, EntryColumns, FlagColumns, PermissionRow, created_keys, restore, restore_all,
-};
+use super::{Activity, EntryColumns, FlagColumns, PermissionRow, restore, restore_all};
+use crate::persistence::catalogue::created_keys;
 
 const ID_A: &str = "0b7e5d3c-2a19-4f8e-8d6c-5b4a39281706";
 const ID_B: &str = "7f1c2a4e-1d0b-4f5e-9a3c-2b6d8e0f1a2b";

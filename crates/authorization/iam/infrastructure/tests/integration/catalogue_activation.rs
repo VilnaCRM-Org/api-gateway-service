@@ -10,8 +10,9 @@ use iam_domain::{
     GraphQlPermissionsCreated, GraphQlSpecRepository as _, GraphQlSpecStatement,
     IamUnitOfWork as _, KeyRename, OpenApiSpecRepository as _, OpenApiSpecStatement, OrphanedGrant,
     PermissionFlags, PermissionId, PermissionKey, PermissionKeyKind, PermissionPageQuery,
-    PolicyEpochRepository as _, RepositoryError, RestPermissionRepository as _, RoleId,
-    RoleRepository as _, ServiceName, SpecId, SpecStatus, SpecTransition,
+    PolicyEpochRepository as _, RepositoryError, RestPermissionRepository as _,
+    RestPermissionsCreated, RoleId, RoleRepository as _, ServiceName, SpecId, SpecStatus,
+    SpecTransition,
 };
 use iam_infrastructure::{
     PgGraphQlPermissionRepository, PgGraphQlSpecRepository, PgIamUnitOfWork,
@@ -625,5 +626,44 @@ async fn the_created_keys_of_an_activation_are_read_from_its_event(pool: PgPool)
         .unwrap();
 
     assert_eq!(found, Some(vec![key(PAY), key(INVOICES)]));
+    assert_eq!(unknown, None);
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn the_created_keys_of_a_rest_activation_are_read_from_its_event(pool: PgPool) {
+    let mut rng = TestRng::from_env();
+    let spec_id = draft_openapi(&pool, &mut rng).await;
+    let created = [
+        key("rest:billing:GET /invoices"),
+        key("rest:billing:POST /invoices/{}"),
+    ];
+    let event = RestPermissionsCreated {
+        event_id: uuid_v7(&mut rng),
+        spec_id,
+        service: service(),
+        created_keys: created.to_vec(),
+        renamed: Vec::new(),
+        flag_changes: Vec::new(),
+        actor: ActorRef::User(uuid_v7(&mut rng)),
+        occurred_at: at(),
+    };
+    let statement = CatalogueStatement::new(parts(PermissionKeyKind::Rest, spec_id)).unwrap();
+    let change = rebuilt(
+        &catalogue_change(&mut rng, DecisionEffect::Affected, vec![statement]),
+        |change| change.events = vec![EventEnvelope::of(&event).unwrap()],
+    );
+    PgIamUnitOfWork::new(pool.clone())
+        .commit(change)
+        .await
+        .unwrap();
+    let permissions = PgRestPermissionRepository::new(pool);
+
+    let found = permissions.find_created_keys(spec_id).await.unwrap();
+    let unknown = permissions
+        .find_created_keys(SpecId::from_uuid(uuid_v7(&mut rng)))
+        .await
+        .unwrap();
+
+    assert_eq!(found, Some(created.to_vec()));
     assert_eq!(unknown, None);
 }

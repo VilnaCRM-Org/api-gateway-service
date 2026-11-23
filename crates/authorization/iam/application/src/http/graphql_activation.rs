@@ -156,7 +156,7 @@ async fn already_active(
 }
 
 /// The current policy version.
-async fn current_policy_version(state: &IamState) -> Result<i64, Problem> {
+pub(crate) async fn current_policy_version(state: &IamState) -> Result<i64, Problem> {
     let epoch = state.query_bus.ask(GetPolicyEpochQuery).await?;
     Ok(epoch.version().value())
 }

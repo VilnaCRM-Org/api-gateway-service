@@ -114,23 +114,34 @@ impl CreateGraphQlPermissionsRequest {
     /// [`IamError::Invalid`] with the violations of every rename that is not a pair of permission
     /// keys, in order.
     pub fn parse(&self) -> Result<Vec<(PermissionKey, PermissionKey)>, IamError> {
-        let parsed: Vec<_> = self
-            .renames
-            .iter()
-            .enumerate()
-            .map(|(index, rename)| rename.parse(index))
-            .collect();
-        let violations: Vec<Violation> = parsed
-            .iter()
-            .filter_map(|rename| rename.as_ref().err())
-            .flatten()
-            .cloned()
-            .collect();
-        if violations.is_empty() {
-            Ok(parsed.into_iter().flatten().collect())
-        } else {
-            Err(IamError::Invalid(violations))
-        }
+        parse_renames(&self.renames)
+    }
+}
+
+/// Parses `renames`, which the activations of both catalogue forms share.
+///
+/// # Errors
+///
+/// [`IamError::Invalid`] with the violations of every rename that is not a pair of permission
+/// keys, in order.
+pub(crate) fn parse_renames(
+    renames: &[KeyRenameDto],
+) -> Result<Vec<(PermissionKey, PermissionKey)>, IamError> {
+    let parsed: Vec<_> = renames
+        .iter()
+        .enumerate()
+        .map(|(index, rename)| rename.parse(index))
+        .collect();
+    let violations: Vec<Violation> = parsed
+        .iter()
+        .filter_map(|rename| rename.as_ref().err())
+        .flatten()
+        .cloned()
+        .collect();
+    if violations.is_empty() {
+        Ok(parsed.into_iter().flatten().collect())
+    } else {
+        Err(IamError::Invalid(violations))
     }
 }
 

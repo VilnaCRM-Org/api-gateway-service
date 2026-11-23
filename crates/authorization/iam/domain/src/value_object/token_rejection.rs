@@ -1,5 +1,7 @@
 //! Why a credential was refused.
 
+use crate::value_object::decision_reason::DecisionReason;
+
 /// The reason a credential does not authenticate its bearer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, thiserror::Error)]
 pub enum TokenRejection {
@@ -31,6 +33,19 @@ impl TokenRejection {
             Self::Expired => "token_expired",
             Self::Revoked => "token_revoked",
             Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+impl From<TokenRejection> for DecisionReason {
+    /// The matching `token_*` reason; a credential that cannot be checked is `unavailable`.
+    fn from(rejection: TokenRejection) -> Self {
+        match rejection {
+            TokenRejection::Missing => Self::TokenMissing,
+            TokenRejection::Invalid => Self::TokenInvalid,
+            TokenRejection::Expired => Self::TokenExpired,
+            TokenRejection::Revoked => Self::TokenRevoked,
+            TokenRejection::Unavailable => Self::Unavailable,
         }
     }
 }

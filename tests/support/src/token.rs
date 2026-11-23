@@ -94,12 +94,16 @@ impl TokenMemo for FakeTokenMemo {
     }
 }
 
-/// A token repository that answers from a table of raw credentials: a blank credential is
-/// missing, a registered one yields its outcome, any other one is invalid. It counts its calls.
+/// A token repository that answers from a table of raw credentials.
+///
+/// A blank credential is missing, a registered one yields its outcome, any other one is invalid.
+/// It counts its calls. The [`failing`](Self::failing) form answers `Unavailable` to every
+/// credential.
 #[derive(Debug, Default)]
 pub struct FakeTokenRepository {
     outcomes: Mutex<BTreeMap<String, Result<TokenIdentity, TokenRejection>>>,
     calls: AtomicUsize,
+    failing: bool,
 }
 
 impl FakeTokenRepository {
@@ -107,6 +111,15 @@ impl FakeTokenRepository {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A repository whose every resolution answers [`TokenRejection::Unavailable`].
+    #[must_use]
+    pub fn failing() -> Self {
+        Self {
+            failing: true,
+            ..Self::default()
+        }
     }
 
     /// Makes `raw` resolve to `identity`.
@@ -140,6 +153,9 @@ impl FakeTokenRepository {
 impl TokenRepository for FakeTokenRepository {
     async fn resolve(&self, credential: &Credential) -> Result<TokenIdentity, TokenRejection> {
         self.calls.fetch_add(1, Ordering::AcqRel);
+        if self.failing {
+            return Err(TokenRejection::Unavailable);
+        }
         if credential.is_blank() {
             return Err(TokenRejection::Missing);
         }

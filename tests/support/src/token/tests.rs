@@ -86,3 +86,13 @@ fn the_repository_answers_from_its_table_and_counts_its_calls() {
     assert_eq!(resolve("  "), Err(TokenRejection::Missing));
     assert_eq!(repository.calls(), 4);
 }
+
+#[test]
+fn a_failing_repository_answers_unavailable_even_for_a_registered_credential() {
+    let repository = FakeTokenRepository::failing().accepting("valid", identity());
+    let resolve = |raw: &str| block_on(repository.resolve(&Credential::new(raw.to_owned())));
+
+    assert_eq!(resolve("valid"), Err(TokenRejection::Unavailable));
+    assert_eq!(resolve("  "), Err(TokenRejection::Unavailable));
+    assert_eq!(repository.calls(), 2);
+}

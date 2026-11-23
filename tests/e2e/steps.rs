@@ -8,5 +8,6 @@ mod iam;
 mod iam_graphql_activation;
 mod iam_graphql_specs;
 mod iam_openapi_specs;
+mod iam_rest_activation;
 mod iam_roles;
 mod iam_user_roles;
