@@ -162,6 +162,164 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /api/graphql-permissions:
+    get:
+      tags:
+      - iam
+      summary: Retrieves the collection of GraphQL permissions.
+      description: 'Returns one page of the catalogue in a stable order, with the `nextCursor` of the next page. Filters: `service`, `type`, `active`, `sensitive` and `keyPrefix`. Each entry carries its key, service, type, field, flags, active state, the active versions that contain it and the roles that grant it by its exact key.'
+      operationId: api_graphql_permissions_get
+      parameters:
+      - name: limit
+        in: query
+        description: The largest number of entries of the page.
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 30
+          maximum: 100
+          minimum: 1
+      - name: after
+        in: query
+        description: The `nextCursor` of the previous page; absent for the first page.
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: service
+        in: query
+        description: Only entries of this service.
+        required: false
+        schema:
+          type: string
+          maxLength: 63
+        example: billing
+      - name: type
+        in: query
+        description: Only entries of this GraphQL type.
+        required: false
+        schema:
+          type: string
+          maxLength: 255
+        example: Query
+      - name: active
+        in: query
+        description: Only active (`true`) or only inactive (`false`) entries.
+        required: false
+        schema:
+          type: boolean
+      - name: sensitive
+        in: query
+        description: Only entries that are sensitive (`true`) or not (`false`).
+        required: false
+        schema:
+          type: boolean
+      - name: keyPrefix
+        in: query
+        description: Only entries whose key starts with this text.
+        required: false
+        schema:
+          type: string
+          maxLength: 512
+        example: gql:billing:Query.
+      responses:
+        '200':
+          description: One page of entries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphQlPermissionPage'
+        '400':
+          description: Invalid query parameter.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+  /api/graphql-permissions/{id}:
+    get:
+      tags:
+      - iam
+      summary: Retrieves a GraphQL permission.
+      description: 'Returns the entry with the identifier: its key, service, type, field, flags, active state, the active versions that contain it and the roles that grant it by its exact key.'
+      operationId: api_graphql_permissions_id_get
+      parameters:
+      - name: id
+        in: path
+        description: Permission identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphQlPermission'
+        '400':
+          description: Invalid identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Permission not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
   /api/graphql-specs:
     get:
       tags:
@@ -875,6 +1033,113 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '422':
           description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+  /api/openapi-specs/{id}/permissions:
+    post:
+      tags:
+      - iam
+      summary: Activates an OpenAPI specification.
+      description: 'Makes the draft version active and its operations grantable permissions: the catalogue of the service becomes the union of its active versions, the next policy version is taken and `iam.rest_permissions.created` is recorded with `createdKeys`, `renamed` and `flagChanges`. An activation that would remove the sensitive or always-audit flag from a key is refused with 409 unless `confirmFlagDowngrade` is `true`, and one that would orphan grants is refused with 409 unless `confirmOrphans` is `true`; the problem lists the keys or the grants. `renames` moves the grants of old keys to new keys before anything is orphaned. A version that is active already returns 200 and changes nothing. A repeated `Idempotency-Key` with the same body within 24 hours returns the original result.'
+      operationId: api_openapi_specs_id_permissions_post
+      parameters:
+      - name: id
+        in: path
+        description: Version identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: Idempotency-Key
+        in: header
+        description: Makes the activation safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRestPermissionsRequest'
+        required: true
+      responses:
+        '200':
+          description: The version was active already; nothing changed.
+          headers:
+            iam-policy-version:
+              schema:
+                type: string
+              description: The current policy version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestPermissionsActivation'
+        '201':
+          description: The version was activated.
+          headers:
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestPermissionsActivation'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Version not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: The version is retired, another change got there first, the activation would remove a flag (`/problems/flag-downgrade-confirmation-required`) or orphan grants (`/problems/orphan-confirmation-required`) without confirmation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: 'Validation failed: an invalid identifier, rename or idempotency key, or the idempotency key was used for another request.'
           content:
             application/problem+json:
               schema:
@@ -1981,6 +2246,29 @@ components:
             before anything is orphaned.
           maxItems: 1000
       additionalProperties: false
+    CreateRestPermissionsRequest:
+      type: object
+      description: Body of the operation that activates an `OpenAPI` specification version.
+      properties:
+        confirmFlagDowngrade:
+          type: boolean
+          description: |-
+            Accepts that keys lose the sensitive or the always-audit flag. Without it, an activation
+            that would remove a flag is refused with 409 and lists the keys.
+        confirmOrphans:
+          type: boolean
+          description: |-
+            Accepts that grants of keys that leave the catalogue become inactive. Without it, an
+            activation that would orphan grants is refused with 409 and lists them.
+        renames:
+          type: array
+          items:
+            $ref: '#/components/schemas/KeyRename'
+          description: |-
+            The operations that the version renames; the grants of each old key move to its new key
+            before anything is orphaned.
+          maxItems: 1000
+      additionalProperties: false
     CreateRoleRequest:
       type: object
       description: Body of the role-creation operation.
@@ -2074,6 +2362,75 @@ components:
           type: string
           description: The coordinate, `Type.field`.
           example: Mutation.pay
+    GraphQlPermission:
+      type: object
+      description: A GraphQL catalogue entry.
+      required:
+      - id
+      - key
+      - service
+      - type
+      - field
+      - flags
+      - active
+      - versions
+      - roles
+      properties:
+        active:
+          type: boolean
+          description: Whether some active version holds the key.
+        field:
+          type: string
+          description: The field of the key; `__introspection` for the introspection key.
+          example: invoices
+        flags:
+          $ref: '#/components/schemas/CoordinateFlags'
+          description: 'The flags of the entry: the most restrictive ones across the active versions.'
+        id:
+          type: string
+          format: uuid
+          description: The identifier of the entry.
+        key:
+          type: string
+          description: The permission key, `gql:{service}:{Type}.{field}` or `gql:{service}:__introspection`.
+          example: gql:billing:Query.invoices
+        roles:
+          type: array
+          items:
+            type: string
+          description: |-
+            The identifiers of the roles that grant the key by its exact key, in order. Wildcard
+            grants are not listed.
+        service:
+          type: string
+          description: The service of the key.
+          example: billing
+        type:
+          type: string
+          description: The GraphQL type of the key; `__introspection` for the introspection key.
+          example: Query
+        versions:
+          type: array
+          items:
+            type: string
+          description: The identifiers of the active versions that contain the key, in order.
+    GraphQlPermissionPage:
+      type: object
+      description: One page of GraphQL catalogue entries.
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/GraphQlPermission'
+          description: The entries of the page.
+        nextCursor:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The `after` value of the next page; absent on the last page.
     GraphQlPermissionsActivation:
       type: object
       description: The result of an activation.
@@ -2638,6 +2995,44 @@ components:
           items:
             type: string
           description: The identifiers of the roles that grant it, in order.
+    RestPermissionsActivation:
+      type: object
+      description: The result of an activation.
+      required:
+      - id
+      - service
+      - status
+      - createdKeys
+      - policyVersion
+      properties:
+        createdKeys:
+          type: array
+          items:
+            type: string
+          description: |-
+            The keys that the activation added to the catalogue, in key order; empty for a version
+            that was active already.
+          example:
+          - rest:billing:GET /invoices
+        id:
+          type: string
+          format: uuid
+          description: The identifier of the activated version.
+        policyVersion:
+          type: integer
+          format: int64
+          description: |-
+            The policy version that the activation produced; for a version that was active already,
+            the current policy version.
+          minimum: 0
+        service:
+          type: string
+          description: The service the document belongs to.
+          example: billing
+        status:
+          type: string
+          description: '`active`.'
+          example: active
     Role:
       type: object
       description: A role.
