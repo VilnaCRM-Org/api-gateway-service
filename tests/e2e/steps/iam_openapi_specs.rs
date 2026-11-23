@@ -2,7 +2,7 @@
 //! its database. The oversized-body and the created-then-found steps are shared with the GraphQL
 //! specification scenarios.
 
-use cucumber::then;
+use cucumber::{given, then};
 
 use crate::world::AppWorld;
 
@@ -12,4 +12,9 @@ const VERSIONS_OF_SERVICE: &str = "SELECT count(*) FROM iam_openapi_specs WHERE 
 #[then(expr = "the service {string} should have {int} OpenAPI specification version(s)")]
 async fn service_has_versions(world: &mut AppWorld, service: String, count: i64) {
     assert_eq!(world.count(VERSIONS_OF_SERVICE, &service).await, count);
+}
+
+#[given("the remembered OpenAPI specification is active")]
+async fn remembered_specification_is_active(world: &mut AppWorld) {
+    world.activate_remembered_openapi_spec().await;
 }

@@ -136,6 +136,23 @@ Content-Type: application/json
   "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe", "expectedVersion": 1, "name": "Accounting administrator" } }
 }
 
+### Delete a role over REST: 200 with the final ETag, the Iam-Policy-Version and the number of assignments it revoked; 428 without If-Match; 412 for a stale If-Match; 403 for a system role; 404 for an unknown or deleted role; 409 for a role with more than 1,000 assignments
+# Every assignment of the role is revoked in the same transaction. A replay with the same Idempotency-Key returns the original count.
+DELETE {{baseUrl}}/api/roles/01a1c6b5-cb86-7134-868a-7608036facfe
+Authorization: Bearer <caller token>
+If-Match: "1"
+Idempotency-Key: delete-billing-administrator
+
+### Delete a role over GraphQL: the id, the final version, the policy version and revokedAssignments; the error codes PRECONDITION_REQUIRED, PRECONDITION_FAILED, FORBIDDEN, NOT_FOUND and CONFLICT
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: DeleteRoleInput!) { deleteRole(input: $input) { id version policyVersion revokedAssignments } }",
+  "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe", "expectedVersion": 1 } }
+}
+
 ### List roles over REST: a page of 1 to 100 roles with the nextCursor of the next page, filtered by namePrefix (without regard to case) and kind (system or custom)
 GET {{baseUrl}}/api/roles?limit=30&namePrefix=bill&kind=custom
 Authorization: Bearer <caller token>
@@ -202,6 +219,28 @@ Authorization: Bearer <caller token>
 GET {{baseUrl}}/api/graphql-specs/01a1c6b5-cb86-7134-868a-7608036facfd/diff
 Authorization: Bearer <caller token>
 
+### Activate a GraphQL specification over REST: the draft becomes active and its fields grantable permissions (201 with the created keys and the policy version); an active version returns 200 and changes nothing. 409 lists the keys that would lose a flag until confirmFlagDowngrade is true and the grants that would be orphaned until confirmOrphans is true; renames move the grants of an old key to its new key; a repeated Idempotency-Key with the same body returns the original result
+POST {{baseUrl}}/api/graphql-specs/01a1c6b5-cb86-7134-868a-7608036facfd/permissions
+Authorization: Bearer <caller token>
+Idempotency-Key: activate-billing-1
+Content-Type: application/json
+
+{
+  "confirmOrphans": false,
+  "confirmFlagDowngrade": false,
+  "renames": [{ "from": "gql:billing:Query.bills", "to": "gql:billing:Query.invoices" }]
+}
+
+### Activate a GraphQL specification over GraphQL: the same data as the REST operation; the error codes FLAG_DOWNGRADE_CONFIRMATION_REQUIRED, ORPHAN_CONFIRMATION_REQUIRED, CONFLICT, NOT_FOUND and VALIDATION_FAILED
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: CreateGraphqlPermissionsInput!) { createGraphqlPermissions(input: $input) { id service status createdKeys policyVersion } }",
+  "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facfd", "confirmOrphans": false, "confirmFlagDowngrade": false, "renames": [], "idempotencyKey": "activate-billing-1" } }
+}
+
 ### Read GraphQL specifications over GraphQL: the same data as the REST operations; graphqlSpec is null for an unknown version, and sdl and diff are read only when they are selected
 POST {{baseUrl}}/api/graphql
 Authorization: Bearer <caller token>
@@ -219,6 +258,38 @@ Content-Type: application/json
 
 {
   "query": "query ($id: ID!) { graphqlSpec(id: $id) { id service status coordinateCount sdl diff { removed removedGrants { coordinate roles } } } }",
+  "variables": { "id": "01a1c6b5-cb86-7134-868a-7608036facfd" }
+}
+
+### List OpenAPI specifications over REST: one page in a stable order with nextCursor; filters service and status; the document only with includeDocument=true; 422 for an invalid parameter
+GET {{baseUrl}}/api/openapi-specs?service=billing&status=draft&limit=10&includeDocument=false
+Authorization: Bearer <caller token>
+
+### Read an OpenAPI specification over REST: service, hash, status, uploader, timestamps and operation count; the document only with includeDocument=true; 404 for an unknown version
+GET {{baseUrl}}/api/openapi-specs/01a1c6b5-cb86-7134-868a-7608036facfd?includeDocument=true
+Authorization: Bearer <caller token>
+
+### Read the diff of an OpenAPI specification over REST: the added and removed operations, the removed operations that roles grant, the wildcard grants that gain operations and the flag downgrades such as a dropped x-iam-sensitive; 404 for an unknown version
+GET {{baseUrl}}/api/openapi-specs/01a1c6b5-cb86-7134-868a-7608036facfd/diff
+Authorization: Bearer <caller token>
+
+### Read OpenAPI specifications over GraphQL: the same data as the REST operations; openapiSpec is null for an unknown version, and document and diff are read only when they are selected
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($filter: OpenapiSpecFilter) { openapiSpecs(first: 10, filter: $filter) { items { id service contentHash status uploadedBy createdAt activatedAt retiredAt operationCount diff { added removed removedGrants { operation roles } wildcardGains { role pattern operations } flagDowngrades { operation before { sensitive auditAlways } after { sensitive auditAlways } } } } nextCursor } }",
+  "variables": { "filter": { "service": "billing", "status": "draft" } }
+}
+
+### Read one OpenAPI specification over GraphQL, with its document
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($id: ID!) { openapiSpec(id: $id) { id service status operationCount document diff { removed removedGrants { operation roles } } } }",
   "variables": { "id": "01a1c6b5-cb86-7134-868a-7608036facfd" }
 }
 

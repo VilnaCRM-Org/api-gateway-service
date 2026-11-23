@@ -381,7 +381,7 @@ pub struct GetGraphQlSpecParams {
 }
 
 /// The status that the text names.
-fn parse_status(text: &str) -> Result<SpecStatus, Violation> {
+pub(crate) fn parse_status(text: &str) -> Result<SpecStatus, Violation> {
     SpecStatus::parse(text).ok_or_else(|| Violation {
         property_path: "status".to_owned(),
         message: "This value must be draft, active or retired.".to_owned(),
@@ -390,7 +390,7 @@ fn parse_status(text: &str) -> Result<SpecStatus, Violation> {
 }
 
 /// The violation of `property_path` that `error` describes.
-fn violation_of(property_path: &str, error: InvalidIamValue) -> Violation {
+pub(crate) fn violation_of(property_path: &str, error: InvalidIamValue) -> Violation {
     Violation {
         property_path: property_path.to_owned(),
         message: error.to_string(),

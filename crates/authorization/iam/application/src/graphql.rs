@@ -8,8 +8,10 @@
 //! transports apply one set of rules; every failure becomes a problem first and a GraphQL error
 //! second.
 
+pub mod graphql_activation;
 pub mod graphql_spec;
 pub mod openapi_spec;
+pub mod role_deletion;
 pub mod schema_parser;
 pub mod user_role;
 
@@ -22,7 +24,7 @@ use shared_application::http::{Problem, Violation};
 use validator::Validate as _;
 
 use crate::command::update_role::DescriptionUpdate;
-use crate::error::IamError;
+use crate::error::{IamError, TYPE_FLAG_DOWNGRADE_CONFIRMATION, TYPE_ORPHAN_CONFIRMATION};
 use crate::http::IamState;
 use crate::http::dto::{
     CreateRoleRequest, DEFAULT_PAGE_SIZE, DescriptionPatch, ListRolesParams, RolePageResponse,
@@ -33,11 +35,19 @@ use crate::http::handler::resolve_credential;
 use crate::http::role::{create_role, find_role, list_roles, parse_role_id, update_role};
 use crate::principal::Principal;
 
+use graphql_activation::{
+    CreateGraphQlPermissionsInput, GraphQlPermissionsActivationObject,
+    create_graphql_permissions_field,
+};
 use graphql_spec::{
     GraphQlSpecFilterInput, GraphQlSpecObject, GraphQlSpecPageObject, LoadGraphQlSpecInput,
     graphql_spec_field, graphql_specs_field, load_graphql_spec_field,
 };
-use openapi_spec::{LoadOpenApiSpecInput, OpenApiSpecObject, load_openapi_spec_field};
+use openapi_spec::{
+    LoadOpenApiSpecInput, OpenApiSpecFilterInput, OpenApiSpecObject, OpenApiSpecPageObject,
+    load_openapi_spec_field, openapi_spec_field, openapi_specs_field,
+};
+use role_deletion::{DeleteRoleInput, DeleteRolePayload, delete_role_field};
 use user_role::{
     AssignUserRoleInput, RevokeUserRoleInput, RevokeUserRolePayload, UpdateUserRoleInput,
     UserRoleFilterInput, UserRoleObject, UserRolePageObject, assign_user_role_field,
@@ -351,6 +361,28 @@ impl IamMutation {
             .map_err(iam_problem_to_graphql_error)
     }
 
+    /// Deletes a custom role when `expectedVersion` is the current version and revokes every assignment of it in the same transaction: the role and its assignments leave the active listings at once, the next policy version is committed, and `iam.role.deleted`, one `iam.user_role.revoked` per revoked assignment and the audit records are written. The payload reports the number of revoked assignments.
+    async fn delete_role(
+        &self,
+        ctx: &Context<'_>,
+        input: DeleteRoleInput,
+    ) -> async_graphql::Result<DeleteRolePayload> {
+        delete_role_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Activates a draft GraphQL specification version and makes its fields grantable permissions: the catalogue of the service becomes the union of its active versions, the next policy version is taken and `iam.graphql_permissions.created` is recorded. An activation that would remove the sensitive or always-audit flag from a key fails with `FLAG_DOWNGRADE_CONFIRMATION_REQUIRED` unless `confirmFlagDowngrade` is true, and one that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED` unless `confirmOrphans` is true. A version that is active already is a no-op.
+    async fn create_graphql_permissions(
+        &self,
+        ctx: &Context<'_>,
+        input: CreateGraphQlPermissionsInput,
+    ) -> async_graphql::Result<GraphQlPermissionsActivationObject> {
+        create_graphql_permissions_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
     /// Loads the SDL of a service as a draft version and returns it with its diff against the active versions; an SDL that the service already holds returns its version and changes nothing. The service `iam` is reserved.
     async fn load_graphql_spec(
         &self,
@@ -456,6 +488,33 @@ impl IamQuery {
             .map_err(iam_problem_to_graphql_error)
     }
 
+    /// Retrieves an `OpenAPI` specification version by id; null when it is unknown. The fields `document` and `diff` are read only when the query selects them.
+    async fn openapi_spec(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> async_graphql::Result<Option<OpenApiSpecObject>> {
+        openapi_spec_field(ctx, &id)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves one page of `OpenAPI` specification versions in a stable order, filtered by service and status.
+    #[graphql(complexity = "page_complexity(first, child_complexity)")]
+    async fn openapi_specs(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 30, desc = "Page size, from 1 to 100.")] first: Option<i32>,
+        #[graphql(desc = "The nextCursor of the previous page.")] after: Option<String>,
+        #[graphql(desc = "Only versions that match the filter.")] filter: Option<
+            OpenApiSpecFilterInput,
+        >,
+    ) -> async_graphql::Result<OpenApiSpecPageObject> {
+        openapi_specs_field(ctx, first, after, filter.unwrap_or_default())
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
     /// Resolves a User service token into its subject, or says why it is refused.
     async fn resolve_token(
         &self,
@@ -484,11 +543,21 @@ fn page_complexity(first: Option<i32>, child_complexity: usize) -> usize {
 /// `INTERNAL_SERVER_ERROR` without detail, as the shared `problem_to_error` builds them.
 #[must_use]
 pub fn iam_problem_to_graphql_error(problem: Problem) -> Error {
-    let Some(code) = client_code(problem.status) else {
+    let Some(code) = confirmation_code(problem.r#type).or_else(|| client_code(problem.status))
+    else {
         return problem_to_error(problem);
     };
     let message = problem.detail.unwrap_or_else(|| problem.title.to_owned());
     Error::new(message).extend_with(|_error, extensions| extensions.set("code", code))
+}
+
+/// The GraphQL code of the 409 problem that asks for a confirmation; none for any other type.
+fn confirmation_code(problem_type: &str) -> Option<&'static str> {
+    match problem_type {
+        TYPE_FLAG_DOWNGRADE_CONFIRMATION => Some("FLAG_DOWNGRADE_CONFIRMATION_REQUIRED"),
+        TYPE_ORPHAN_CONFIRMATION => Some("ORPHAN_CONFIRMATION_REQUIRED"),
+        _ => None,
+    }
 }
 
 /// The GraphQL code of an IAM client error status; none for 422 and the server errors that the

@@ -16,18 +16,24 @@ use iam_application::graphql::AsyncGraphQlSchemaParser;
 use iam_application::http::IamState;
 use iam_application::http::JsonOpenApiDocumentParser;
 use iam_application::{
+    ActivationReads, CreateGraphQlPermissionsCommandHandler,
+    GetGraphQlPermissionsCreatedQueryHandler,
+};
+use iam_application::{
     AssignUserRoleCommandHandler, GetUserRoleQueryHandler, ListUserRolesQueryHandler,
     RevokeUserRoleCommandHandler, UpdateUserRoleCommandHandler,
 };
 use iam_application::{
-    CreateRoleCommandHandler, GetRoleQueryHandler, ListRolesQueryHandler, UpdateRoleCommandHandler,
+    CreateRoleCommandHandler, DeleteRoleCommandHandler, GetRoleQueryHandler, ListRolesQueryHandler,
+    UpdateRoleCommandHandler,
 };
 use iam_application::{
     FindGraphQlSpecQueryHandler, GetGraphQlSpecDiffQueryHandler, GetGraphQlSpecQueryHandler,
     GetGraphQlSpecsQueryHandler, LoadGraphQlSpecCommandHandler,
 };
 use iam_application::{
-    FindOpenApiSpecQueryHandler, GetOpenApiSpecDiffQueryHandler, LoadOpenApiSpecCommandHandler,
+    FindOpenApiSpecQueryHandler, GetOpenApiSpecDiffQueryHandler, GetOpenApiSpecQueryHandler,
+    GetOpenApiSpecsQueryHandler, LoadOpenApiSpecCommandHandler,
 };
 use iam_application::{
     GetChangeReceiptQueryHandler, GetIdempotentReplayQueryHandler, GetPolicyEpochQueryHandler,
@@ -283,7 +289,14 @@ fn register_role_commands(
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
-    Ok(bus.register(create)?.register(update)?)
+    let delete = DeleteRoleCommandHandler::new(
+        Arc::clone(&adapters.roles),
+        Arc::clone(&adapters.user_roles),
+        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    Ok(bus.register(create)?.register(update)?.register(delete)?)
 }
 
 /// Registers the query handlers of the IAM roles.
@@ -363,6 +376,36 @@ fn register_graphql_spec_queries(
         .register(list)?)
 }
 
+/// Registers the command handler that activates GraphQL specifications.
+fn register_graphql_activation_commands(
+    bus: InMemoryCommandBus,
+    adapters: &Adapters,
+) -> Result<InMemoryCommandBus, BootstrapError> {
+    let reads = ActivationReads {
+        specs: Arc::clone(&adapters.graphql_specs),
+        permissions: Arc::clone(&adapters.graphql_permissions),
+        roles: Arc::clone(&adapters.roles),
+        policy_epochs: Arc::clone(&adapters.policy_epochs),
+    };
+    let activate = CreateGraphQlPermissionsCommandHandler::new(
+        reads,
+        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    Ok(bus.register(activate)?)
+}
+
+/// Registers the query handler that reads the keys an activation of a GraphQL specification created.
+fn register_graphql_activation_queries(
+    bus: InMemoryQueryBus,
+    adapters: &Adapters,
+) -> Result<InMemoryQueryBus, BootstrapError> {
+    let created =
+        GetGraphQlPermissionsCreatedQueryHandler::new(Arc::clone(&adapters.graphql_permissions));
+    Ok(bus.register(created)?)
+}
+
 /// Registers the command handler that loads `OpenAPI` specifications.
 fn register_openapi_spec_commands(
     bus: InMemoryCommandBus,
@@ -379,7 +422,7 @@ fn register_openapi_spec_commands(
 }
 
 /// Registers the query handlers that read `OpenAPI` specifications: the lookup of an identical
-/// upload and the version with its diff.
+/// upload, the version with its diff, the version alone and the list of versions.
 fn register_openapi_spec_queries(
     bus: InMemoryQueryBus,
     adapters: &Adapters,
@@ -389,7 +432,13 @@ fn register_openapi_spec_queries(
         Arc::clone(&adapters.openapi_specs),
         Arc::clone(&adapters.roles),
     );
-    Ok(bus.register(find)?.register(diff)?)
+    let one = GetOpenApiSpecQueryHandler::new(Arc::clone(&adapters.openapi_specs));
+    let list = GetOpenApiSpecsQueryHandler::new(Arc::clone(&adapters.openapi_specs));
+    Ok(bus
+        .register(find)?
+        .register(diff)?
+        .register(one)?
+        .register(list)?)
 }
 
 /// Registers the command handlers of the IAM role assignments.
@@ -450,6 +499,7 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
     let commands = register_commands(InMemoryCommandBus::new(), create)?;
     let commands = register_role_commands(commands, adapters)?;
     let commands = register_graphql_spec_commands(commands, adapters)?;
+    let commands = register_graphql_activation_commands(commands, adapters)?;
     let commands = register_openapi_spec_commands(commands, adapters)?;
     let commands = register_user_role_commands(commands, adapters)?;
     let queries = InMemoryQueryBus::new();
@@ -458,6 +508,7 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
     let queries = register_change_queries(queries, receipts, keys, &adapters.clock)?;
     let queries = register_role_queries(queries, &adapters.roles)?;
     let queries = register_graphql_spec_queries(queries, adapters)?;
+    let queries = register_graphql_activation_queries(queries, adapters)?;
     let queries = register_openapi_spec_queries(queries, adapters)?;
     let queries = register_user_role_queries(queries, adapters)?;
     let queries = register_token_queries(queries, &adapters.tokens, config)?;

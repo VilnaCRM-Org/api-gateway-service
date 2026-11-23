@@ -5,13 +5,17 @@
 
 use iam_domain::{
     PermissionFlags, RemovedRestGrant, RestFlagDowngrade, RestOperationKey, RestSpecDiff,
-    RestWildcardGain,
+    RestWildcardGain, ServiceName, SpecId,
 };
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 use validator::Validate;
 
+use crate::error::IamError;
+use crate::http::dto::DEFAULT_PAGE_SIZE;
+use crate::http::graphql_spec::dto::{parse_status, violation_of};
 use crate::query::get_openapi_spec_diff::OpenApiSpecView;
+use crate::query::get_openapi_specs::{GetOpenApiSpecsQuery, OpenApiSpecPage, OpenApiSpecSummary};
 
 /// Body of the operation that loads an `OpenAPI` specification.
 #[derive(Clone, Deserialize, ToSchema, Validate)]
@@ -224,6 +228,167 @@ impl From<&OpenApiSpecView> for OpenApiSpecResponse {
             diff: RestSpecDiffResponse::from(&view.diff),
         }
     }
+}
+
+/// An `OpenAPI` specification version without its diff.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schema(as = OpenApiSpecSummary)]
+pub struct OpenApiSpecSummaryResponse {
+    /// The identifier of the version.
+    #[schema(format = Uuid)]
+    pub id: String,
+    /// The service the document belongs to.
+    #[schema(example = "billing")]
+    pub service: String,
+    /// The SHA-256 hash of the document, in lower-case hexadecimal.
+    #[schema(min_length = 64, max_length = 64)]
+    pub content_hash: String,
+    /// `draft`, `active` or `retired`.
+    #[schema(example = "draft")]
+    pub status: String,
+    /// Who loaded the version, as `user:<id>`, `service:<name>` or `system:<component>`.
+    pub uploaded_by: String,
+    /// When the version was loaded, as an RFC 3339 UTC time.
+    #[schema(format = DateTime, example = "2026-11-23T10:15:30.123456Z")]
+    pub created_at: String,
+    /// When the version became active.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(format = DateTime)]
+    pub activated_at: Option<String>,
+    /// When the version was retired.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(format = DateTime)]
+    pub retired_at: Option<String>,
+    /// The number of operations of the document.
+    #[schema(minimum = 0)]
+    pub operation_count: i64,
+    /// The `OpenAPI` document as JSON text; present only when the request asks for it with
+    /// `includeDocument`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub document: Option<String>,
+}
+
+impl From<OpenApiSpecSummary> for OpenApiSpecSummaryResponse {
+    fn from(summary: OpenApiSpecSummary) -> Self {
+        let spec = &summary.spec;
+        let time = |time| humantime::format_rfc3339_micros(time).to_string();
+        Self {
+            id: spec.id.to_string(),
+            service: spec.content.service.to_string(),
+            content_hash: spec.content.content_hash.to_string(),
+            status: spec.status.as_str().to_owned(),
+            uploaded_by: spec.uploaded_by.to_string(),
+            created_at: time(spec.created_at),
+            activated_at: spec.activated_at.map(time),
+            retired_at: spec.retired_at.map(time),
+            operation_count: i64::try_from(summary.operation_count).unwrap_or(i64::MAX),
+            document: summary.document,
+        }
+    }
+}
+
+/// One page of `OpenAPI` specification versions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schema(as = OpenApiSpecPage)]
+pub struct OpenApiSpecPageResponse {
+    /// The versions of the page.
+    pub items: Vec<OpenApiSpecSummaryResponse>,
+    /// The `after` value of the next page; absent on the last page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(format = Uuid)]
+    pub next_cursor: Option<String>,
+}
+
+impl From<OpenApiSpecPage> for OpenApiSpecPageResponse {
+    fn from(page: OpenApiSpecPage) -> Self {
+        Self {
+            items: page
+                .specs
+                .into_iter()
+                .map(OpenApiSpecSummaryResponse::from)
+                .collect(),
+            next_cursor: page.next_after.map(|id| id.to_string()),
+        }
+    }
+}
+
+/// Query parameters of the version list; `limit` is signed so that a negative value is a 422, not
+/// a parse error.
+#[derive(Debug, Clone, Deserialize, IntoParams, Validate)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
+pub struct ListOpenApiSpecsParams {
+    /// The largest number of versions of the page.
+    #[param(minimum = 1, maximum = 100, default = 30)]
+    #[validate(range(min = 1, max = 100, message = "This value must be between 1 and 100."))]
+    pub limit: i32,
+    /// The `nextCursor` of the previous page; absent for the first page.
+    #[param(format = Uuid)]
+    pub after: Option<String>,
+    /// Only versions of this service.
+    #[param(max_length = 63, example = "billing")]
+    #[validate(length(max = 63, message = "This value must contain 63 characters or fewer."))]
+    pub service: Option<String>,
+    /// Only versions in this status: `draft`, `active` or `retired`.
+    #[param(example = "active")]
+    pub status: Option<String>,
+    /// Whether each version carries its document; default `false`.
+    pub include_document: bool,
+}
+
+impl Default for ListOpenApiSpecsParams {
+    fn default() -> Self {
+        Self {
+            limit: DEFAULT_PAGE_SIZE,
+            after: None,
+            service: None,
+            status: None,
+            include_document: false,
+        }
+    }
+}
+
+impl ListOpenApiSpecsParams {
+    /// The query for these parameters; call it after validation, which makes `limit` positive.
+    ///
+    /// # Errors
+    ///
+    /// [`IamError::Invalid`] with a violation for each of `after`, `service` and `status` that
+    /// does not hold a UUID, a service name or a known status.
+    pub fn into_query(self) -> Result<GetOpenApiSpecsQuery, IamError> {
+        let after = self.after.as_deref().map(SpecId::parse).transpose();
+        let service = self.service.as_deref().map(ServiceName::new).transpose();
+        let status = self.status.as_deref().map(parse_status).transpose();
+        match (after, service, status) {
+            (Ok(after), Ok(service), Ok(status)) => Ok(GetOpenApiSpecsQuery {
+                limit: self.limit.unsigned_abs(),
+                after,
+                service,
+                status,
+                include_document: self.include_document,
+            }),
+            (after, service, status) => Err(IamError::Invalid(
+                after
+                    .err()
+                    .map(|error| violation_of("after", error))
+                    .into_iter()
+                    .chain(service.err().map(|error| violation_of("service", error)))
+                    .chain(status.err())
+                    .collect(),
+            )),
+        }
+    }
+}
+
+/// Query parameters of the read of one version.
+#[derive(Debug, Clone, Default, Deserialize, IntoParams, Validate)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
+pub struct GetOpenApiSpecParams {
+    /// Whether the version carries its document; default `false`.
+    pub include_document: bool,
 }
 
 #[cfg(test)]

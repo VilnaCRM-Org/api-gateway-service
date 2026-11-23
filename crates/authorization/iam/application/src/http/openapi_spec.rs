@@ -13,18 +13,24 @@ use axum::http::StatusCode;
 use axum::http::header::LOCATION;
 use axum::response::AppendHeaders;
 use iam_domain::{ChangeId, SpecId};
-use shared_application::http::{Problem, ValidatedJson};
+use shared_application::http::{ApiPath, Problem, ValidatedJson, ValidatedQuery};
 
 use super::IamState;
 use super::extract::CallerPrincipal;
+use super::graphql_spec::parse_spec_id;
 use super::response::WriteHeaders;
 use crate::command::load_graphql_spec::{content_hash_of, loadable_service};
 use crate::command::load_openapi_spec::LoadOpenApiSpecCommand;
 use crate::error::IamError;
 use crate::principal::Principal;
 use crate::query::find_openapi_spec::FindOpenApiSpecQuery;
+use crate::query::get_openapi_spec::GetOpenApiSpecQuery;
 use crate::query::get_openapi_spec_diff::{GetOpenApiSpecDiffQuery, OpenApiSpecView};
-use dto::{LoadOpenApiSpecRequest, OpenApiSpecResponse};
+use crate::query::get_openapi_specs::{OpenApiSpecPage, OpenApiSpecSummary};
+use dto::{
+    GetOpenApiSpecParams, ListOpenApiSpecsParams, LoadOpenApiSpecRequest, OpenApiSpecPageResponse,
+    OpenApiSpecResponse, OpenApiSpecSummaryResponse, RestSpecDiffResponse,
+};
 
 /// The path of the specification collection, under which a version has its `Location`.
 const OPENAPI_SPECS_PATH: &str = "/api/openapi-specs";
@@ -87,6 +93,51 @@ pub(crate) async fn load_openapi_spec(
     Ok(LoadedOpenApiSpec { view, created })
 }
 
+/// One page of versions for validated parameters.
+///
+/// # Errors
+///
+/// The 422 problem of an invalid cursor, service or status, the 500 problem of a storage failure.
+pub(crate) async fn list_openapi_specs(
+    state: &IamState,
+    params: ListOpenApiSpecsParams,
+) -> Result<OpenApiSpecPage, Problem> {
+    Ok(state.query_bus.ask(params.into_query()?).await?)
+}
+
+/// The version with the identifier, with its document when `include_document` is set; none when it
+/// is unknown.
+///
+/// # Errors
+///
+/// The 500 problem of a storage failure.
+pub(crate) async fn find_openapi_spec(
+    state: &IamState,
+    id: SpecId,
+    include_document: bool,
+) -> Result<Option<OpenApiSpecSummary>, Problem> {
+    Ok(state
+        .query_bus
+        .ask(GetOpenApiSpecQuery {
+            id,
+            include_document,
+        })
+        .await?)
+}
+
+/// The version with the identifier and its diff against the active versions of its service; none
+/// when it is unknown.
+///
+/// # Errors
+///
+/// The 500 problem of a storage failure.
+pub(crate) async fn find_openapi_spec_diff(
+    state: &IamState,
+    id: SpecId,
+) -> Result<Option<OpenApiSpecView>, Problem> {
+    Ok(state.query_bus.ask(GetOpenApiSpecDiffQuery { id }).await?)
+}
+
 /// Loads an `OpenAPI` specification.
 ///
 /// # Errors
@@ -146,6 +197,130 @@ pub async fn load(
     let location = format!("{OPENAPI_SPECS_PATH}/{}", response.id);
     let headers = AppendHeaders(vec![(LOCATION, location)]);
     Ok((status, headers, Json(response)))
+}
+
+/// Lists `OpenAPI` specification versions.
+///
+/// # Errors
+///
+/// A problem document: 401 without a valid token, 422 for invalid parameters.
+#[utoipa::path(
+    get,
+    path = "/openapi-specs",
+    operation_id = "api_openapi_specs_get",
+    tag = "iam",
+    summary = "Retrieves the collection of OpenAPI specifications.",
+    description = "Returns one page of versions in a stable order, with the `nextCursor` of the next page. Filters: `service` and `status`. Each version carries its service, hash, status, uploader, timestamps and operation count; the document only when `includeDocument` is `true`.",
+    security(("bearerAuth" = [])),
+    params(ListOpenApiSpecsParams),
+    responses(
+        (status = 200, description = "One page of versions.", body = OpenApiSpecPageResponse),
+        (status = 400, description = "Invalid query parameter.", body = Problem, content_type = "application/problem+json"),
+        (
+            status = 401,
+            description = "The caller presented no valid bearer token.",
+            body = Problem,
+            content_type = "application/problem+json",
+            headers(("www-authenticate" = String, description = "The `Bearer` challenge."))
+        ),
+        (status = 422, description = "Validation failed.", body = Problem, content_type = "application/problem+json"),
+        (status = "default", description = "Problem response.", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+pub async fn list(
+    State(state): State<IamState>,
+    CallerPrincipal(_caller): CallerPrincipal,
+    ValidatedQuery(params): ValidatedQuery<ListOpenApiSpecsParams>,
+) -> Result<Json<OpenApiSpecPageResponse>, Problem> {
+    Ok(Json(OpenApiSpecPageResponse::from(
+        list_openapi_specs(&state, params).await?,
+    )))
+}
+
+/// Reads an `OpenAPI` specification version.
+///
+/// # Errors
+///
+/// A problem document: 401 without a valid token, 404 for an unknown version, 422 for an id that
+/// is not a UUID.
+#[utoipa::path(
+    get,
+    path = "/openapi-specs/{id}",
+    operation_id = "api_openapi_specs_id_get",
+    tag = "iam",
+    summary = "Retrieves an OpenAPI specification.",
+    description = "Returns the version with the identifier: its service, hash, status, uploader, timestamps and operation count, and its document only when `includeDocument` is `true`.",
+    security(("bearerAuth" = [])),
+    params(
+        ("id" = String, Path, format = Uuid, description = "Version identifier"),
+        GetOpenApiSpecParams
+    ),
+    responses(
+        (status = 200, description = "The version.", body = OpenApiSpecSummaryResponse),
+        (status = 400, description = "Invalid identifier or query parameter.", body = Problem, content_type = "application/problem+json"),
+        (
+            status = 401,
+            description = "The caller presented no valid bearer token.",
+            body = Problem,
+            content_type = "application/problem+json",
+            headers(("www-authenticate" = String, description = "The `Bearer` challenge."))
+        ),
+        (status = 404, description = "Version not found.", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Validation failed.", body = Problem, content_type = "application/problem+json"),
+        (status = "default", description = "Problem response.", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+pub async fn get_one(
+    State(state): State<IamState>,
+    CallerPrincipal(_caller): CallerPrincipal,
+    ApiPath(id): ApiPath<String>,
+    ValidatedQuery(params): ValidatedQuery<GetOpenApiSpecParams>,
+) -> Result<Json<OpenApiSpecSummaryResponse>, Problem> {
+    let summary = find_openapi_spec(&state, parse_spec_id(&id)?, params.include_document)
+        .await?
+        .ok_or(IamError::NotFound)?;
+    Ok(Json(OpenApiSpecSummaryResponse::from(summary)))
+}
+
+/// Reads what an `OpenAPI` specification version changes.
+///
+/// # Errors
+///
+/// A problem document: 401 without a valid token, 404 for an unknown version, 422 for an id that
+/// is not a UUID.
+#[utoipa::path(
+    get,
+    path = "/openapi-specs/{id}/diff",
+    operation_id = "api_openapi_specs_id_diff_get",
+    tag = "iam",
+    summary = "Retrieves the diff of an OpenAPI specification.",
+    description = "Returns the operations the version adds and removes against the union of the active versions of its service, the removed operations that roles grant, the wildcard grants that would cover added operations and the operations that would lose a flag such as `x-iam-sensitive`.",
+    security(("bearerAuth" = [])),
+    params(("id" = String, Path, format = Uuid, description = "Version identifier")),
+    responses(
+        (status = 200, description = "The diff of the version.", body = RestSpecDiffResponse),
+        (status = 400, description = "Invalid identifier.", body = Problem, content_type = "application/problem+json"),
+        (
+            status = 401,
+            description = "The caller presented no valid bearer token.",
+            body = Problem,
+            content_type = "application/problem+json",
+            headers(("www-authenticate" = String, description = "The `Bearer` challenge."))
+        ),
+        (status = 404, description = "Version not found.", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Validation failed.", body = Problem, content_type = "application/problem+json"),
+        (status = "default", description = "Problem response.", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+pub async fn get_diff(
+    State(state): State<IamState>,
+    CallerPrincipal(_caller): CallerPrincipal,
+    ApiPath(id): ApiPath<String>,
+) -> Result<Json<RestSpecDiffResponse>, Problem> {
+    let view = find_openapi_spec_diff(&state, parse_spec_id(&id)?)
+        .await?
+        .ok_or(IamError::NotFound)?;
+    Ok(Json(RestSpecDiffResponse::from(&view.diff)))
 }
 
 #[cfg(test)]

@@ -12,6 +12,8 @@ pub mod error;
 mod fixtures;
 pub mod graphql;
 #[cfg(test)]
+mod graphql_activation_fixtures;
+#[cfg(test)]
 mod graphql_spec_fixtures;
 pub mod http;
 #[cfg(test)]
@@ -24,7 +26,11 @@ pub mod subscriber;
 mod user_role_fixtures;
 
 pub use command::assign_user_role::{AssignUserRoleCommand, AssignUserRoleCommandHandler};
+pub use command::create_graphql_permissions::{
+    ActivationReads, CreateGraphQlPermissionsCommand, CreateGraphQlPermissionsCommandHandler,
+};
 pub use command::create_role::{CreateRoleCommand, CreateRoleCommandHandler};
+pub use command::delete_role::{DeleteRoleCommand, DeleteRoleCommandHandler};
 pub use command::load_graphql_spec::{LoadGraphQlSpecCommand, LoadGraphQlSpecCommandHandler};
 pub use command::load_openapi_spec::{LoadOpenApiSpecCommand, LoadOpenApiSpecCommandHandler};
 pub use command::revoke_user_role::{RevokeUserRoleCommand, RevokeUserRoleCommandHandler};
@@ -35,6 +41,9 @@ pub use principal::Principal;
 pub use query::find_graphql_spec::{FindGraphQlSpecQuery, FindGraphQlSpecQueryHandler};
 pub use query::find_openapi_spec::{FindOpenApiSpecQuery, FindOpenApiSpecQueryHandler};
 pub use query::get_change_receipt::{GetChangeReceiptQuery, GetChangeReceiptQueryHandler};
+pub use query::get_graphql_permissions_created::{
+    GetGraphQlPermissionsCreatedQuery, GetGraphQlPermissionsCreatedQueryHandler,
+};
 pub use query::get_graphql_spec::{GetGraphQlSpecQuery, GetGraphQlSpecQueryHandler};
 pub use query::get_graphql_spec_diff::{
     GetGraphQlSpecDiffQuery, GetGraphQlSpecDiffQueryHandler, GraphQlSpecView,
@@ -43,8 +52,12 @@ pub use query::get_graphql_specs::{
     GetGraphQlSpecsQuery, GetGraphQlSpecsQueryHandler, GraphQlSpecPage, GraphQlSpecSummary,
 };
 pub use query::get_idempotent_replay::{GetIdempotentReplayQuery, GetIdempotentReplayQueryHandler};
+pub use query::get_openapi_spec::{GetOpenApiSpecQuery, GetOpenApiSpecQueryHandler};
 pub use query::get_openapi_spec_diff::{
     GetOpenApiSpecDiffQuery, GetOpenApiSpecDiffQueryHandler, OpenApiSpecView,
+};
+pub use query::get_openapi_specs::{
+    GetOpenApiSpecsQuery, GetOpenApiSpecsQueryHandler, OpenApiSpecPage, OpenApiSpecSummary,
 };
 pub use query::get_policy_epoch::{GetPolicyEpochQuery, GetPolicyEpochQueryHandler};
 pub use query::get_role::{GetRoleQuery, GetRoleQueryHandler};

@@ -3,17 +3,22 @@
 //! The resolver shares the use-case call and the response shapes of the REST handler, so both
 //! transports apply one set of rules.
 
-use async_graphql::{Context, ID, InputObject, SimpleObject};
+use async_graphql::{ComplexObject, Context, ID, InputObject, SimpleObject};
 use shared_application::http::Problem;
 use validator::Validate as _;
 
-use super::{require_caller, state};
+use super::{iam_problem_to_graphql_error, require_caller, state};
+use crate::error::IamError;
+use crate::http::dto::DEFAULT_PAGE_SIZE;
+use crate::http::graphql_spec::parse_spec_id;
 use crate::http::openapi_spec::dto::{
-    LoadOpenApiSpecRequest, OpenApiSpecResponse, OperationFlagDowngradeResponse,
-    OperationFlagsResponse, OperationWildcardGainResponse, RemovedOperationGrantResponse,
-    RestSpecDiffResponse,
+    ListOpenApiSpecsParams, LoadOpenApiSpecRequest, OpenApiSpecPageResponse, OpenApiSpecResponse,
+    OpenApiSpecSummaryResponse, OperationFlagDowngradeResponse, OperationFlagsResponse,
+    OperationWildcardGainResponse, RemovedOperationGrantResponse, RestSpecDiffResponse,
 };
-use crate::http::openapi_spec::load_openapi_spec;
+use crate::http::openapi_spec::{
+    find_openapi_spec, find_openapi_spec_diff, list_openapi_specs, load_openapi_spec,
+};
 
 /// Input of the mutation that loads an `OpenAPI` specification.
 #[derive(InputObject)]
@@ -31,6 +36,16 @@ impl std::fmt::Debug for LoadOpenApiSpecInput {
             .field("service", &self.service)
             .finish_non_exhaustive()
     }
+}
+
+/// Filters of the version list.
+#[derive(Debug, Default, InputObject)]
+#[graphql(name = "OpenapiSpecFilter")]
+pub struct OpenApiSpecFilterInput {
+    /// Only versions of this service.
+    pub service: Option<String>,
+    /// Only versions in this status: `draft`, `active` or `retired`.
+    pub status: Option<String>,
 }
 
 /// The two flags of an operation.
@@ -143,9 +158,9 @@ impl From<RestSpecDiffResponse> for RestSpecDiffObject {
     }
 }
 
-/// An `OpenAPI` specification version with its diff.
+/// An `OpenAPI` specification version.
 #[derive(Debug, Clone, PartialEq, Eq, SimpleObject)]
-#[graphql(name = "OpenApiSpec")]
+#[graphql(name = "OpenApiSpec", complex)]
 pub struct OpenApiSpecObject {
     /// The identifier of the version.
     pub id: ID,
@@ -165,8 +180,28 @@ pub struct OpenApiSpecObject {
     pub retired_at: Option<String>,
     /// The number of operations of the document.
     pub operation_count: i64,
-    /// What the version changes against the active versions of its service.
-    pub diff: RestSpecDiffObject,
+    /// The diff that the operation already computed, so that the field does not read it again.
+    #[graphql(skip)]
+    pub loaded_diff: Option<RestSpecDiffObject>,
+}
+
+#[ComplexObject]
+impl OpenApiSpecObject {
+    /// What the version changes against the union of the active versions of its service.
+    #[graphql(complexity = 100)]
+    async fn diff(&self, ctx: &Context<'_>) -> async_graphql::Result<RestSpecDiffObject> {
+        diff_field(ctx, &self.id, self.loaded_diff.as_ref())
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// The `OpenAPI` document as JSON text, read only when the query selects it.
+    #[graphql(complexity = 500)]
+    async fn document(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<String>> {
+        document_field(ctx, &self.id)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
 }
 
 impl From<OpenApiSpecResponse> for OpenApiSpecObject {
@@ -181,7 +216,47 @@ impl From<OpenApiSpecResponse> for OpenApiSpecObject {
             activated_at: spec.activated_at,
             retired_at: spec.retired_at,
             operation_count: spec.operation_count,
-            diff: RestSpecDiffObject::from(spec.diff),
+            loaded_diff: Some(RestSpecDiffObject::from(spec.diff)),
+        }
+    }
+}
+
+impl From<OpenApiSpecSummaryResponse> for OpenApiSpecObject {
+    fn from(spec: OpenApiSpecSummaryResponse) -> Self {
+        Self {
+            id: ID::from(spec.id),
+            service: spec.service,
+            content_hash: spec.content_hash,
+            status: spec.status,
+            uploaded_by: spec.uploaded_by,
+            created_at: spec.created_at,
+            activated_at: spec.activated_at,
+            retired_at: spec.retired_at,
+            operation_count: spec.operation_count,
+            loaded_diff: None,
+        }
+    }
+}
+
+/// One page of `OpenAPI` specification versions.
+#[derive(Debug, Clone, PartialEq, Eq, SimpleObject)]
+#[graphql(name = "OpenapiSpecPage")]
+pub struct OpenApiSpecPageObject {
+    /// The versions of the page.
+    pub items: Vec<OpenApiSpecObject>,
+    /// The `after` value of the next page; null on the last page.
+    pub next_cursor: Option<String>,
+}
+
+impl From<OpenApiSpecPageResponse> for OpenApiSpecPageObject {
+    fn from(page: OpenApiSpecPageResponse) -> Self {
+        Self {
+            items: page
+                .items
+                .into_iter()
+                .map(OpenApiSpecObject::from)
+                .collect(),
+            next_cursor: page.next_cursor,
         }
     }
 }
@@ -201,6 +276,63 @@ pub(super) async fn load_openapi_spec_field(
     let loaded = load_openapi_spec(state(ctx)?, caller, request).await?;
     Ok(OpenApiSpecObject::from(OpenApiSpecResponse::from(
         &loaded.view,
+    )))
+}
+
+/// The diff of a version: the one the operation already computed, or the one read now. The
+/// operations that return a version have authenticated the caller already.
+async fn diff_field(
+    ctx: &Context<'_>,
+    id: &ID,
+    loaded: Option<&RestSpecDiffObject>,
+) -> Result<RestSpecDiffObject, Problem> {
+    if let Some(diff) = loaded {
+        return Ok(diff.clone());
+    }
+    let view = find_openapi_spec_diff(state(ctx)?, parse_spec_id(id.as_str())?)
+        .await?
+        .ok_or(IamError::NotFound)?;
+    Ok(RestSpecDiffObject::from(RestSpecDiffResponse::from(
+        &view.diff,
+    )))
+}
+
+/// The document of a version; none when the version vanished. The operations that return a version
+/// have authenticated the caller already.
+async fn document_field(ctx: &Context<'_>, id: &ID) -> Result<Option<String>, Problem> {
+    let summary = find_openapi_spec(state(ctx)?, parse_spec_id(id.as_str())?, true).await?;
+    Ok(summary.and_then(|summary| summary.document))
+}
+
+/// Reads one version, without its document and its diff; none when it is unknown.
+pub(super) async fn openapi_spec_field(
+    ctx: &Context<'_>,
+    id: &ID,
+) -> Result<Option<OpenApiSpecObject>, Problem> {
+    require_caller(ctx)?;
+    let summary = find_openapi_spec(state(ctx)?, parse_spec_id(id.as_str())?, false).await?;
+    Ok(summary.map(|summary| OpenApiSpecObject::from(OpenApiSpecSummaryResponse::from(summary))))
+}
+
+/// Reads one page of versions.
+pub(super) async fn openapi_specs_field(
+    ctx: &Context<'_>,
+    first: Option<i32>,
+    after: Option<String>,
+    filter: OpenApiSpecFilterInput,
+) -> Result<OpenApiSpecPageObject, Problem> {
+    require_caller(ctx)?;
+    let params = ListOpenApiSpecsParams {
+        limit: first.unwrap_or(DEFAULT_PAGE_SIZE),
+        after,
+        service: filter.service,
+        status: filter.status,
+        include_document: false,
+    };
+    params.validate()?;
+    let page = list_openapi_specs(state(ctx)?, params).await?;
+    Ok(OpenApiSpecPageObject::from(OpenApiSpecPageResponse::from(
+        page,
     )))
 }
 

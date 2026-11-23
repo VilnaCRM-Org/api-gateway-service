@@ -6,16 +6,20 @@ use iam_domain::{
     RestOperationSet, RestSpecDiff, RestWildcardGain, RoleId, ServiceName, SpecId, SpecStatus,
     WildcardPattern,
 };
+use rstest::rstest;
 use serde_json::json;
 use shared_domain::Uuid;
 use validator::Validate as _;
 
 use super::{
-    LoadOpenApiSpecRequest, OpenApiSpecResponse, OperationFlagDowngradeResponse,
+    GetOpenApiSpecParams, ListOpenApiSpecsParams, LoadOpenApiSpecRequest, OpenApiSpecPageResponse,
+    OpenApiSpecResponse, OpenApiSpecSummaryResponse, OperationFlagDowngradeResponse,
     OperationFlagsResponse, OperationWildcardGainResponse, RemovedOperationGrantResponse,
     RestSpecDiffResponse,
 };
+use crate::error::IamError;
 use crate::query::get_openapi_spec_diff::OpenApiSpecView;
+use crate::query::get_openapi_specs::{GetOpenApiSpecsQuery, OpenApiSpecPage, OpenApiSpecSummary};
 
 const SPEC: &str = "0190f2a8-7b3c-7d4e-8f10-1234567890ad";
 const ROLE: &str = "0190f2a8-7b3c-7d4e-8f11-1234567890ad";
@@ -217,4 +221,207 @@ fn the_parts_of_a_diff_are_rendered_with_operation_texts() {
             },
         }
     );
+}
+
+fn summary(
+    status: SpecStatus,
+    activated: Option<SystemTime>,
+    document: Option<&str>,
+) -> OpenApiSpecSummary {
+    let view = view(status, activated);
+    OpenApiSpecSummary {
+        spec: view.spec,
+        operation_count: view.operation_count,
+        document: document.map(str::to_owned),
+    }
+}
+
+#[test]
+fn a_summary_response_carries_the_state_the_count_and_the_requested_document() {
+    let response = OpenApiSpecSummaryResponse::from(summary(
+        SpecStatus::Active,
+        Some(at(90_000)),
+        Some("{\"openapi\":\"3.1.0\"}"),
+    ));
+
+    assert_eq!(response.id, SPEC);
+    assert_eq!(response.service, "billing");
+    assert_eq!(response.content_hash, "ab".repeat(32));
+    assert_eq!(response.status, "active");
+    assert_eq!(response.uploaded_by, format!("user:{USER}"));
+    assert_eq!(response.created_at, "1970-01-02T00:00:00.000000Z");
+    assert_eq!(
+        response.activated_at.as_deref(),
+        Some("1970-01-02T01:00:00.000000Z")
+    );
+    assert_eq!(response.retired_at, None);
+    assert_eq!(response.operation_count, 1);
+    assert_eq!(
+        response.document.as_deref(),
+        Some("{\"openapi\":\"3.1.0\"}")
+    );
+}
+
+#[test]
+fn a_summary_response_leaves_out_what_a_draft_does_not_have() {
+    let body = serde_json::to_value(OpenApiSpecSummaryResponse::from(summary(
+        SpecStatus::Draft,
+        None,
+        None,
+    )))
+    .unwrap();
+
+    assert_eq!(body["status"], json!("draft"));
+    assert_eq!(body["operationCount"], json!(1));
+    assert!(body.get("activatedAt").is_none());
+    assert!(body.get("retiredAt").is_none());
+    assert!(body.get("document").is_none());
+}
+
+#[test]
+fn a_page_response_lists_its_items_and_names_the_cursor_of_the_next_page() {
+    let next = SpecId::parse(SPEC).unwrap();
+    let page = OpenApiSpecPageResponse::from(OpenApiSpecPage {
+        specs: vec![summary(SpecStatus::Draft, None, None)],
+        next_after: Some(next),
+    });
+    let last = OpenApiSpecPageResponse::from(OpenApiSpecPage {
+        specs: Vec::new(),
+        next_after: None,
+    });
+
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.next_cursor.as_deref(), Some(SPEC));
+    assert_eq!(last.items, Vec::new());
+    assert_eq!(last.next_cursor, None);
+    let body = serde_json::to_value(&last).unwrap();
+    assert!(body.get("nextCursor").is_none());
+}
+
+fn params() -> ListOpenApiSpecsParams {
+    ListOpenApiSpecsParams::default()
+}
+
+fn violations(error: IamError) -> Vec<(String, String)> {
+    let IamError::Invalid(violations) = error else {
+        panic!("a validation error expected: {error:?}");
+    };
+    violations
+        .into_iter()
+        .map(|violation| (violation.property_path, violation.code))
+        .collect()
+}
+
+#[test]
+fn the_list_parameters_default_to_the_first_page_of_thirty_without_the_document() {
+    let query = params().into_query().unwrap();
+
+    assert_eq!(
+        query,
+        GetOpenApiSpecsQuery {
+            limit: 30,
+            after: None,
+            service: None,
+            status: None,
+            include_document: false,
+        }
+    );
+}
+
+#[test]
+fn the_list_parameters_become_the_query_filters() {
+    let query = ListOpenApiSpecsParams {
+        limit: 5,
+        after: Some(SPEC.to_owned()),
+        service: Some("billing".to_owned()),
+        status: Some("retired".to_owned()),
+        include_document: true,
+    }
+    .into_query()
+    .unwrap();
+
+    assert_eq!(
+        query,
+        GetOpenApiSpecsQuery {
+            limit: 5,
+            after: Some(SpecId::parse(SPEC).unwrap()),
+            service: Some(billing()),
+            status: Some(SpecStatus::Retired),
+            include_document: true,
+        }
+    );
+}
+
+#[rstest]
+#[case::zero(0, false)]
+#[case::one(1, true)]
+#[case::hundred(100, true)]
+#[case::over(101, false)]
+#[case::negative(-1, false)]
+fn the_limit_is_between_one_and_one_hundred(#[case] limit: i32, #[case] valid: bool) {
+    let parameters = ListOpenApiSpecsParams { limit, ..params() };
+
+    assert_eq!(parameters.validate().is_ok(), valid);
+}
+
+#[test]
+fn the_service_filter_has_at_most_63_characters() {
+    let long = ListOpenApiSpecsParams {
+        service: Some("a".repeat(64)),
+        ..params()
+    };
+    let longest = ListOpenApiSpecsParams {
+        service: Some("a".repeat(63)),
+        ..params()
+    };
+
+    assert!(long.validate().is_err());
+    assert!(longest.validate().is_ok());
+}
+
+#[test]
+fn every_invalid_filter_is_a_violation_of_its_own_parameter() {
+    let error = ListOpenApiSpecsParams {
+        after: Some("not-a-uuid".to_owned()),
+        service: Some("Not A Service".to_owned()),
+        status: Some("pending".to_owned()),
+        ..params()
+    }
+    .into_query()
+    .unwrap_err();
+
+    assert_eq!(
+        violations(error),
+        [
+            ("after".to_owned(), "uuid".to_owned()),
+            ("service".to_owned(), "pattern".to_owned()),
+            ("status".to_owned(), "choice".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn a_single_invalid_status_is_one_violation() {
+    let error = ListOpenApiSpecsParams {
+        status: Some("pending".to_owned()),
+        ..params()
+    }
+    .into_query()
+    .unwrap_err();
+
+    assert_eq!(
+        violations(error),
+        [("status".to_owned(), "choice".to_owned())]
+    );
+}
+
+#[test]
+fn the_read_parameters_default_to_no_document_and_refuse_unknown_members() {
+    assert!(!GetOpenApiSpecParams::default().include_document);
+    assert!(GetOpenApiSpecParams::default().validate().is_ok());
+    let parsed = serde_json::from_value::<GetOpenApiSpecParams>(json!({"includeDocument": true}));
+    let unknown = serde_json::from_value::<GetOpenApiSpecParams>(json!({"document": true}));
+
+    assert!(parsed.unwrap().include_document);
+    assert!(unknown.is_err());
 }

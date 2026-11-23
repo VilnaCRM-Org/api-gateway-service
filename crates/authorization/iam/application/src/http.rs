@@ -3,6 +3,7 @@
 
 pub mod dto;
 pub mod extract;
+pub mod graphql_activation;
 pub mod graphql_spec;
 pub mod handler;
 pub mod openapi_document_parser;
@@ -47,7 +48,8 @@ where
     OpenApiRouter::new()
         .routes(routes!(handler::resolve))
         .routes(routes!(role::create, role::list))
-        .routes(routes!(role::get_one, role::update))
+        .routes(routes!(role::get_one, role::update, role::delete))
+        .routes(routes!(graphql_activation::create))
         .merge(user_role_router())
 }
 
@@ -80,7 +82,19 @@ where
         .routes(routes!(graphql_spec::load, graphql_spec::list))
         .routes(routes!(graphql_spec::get_one))
         .routes(routes!(graphql_spec::get_diff))
-        .routes(routes!(openapi_spec::load))
+        .merge(openapi_specification_router())
+}
+
+/// The routes of the `OpenAPI` specifications, merged into [`specification_router`].
+fn openapi_specification_router<S>() -> OpenApiRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+    IamState: FromRef<S>,
+{
+    OpenApiRouter::new()
+        .routes(routes!(openapi_spec::load, openapi_spec::list))
+        .routes(routes!(openapi_spec::get_one))
+        .routes(routes!(openapi_spec::get_diff))
 }
 
 #[cfg(test)]
