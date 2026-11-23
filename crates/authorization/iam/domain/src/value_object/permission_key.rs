@@ -105,6 +105,17 @@ impl PermissionKey {
         }
     }
 
+    /// The method and the path template of a REST key; none for a GraphQL or a reserved key.
+    #[must_use]
+    pub const fn rest_operation(&self) -> Option<(HttpMethod, &RestTemplate)> {
+        match self {
+            Self::Rest {
+                method, template, ..
+            } => Some((*method, template)),
+            Self::Gql { .. } | Self::Reserved(_) => None,
+        }
+    }
+
     /// The service segment; a reserved key belongs to the service `iam`.
     #[must_use]
     pub fn service(&self) -> &ServiceName {

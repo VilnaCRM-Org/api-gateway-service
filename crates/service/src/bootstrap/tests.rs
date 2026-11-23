@@ -38,14 +38,16 @@ use test_support::revocation::FakeRevocationRepository;
 use test_support::role::FakeRoleRepository;
 use test_support::security_audit::FakeSecurityAuditLog;
 use test_support::seed::TestRng;
+use test_support::startup_lock::FakeStartupLock;
 use test_support::token::FakeTokenRepository;
 use test_support::unit_of_work::FakeIamUnitOfWork;
 use test_support::user_role::FakeUserRoleRepository;
+use tokio::sync::watch;
 use tower::ServiceExt as _;
 
 use super::{
-    Adapters, BootstrapError, access_token_verifier, event_bus, register_change_queries,
-    register_commands, register_queries, router,
+    Adapters, BootstrapError, TaskMode, access_token_verifier, event_bus, register_change_queries,
+    register_commands, register_iam_specs, register_queries, router, start_tasks,
 };
 use crate::cli::ServeArgs;
 use crate::config::Config;
@@ -89,6 +91,7 @@ fn adapters() -> Adapters {
         policy_epochs: Arc::new(FakePolicyEpochRepository::new()),
         policy_reads: Arc::new(FakePolicyReadRepository::new()),
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
+        startup_lock: Arc::new(FakeStartupLock::new()),
         change_receipts: Arc::new(FakeChangeReceiptRepository::new()),
         idempotency_records: Arc::new(FakeIdempotencyRepository::new()),
         roles: Arc::new(FakeRoleRepository::new()),
@@ -662,5 +665,45 @@ async fn the_resolve_token_query_reaches_the_iam_state_of_the_assembled_schema()
     assert_eq!(
         anonymous.json()["errors"][0]["extensions"]["code"],
         "UNAUTHENTICATED"
+    );
+}
+
+#[tokio::test]
+async fn the_registration_holds_the_startup_lock_and_releases_it_when_it_ends() {
+    let lock = Arc::new(FakeStartupLock::new());
+    let mut adapters = adapters();
+    let port: Arc<FakeStartupLock> = Arc::clone(&lock);
+    adapters.startup_lock = port;
+
+    // The doubles share no state, so the activation of the loaded draft finds nothing: the
+    // outcome is the registration failure, and the lock must be released all the same.
+    let outcome = register_iam_specs(&adapters).await;
+
+    assert!(matches!(outcome, Err(BootstrapError::Registration(_))));
+    assert_eq!(lock.taken(), [iam_domain::OWN_SPECIFICATIONS_LOCK]);
+    assert_eq!(lock.held(), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn a_lock_that_cannot_be_taken_fails_the_registration_before_anything_is_written() {
+    let mut adapters = adapters();
+    adapters.startup_lock = Arc::new(FakeStartupLock::failing());
+
+    let outcome = register_iam_specs(&adapters).await;
+
+    assert!(matches!(outcome, Err(BootstrapError::Lock(_))));
+}
+
+#[tokio::test]
+async fn the_supervisor_starts_without_a_task_and_stops_at_once() {
+    let (stop, stopping) = watch::channel(false);
+
+    let supervisor = start_tasks(&adapters(), TaskMode::Test, stopping);
+
+    assert!(supervisor.is_empty());
+    stop.send_replace(true);
+    assert_eq!(
+        supervisor.stop(Duration::from_secs(1)).await,
+        super::TaskStop::Drained
     );
 }

@@ -13,7 +13,7 @@ Feature: IAM role assignments
     Then the response status code should be 201
     And the response header "location" should contain "/api/user-roles/"
     And the response header "etag" should contain '"1"'
-    And the response header "iam-policy-version" should contain "1"
+    And the response header "iam-policy-version" should contain "3"
     And the JSON pointer "/id" should be present
     And the JSON pointer "/subject/kind" should equal "user"
     And the JSON pointer "/subject/id" should equal "0190f2a8-7b3c-7d4e-8f10-1234567890ab"
@@ -24,7 +24,7 @@ Feature: IAM role assignments
     And the JSON pointer "/version" should equal the number 1
     And the JSON pointer "/createdAt" should be present
     And the JSON pointer "/updatedAt" should be present
-    And the IAM policy version should be 1
+    And the IAM policy version should be 3
     And the outbox should hold 1 "iam.user_role.assigned" event
     And the "iam.user_role.assigned" event should carry "userId" in its payload
     And the "iam.user_role.assigned" event should carry "subject" in its payload
@@ -48,7 +48,7 @@ Feature: IAM role assignments
     And the JSON pointer "/data/assignUserRole/expiresAt" should equal "2099-01-01T00:00:00.000000Z"
     And the JSON pointer "/data/assignUserRole/version" should equal the number 1
     And the JSON pointer "/data/assignUserRole/createdAt" should be present
-    And the IAM policy version should be 1
+    And the IAM policy version should be 3
     And the outbox should hold 1 "iam.user_role.assigned" event
     And the audit log should hold 1 committed "user_role.assign" record
 
@@ -145,7 +145,7 @@ Feature: IAM role assignments
       """
     Then the GraphQL error code should be "CONFLICT"
     And the store should hold 1 assignment of subject kind "user"
-    And the IAM policy version should be 1
+    And the IAM policy version should be 3
     And the outbox should hold 1 "iam.user_role.assigned" event
     And the audit log should hold 1 committed "user_role.assign" record
 
@@ -166,7 +166,7 @@ Feature: IAM role assignments
       """
     Then the response status code should be 201
     And the store should hold 3 assignments of subject kind "user"
-    And the IAM policy version should be 3
+    And the IAM policy version should be 5
 
   Scenario: A past expiry is a validation failure over REST and GraphQL
     Given a caller authenticated with a valid service token
@@ -185,7 +185,7 @@ Feature: IAM role assignments
     Then the GraphQL error code should be "VALIDATION_FAILED"
     And the response body should contain "expiresAt"
     And the store should hold 0 assignments of subject kind "user"
-    And the IAM policy version should be 0
+    And the IAM policy version should be 2
     And the outbox should hold 0 "iam.user_role.assigned" events
     And the audit log should hold 0 committed "user_role.assign" records
 
@@ -257,7 +257,7 @@ Feature: IAM role assignments
     Then the response status code should be 201
     And the last two responses should have the same body
     And the store should hold 1 assignment of subject kind "user"
-    And the IAM policy version should be 1
+    And the IAM policy version should be 3
     And the outbox should hold 1 "iam.user_role.assigned" event
     And the audit log should hold 1 committed "user_role.assign" record
 
@@ -428,7 +428,7 @@ Feature: IAM role assignments
       """
     Then the response status code should be 200
     And the response header "etag" should contain '"2"'
-    And the response header "iam-policy-version" should contain "2"
+    And the response header "iam-policy-version" should contain "4"
     And the JSON pointer "/expiresAt" should equal "2099-01-01T00:00:00.000000Z"
     And the JSON pointer "/version" should equal the number 2
     Given the If-Match header is the ETag of the last response
@@ -447,7 +447,7 @@ Feature: IAM role assignments
     Then the response status code should be 200
     And the JSON pointer "/expiresAt" should be absent
     And the JSON pointer "/version" should equal the number 4
-    And the IAM policy version should be 4
+    And the IAM policy version should be 6
     And the outbox should hold 3 "iam.user_role.updated" events
     And the audit log should hold 3 committed "user_role.update" records
     When GET request is sent to "/api/user-roles/{id}"
@@ -476,7 +476,7 @@ Feature: IAM role assignments
     Then the GraphQL response should have no errors
     And the JSON pointer "/data/updateUserRole/expiresAt" should be null
     And the JSON pointer "/data/updateUserRole/version" should equal the number 3
-    And the IAM policy version should be 3
+    And the IAM policy version should be 5
     And the outbox should hold 2 "iam.user_role.updated" events
     And the audit log should hold 2 committed "user_role.update" records
 
@@ -500,7 +500,7 @@ Feature: IAM role assignments
       """
     Then the GraphQL error code should be "VALIDATION_FAILED"
     And the outbox should hold 0 "iam.user_role.updated" events
-    And the IAM policy version should be 1
+    And the IAM policy version should be 3
 
   Scenario: An update without a version or with a stale version is refused over REST and GraphQL
     Given a caller authenticated with a valid service token
@@ -544,8 +544,8 @@ Feature: IAM role assignments
     Given the If-Match header is the ETag of the last response
     When DELETE request is sent to "/api/user-roles/{id}"
     Then the response status code should be 204
-    And the response header "iam-policy-version" should contain "2"
-    And the IAM policy version should be 2
+    And the response header "iam-policy-version" should contain "4"
+    And the IAM policy version should be 4
     And the store should hold 0 assignments of subject kind "user"
     And the outbox should hold 1 "iam.user_role.revoked" event
     And the "iam.user_role.revoked" event should carry "Billing administrator" in its payload
@@ -571,8 +571,8 @@ Feature: IAM role assignments
     Then the GraphQL response should have no errors
     And the JSON pointer "/data/revokeUserRole/id" should be present
     And the JSON pointer "/data/revokeUserRole/version" should equal the number 2
-    And the JSON pointer "/data/revokeUserRole/policyVersion" should equal the number 2
-    And the IAM policy version should be 2
+    And the JSON pointer "/data/revokeUserRole/policyVersion" should equal the number 4
+    And the IAM policy version should be 4
     And the store should hold 0 assignments of subject kind "user"
     And the outbox should hold 1 "iam.user_role.revoked" event
     And the audit log should hold 1 committed "user_role.revoke" record
@@ -611,7 +611,7 @@ Feature: IAM role assignments
       """
     Then the GraphQL error code should be "PRECONDITION_FAILED"
     And the outbox should hold 0 "iam.user_role.revoked" events
-    And the IAM policy version should be 1
+    And the IAM policy version should be 3
     Given the If-Match header '"1"'
     When DELETE request is sent to "/api/user-roles/{id}"
     Then the response status code should be 204
@@ -638,10 +638,10 @@ Feature: IAM role assignments
     Then the response status code should be 204
     When DELETE request is sent to "/api/user-roles/{id}"
     Then the response status code should be 204
-    And the response header "iam-policy-version" should contain "2"
+    And the response header "iam-policy-version" should contain "4"
     And the outbox should hold 1 "iam.user_role.revoked" event
     And the audit log should hold 1 committed "user_role.revoke" record
-    And the IAM policy version should be 2
+    And the IAM policy version should be 4
 
   Scenario: Updating and revoking an assignment need a valid bearer token
     When PATCH request is sent to "/api/user-roles/0190f2a8-7b3c-7d4e-8f10-1234567890ab" with body:

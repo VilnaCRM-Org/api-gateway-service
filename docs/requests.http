@@ -153,6 +153,31 @@ Content-Type: application/json
   "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe", "expectedVersion": 1 } }
 }
 
+### Read the permissions of a role over REST: every grant in key order with its key, kind (rest, gql or reserved), service, active flag and wildcard flag, and the ETag of the role; 404 for an unknown role, 422 for an id that is not a UUID
+GET {{baseUrl}}/api/roles/01a1c6b5-cb86-7134-868a-7608036facfe/permissions
+Authorization: Bearer <caller token>
+
+### Replace the permissions of a role over REST: keys of an active catalogue and the four wildcard forms of a service that has a catalogue, at most 5000; If-Match is required (428 without it, 412 when stale); unknown keys are 422 with one violation per key; the change takes the next policy version and records iam.role_permissions.changed; an added wildcard is audited with coversFutureElements=true
+PUT {{baseUrl}}/api/roles/01a1c6b5-cb86-7134-868a-7608036facfe/permissions
+Authorization: Bearer <caller token>
+If-Match: "1"
+Idempotency-Key: set-billing-permissions
+Content-Type: application/json
+
+{
+  "keys": ["rest:billing:GET /invoices", "gql:billing:Query.invoices", "gql:billing:*"]
+}
+
+### Read and replace the permissions of a role over GraphQL: Role.permissions lists the grants and setRolePermissions returns the changed role; the error codes PRECONDITION_REQUIRED, PRECONDITION_FAILED, NOT_FOUND and VALIDATION_FAILED
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: SetRolePermissionsInput!) { setRolePermissions(input: $input) { id version grantCount permissions { key kind service active wildcard } } }",
+  "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe", "expectedVersion": 1, "keys": ["rest:billing:GET /invoices", "gql:billing:*"], "idempotencyKey": "set-billing-permissions-gql" } }
+}
+
 ### List roles over REST: a page of 1 to 100 roles with the nextCursor of the next page, filtered by namePrefix (without regard to case) and kind (system or custom)
 GET {{baseUrl}}/api/roles?limit=30&namePrefix=bill&kind=custom
 Authorization: Bearer <caller token>
@@ -321,6 +346,34 @@ Content-Type: application/json
 {
   "query": "mutation ($input: CreateRestPermissionsInput!) { createRestPermissions(input: $input) { id service status createdKeys policyVersion } }",
   "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facfd", "confirmOrphans": false, "confirmFlagDowngrade": false, "renames": [], "idempotencyKey": "activate-billing-operations-1" } }
+}
+
+### List REST permissions over REST: one page of the catalogue in a stable order with nextCursor; filters service, method, active, sensitive and templatePrefix (the normalised template, parameters written {}); each entry shows its key, service, method, template, flags, active state, the active versions that contain it and the roles that grant it by its exact key; 422 for an invalid parameter
+GET {{baseUrl}}/api/rest-permissions?service=billing&method=POST&active=true&sensitive=true&templatePrefix=/invoices&limit=10
+Authorization: Bearer <caller token>
+
+### Read a REST permission over REST: the same entry as a list item; 404 for an unknown permission, 422 for an identifier that is not a UUID
+GET {{baseUrl}}/api/rest-permissions/01a1c6b5-cb86-7134-868a-7608036facfe
+Authorization: Bearer <caller token>
+
+### List REST permissions over GraphQL: the same data as the REST operation; pass the nextCursor as after for the next page
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($first: Int, $after: String, $filter: RestPermissionFilter) { restPermissions(first: $first, after: $after, filter: $filter) { items { id key service method template flags { sensitive auditAlways } active versions roles } nextCursor } }",
+  "variables": { "first": 10, "filter": { "service": "billing", "method": "POST", "active": true, "sensitive": true, "templatePrefix": "/invoices" } }
+}
+
+### Read one REST permission over GraphQL: restPermission is null for an unknown permission
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($id: ID!) { restPermission(id: $id) { id key service method template flags { sensitive auditAlways } active versions roles } }",
+  "variables": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe" }
 }
 
 ### Read OpenAPI specifications over GraphQL: the same data as the REST operations; openapiSpec is null for an unknown version, and document and diff are read only when they are selected

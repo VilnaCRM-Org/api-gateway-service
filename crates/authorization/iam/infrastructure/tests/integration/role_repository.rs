@@ -7,7 +7,7 @@ use std::time::{Duration, SystemTime};
 
 use iam_domain::{
     ActorRef, EntityVersion, IamUnitOfWork as _, PermissionGrant, PermissionGrantSet,
-    RepositoryError, Role, RoleId, RoleKind, RolePageQuery, RoleParts, RolePatch,
+    RepositoryError, Role, RoleGrant, RoleId, RoleKind, RolePageQuery, RoleParts, RolePatch,
     RoleRepository as _, RoleStamp, RoleStatement,
 };
 use iam_infrastructure::{PgIamUnitOfWork, PgRoleRepository};
@@ -413,6 +413,96 @@ async fn pages_of_every_size_list_each_matching_role_exactly_once_in_a_stable_or
             "pages of {limit} repeat a role"
         );
     }
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn the_grants_of_a_role_are_listed_with_their_active_flag_in_key_order(pool: PgPool) {
+    let mut rng = TestRng::from_env();
+    let writer = role_writer(&mut rng);
+    let mut created = role(&mut rng, "Billing", RoleKind::Custom);
+    created
+        .replace_permissions(
+            Some(version(1)),
+            grants(&[
+                "rest:core:GET /users",
+                "gql:billing:*",
+                "gql:billing:Query.old",
+            ]),
+            stamp(&writer, &created),
+        )
+        .unwrap();
+    save(
+        &pool,
+        &mut rng,
+        vec![RoleStatement::insert(&created, writer)],
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE iam_role_permissions SET active = FALSE WHERE permission_key = $1")
+        .bind("gql:billing:Query.old")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let found = PgRoleRepository::new(pool)
+        .find_grants(created.parts().id)
+        .await
+        .unwrap();
+
+    let listed: Vec<(String, bool)> = found
+        .iter()
+        .map(|grant| (grant.grant.to_string(), grant.active))
+        .collect();
+    assert_eq!(
+        listed,
+        vec![
+            ("gql:billing:*".to_owned(), true),
+            ("gql:billing:Query.old".to_owned(), false),
+            ("rest:core:GET /users".to_owned(), true),
+        ]
+    );
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn a_deleted_or_unknown_role_has_no_listed_grants(pool: PgPool) {
+    let mut rng = TestRng::from_env();
+    let writer = role_writer(&mut rng);
+    let mut deleted = role(&mut rng, "Gone", RoleKind::Custom);
+    deleted
+        .replace_permissions(
+            Some(version(1)),
+            grants(&["gql:billing:*"]),
+            stamp(&writer, &deleted),
+        )
+        .unwrap();
+    save(
+        &pool,
+        &mut rng,
+        vec![RoleStatement::insert(&deleted, writer.clone())],
+    )
+    .await
+    .unwrap();
+    let repository = PgRoleRepository::new(pool.clone());
+    let unknown = role(&mut rng, "Unknown", RoleKind::Custom);
+    deleted
+        .delete(Some(version(2)), 0, stamp(&writer, &deleted))
+        .unwrap();
+    save(
+        &pool,
+        &mut rng,
+        vec![RoleStatement::update(&deleted, version(2), writer)],
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        repository.find_grants(deleted.parts().id).await.unwrap(),
+        Vec::<RoleGrant>::new()
+    );
+    assert_eq!(
+        repository.find_grants(unknown.parts().id).await.unwrap(),
+        Vec::<RoleGrant>::new()
+    );
 }
 
 #[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]

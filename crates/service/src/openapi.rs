@@ -127,5 +127,69 @@ pub fn yaml() -> Result<String, ExportError> {
     document().to_yaml().map_err(ExportError::new)
 }
 
+/// The tag that every operation of the IAM context carries.
+pub const IAM_TAG: &str = "iam";
+
+/// The members of a path item that are operations.
+const OPERATION_MEMBERS: [&str; 8] = [
+    "get", "put", "post", "delete", "options", "head", "patch", "trace",
+];
+
+/// Whether the operation lists `tag`.
+fn has_tag(operation: &serde_json::Value, tag: &str) -> bool {
+    operation
+        .get("tags")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|tags| tags.iter().any(|candidate| candidate.as_str() == Some(tag)))
+}
+
+/// Removes the operations of the path item that do not carry `tag` and says whether one is left.
+fn retain_tagged(item: &mut serde_json::Value, tag: &str) -> bool {
+    let Some(members) = item.as_object_mut() else {
+        return false;
+    };
+    members.retain(|name, operation| {
+        !OPERATION_MEMBERS.contains(&name.as_str()) || has_tag(operation, tag)
+    });
+    OPERATION_MEMBERS
+        .iter()
+        .any(|name| members.contains_key(*name))
+}
+
+/// The document of the operations that carry `tag`, as JSON: every other operation and every path
+/// without one is removed.
+///
+/// # Errors
+///
+/// Returns [`ExportError`] when the document cannot be serialised.
+pub fn tagged_json(document: &utoipa::openapi::OpenApi, tag: &str) -> Result<String, ExportError> {
+    let mut value = serde_json::to_value(document).map_err(ExportError::new)?;
+    retain_tagged_paths(&mut value, tag);
+    serde_json::to_string(&value).map_err(ExportError::new)
+}
+
+/// Keeps the path items of the JSON document that still hold an operation tagged `tag`; a
+/// document without a `paths` object is left as it is.
+fn retain_tagged_paths(document: &mut serde_json::Value, tag: &str) {
+    if let Some(paths) = document
+        .get_mut("paths")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        paths.retain(|_path, item| retain_tagged(item, tag));
+    }
+}
+
+/// IAM's own `OpenAPI` document as JSON: the operations of [`document`] tagged [`IAM_TAG`].
+///
+/// IAM registers it as its own specification at startup. The same build always yields the same
+/// bytes, so the content hash identifies the build's contract.
+///
+/// # Errors
+///
+/// Returns [`ExportError`] when the document cannot be serialised.
+pub fn iam_document() -> Result<String, ExportError> {
+    tagged_json(&document(), IAM_TAG)
+}
+
 #[cfg(test)]
 mod tests;

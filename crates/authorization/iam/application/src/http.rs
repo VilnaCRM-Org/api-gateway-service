@@ -11,12 +11,14 @@ pub mod openapi_document_parser;
 pub mod openapi_spec;
 pub mod response;
 pub mod rest_activation;
+pub mod rest_permission;
 pub mod role;
+pub mod role_permission;
 pub mod user_role;
 
 use std::sync::Arc;
 
-use axum::extract::FromRef;
+use axum::extract::{DefaultBodyLimit, FromRef};
 use iam_domain::RequestDigester;
 use shared_domain::{Clock, CommandBus, QueryBus, UuidGenerator};
 use utoipa_axum::router::OpenApiRouter;
@@ -52,8 +54,10 @@ where
         .routes(routes!(role::create, role::list))
         .routes(routes!(role::get_one, role::update, role::delete))
         .merge(graphql_permission_router())
+        .merge(rest_permission_router())
         .merge(activation_router())
         .merge(user_role_router())
+        .merge(role_permission_router())
 }
 
 /// The routes that read the GraphQL permission catalogue, merged into [`router`].
@@ -67,6 +71,17 @@ where
         .routes(routes!(graphql_permission::get_one))
 }
 
+/// The routes that read the REST permission catalogue, merged into [`router`].
+fn rest_permission_router<S>() -> OpenApiRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+    IamState: FromRef<S>,
+{
+    OpenApiRouter::new()
+        .routes(routes!(rest_permission::list))
+        .routes(routes!(rest_permission::get_one))
+}
+
 /// The routes that activate specification versions, merged into [`router`].
 fn activation_router<S>() -> OpenApiRouter<S>
 where
@@ -76,6 +91,19 @@ where
     OpenApiRouter::new()
         .routes(routes!(graphql_activation::create))
         .routes(routes!(rest_activation::create))
+}
+
+/// The routes of the grants of a role, merged into [`router`].
+fn role_permission_router<S>() -> OpenApiRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+    IamState: FromRef<S>,
+{
+    OpenApiRouter::new()
+        .routes(routes!(role_permission::list, role_permission::replace))
+        .layer(DefaultBodyLimit::max(
+            role_permission::ROLE_PERMISSIONS_BODY_LIMIT_BYTES,
+        ))
 }
 
 /// The routes of the role assignments, merged into [`router`].

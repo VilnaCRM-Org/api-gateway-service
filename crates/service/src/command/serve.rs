@@ -11,7 +11,7 @@ use tokio::net::TcpListener;
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::watch;
 
-use crate::bootstrap::{self, Adapters};
+use crate::bootstrap::{self, Adapters, TaskMode, TaskStop, TaskSupervisor};
 use crate::config::{AppEnv, Config, ConfigErrors, ConfigProblem};
 use crate::telemetry;
 
@@ -100,30 +100,52 @@ async fn bind(config: &Config) -> std::io::Result<TcpListener> {
     TcpListener::bind((config.host, config.port)).await
 }
 
-/// Wires the application, binds, serves and drains. Nothing here contacts a dependency.
-async fn serve(config: &Config) -> Result<Shutdown, BoxError> {
-    let signals = Signals::install()?;
-    let adapters = Adapters::connect(config).await?;
-    let router = bootstrap::router(adapters, config)?;
-    let listener = bind(config).await?;
-    let addr = listener.local_addr()?;
-    log_listening(addr, mode(config.app_env));
-    let (stop, stopping) = watch::channel(false);
-    let server = axum::serve(listener, router).with_graceful_shutdown(stopped(stopping));
-    let server = tokio::spawn(async move { server.await });
-    log_signal(signals.received().await);
-    stop.send_replace(true);
-    match tokio::time::timeout(config.shutdown_grace_period, server).await {
-        Ok(joined) => {
+/// Waits for the server and for the per-replica tasks within the grace period; the stop flag is set.
+async fn drain(
+    server: tokio::task::JoinHandle<std::io::Result<()>>,
+    tasks: TaskSupervisor,
+    grace_period: Duration,
+) -> Result<Shutdown, BoxError> {
+    let (server_end, tasks_end) = tokio::join!(
+        tokio::time::timeout(grace_period, server),
+        tasks.stop(grace_period)
+    );
+    match (server_end, tasks_end) {
+        (Ok(joined), TaskStop::Drained) => {
             joined??;
             log_stopped();
             Ok(Shutdown::Drained)
         }
-        Err(_elapsed) => {
-            log_forced(config.shutdown_grace_period);
+        (Ok(joined), TaskStop::Aborted { .. }) => {
+            joined??;
+            log_forced(grace_period);
+            Ok(Shutdown::Forced)
+        }
+        (Err(_elapsed), _) => {
+            log_forced(grace_period);
             Ok(Shutdown::Forced)
         }
     }
+}
+
+/// Wires the application, registers IAM's own specifications, starts the per-replica tasks, binds,
+/// serves and drains. The registration is the first contact with the database; it fails the start
+/// when the database cannot be reached.
+async fn serve(config: &Config) -> Result<Shutdown, BoxError> {
+    let signals = Signals::install()?;
+    let adapters = Adapters::connect(config).await?;
+    bootstrap::register_iam_specs(&adapters).await?;
+    let (stop, stopping) = watch::channel(false);
+    let tasks = bootstrap::start_tasks(&adapters, TaskMode::Serve, stopping.clone());
+    let router = bootstrap::router(adapters, config)?;
+    let listener = bind(config).await?;
+    let addr = listener.local_addr()?;
+    log_listening(addr, mode(config.app_env));
+    let server = axum::serve(listener, router).with_graceful_shutdown(stopped(stopping));
+    let server = tokio::spawn(async move { server.await });
+    log_signal(signals.received().await);
+    stop.send_replace(true);
+    drain(server, tasks, config.shutdown_grace_period).await
 }
 
 fn start(config: &Config) -> Result<Shutdown, BoxError> {
@@ -165,3 +187,6 @@ pub fn reject(errors: &ConfigErrors) -> ExitCode {
     drop(report(errors));
     ExitCode::from(crate::command::REJECTED)
 }
+
+#[cfg(test)]
+mod tests;

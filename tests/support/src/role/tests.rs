@@ -2,8 +2,8 @@ use std::time::SystemTime;
 
 use iam_domain::{
     ChangeStatement, GrantRecord, GrantStatus, PermissionGrant, PermissionGrantSet, PermissionKey,
-    PermissionKeyKind, RepositoryError, RoleKind, RolePageQuery, RoleParts, RoleRepository as _,
-    RoleStatement, ServiceName,
+    PermissionKeyKind, RepositoryError, RoleGrant, RoleKind, RolePageQuery, RoleParts,
+    RoleRepository as _, RoleStatement, ServiceName,
 };
 
 use super::{FakeRoleRepository, role, role_change, role_writer};
@@ -215,6 +215,43 @@ fn a_failing_repository_cannot_list_catalogue_grants() {
     let found = block_on(
         FakeRoleRepository::failing().find_catalogue_grants(&service, PermissionKeyKind::Gql),
     );
+
+    assert!(matches!(found, Err(RepositoryError::Unavailable(_))));
+}
+
+#[test]
+fn the_grants_of_a_role_are_all_active_and_in_key_order() {
+    let mut rng = TestRng::from_seed(5);
+    let role = holding_grants(
+        &mut rng,
+        "Billing",
+        &["rest:billing:GET /invoices", "gql:billing:*"],
+    );
+    let repository = FakeRoleRepository::holding(vec![role.clone()]);
+
+    let found = block_on(repository.find_grants(role.id)).unwrap();
+
+    let keys: Vec<String> = found.iter().map(|grant| grant.grant.to_string()).collect();
+    assert_eq!(keys, ["gql:billing:*", "rest:billing:GET /invoices"]);
+    assert!(found.iter().all(|grant| grant.active));
+}
+
+#[test]
+fn an_unknown_role_has_no_grants() {
+    let mut rng = TestRng::from_seed(5);
+    let role = holding_grants(&mut rng, "Billing", &["gql:billing:*"]);
+
+    let found = block_on(FakeRoleRepository::new().find_grants(role.id)).unwrap();
+
+    assert_eq!(found, Vec::<RoleGrant>::new());
+}
+
+#[test]
+fn a_failing_repository_cannot_list_the_grants_of_a_role() {
+    let mut rng = TestRng::from_seed(5);
+    let role = holding_grants(&mut rng, "Billing", &["gql:billing:*"]);
+
+    let found = block_on(FakeRoleRepository::failing().find_grants(role.id));
 
     assert!(matches!(found, Err(RepositoryError::Unavailable(_))));
 }

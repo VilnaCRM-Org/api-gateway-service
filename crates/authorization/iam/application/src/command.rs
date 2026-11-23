@@ -10,6 +10,8 @@ pub mod create_role;
 pub mod delete_role;
 pub mod load_graphql_spec;
 pub mod load_openapi_spec;
+pub mod register_own_specs;
 pub mod revoke_user_role;
+pub mod set_role_permissions;
 pub mod update_role;
 pub mod update_user_role;

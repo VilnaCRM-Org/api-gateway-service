@@ -8,17 +8,21 @@
 //! transports apply one set of rules; every failure becomes a problem first and a GraphQL error
 //! second.
 
+pub mod document_analyzer;
 pub mod graphql_activation;
 pub mod graphql_permission;
 pub mod graphql_spec;
 pub mod openapi_spec;
 pub mod rest_activation;
+pub mod rest_permission;
 pub mod role_deletion;
+pub mod role_permission;
 pub mod schema_parser;
 pub mod user_role;
 
 use async_graphql::{
-    Context, Error, ErrorExtensions as _, ID, InputObject, MaybeUndefined, Object, SimpleObject,
+    ComplexObject, Context, Error, ErrorExtensions as _, ID, InputObject, MaybeUndefined, Object,
+    SimpleObject,
 };
 use iam_domain::{EntityVersion, IdempotencyKey};
 use shared_application::graphql::problem_to_error;
@@ -56,13 +60,22 @@ use openapi_spec::{
 use rest_activation::{
     CreateRestPermissionsInput, RestPermissionsActivationObject, create_rest_permissions_field,
 };
+use rest_permission::{
+    RestPermissionFilterInput, RestPermissionObject, RestPermissionPageObject,
+    rest_permission_field, rest_permissions_field,
+};
 use role_deletion::{DeleteRoleInput, DeleteRolePayload, delete_role_field};
+use role_permission::{
+    RolePermissionObject, SetRolePermissionsInput, role_permissions_field,
+    set_role_permissions_field,
+};
 use user_role::{
     AssignUserRoleInput, RevokeUserRoleInput, RevokeUserRolePayload, UpdateUserRoleInput,
     UserRoleFilterInput, UserRoleObject, UserRolePageObject, assign_user_role_field,
     revoke_user_role_field, update_user_role_field, user_role_field, user_roles_field,
 };
 
+pub use document_analyzer::AsyncGraphQlDocumentAnalyzer;
 pub use schema_parser::AsyncGraphQlSchemaParser;
 
 /// Query root of the IAM context.
@@ -162,7 +175,7 @@ pub struct RoleFilterInput {
 
 /// A role.
 #[derive(Debug, Clone, PartialEq, Eq, SimpleObject)]
-#[graphql(name = "Role")]
+#[graphql(name = "Role", complex)]
 pub struct RoleObject {
     /// The identifier of the role.
     pub id: ID,
@@ -194,6 +207,19 @@ impl From<RoleResponse> for RoleObject {
             created_at: response.created_at,
             updated_at: response.updated_at,
         }
+    }
+}
+
+#[ComplexObject]
+impl RoleObject {
+    /// The grants of the role in key order, each with its key, kind, service, active flag and wildcard flag.
+    async fn permissions(
+        &self,
+        ctx: &Context<'_>,
+    ) -> async_graphql::Result<Vec<RolePermissionObject>> {
+        role_permissions_field(ctx, &self.id)
+            .await
+            .map_err(iam_problem_to_graphql_error)
     }
 }
 
@@ -381,6 +407,17 @@ impl IamMutation {
             .map_err(iam_problem_to_graphql_error)
     }
 
+    /// Replaces the whole grant set of a role when `expectedVersion` is the current version: every key must be in an active catalogue or be one of the four wildcard forms of a service that has a catalogue, and at most 5,000 keys are accepted; unknown keys fail with `VALIDATION_FAILED` and one violation per key. The change increases the version, updates the grant count, takes the next policy version and records `iam.role_permissions.changed` with the added and removed keys; an added wildcard is audited with `coversFutureElements=true`.
+    async fn set_role_permissions(
+        &self,
+        ctx: &Context<'_>,
+        input: SetRolePermissionsInput,
+    ) -> async_graphql::Result<RoleObject> {
+        set_role_permissions_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
     /// Activates a draft GraphQL specification version and makes its fields grantable permissions: the catalogue of the service becomes the union of its active versions, the next policy version is taken and `iam.graphql_permissions.created` is recorded. An activation that would remove the sensitive or always-audit flag from a key fails with `FLAG_DOWNGRADE_CONFIRMATION_REQUIRED` unless `confirmFlagDowngrade` is true, and one that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED` unless `confirmOrphans` is true. A version that is active already is a no-op.
     async fn create_graphql_permissions(
         &self,
@@ -558,6 +595,33 @@ impl IamQuery {
         >,
     ) -> async_graphql::Result<GraphQlPermissionPageObject> {
         graphql_permissions_field(ctx, first, after, filter.unwrap_or_default())
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves a REST permission by id with the active versions that contain its key and the roles that grant it by its exact key; null when it is unknown.
+    async fn rest_permission(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> async_graphql::Result<Option<RestPermissionObject>> {
+        rest_permission_field(ctx, &id)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves one page of REST permissions in a stable order, filtered by service, method, active state, the sensitive flag and path template prefix.
+    #[graphql(complexity = "page_complexity(first, child_complexity)")]
+    async fn rest_permissions(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 30, desc = "Page size, from 1 to 100.")] first: Option<i32>,
+        #[graphql(desc = "The nextCursor of the previous page.")] after: Option<String>,
+        #[graphql(desc = "Only permissions that match the filter.")] filter: Option<
+            RestPermissionFilterInput,
+        >,
+    ) -> async_graphql::Result<RestPermissionPageObject> {
+        rest_permissions_field(ctx, first, after, filter.unwrap_or_default())
             .await
             .map_err(iam_problem_to_graphql_error)
     }

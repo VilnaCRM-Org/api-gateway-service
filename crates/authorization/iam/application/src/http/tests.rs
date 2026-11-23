@@ -109,9 +109,19 @@ fn the_router_documents_the_role_operations_under_the_iam_tag_behind_the_bearer_
         );
         assert!(operation.security.is_some(), "{operation_id}");
     }
+    let permissions = &document.paths.paths["/roles/{id}/permissions"];
+    assert_eq!(
+        permissions.get.as_ref().unwrap().operation_id.as_deref(),
+        Some("api_roles_id_permissions_get")
+    );
+    assert_eq!(
+        permissions.put.as_ref().unwrap().operation_id.as_deref(),
+        Some("api_roles_id_permissions_put")
+    );
+    assert!(permissions.post.is_none() && permissions.delete.is_none());
     assert!(collection.put.is_none() && collection.delete.is_none() && collection.patch.is_none());
     assert!(item.post.is_none() && item.put.is_none());
-    assert_eq!(document.paths.paths.len(), 9);
+    assert_eq!(document.paths.paths.len(), 12);
 }
 
 #[test]

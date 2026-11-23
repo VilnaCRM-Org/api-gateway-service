@@ -10,8 +10,8 @@ use sqlx::types::Uuid as SqlUuid;
 use sqlx::types::time::OffsetDateTime;
 
 use super::{
-    GrantColumns, GrantRow, RoleRow, WriteRow, key_kind, restore_all, restore_grants, translate,
-    updated,
+    GrantColumns, GrantRow, RoleRow, WriteRow, key_kind, restore_all, restore_grants, role_grant,
+    translate, updated,
 };
 
 const ROLE: &str = "7f1c2a4e-1d0b-4f5e-9a3c-2b6d8e0f1a2b";
@@ -234,4 +234,19 @@ fn a_stored_key_that_is_not_a_grant_is_unavailable() {
         restore_grants(&["rest:core:*".to_owned()]).unwrap(),
         PermissionGrantSet::new([grant("rest:core:*")]).unwrap()
     );
+}
+
+#[rstest]
+#[case("rest:core:GET /items", true)]
+#[case("gql:core:Query.*", false)]
+fn a_stored_grant_keeps_its_key_and_its_active_flag(#[case] key: &str, #[case] active: bool) {
+    let stored = role_grant(key, active).unwrap();
+
+    assert_eq!(stored.grant, grant(key));
+    assert_eq!(stored.active, active);
+}
+
+#[test]
+fn a_stored_grant_key_that_is_not_a_grant_is_unavailable() {
+    assert!(unavailable(&role_grant("not a key", true)));
 }

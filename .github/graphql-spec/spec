@@ -298,6 +298,8 @@ type Mutation {
   loadOpenapiSpec(input: LoadOpenapiSpecInput!): OpenApiSpec!
   "Revokes an assignment when `expectedVersion` is the current version: it leaves the active listings at once, the next policy version is committed, and `iam.user_role.revoked` and an audit record are written in the same transaction."
   revokeUserRole(input: RevokeUserRoleInput!): RevokeUserRolePayload!
+  "Replaces the whole grant set of a role when `expectedVersion` is the current version: every key must be in an active catalogue or be one of the four wildcard forms of a service that has a catalogue, and at most 5,000 keys are accepted; unknown keys fail with `VALIDATION_FAILED` and one violation per key. The change increases the version, updates the grant count, takes the next policy version and records `iam.role_permissions.changed` with the added and removed keys; an added wildcard is audited with `coversFutureElements=true`."
+  setRolePermissions(input: SetRolePermissionsInput!): Role!
   "Renames a custom role or changes its description when `expectedVersion` is the current version, increases the version and records `iam.role.updated`."
   updateRole(input: UpdateRoleInput!): Role!
   "Sets, extends, shortens or clears the expiry of an assignment when `expectedVersion` is the current version, increases the version, takes the next policy version and records `iam.user_role.updated`. `expiresAt` is required: a time in the future, or null to clear the expiry."
@@ -434,6 +436,17 @@ type Query {
   ): OpenapiSpecPage!
   "Resolves a User service token into its subject, or says why it is refused."
   resolveToken(input: ResolveTokenInput!): TokenResolution!
+  "Retrieves a REST permission by id with the active versions that contain its key and the roles that grant it by its exact key; null when it is unknown."
+  restPermission(id: ID!): RestPermission
+  "Retrieves one page of REST permissions in a stable order, filtered by service, method, active state, the sensitive flag and path template prefix."
+  restPermissions(
+    "The nextCursor of the previous page."
+    after: String,
+    "Only permissions that match the filter."
+    filter: RestPermissionFilter,
+    "Page size, from 1 to 100."
+    first: Int = 30
+  ): RestPermissionPage!
   "Retrieves a role by id; null when it is unknown or deleted."
   role(id: ID!): Role
   "Retrieves one page of roles in a stable order, filtered by name prefix and kind."
@@ -478,6 +491,50 @@ type RemovedOperationGrant {
 input ResolveTokenInput {
   "The User service token to resolve; an empty one resolves as `token_missing`."
   credential: String!
+}
+
+"A REST catalogue entry."
+type RestPermission {
+  "Whether some active version holds the key."
+  active: Boolean!
+  "The flags of the entry: the most restrictive ones across the active versions."
+  flags: OperationFlags!
+  "The identifier of the entry."
+  id: ID!
+  "The permission key, `rest:{service}:{METHOD} {template}`."
+  key: String!
+  "The HTTP method of the key."
+  method: String!
+  "The identifiers of the roles that grant the key by its exact key; wildcard grants are not listed."
+  roles: [String!]!
+  "The service of the key."
+  service: String!
+  "The normalised path template of the key; parameters are written `{}`."
+  template: String!
+  "The identifiers of the active versions that contain the key."
+  versions: [String!]!
+}
+
+"Filters of the REST permission list."
+input RestPermissionFilter {
+  "Only active (`true`) or only inactive (`false`) permissions."
+  active: Boolean
+  "Only permissions of this HTTP method, in upper case."
+  method: String
+  "Only permissions that are sensitive (`true`) or not (`false`)."
+  sensitive: Boolean
+  "Only permissions of this service."
+  service: String
+  "Only permissions whose normalised path template starts with this text."
+  templatePrefix: String
+}
+
+"One page of REST catalogue entries."
+type RestPermissionPage {
+  "The entries of the page."
+  items: [RestPermission!]!
+  "The `after` value of the next page; null on the last page."
+  nextCursor: String
 }
 
 "The result of an activation."
@@ -528,6 +585,8 @@ type Role {
   kind: String!
   "The name of the role."
   name: String!
+  "The grants of the role in key order, each with its key, kind, service, active flag and wildcard flag."
+  permissions: [RolePermission!]!
   "When the role was last changed, as an RFC 3339 UTC time."
   updatedAt: String!
   "The version of the role."
@@ -548,6 +607,32 @@ type RolePage {
   items: [Role!]!
   "The `after` value of the next page; null on the last page."
   nextCursor: String
+}
+
+"One grant of a role."
+type RolePermission {
+  "Whether the grant takes part in decisions; a grant to a key that left the catalogue is inactive."
+  active: Boolean!
+  "The permission key or the wildcard pattern."
+  key: String!
+  "The form of the key: `rest` or `gql`, or `reserved` for a reserved `iam:` key."
+  kind: String!
+  "The service of the key."
+  service: String!
+  "Whether the grant is a wildcard pattern."
+  wildcard: Boolean!
+}
+
+"Input of the mutation that replaces the grants of a role."
+input SetRolePermissionsInput {
+  "The version the caller read; required, and the replacement is refused when it is not the current one."
+  expectedVersion: Int
+  "The role to change."
+  id: ID!
+  "Makes the replacement safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+  "The new grant set: keys of an active catalogue and the four wildcard forms of a service that has a catalogue; at most 5,000. A key that repeats counts once and an empty list removes every grant."
+  keys: [String!]!
 }
 
 "The resolution of a credential: the subject and its token claims, or the reason it is refused."

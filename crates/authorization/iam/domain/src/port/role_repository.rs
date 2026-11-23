@@ -4,6 +4,7 @@ use crate::policy::catalogue_activation::GrantRecord;
 use crate::port::RepositoryError;
 use crate::role::Role;
 use crate::value_object::identifier::RoleId;
+use crate::value_object::permission_grant::PermissionGrant;
 use crate::value_object::permission_key::PermissionKeyKind;
 use crate::value_object::role_kind::RoleKind;
 use crate::value_object::service_name::ServiceName;
@@ -20,6 +21,16 @@ pub struct RolePageQuery {
     pub name_prefix: Option<String>,
     /// Only roles of this kind.
     pub kind: Option<RoleKind>,
+}
+
+/// One grant of a role as stored: the grant and whether it is active. A grant to an exact key turns
+/// inactive when its key leaves the catalogue; a wildcard grant is always active.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleGrant {
+    /// The key or the wildcard pattern.
+    pub grant: PermissionGrant,
+    /// Whether the grant takes part in decisions.
+    pub active: bool,
 }
 
 /// Reads `Role` aggregates. Roles are written through the
@@ -40,6 +51,14 @@ pub trait RoleRepository: std::fmt::Debug + Send + Sync {
     ///
     /// [`RepositoryError::Unavailable`] when the storage fails or holds unusable data.
     async fn find_page(&self, query: &RolePageQuery) -> Result<Vec<Role>, RepositoryError>;
+
+    /// Every grant of the role with its active flag, in key order; none for a role that is unknown
+    /// or deleted.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when the storage fails or holds unusable data.
+    async fn find_grants(&self, id: RoleId) -> Result<Vec<RoleGrant>, RepositoryError>;
 
     /// Every grant of a role that is not deleted to an exact key of the service and the form, with
     /// its status, in role then key order. Wildcard grants and reserved keys are not catalogue

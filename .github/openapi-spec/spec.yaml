@@ -1152,6 +1152,165 @@ paths:
                 $ref: '#/components/schemas/Problem'
       security:
       - bearerAuth: []
+  /api/rest-permissions:
+    get:
+      tags:
+      - iam
+      summary: Retrieves the collection of REST permissions.
+      description: 'Returns one page of the catalogue in a stable order, with the `nextCursor` of the next page. Filters: `service`, `method`, `active`, `sensitive` and `templatePrefix`. Each entry carries its key, service, method, template, flags, active state, the active versions that contain it and the roles that grant it by its exact key.'
+      operationId: api_rest_permissions_get
+      parameters:
+      - name: limit
+        in: query
+        description: The largest number of entries of the page.
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 30
+          maximum: 100
+          minimum: 1
+      - name: after
+        in: query
+        description: The `nextCursor` of the previous page; absent for the first page.
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: service
+        in: query
+        description: Only entries of this service.
+        required: false
+        schema:
+          type: string
+          maxLength: 63
+        example: billing
+      - name: method
+        in: query
+        description: Only entries of this HTTP method, in upper case.
+        required: false
+        schema:
+          type: string
+        example: GET
+      - name: active
+        in: query
+        description: Only active (`true`) or only inactive (`false`) entries.
+        required: false
+        schema:
+          type: boolean
+      - name: sensitive
+        in: query
+        description: Only entries that are sensitive (`true`) or not (`false`).
+        required: false
+        schema:
+          type: boolean
+      - name: templatePrefix
+        in: query
+        description: |-
+          Only entries whose normalised path template starts with this text; parameters are written
+          `{}`.
+        required: false
+        schema:
+          type: string
+          maxLength: 2048
+        example: /api/invoices
+      responses:
+        '200':
+          description: One page of entries.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestPermissionPage'
+        '400':
+          description: Invalid query parameter.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+  /api/rest-permissions/{id}:
+    get:
+      tags:
+      - iam
+      summary: Retrieves a REST permission.
+      description: 'Returns the entry with the identifier: its key, service, method, template, flags, active state, the active versions that contain it and the roles that grant it by its exact key.'
+      operationId: api_rest_permissions_id_get
+      parameters:
+      - name: id
+        in: path
+        description: Permission identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The entry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestPermission'
+        '400':
+          description: Invalid identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Permission not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
   /api/roles:
     get:
       tags:
@@ -1585,6 +1744,187 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '422':
           description: Validation failed, or the idempotency key was used for another request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '428':
+          description: '`If-Match` is missing.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+  /api/roles/{id}/permissions:
+    get:
+      tags:
+      - iam
+      summary: Retrieves the permissions of a role.
+      description: Returns every grant of the role in key order, each with its key, kind (`rest`, `gql` or `reserved`), service, active flag and wildcard flag, with the `ETag` of the role.
+      operationId: api_roles_id_permissions_get
+      parameters:
+      - name: id
+        in: path
+        description: Role identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The grants of the role.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the role in double quotes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RolePermissions'
+        '400':
+          description: Invalid identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Role not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+    put:
+      tags:
+      - iam
+      summary: Replaces the permissions of a role.
+      description: 'Replaces the whole grant set of the role with `keys` when `If-Match` holds the current `ETag`: every key must be in an active catalogue or be one of the four wildcard forms of a service that has a catalogue, and at most 5,000 keys are accepted; unknown keys return 422 with one violation per key. The change increases the version, updates the grant count, takes the next policy version and records `iam.role_permissions.changed` with the added and removed keys; an added wildcard is audited with `coversFutureElements=true`. A repeated `Idempotency-Key` with the same request within 24 hours returns the original result.'
+      operationId: api_roles_id_permissions_put
+      parameters:
+      - name: id
+        in: path
+        description: Role identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: If-Match
+        in: header
+        description: The `ETag` of the version the replacement changes, such as `"3"`.
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        description: Makes the replacement safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetRolePermissionsRequest'
+        required: true
+      responses:
+        '200':
+          description: The grants were replaced.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The new version of the role in double quotes.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RolePermissions'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Role not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: The role changed concurrently.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '412':
+          description: '`If-Match` is not the current version.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: 'Validation failed: unknown keys, more than 5,000 keys, or the idempotency key was used for another request.'
           content:
             application/problem+json:
               schema:
@@ -2995,6 +3335,75 @@ components:
           items:
             type: string
           description: The identifiers of the roles that grant it, in order.
+    RestPermission:
+      type: object
+      description: A REST catalogue entry.
+      required:
+      - id
+      - key
+      - service
+      - method
+      - template
+      - flags
+      - active
+      - versions
+      - roles
+      properties:
+        active:
+          type: boolean
+          description: Whether some active version holds the key.
+        flags:
+          $ref: '#/components/schemas/OperationFlags'
+          description: 'The flags of the entry: the most restrictive ones across the active versions.'
+        id:
+          type: string
+          format: uuid
+          description: The identifier of the entry.
+        key:
+          type: string
+          description: The permission key, `rest:{service}:{METHOD} {template}`.
+          example: rest:billing:POST /api/invoices/{}/pay
+        method:
+          type: string
+          description: The HTTP method of the key.
+          example: POST
+        roles:
+          type: array
+          items:
+            type: string
+          description: |-
+            The identifiers of the roles that grant the key by its exact key, in order. Wildcard
+            grants are not listed.
+        service:
+          type: string
+          description: The service of the key.
+          example: billing
+        template:
+          type: string
+          description: The normalised path template of the key; parameters are written `{}`.
+          example: /api/invoices/{}/pay
+        versions:
+          type: array
+          items:
+            type: string
+          description: The identifiers of the active versions that contain the key, in order.
+    RestPermissionPage:
+      type: object
+      description: One page of REST catalogue entries.
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RestPermission'
+          description: The entries of the page.
+        nextCursor:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The `after` value of the next page; absent on the last page.
     RestPermissionsActivation:
       type: object
       description: The result of an activation.
@@ -3101,6 +3510,78 @@ components:
           - 'null'
           format: uuid
           description: The `after` value of the next page; absent on the last page.
+    RolePermission:
+      type: object
+      description: One grant of a role.
+      required:
+      - key
+      - kind
+      - service
+      - active
+      - wildcard
+      properties:
+        active:
+          type: boolean
+          description: |-
+            Whether the grant takes part in decisions; a grant to a key that left the catalogue is
+            inactive.
+        key:
+          type: string
+          description: The permission key or the wildcard pattern.
+          example: rest:billing:GET /invoices
+        kind:
+          type: string
+          description: 'The form of the key: `rest` or `gql`, or `reserved` for a reserved `iam:` key.'
+          example: rest
+        service:
+          type: string
+          description: The service of the key.
+          example: billing
+        wildcard:
+          type: boolean
+          description: Whether the grant is a wildcard pattern.
+    RolePermissions:
+      type: object
+      description: The grants of a role.
+      required:
+      - roleId
+      - version
+      - permissions
+      properties:
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/RolePermission'
+          description: The grants in key order.
+        roleId:
+          type: string
+          format: uuid
+          description: The identifier of the role.
+        version:
+          type: integer
+          format: int64
+          description: The version of the role.
+          minimum: 1
+    SetRolePermissionsRequest:
+      type: object
+      description: Body of the operation that replaces the grants of a role.
+      required:
+      - keys
+      properties:
+        keys:
+          type: array
+          items:
+            type: string
+          description: |-
+            The new grant set: keys of an active catalogue and the four wildcard forms of a service
+            that has a catalogue (`gql:{service}:{Type}.*`, `gql:{service}:*`,
+            `rest:{service}:{METHOD} *`, `rest:{service}:*`). A key that repeats counts once; an empty
+            list removes every grant.
+          example:
+          - rest:billing:GET /invoices
+          - gql:billing:*
+          maxItems: 5000
+      additionalProperties: false
     TokenResolution:
       type: object
       description: |-

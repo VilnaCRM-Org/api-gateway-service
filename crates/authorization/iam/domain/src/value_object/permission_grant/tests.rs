@@ -2,7 +2,7 @@ use rstest::rstest;
 
 use super::PermissionGrant;
 use crate::error::InvalidPermissionKey;
-use crate::value_object::permission_key::PermissionKey;
+use crate::value_object::permission_key::{PermissionKey, PermissionKeyKind};
 use crate::value_object::service_name::ServiceName;
 use crate::value_object::wildcard_pattern::WildcardPattern;
 
@@ -73,4 +73,19 @@ fn a_wildcard_or_a_reserved_key_is_privileged(#[case] text: &str, #[case] privil
         PermissionGrant::parse(text).unwrap().is_privileged(),
         privileged
     );
+}
+
+#[rstest]
+#[case("rest:core:GET /api/items", PermissionKeyKind::Rest)]
+#[case("gql:core:Query.items", PermissionKeyKind::Gql)]
+#[case("iam:grant:*", PermissionKeyKind::Reserved)]
+#[case("rest:core:*", PermissionKeyKind::Rest)]
+#[case("rest:core:GET *", PermissionKeyKind::Rest)]
+#[case("gql:core:*", PermissionKeyKind::Gql)]
+#[case("gql:core:Query.*", PermissionKeyKind::Gql)]
+fn a_grant_has_the_form_of_its_key_or_of_the_keys_its_pattern_covers(
+    #[case] text: &str,
+    #[case] kind: PermissionKeyKind,
+) {
+    assert_eq!(PermissionGrant::parse(text).unwrap().kind(), kind);
 }

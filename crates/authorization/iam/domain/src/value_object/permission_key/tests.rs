@@ -32,6 +32,26 @@ fn a_rest_key_exposes_its_kind_service_method_and_template() {
 }
 
 #[test]
+fn only_a_rest_key_has_a_rest_operation() {
+    let rest = PermissionKey::parse("rest:billing:DELETE /invoices/{}").unwrap();
+
+    assert_eq!(
+        rest.rest_operation(),
+        Some((
+            HttpMethod::Delete,
+            &RestTemplate::parse("/invoices/{}").unwrap()
+        ))
+    );
+    for other in ["gql:billing:Query.invoices", "iam:grant:*"] {
+        assert_eq!(
+            PermissionKey::parse(other).unwrap().rest_operation(),
+            None,
+            "{other}"
+        );
+    }
+}
+
+#[test]
 fn a_gql_key_exposes_its_kind_service_and_coordinate() {
     let key = PermissionKey::parse("gql:iam:Mutation.createRole").unwrap();
 

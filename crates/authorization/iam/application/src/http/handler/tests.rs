@@ -126,6 +126,10 @@ fn handlers_use_only_the_problem_aware_extractors() {
         (include_str!("../graphql_activation.rs"), vec!["create"]),
         (include_str!("../rest_activation.rs"), vec!["create"]),
         (
+            include_str!("../rest_permission.rs"),
+            vec!["list", "get_one"],
+        ),
+        (
             include_str!("../graphql_permission.rs"),
             vec!["list", "get_one"],
         ),
@@ -136,6 +140,10 @@ fn handlers_use_only_the_problem_aware_extractors() {
         (
             include_str!("../role.rs"),
             vec!["create", "get_one", "update", "delete", "list"],
+        ),
+        (
+            include_str!("../role_permission.rs"),
+            vec!["list", "replace"],
         ),
         (
             include_str!("../user_role.rs"),

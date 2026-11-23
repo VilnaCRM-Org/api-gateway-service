@@ -44,6 +44,20 @@ impl PermissionGrant {
         }
     }
 
+    /// The form of the grant: the form of the key, or of the keys that the pattern covers.
+    #[must_use]
+    pub const fn kind(&self) -> PermissionKeyKind {
+        match self {
+            Self::Key(key) => key.kind(),
+            Self::Wildcard(
+                WildcardPattern::GqlType { .. } | WildcardPattern::GqlService { .. },
+            ) => PermissionKeyKind::Gql,
+            Self::Wildcard(
+                WildcardPattern::RestMethod { .. } | WildcardPattern::RestService { .. },
+            ) => PermissionKeyKind::Rest,
+        }
+    }
+
     /// The service of the key or pattern.
     #[must_use]
     pub fn service(&self) -> &ServiceName {

@@ -5,8 +5,9 @@ use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
 use iam_domain::{
     ActorRef, ChangeStatement, DecisionEffect, EntityVersion, GrantRecord, GrantStatus, IamChange,
-    PermissionGrant, PermissionGrantSet, PermissionKeyKind, RepositoryError, Role, RoleId,
-    RoleKind, RoleName, RolePageQuery, RoleParts, RoleRepository, RoleStatement, ServiceName,
+    PermissionGrant, PermissionGrantSet, PermissionKeyKind, RepositoryError, Role, RoleGrant,
+    RoleId, RoleKind, RoleName, RolePageQuery, RoleParts, RoleRepository, RoleStatement,
+    ServiceName,
 };
 use rand::RngExt as _;
 
@@ -178,6 +179,27 @@ impl RoleRepository for FakeRoleRepository {
             .take(limit)
             .map(|role| Role::restore(role.clone()))
             .collect())
+    }
+
+    async fn find_grants(&self, id: RoleId) -> Result<Vec<RoleGrant>, RepositoryError> {
+        Ok(self
+            .live()?
+            .into_iter()
+            .find(|role| role.id == id)
+            .map(|role| {
+                let mut grants: Vec<RoleGrant> = role
+                    .grants
+                    .iter()
+                    .map(|grant| RoleGrant {
+                        grant: grant.clone(),
+                        active: true,
+                    })
+                    .collect();
+                // The port answers in key order, as the database adapter does.
+                grants.sort_by_cached_key(|grant| grant.grant.to_string());
+                grants
+            })
+            .unwrap_or_default())
     }
 
     async fn find_catalogue_grants(

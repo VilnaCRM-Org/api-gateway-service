@@ -8,9 +8,17 @@ use test_support::policy_epoch::seeded_policy_epoch;
 use crate::tokens::{SigningKey, USER_ID};
 use crate::world::AppWorld;
 
-#[then("the IAM policy epoch should be the seeded one")]
-async fn policy_epoch_should_be_the_seeded_one(world: &mut AppWorld) {
-    assert_eq!(world.policy_epoch().await, seeded_policy_epoch());
+#[then("the IAM policy epoch should be the one of the startup registration")]
+async fn policy_epoch_should_be_the_one_of_the_startup_registration(world: &mut AppWorld) {
+    let seeded = seeded_policy_epoch();
+    let epoch = world.policy_epoch().await;
+    // The activations of IAM's own OpenAPI and GraphQL specifications each take a policy version
+    // and change the catalogue; nothing else moves from the seeded epoch.
+    assert_eq!(epoch.version().value(), 2);
+    assert_eq!(epoch.catalog_epoch(), 2);
+    assert_eq!(epoch.digest(), seeded.digest());
+    assert_eq!(epoch.log_epoch(), seeded.log_epoch());
+    assert_eq!(epoch.relay_epoch(), seeded.relay_epoch());
 }
 
 #[given("a caller authenticated with a valid service token")]

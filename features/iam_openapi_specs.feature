@@ -19,8 +19,8 @@ Feature: IAM OpenAPI specifications
     And the JSON array at "/diff/added" should have 2 items
     And the JSON array at "/diff/removed" should have 0 items
     And the service "billing" should have 1 OpenAPI specification version
-    And the outbox should hold 1 "iam.openapi_spec.loaded" event
-    And the audit log should hold 1 committed "openapi_spec.load" record
+    And the outbox should hold 2 "iam.openapi_spec.loaded" events
+    And the audit log should hold 2 committed "openapi_spec.load" records
 
   Scenario: Uploading a new document over GraphQL returns the same data
     Given a caller authenticated with a valid service token
@@ -35,8 +35,8 @@ Feature: IAM OpenAPI specifications
     And the JSON pointer "/data/loadOpenapiSpec/status" should equal "draft"
     And the JSON pointer "/data/loadOpenapiSpec/operationCount" should equal the number 1
     And the JSON array at "/data/loadOpenapiSpec/diff/added" should have 1 items
-    And the outbox should hold 1 "iam.openapi_spec.loaded" event
-    And the audit log should hold 1 committed "openapi_spec.load" record
+    And the outbox should hold 2 "iam.openapi_spec.loaded" events
+    And the audit log should hold 2 committed "openapi_spec.load" records
 
   Scenario: Uploading identical content again returns the existing version and changes nothing
     Given a caller authenticated with a valid service token
@@ -52,8 +52,8 @@ Feature: IAM OpenAPI specifications
     Then the response status code should be 200
     And the last two responses should be the created version and then the same version found
     And the service "billing" should have 1 OpenAPI specification version
-    And the outbox should hold 1 "iam.openapi_spec.loaded" event
-    And the audit log should hold 1 committed "openapi_spec.load" record
+    And the outbox should hold 2 "iam.openapi_spec.loaded" events
+    And the audit log should hold 2 committed "openapi_spec.load" records
 
   Scenario: A document with an external reference is a validation failure with its JSON pointer over REST and GraphQL
     Given a caller authenticated with a valid service token
@@ -71,7 +71,7 @@ Feature: IAM OpenAPI specifications
       """
     Then the GraphQL error code should be "VALIDATION_FAILED"
     And the service "billing" should have 0 OpenAPI specification versions
-    And the outbox should hold 0 "iam.openapi_spec.loaded" events
+    And the outbox should hold 1 "iam.openapi_spec.loaded" event
 
   Scenario: Two operations with the same normalised key are a validation failure over REST and GraphQL
     Given a caller authenticated with a valid service token
@@ -88,7 +88,7 @@ Feature: IAM OpenAPI specifications
       """
     Then the GraphQL error code should be "VALIDATION_FAILED"
     And the service "billing" should have 0 OpenAPI specification versions
-    And the outbox should hold 0 "iam.openapi_spec.loaded" events
+    And the outbox should hold 1 "iam.openapi_spec.loaded" event
 
   Scenario: An invalid service name is a validation failure over REST and GraphQL
     Given a caller authenticated with a valid service token
@@ -103,7 +103,7 @@ Feature: IAM OpenAPI specifications
       mutation { loadOpenapiSpec(input: {service: "Not A Service", document: "{}"}) { id } }
       """
     Then the GraphQL error code should be "VALIDATION_FAILED"
-    And the outbox should hold 0 "iam.openapi_spec.loaded" events
+    And the outbox should hold 1 "iam.openapi_spec.loaded" event
 
   Scenario: The reserved service iam is refused to every actor but the startup registration
     Given a caller authenticated with a valid service token
@@ -117,8 +117,8 @@ Feature: IAM OpenAPI specifications
       mutation { loadOpenapiSpec(input: {service: "iam", document: "{}"}) { id } }
       """
     Then the GraphQL error code should be "FORBIDDEN"
-    And the service "iam" should have 0 OpenAPI specification versions
-    And the outbox should hold 0 "iam.openapi_spec.loaded" events
+    And the service "iam" should have 1 OpenAPI specification version
+    And the outbox should hold 1 "iam.openapi_spec.loaded" event
 
   Scenario: A caller without a token is refused
     When POST request is sent to "/api/openapi-specs" with body:
@@ -149,7 +149,7 @@ Feature: IAM OpenAPI specifications
     Then the response status code should be 201
     When GET request is sent to "/api/openapi-specs"
     Then the response status code should be 200
-    And the JSON array at "/items" should have 2 items
+    And the JSON array at "/items" should have 3 items
     And the JSON pointer "/nextCursor" should be absent
     When GET request is sent to "/api/openapi-specs?service=billing"
     Then the response status code should be 200
@@ -331,18 +331,18 @@ Feature: IAM OpenAPI specifications
       {}
       """
     Then the response status code should be 201
-    And the response header "iam-policy-version" should contain "1"
+    And the response header "iam-policy-version" should contain "3"
     And the JSON pointer "/service" should equal "billing"
     And the JSON pointer "/status" should equal "active"
     And the JSON array at "/createdKeys" should have 2 items
-    And the JSON pointer "/policyVersion" should equal the number 1
+    And the JSON pointer "/policyVersion" should equal the number 3
     And the response body should contain "rest:billing:GET /invoices"
     And the response body should contain "rest:billing:POST /invoices/{}/pay"
     And the catalogue of the service "billing" should hold 2 active REST permissions
     And the REST key "rest:billing:POST /invoices/{}/pay" should be an active catalogue entry that is sensitive
-    And the IAM policy version should be 1
-    And the outbox should hold 1 "iam.rest_permissions.created" event
-    And the audit log should hold 1 committed "openapi_spec.activate" record
+    And the IAM policy version should be 3
+    And the outbox should hold 2 "iam.rest_permissions.created" events
+    And the audit log should hold 2 committed "openapi_spec.activate" records
     When GET request is sent to "/api/openapi-specs/{id}"
     Then the response status code should be 200
     And the JSON pointer "/status" should equal "active"
@@ -364,10 +364,10 @@ Feature: IAM OpenAPI specifications
     And the JSON pointer "/data/createRestPermissions/service" should equal "billing"
     And the JSON pointer "/data/createRestPermissions/status" should equal "active"
     And the JSON array at "/data/createRestPermissions/createdKeys" should have 2 items
-    And the JSON pointer "/data/createRestPermissions/policyVersion" should equal the number 1
+    And the JSON pointer "/data/createRestPermissions/policyVersion" should equal the number 3
     And the catalogue of the service "billing" should hold 2 active REST permissions
-    And the outbox should hold 1 "iam.rest_permissions.created" event
-    And the audit log should hold 1 committed "openapi_spec.activate" record
+    And the outbox should hold 2 "iam.rest_permissions.created" events
+    And the audit log should hold 2 committed "openapi_spec.activate" records
 
   Scenario: An activation that would drop a sensitive flag needs confirmFlagDowngrade over REST and GraphQL
     Given a caller authenticated with a valid service token
@@ -384,8 +384,8 @@ Feature: IAM OpenAPI specifications
     Then the response status code should be 409
     And the response body should contain "/problems/flag-downgrade-confirmation-required"
     And the response body should contain "rest:billing:POST /invoices/{}/pay"
-    And the outbox should hold 0 "iam.rest_permissions.created" events
-    And the IAM policy version should be 0
+    And the outbox should hold 1 "iam.rest_permissions.created" event
+    And the IAM policy version should be 2
     When the GraphQL operation is sent:
       """
       mutation { createRestPermissions(input: {id: "{id}"}) { id } }
@@ -397,8 +397,8 @@ Feature: IAM OpenAPI specifications
       """
     Then the response status code should be 201
     And the REST key "rest:billing:POST /invoices/{}/pay" should be an active catalogue entry that is not sensitive
-    And the outbox should hold 1 "iam.rest_permissions.created" event
-    And the "iam.rest_permissions.created" event should carry "flagChanges" in its payload
+    And the outbox should hold 2 "iam.rest_permissions.created" events
+    And the "iam.rest_permissions.created" event should carry '"before":' in its payload
 
   Scenario: Repeating an activation with the same idempotency key returns the original result and no second event
     Given a caller authenticated with a valid service token
@@ -419,9 +419,9 @@ Feature: IAM OpenAPI specifications
       """
     Then the response status code should be 201
     And the last two responses should have the same body
-    And the IAM policy version should be 1
-    And the outbox should hold 1 "iam.rest_permissions.created" event
-    And the audit log should hold 1 committed "openapi_spec.activate" record
+    And the IAM policy version should be 3
+    And the outbox should hold 2 "iam.rest_permissions.created" events
+    And the audit log should hold 2 committed "openapi_spec.activate" records
 
   Scenario: An activation that would orphan grants needs confirmOrphans over REST and GraphQL
     Given a caller authenticated with a valid service token
@@ -439,7 +439,7 @@ Feature: IAM OpenAPI specifications
     And the response body should contain "/problems/orphan-confirmation-required"
     And the response body should contain "rest:billing:POST /invoices/{}/pay"
     And the seeded role should hold 0 orphaned grants
-    And the outbox should hold 0 "iam.rest_permissions.created" events
+    And the outbox should hold 1 "iam.rest_permissions.created" event
     When the GraphQL operation is sent:
       """
       mutation { createRestPermissions(input: {id: "{id}"}) { id } }
@@ -451,7 +451,7 @@ Feature: IAM OpenAPI specifications
       """
     Then the response status code should be 201
     And the seeded role should hold 1 orphaned grant
-    And the outbox should hold 1 "iam.rest_permissions.created" event
+    And the outbox should hold 2 "iam.rest_permissions.created" events
     And the outbox should hold 1 "iam.permissions.orphaned" event
 
   Scenario: A rename moves the grants of the old key to the new key instead of orphaning them
@@ -490,9 +490,9 @@ Feature: IAM OpenAPI specifications
       """
     Then the response status code should be 200
     And the JSON array at "/createdKeys" should have 0 items
-    And the IAM policy version should be 1
-    And the outbox should hold 1 "iam.rest_permissions.created" event
-    And the audit log should hold 1 committed "openapi_spec.activate" record
+    And the IAM policy version should be 3
+    And the outbox should hold 2 "iam.rest_permissions.created" events
+    And the audit log should hold 2 committed "openapi_spec.activate" records
 
   Scenario: Two active versions of one service make the catalogue their union
     Given a caller authenticated with a valid service token
@@ -546,7 +546,7 @@ Feature: IAM OpenAPI specifications
       mutation { createRestPermissions(input: {id: "0190f2a8-7b3c-7d4e-8f10-1234567890ad"}) { id } }
       """
     Then the GraphQL error code should be "NOT_FOUND"
-    And the outbox should hold 0 "iam.rest_permissions.created" events
+    And the outbox should hold 1 "iam.rest_permissions.created" event
 
   Scenario: The REST activation needs a valid token
     When POST request is sent to "/api/openapi-specs/0190f2a8-7b3c-7d4e-8f10-1234567890ad/permissions" with body:

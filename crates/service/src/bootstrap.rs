@@ -44,18 +44,26 @@ use iam_application::{
 use iam_application::{
     GetGraphQlPermissionQueryHandler, GetGraphQlPermissionsQueryHandler, PermissionReads,
 };
+use iam_application::{
+    GetRestPermissionQueryHandler, GetRestPermissionsQueryHandler, RestPermissionReads,
+};
+use iam_application::{
+    GetRolePermissionsQueryHandler, SetRolePermissionsCommandHandler, SetRolePermissionsReads,
+};
+use iam_application::{RegisterOwnSpecsCommand, RegisterOwnSpecsCommandHandler};
 use iam_application::{ResolveSubjectTokenQueryHandler, ResolveTokenQueryHandler};
 use iam_domain::GraphQlPermissionRepository;
 use iam_domain::GraphQlSpecRepository;
 use iam_domain::OpenApiSpecRepository;
 use iam_domain::RestPermissionRepository;
 use iam_domain::RoleRepository;
+use iam_domain::StartupLock;
 use iam_domain::UserRoleRepository;
 use iam_domain::{
     AccessTokenVerifier, ChangeReceiptRepository, IdempotencyRepository, PolicyEpochRepository,
     PolicyReadRepository, SecurityAuditLog,
 };
-use iam_domain::{IamUnitOfWork, RequestDigester};
+use iam_domain::{IamUnitOfWork, OWN_SPECIFICATIONS_LOCK, RepositoryError, RequestDigester};
 use iam_domain::{RevocationRepository, RevocationView, TokenMemo, TokenRepository};
 use iam_infrastructure::PgGraphQlPermissionRepository;
 use iam_infrastructure::PgGraphQlSpecRepository;
@@ -70,8 +78,8 @@ use iam_infrastructure::{
     JwtAccessTokenVerifier, JwtKeyFileError, PgChangeReceiptRepository, PgIdempotencyRepository,
     PgPolicyEpochRepository, PgPolicyReadRepository, PgSecurityAuditLog,
 };
-use iam_infrastructure::{PgIamUnitOfWork, Sha256RequestDigester};
-use shared_domain::{Clock, CommandBus, EventBus, QueryBus, UuidGenerator};
+use iam_infrastructure::{PgIamUnitOfWork, PgStartupLock, Sha256RequestDigester};
+use shared_domain::{Clock, CommandBus, CommandHandler as _, EventBus, QueryBus, UuidGenerator};
 use shared_infrastructure::bus::{
     DuplicateHandler, InMemoryCommandBus, InMemoryEventBus, InMemoryQueryBus,
 };
@@ -92,6 +100,9 @@ use crate::config::Config;
 use crate::graphql::schema;
 use crate::http::AppState;
 use crate::http::router::assemble_with_iam_routes;
+use crate::openapi::{self, ExportError};
+
+pub use tasks::{TaskMode, TaskStop, TaskSupervisor, start_tasks};
 
 /// Every driven port of the application.
 #[derive(Debug)]
@@ -104,6 +115,8 @@ pub struct Adapters {
     pub policy_reads: Arc<dyn PolicyReadRepository>,
     /// The hash-chained IAM security audit log.
     pub security_audit_log: Arc<dyn SecurityAuditLog>,
+    /// The cross-instance lock that serializes the startup registration of IAM's specifications.
+    pub startup_lock: Arc<dyn StartupLock>,
     /// Reader of the receipts of committed IAM changes.
     pub change_receipts: Arc<dyn ChangeReceiptRepository>,
     /// Reader of the idempotency records of IAM writes.
@@ -152,6 +165,15 @@ pub enum BootstrapError {
     /// `JWT_PUBLIC_KEYS_FILE` holds no usable key set.
     #[error("invalid JWT_PUBLIC_KEYS_FILE")]
     KeyFile(#[from] JwtKeyFileError),
+    /// The startup lock could not be taken.
+    #[error("the startup lock could not be taken")]
+    Lock(#[source] RepositoryError),
+    /// IAM's own `OpenAPI` document could not be generated.
+    #[error(transparent)]
+    OwnDocument(#[from] ExportError),
+    /// IAM's own specifications could not be registered.
+    #[error("IAM's own specifications could not be registered")]
+    Registration(#[from] iam_application::IamError),
 }
 
 /// How often the key file of `JWT_PUBLIC_KEYS_FILE` is checked for a replacement.
@@ -179,6 +201,7 @@ impl Adapters {
             policy_epochs: Arc::new(PgPolicyEpochRepository::new(pool.clone())),
             policy_reads: Arc::new(PgPolicyReadRepository::new(pool.clone())),
             security_audit_log: Arc::new(PgSecurityAuditLog::new(pool.clone())),
+            startup_lock: Arc::new(PgStartupLock::new(pool.clone())),
             change_receipts: Arc::new(PgChangeReceiptRepository::new(pool.clone())),
             idempotency_records: Arc::new(PgIdempotencyRepository::new(pool.clone())),
             roles: Arc::new(PgRoleRepository::new(pool.clone())),
@@ -302,7 +325,21 @@ fn register_role_commands(
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
-    Ok(bus.register(create)?.register(update)?.register(delete)?)
+    let set_permissions = SetRolePermissionsCommandHandler::new(
+        SetRolePermissionsReads {
+            roles: Arc::clone(&adapters.roles),
+            graphql_permissions: Arc::clone(&adapters.graphql_permissions),
+            rest_permissions: Arc::clone(&adapters.rest_permissions),
+        },
+        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    Ok(bus
+        .register(create)?
+        .register(update)?
+        .register(delete)?
+        .register(set_permissions)?)
 }
 
 /// Registers the query handlers of the IAM roles.
@@ -312,7 +349,8 @@ fn register_role_queries(
 ) -> Result<InMemoryQueryBus, BootstrapError> {
     let get = GetRoleQueryHandler::new(Arc::clone(roles));
     let list = ListRolesQueryHandler::new(Arc::clone(roles));
-    Ok(bus.register(get)?.register(list)?)
+    let permissions = GetRolePermissionsQueryHandler::new(Arc::clone(roles));
+    Ok(bus.register(get)?.register(list)?.register(permissions)?)
 }
 
 /// Registers the query handlers that read the result of an IAM write: its change receipt and the
@@ -424,6 +462,21 @@ fn register_graphql_permission_queries(
     };
     let list = GetGraphQlPermissionsQueryHandler::new(reads.clone());
     let one = GetGraphQlPermissionQueryHandler::new(reads);
+    Ok(bus.register(list)?.register(one)?)
+}
+
+/// Registers the query handlers that read the REST permission catalogue.
+fn register_rest_permission_queries(
+    bus: InMemoryQueryBus,
+    adapters: &Adapters,
+) -> Result<InMemoryQueryBus, BootstrapError> {
+    let reads = RestPermissionReads {
+        permissions: Arc::clone(&adapters.rest_permissions),
+        specs: Arc::clone(&adapters.openapi_specs),
+        roles: Arc::clone(&adapters.roles),
+    };
+    let list = GetRestPermissionsQueryHandler::new(reads.clone());
+    let one = GetRestPermissionQueryHandler::new(reads);
     Ok(bus.register(list)?.register(one)?)
 }
 
@@ -565,9 +618,79 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
     let queries = register_graphql_permission_queries(queries, adapters)?;
     let queries = register_openapi_spec_queries(queries, adapters)?;
     let queries = register_rest_activation_queries(queries, adapters)?;
+    let queries = register_rest_permission_queries(queries, adapters)?;
     let queries = register_user_role_queries(queries, adapters)?;
     let queries = register_token_queries(queries, &adapters.tokens, config)?;
     Ok((Arc::new(commands), Arc::new(queries)))
+}
+
+/// The buses of the registration: the loads and activations of both kinds of specification and the
+/// lookups of an identical version.
+fn registration_buses(adapters: &Adapters) -> Result<Buses, BootstrapError> {
+    let commands = register_graphql_spec_commands(InMemoryCommandBus::new(), adapters)?;
+    let commands = register_graphql_activation_commands(commands, adapters)?;
+    let commands = register_openapi_spec_commands(commands, adapters)?;
+    let commands = register_rest_activation_commands(commands, adapters)?;
+    let find_graphql = FindGraphQlSpecQueryHandler::new(Arc::clone(&adapters.graphql_specs));
+    let find_openapi = FindOpenApiSpecQueryHandler::new(Arc::clone(&adapters.openapi_specs));
+    let queries = InMemoryQueryBus::new()
+        .register(find_graphql)?
+        .register(find_openapi)?;
+    Ok((Arc::new(commands), Arc::new(queries)))
+}
+
+/// Registers IAM's own specifications in its catalogue: the operations of the generated `OpenAPI`
+/// document tagged `iam` and the GraphQL operations that IAM owns, as `system:startup`.
+///
+/// The registration is additive and idempotent by content hash. It runs under a PostgreSQL
+/// transaction-level advisory lock, so of several instances that start together one registers and
+/// the others find the active version. `service serve` calls it after [`Adapters::connect`], and
+/// so does every test that builds the application from the adapters.
+///
+/// # Errors
+///
+/// Returns [`BootstrapError::Lock`] when the lock cannot be taken,
+/// [`BootstrapError::OwnDocument`] when the document cannot be generated,
+/// [`BootstrapError::DuplicateHandler`] when a message has two handlers and
+/// [`BootstrapError::Registration`] when the database refuses the registration.
+pub async fn register_iam_specs(adapters: &Adapters) -> Result<(), BootstrapError> {
+    let command = RegisterOwnSpecsCommand {
+        openapi_document: openapi::iam_document()?,
+        graphql_sdl: schema::iam_sdl(),
+    };
+    register_iam_documents(adapters, command).await
+}
+
+/// [`register_iam_specs`] for the documents of `command`: the same registration under the same
+/// lock, for the tests that register the contract of another build.
+///
+/// # Errors
+///
+/// The errors of [`register_iam_specs`], except [`BootstrapError::OwnDocument`].
+pub async fn register_iam_documents(
+    adapters: &Adapters,
+    command: RegisterOwnSpecsCommand,
+) -> Result<(), BootstrapError> {
+    let _lock = adapters
+        .startup_lock
+        .acquire(OWN_SPECIFICATIONS_LOCK)
+        .await
+        .map_err(BootstrapError::Lock)?;
+    registration_handler(adapters)?.handle(command).await?;
+    Ok(())
+}
+
+/// The handler of the registration over the buses of [`registration_buses`].
+fn registration_handler(
+    adapters: &Adapters,
+) -> Result<RegisterOwnSpecsCommandHandler, BootstrapError> {
+    let (commands, queries) = registration_buses(adapters)?;
+    Ok(RegisterOwnSpecsCommandHandler::new(
+        commands,
+        queries,
+        Arc::clone(&adapters.request_digester),
+        Arc::clone(&adapters.uuid_generator),
+    ))
 }
 
 /// Registers every handler, builds the command and query buses, the state, the `GraphQL` schema
@@ -622,6 +745,8 @@ pub fn router_with_iam_routes(
     };
     Ok(assemble_with_iam_routes(state, schema, config, iam_routes))
 }
+
+mod tasks;
 
 #[cfg(test)]
 mod tests;

@@ -8,8 +8,8 @@ use std::time::SystemTime;
 use iam_domain::{
     EntityVersion, GrantRecord, GrantStatus, InvalidIamValue, InvalidPermissionKey, InvalidRole,
     PermissionGrant, PermissionGrantSet, PermissionKey, PermissionKeyKind, RepositoryError, Role,
-    RoleDescription, RoleId, RoleKind, RoleName, RolePageQuery, RoleParts, RoleRepository,
-    RoleStatement, ServiceName, WildcardPattern,
+    RoleDescription, RoleGrant, RoleId, RoleKind, RoleName, RolePageQuery, RoleParts,
+    RoleRepository, RoleStatement, ServiceName, WildcardPattern,
 };
 use shared_domain::Uuid;
 use sqlx::types::Uuid as SqlUuid;
@@ -97,6 +97,29 @@ impl PgRoleRepository {
         .fetch_all(&self.pool)
         .await
         .map_err(translate)
+    }
+
+    /// The grants of a role that is not deleted with their active flag, in key order. The statement
+    /// is checked at run time, so the offline metadata does not hold it.
+    async fn select_role_grants(&self, id: RoleId) -> Result<Vec<RoleGrant>, RepositoryError> {
+        let rows = sqlx::query(
+            "SELECT grants.permission_key, grants.active
+            FROM iam_role_permissions AS grants
+            JOIN iam_roles AS roles ON roles.id = grants.role_id
+            WHERE roles.deleted_at IS NULL AND grants.role_id = $1
+            ORDER BY grants.permission_key",
+        )
+        .bind(id.as_uuid().as_uuid())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(translate)?;
+        rows.iter()
+            .map(|row| {
+                let permission_key: String = row.try_get("permission_key").map_err(translate)?;
+                let active: bool = row.try_get("active").map_err(translate)?;
+                role_grant(&permission_key, active)
+            })
+            .collect()
     }
 
     /// The grants of roles that are not deleted to exact keys of the service and the form. The
@@ -419,6 +442,14 @@ fn invalid_key(error: InvalidPermissionKey) -> RepositoryError {
     RepositoryError::Unavailable(Box::new(error))
 }
 
+/// The grant of a stored key and active flag; a stored key that is not a grant is unusable data.
+fn role_grant(permission_key: &str, active: bool) -> Result<RoleGrant, RepositoryError> {
+    Ok(RoleGrant {
+        grant: PermissionGrant::parse(permission_key).map_err(invalid_key)?,
+        active,
+    })
+}
+
 /// The catalogue grant that a stored row holds.
 fn grant_record(row: &sqlx::postgres::PgRow) -> Result<GrantRecord, RepositoryError> {
     let role_id: SqlUuid = row.try_get("role_id").map_err(translate)?;
@@ -443,6 +474,10 @@ impl RoleRepository for PgRoleRepository {
 
     async fn find_page(&self, query: &RolePageQuery) -> Result<Vec<Role>, RepositoryError> {
         self.select_page(query).await
+    }
+
+    async fn find_grants(&self, id: RoleId) -> Result<Vec<RoleGrant>, RepositoryError> {
+        self.select_role_grants(id).await
     }
 
     async fn find_catalogue_grants(

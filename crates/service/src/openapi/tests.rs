@@ -1,3 +1,4 @@
+use iam_domain::OpenApiDocumentParser as _;
 use rstest::rstest;
 use serde_json::{Value, json};
 
@@ -98,11 +99,15 @@ fn documents_exactly_the_twenty_four_operations() {
             "get /api/openapi-specs/{id}",
             "get /api/openapi-specs/{id}/diff",
             "post /api/openapi-specs/{id}/permissions",
+            "get /api/rest-permissions",
+            "get /api/rest-permissions/{id}",
             "get /api/roles",
             "post /api/roles",
             "get /api/roles/{id}",
             "delete /api/roles/{id}",
             "patch /api/roles/{id}",
+            "get /api/roles/{id}/permissions",
+            "put /api/roles/{id}/permissions",
             "post /api/token-resolutions",
             "get /api/user-roles",
             "post /api/user-roles",
@@ -474,6 +479,67 @@ fn documents_the_graphql_permission_reads_with_the_bearer_requirement_and_the_ia
             "sensitive",
             "service",
             "type"
+        ]
+    );
+}
+
+#[test]
+fn documents_the_rest_permission_reads_with_the_bearer_requirement_and_the_iam_tag() {
+    let json = json_document();
+    let cases = [
+        (
+            "/api/rest-permissions",
+            "api_rest_permissions_get",
+            ["200", "400", "401", "422", "default"].as_slice(),
+            "#/components/schemas/RestPermissionPage",
+        ),
+        (
+            "/api/rest-permissions/{id}",
+            "api_rest_permissions_id_get",
+            ["200", "400", "401", "404", "422", "default"].as_slice(),
+            "#/components/schemas/RestPermission",
+        ),
+    ];
+
+    for (path, operation_id, statuses, schema) in cases {
+        let operation = &json["paths"][path]["get"];
+        assert_eq!(operation["operationId"], operation_id);
+        assert_eq!(operation["tags"], json!(["iam"]), "{operation_id}");
+        assert_eq!(
+            operation["security"],
+            json!([{ "bearerAuth": [] }]),
+            "{operation_id}"
+        );
+        let mut documented: Vec<&str> = operation["responses"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        documented.sort_unstable();
+        assert_eq!(documented, statuses, "{operation_id}");
+        assert_eq!(
+            operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"], schema,
+            "{operation_id}"
+        );
+    }
+    let mut names: Vec<&str> = json["paths"]["/api/rest-permissions"]["get"]["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|parameter| parameter["name"].as_str())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        [
+            "active",
+            "after",
+            "limit",
+            "method",
+            "sensitive",
+            "service",
+            "templatePrefix"
         ]
     );
 }
@@ -979,9 +1045,14 @@ fn defines_exactly_the_documented_schemas() {
             "Problem",
             "RemovedGrant",
             "RemovedOperationGrant",
+            "RestPermission",
+            "RestPermissionPage",
             "RestPermissionsActivation",
             "Role",
             "RolePage",
+            "RolePermission",
+            "RolePermissions",
+            "SetRolePermissionsRequest",
             "TokenResolution",
             "TokenResolutionRequest",
             "UpdateRoleRequest",
@@ -1040,4 +1111,151 @@ fn an_export_error_names_the_document_and_keeps_its_cause() {
     );
     let source = std::error::Error::source(&error).unwrap();
     assert_eq!(source.to_string(), "disk on fire");
+}
+
+#[test]
+fn the_iam_document_holds_the_iam_operations_alone() {
+    let value: Value = serde_json::from_str(&iam_document().unwrap()).unwrap();
+    let paths = value["paths"].as_object().unwrap();
+
+    assert_eq!(paths["/api/roles"]["post"]["tags"], json!(["iam"]));
+    assert!(!paths.contains_key("/api/health"));
+    assert!(!paths.contains_key("/api/example_api_resources"));
+    for item in paths.values() {
+        for (name, operation) in item.as_object().unwrap() {
+            if OPERATION_MEMBERS.contains(&name.as_str()) {
+                assert_eq!(operation["tags"], json!(["iam"]), "{name}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_iam_document_is_an_openapi_document_that_iam_parses() {
+    let text = iam_document().unwrap();
+
+    let operations = iam_application::http::JsonOpenApiDocumentParser
+        .parse(&text)
+        .unwrap();
+
+    assert!(!operations.is_empty());
+}
+
+#[test]
+fn the_iam_document_is_byte_identical_across_generations() {
+    let first = iam_document().unwrap();
+
+    for _ in 0..20 {
+        assert_eq!(iam_document().unwrap(), first);
+    }
+}
+
+#[test]
+fn a_path_item_keeps_the_operations_of_the_tag_and_loses_the_others() {
+    let mut item = json!({
+        "get": {"tags": ["iam"]},
+        "post": {"tags": ["other"]},
+        "parameters": []
+    });
+
+    assert!(retain_tagged(&mut item, "iam"));
+
+    assert_eq!(item, json!({"get": {"tags": ["iam"]}, "parameters": []}));
+}
+
+#[rstest]
+#[case::only_other_tags(json!({"get": {"tags": ["other"]}}))]
+#[case::no_tags(json!({"get": {}}))]
+#[case::tags_of_another_type(json!({"get": {"tags": "iam"}}))]
+#[case::not_an_object(json!("text"))]
+fn a_path_item_without_an_operation_of_the_tag_is_dropped(#[case] mut item: Value) {
+    assert!(!retain_tagged(&mut item, "iam"));
+}
+
+#[test]
+fn a_document_without_paths_is_returned_unchanged_in_content() {
+    let document = utoipa::openapi::OpenApiBuilder::new().build();
+
+    let text = tagged_json(&document, "iam").unwrap();
+
+    let value: Value = serde_json::from_str(&text).unwrap();
+    assert!(value["paths"].as_object().unwrap().is_empty());
+}
+
+#[rstest]
+#[case::no_paths(json!({"openapi": "3.1.0"}))]
+#[case::paths_that_are_not_an_object(json!({"openapi": "3.1.0", "paths": []}))]
+fn a_json_document_without_a_paths_object_is_left_as_it_is(#[case] mut document: Value) {
+    let before = document.clone();
+
+    retain_tagged_paths(&mut document, "iam");
+
+    assert_eq!(document, before);
+}
+
+#[test]
+fn the_paths_without_an_operation_of_the_tag_are_removed_from_a_json_document() {
+    let mut document = json!({"paths": {
+        "/kept": {"get": {"tags": ["iam"]}},
+        "/dropped": {"get": {"tags": ["other"]}}
+    }});
+
+    retain_tagged_paths(&mut document, "iam");
+
+    assert_eq!(
+        document,
+        json!({"paths": {"/kept": {"get": {"tags": ["iam"]}}}})
+    );
+}
+
+#[test]
+fn the_role_permissions_document_their_responses_headers_and_schemas() {
+    let json = json_document();
+    let path = &json["paths"]["/api/roles/{id}/permissions"];
+
+    let read = &path["get"];
+    assert_eq!(read["operationId"], "api_roles_id_permissions_get");
+    assert_eq!(read["tags"], json!(["iam"]));
+    assert_eq!(read["security"], json!([{ "bearerAuth": [] }]));
+    assert_eq!(
+        read["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/RolePermissions"
+    );
+    assert!(read["responses"]["200"]["headers"]["etag"].is_object());
+    assert!(read["responses"]["404"].is_object());
+
+    let replace = &path["put"];
+    assert_eq!(replace["operationId"], "api_roles_id_permissions_put");
+    assert_eq!(replace["tags"], json!(["iam"]));
+    assert_eq!(replace["security"], json!([{ "bearerAuth": [] }]));
+    let mut statuses: Vec<&str> = replace["responses"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    statuses.sort_unstable();
+    assert_eq!(
+        statuses,
+        [
+            "200", "400", "401", "404", "409", "412", "413", "415", "422", "428", "default"
+        ]
+    );
+    let headers = &replace["responses"]["200"]["headers"];
+    assert!(headers["etag"].is_object());
+    assert!(headers["iam-policy-version"].is_object());
+    let mut names: Vec<&str> = replace["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|parameter| parameter["name"].as_str())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(names, ["Idempotency-Key", "If-Match", "id"]);
+    let request = &json["components"]["schemas"]["SetRolePermissionsRequest"];
+    assert_eq!(request["properties"]["keys"]["maxItems"], 5000);
+    let grant = &json["components"]["schemas"]["RolePermission"];
+    for field in ["key", "kind", "service", "active", "wildcard"] {
+        assert!(grant["properties"][field].is_object(), "{field}");
+    }
 }
