@@ -6,6 +6,7 @@ pub mod extract;
 pub mod graphql_spec;
 pub mod handler;
 pub mod openapi_document_parser;
+pub mod openapi_spec;
 pub mod response;
 pub mod role;
 pub mod user_role;
@@ -58,7 +59,11 @@ where
 {
     OpenApiRouter::new()
         .routes(routes!(user_role::assign, user_role::list))
-        .routes(routes!(user_role::get_one))
+        .routes(routes!(
+            user_role::get_one,
+            user_role::update,
+            user_role::revoke
+        ))
 }
 
 /// The routes that upload specification documents, to be nested under `/api`.
@@ -71,7 +76,11 @@ where
     S: Clone + Send + Sync + 'static,
     IamState: FromRef<S>,
 {
-    OpenApiRouter::new().routes(routes!(graphql_spec::load))
+    OpenApiRouter::new()
+        .routes(routes!(graphql_spec::load, graphql_spec::list))
+        .routes(routes!(graphql_spec::get_one))
+        .routes(routes!(graphql_spec::get_diff))
+        .routes(routes!(openapi_spec::load))
 }
 
 #[cfg(test)]

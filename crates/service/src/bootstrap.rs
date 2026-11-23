@@ -14,14 +14,20 @@ use health_check_domain::HealthProbe;
 use health_check_infrastructure::{CacheProbe, PostgresProbe, SqsProbe};
 use iam_application::graphql::AsyncGraphQlSchemaParser;
 use iam_application::http::IamState;
+use iam_application::http::JsonOpenApiDocumentParser;
 use iam_application::{
     AssignUserRoleCommandHandler, GetUserRoleQueryHandler, ListUserRolesQueryHandler,
+    RevokeUserRoleCommandHandler, UpdateUserRoleCommandHandler,
 };
 use iam_application::{
     CreateRoleCommandHandler, GetRoleQueryHandler, ListRolesQueryHandler, UpdateRoleCommandHandler,
 };
 use iam_application::{
-    FindGraphQlSpecQueryHandler, GetGraphQlSpecDiffQueryHandler, LoadGraphQlSpecCommandHandler,
+    FindGraphQlSpecQueryHandler, GetGraphQlSpecDiffQueryHandler, GetGraphQlSpecQueryHandler,
+    GetGraphQlSpecsQueryHandler, LoadGraphQlSpecCommandHandler,
+};
+use iam_application::{
+    FindOpenApiSpecQueryHandler, GetOpenApiSpecDiffQueryHandler, LoadOpenApiSpecCommandHandler,
 };
 use iam_application::{
     GetChangeReceiptQueryHandler, GetIdempotentReplayQueryHandler, GetPolicyEpochQueryHandler,
@@ -337,8 +343,8 @@ fn register_graphql_spec_commands(
     Ok(bus.register(load)?)
 }
 
-/// Registers the query handlers that read GraphQL specifications: the lookup of an identical upload
-/// and the version with its diff.
+/// Registers the query handlers that read GraphQL specifications: the lookup of an identical upload,
+/// the version with its diff, the version alone and the list of versions.
 fn register_graphql_spec_queries(
     bus: InMemoryQueryBus,
     adapters: &Adapters,
@@ -348,10 +354,45 @@ fn register_graphql_spec_queries(
         Arc::clone(&adapters.graphql_specs),
         Arc::clone(&adapters.roles),
     );
+    let one = GetGraphQlSpecQueryHandler::new(Arc::clone(&adapters.graphql_specs));
+    let list = GetGraphQlSpecsQueryHandler::new(Arc::clone(&adapters.graphql_specs));
+    Ok(bus
+        .register(find)?
+        .register(diff)?
+        .register(one)?
+        .register(list)?)
+}
+
+/// Registers the command handler that loads `OpenAPI` specifications.
+fn register_openapi_spec_commands(
+    bus: InMemoryCommandBus,
+    adapters: &Adapters,
+) -> Result<InMemoryCommandBus, BootstrapError> {
+    let load = LoadOpenApiSpecCommandHandler::new(
+        Arc::clone(&adapters.unit_of_work),
+        Arc::new(JsonOpenApiDocumentParser),
+        Arc::clone(&adapters.request_digester),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    Ok(bus.register(load)?)
+}
+
+/// Registers the query handlers that read `OpenAPI` specifications: the lookup of an identical
+/// upload and the version with its diff.
+fn register_openapi_spec_queries(
+    bus: InMemoryQueryBus,
+    adapters: &Adapters,
+) -> Result<InMemoryQueryBus, BootstrapError> {
+    let find = FindOpenApiSpecQueryHandler::new(Arc::clone(&adapters.openapi_specs));
+    let diff = GetOpenApiSpecDiffQueryHandler::new(
+        Arc::clone(&adapters.openapi_specs),
+        Arc::clone(&adapters.roles),
+    );
     Ok(bus.register(find)?.register(diff)?)
 }
 
-/// Registers the command handler of the IAM role assignments.
+/// Registers the command handlers of the IAM role assignments.
 fn register_user_role_commands(
     bus: InMemoryCommandBus,
     adapters: &Adapters,
@@ -362,7 +403,20 @@ fn register_user_role_commands(
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
-    Ok(bus.register(assign)?)
+    let update = UpdateUserRoleCommandHandler::new(
+        Arc::clone(&adapters.user_roles),
+        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    let revoke = RevokeUserRoleCommandHandler::new(
+        Arc::clone(&adapters.user_roles),
+        Arc::clone(&adapters.roles),
+        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    Ok(bus.register(assign)?.register(update)?.register(revoke)?)
 }
 
 /// Registers the query handlers of the IAM role assignments.
@@ -396,6 +450,7 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
     let commands = register_commands(InMemoryCommandBus::new(), create)?;
     let commands = register_role_commands(commands, adapters)?;
     let commands = register_graphql_spec_commands(commands, adapters)?;
+    let commands = register_openapi_spec_commands(commands, adapters)?;
     let commands = register_user_role_commands(commands, adapters)?;
     let queries = InMemoryQueryBus::new();
     let queries = register_queries(queries, &adapters.repository, &adapters.policy_epochs)?;
@@ -403,6 +458,7 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
     let queries = register_change_queries(queries, receipts, keys, &adapters.clock)?;
     let queries = register_role_queries(queries, &adapters.roles)?;
     let queries = register_graphql_spec_queries(queries, adapters)?;
+    let queries = register_openapi_spec_queries(queries, adapters)?;
     let queries = register_user_role_queries(queries, adapters)?;
     let queries = register_token_queries(queries, &adapters.tokens, config)?;
     Ok((Arc::new(commands), Arc::new(queries)))

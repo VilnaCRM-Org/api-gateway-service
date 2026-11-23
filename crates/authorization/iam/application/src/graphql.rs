@@ -9,6 +9,7 @@
 //! second.
 
 pub mod graphql_spec;
+pub mod openapi_spec;
 pub mod schema_parser;
 pub mod user_role;
 
@@ -32,10 +33,15 @@ use crate::http::handler::resolve_credential;
 use crate::http::role::{create_role, find_role, list_roles, parse_role_id, update_role};
 use crate::principal::Principal;
 
-use graphql_spec::{GraphQlSpecObject, LoadGraphQlSpecInput, load_graphql_spec_field};
+use graphql_spec::{
+    GraphQlSpecFilterInput, GraphQlSpecObject, GraphQlSpecPageObject, LoadGraphQlSpecInput,
+    graphql_spec_field, graphql_specs_field, load_graphql_spec_field,
+};
+use openapi_spec::{LoadOpenApiSpecInput, OpenApiSpecObject, load_openapi_spec_field};
 use user_role::{
-    AssignUserRoleInput, UserRoleFilterInput, UserRoleObject, UserRolePageObject,
-    assign_user_role_field, user_role_field, user_roles_field,
+    AssignUserRoleInput, RevokeUserRoleInput, RevokeUserRolePayload, UpdateUserRoleInput,
+    UserRoleFilterInput, UserRoleObject, UserRolePageObject, assign_user_role_field,
+    revoke_user_role_field, update_user_role_field, user_role_field, user_roles_field,
 };
 
 pub use schema_parser::AsyncGraphQlSchemaParser;
@@ -312,6 +318,28 @@ impl IamMutation {
             .map_err(iam_problem_to_graphql_error)
     }
 
+    /// Sets, extends, shortens or clears the expiry of an assignment when `expectedVersion` is the current version, increases the version, takes the next policy version and records `iam.user_role.updated`. `expiresAt` is required: a time in the future, or null to clear the expiry.
+    async fn update_user_role(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateUserRoleInput,
+    ) -> async_graphql::Result<UserRoleObject> {
+        update_user_role_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Revokes an assignment when `expectedVersion` is the current version: it leaves the active listings at once, the next policy version is committed, and `iam.user_role.revoked` and an audit record are written in the same transaction.
+    async fn revoke_user_role(
+        &self,
+        ctx: &Context<'_>,
+        input: RevokeUserRoleInput,
+    ) -> async_graphql::Result<RevokeUserRolePayload> {
+        revoke_user_role_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
     /// Renames a custom role or changes its description when `expectedVersion` is the current version, increases the version and records `iam.role.updated`.
     async fn update_role(
         &self,
@@ -330,6 +358,17 @@ impl IamMutation {
         input: LoadGraphQlSpecInput,
     ) -> async_graphql::Result<GraphQlSpecObject> {
         load_graphql_spec_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Loads the `OpenAPI` document of a service as a draft version and returns it with its diff against the active versions; a document that the service already holds returns its version and changes nothing. The service `iam` is reserved.
+    async fn load_openapi_spec(
+        &self,
+        ctx: &Context<'_>,
+        input: LoadOpenApiSpecInput,
+    ) -> async_graphql::Result<OpenApiSpecObject> {
+        load_openapi_spec_field(ctx, input)
             .await
             .map_err(iam_problem_to_graphql_error)
     }
@@ -386,6 +425,32 @@ impl IamQuery {
             kind: filter.kind,
         };
         roles_field(ctx, params)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves a GraphQL specification version by id; null when it is unknown. The fields `sdl` and `diff` are read only when the query selects them.
+    async fn graphql_spec(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> async_graphql::Result<Option<GraphQlSpecObject>> {
+        graphql_spec_field(ctx, &id)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves one page of GraphQL specification versions in a stable order, filtered by service and status.
+    async fn graphql_specs(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 30, desc = "Page size, from 1 to 100.")] first: Option<i32>,
+        #[graphql(desc = "The nextCursor of the previous page.")] after: Option<String>,
+        #[graphql(desc = "Only versions that match the filter.")] filter: Option<
+            GraphQlSpecFilterInput,
+        >,
+    ) -> async_graphql::Result<GraphQlSpecPageObject> {
+        graphql_specs_field(ctx, first, after, filter.unwrap_or_default())
             .await
             .map_err(iam_problem_to_graphql_error)
     }

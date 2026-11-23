@@ -6,4 +6,7 @@
 pub mod assign_user_role;
 pub mod create_role;
 pub mod load_graphql_spec;
+pub mod load_openapi_spec;
+pub mod revoke_user_role;
 pub mod update_role;
+pub mod update_user_role;

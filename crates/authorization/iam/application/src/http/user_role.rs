@@ -18,16 +18,21 @@ use iam_domain::{
 use shared_application::http::{ApiPath, Problem, ValidatedJson, ValidatedQuery, Violation};
 
 use super::IamState;
-use super::extract::{CallerPrincipal, IdempotencyKeyHeader};
-use super::response::{WriteHeaders, created_headers, etag};
+use super::extract::{CallerPrincipal, IdempotencyKeyHeader, VersionedWriteHeaders};
+use super::response::{WriteHeaders, change_headers, created_headers, etag};
 use crate::command::assign_user_role::AssignUserRoleCommand;
+use crate::command::revoke_user_role::RevokeUserRoleCommand;
+use crate::command::update_user_role::UpdateUserRoleCommand;
 use crate::error::IamError;
 use crate::principal::Principal;
 use crate::query::get_change_receipt::GetChangeReceiptQuery;
 use crate::query::get_idempotent_replay::GetIdempotentReplayQuery;
 use crate::query::get_user_role::{GetUserRoleQuery, UserRoleView};
 use crate::query::list_user_roles::UserRolePage;
-use dto::{AssignUserRoleRequest, ListUserRolesParams, UserRolePageResponse, UserRoleResponse};
+use dto::{
+    AssignUserRoleRequest, ListUserRolesParams, UpdateUserRoleRequest, UserRolePageResponse,
+    UserRoleResponse, revoke_canonical_form,
+};
 
 /// The path of the assignment collection, under which a created assignment has its `Location`.
 const USER_ROLES_PATH: &str = "/api/user-roles";
@@ -115,6 +120,97 @@ async fn read_assigned(
     let id = UserRoleId::parse(receipt.target().target_id()).map_err(IamError::from)?;
     let user_role = find_user_role(state, id).await?.ok_or(IamError::NotFound)?;
     Ok((user_role, receipt))
+}
+
+/// Changes the expiry of the assignment `id` as `caller` when it still holds the version
+/// `expected`, or replays the update that `key` already committed; REST and GraphQL share it.
+///
+/// The receipt of the change and the assignment are read back, because a command returns no data.
+///
+/// # Errors
+///
+/// The problem of a refused request: 404 for an unknown or revoked assignment, 409 for a concurrent
+/// change, 412 for a stale version, 422 for an expiry that is invalid or not in the future or a
+/// key reused for another request, 500 for a storage failure.
+pub(crate) async fn update_user_role(
+    state: &IamState,
+    caller: &Principal,
+    id: UserRoleId,
+    headers: VersionedWriteHeaders,
+    request: UpdateUserRoleRequest,
+) -> Result<(UserRoleView, ChangeReceipt), Problem> {
+    let VersionedWriteHeaders { expected, key } = headers;
+    let expires_at = request.parse()?;
+    let actor = caller.actor();
+    let idempotency = key.map(|key| IdempotencyRequest {
+        key,
+        request_digest: state
+            .request_digester
+            .digest(&request.canonical_form(id, expected)),
+    });
+    let receipt = if let Some(replayed) = find_replay(state, &actor, idempotency.as_ref()).await? {
+        replayed
+    } else {
+        let change_id = ChangeId::from_uuid(state.uuid_generator.generate());
+        let command = UpdateUserRoleCommand {
+            change_id,
+            user_role_id: id,
+            actor,
+            expected,
+            expires_at,
+            idempotency,
+        };
+        state.command_bus.dispatch(command).await?;
+        state
+            .query_bus
+            .ask(GetChangeReceiptQuery { change_id })
+            .await?
+    };
+    let user_role = find_user_role(state, id).await?.ok_or(IamError::NotFound)?;
+    Ok((user_role, receipt))
+}
+
+/// Revokes the assignment `id` as `caller` when it still holds the version `expected`, or replays
+/// the revocation that `key` already committed; REST and GraphQL share it.
+///
+/// It returns the receipt of the change, because a command returns no data and a revoked
+/// assignment can no longer be read.
+///
+/// # Errors
+///
+/// The problem of a refused request: 404 for an unknown or already revoked assignment, 409 for a
+/// concurrent change, 412 for a stale version, 422 for a key reused for another request, 500 for a
+/// storage failure.
+pub(crate) async fn revoke_user_role(
+    state: &IamState,
+    caller: &Principal,
+    id: UserRoleId,
+    headers: VersionedWriteHeaders,
+) -> Result<ChangeReceipt, Problem> {
+    let VersionedWriteHeaders { expected, key } = headers;
+    let actor = caller.actor();
+    let idempotency = key.map(|key| IdempotencyRequest {
+        key,
+        request_digest: state
+            .request_digester
+            .digest(&revoke_canonical_form(id, expected)),
+    });
+    if let Some(replayed) = find_replay(state, &actor, idempotency.as_ref()).await? {
+        return Ok(replayed);
+    }
+    let change_id = ChangeId::from_uuid(state.uuid_generator.generate());
+    let command = RevokeUserRoleCommand {
+        change_id,
+        user_role_id: id,
+        actor,
+        expected,
+        idempotency,
+    };
+    state.command_bus.dispatch(command).await?;
+    Ok(state
+        .query_bus
+        .ask(GetChangeReceiptQuery { change_id })
+        .await?)
 }
 
 /// The assignment with the identifier and its role name, none when it is unknown or revoked.
@@ -243,6 +339,123 @@ pub async fn get_one(
         .ok_or(IamError::NotFound)?;
     let tag = etag(user_role.user_role.version);
     Ok(([(ETAG, tag)], Json(UserRoleResponse::from(user_role))))
+}
+
+/// Updates the expiry of an assignment.
+///
+/// # Errors
+///
+/// A problem document: 401 without a valid token, 404 for an unknown or revoked assignment, 412
+/// for a stale `If-Match`, 422 for an invalid expiry, an expiry in the past or a reused idempotency
+/// key, 428 without `If-Match`, 500 when the storage fails.
+#[utoipa::path(
+    patch,
+    path = "/user-roles/{id}",
+    operation_id = "api_user_roles_id_patch",
+    tag = "iam",
+    summary = "Updates a role assignment.",
+    description = "Sets, extends, shortens or clears the expiry of an assignment when `If-Match` holds the current `ETag`, increases the version, takes the next policy version and records `iam.user_role.updated`. `expiresAt` is required: a time in the future, or `null` to clear the expiry. A repeated `Idempotency-Key` with the same request within 24 hours returns the original result.",
+    security(("bearerAuth" = [])),
+    params(
+        ("id" = String, Path, format = Uuid, description = "Assignment identifier"),
+        ("If-Match" = String, Header, description = "The `ETag` of the version the update changes, such as `\"3\"`."),
+        ("Idempotency-Key" = Option<String>, Header, description = "Makes the update safe to repeat for 24 hours; 1 to 255 visible ASCII characters.")
+    ),
+    request_body(content = UpdateUserRoleRequest, content_type = "application/json"),
+    responses(
+        (
+            status = 200,
+            description = "The assignment was updated.",
+            body = UserRoleResponse,
+            headers(
+                ("etag" = String, description = "The new version of the assignment in double quotes."),
+                ("iam-policy-version" = String, description = "The policy version that the change produced.")
+            )
+        ),
+        (status = 400, description = "Invalid input.", body = Problem, content_type = "application/problem+json"),
+        (
+            status = 401,
+            description = "The caller presented no valid bearer token.",
+            body = Problem,
+            content_type = "application/problem+json",
+            headers(("www-authenticate" = String, description = "The `Bearer` challenge."))
+        ),
+        (status = 404, description = "Assignment not found or revoked.", body = Problem, content_type = "application/problem+json"),
+        (status = 412, description = "`If-Match` is not the current version.", body = Problem, content_type = "application/problem+json"),
+        (status = 413, description = "Request body too large.", body = Problem, content_type = "application/problem+json"),
+        (status = 415, description = "Unsupported media type.", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Validation failed: an invalid expiry (`expiresAt`), an expiry in the past, or the idempotency key was used for another request.", body = Problem, content_type = "application/problem+json"),
+        (status = 428, description = "`If-Match` is missing.", body = Problem, content_type = "application/problem+json"),
+        (status = "default", description = "Problem response.", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+pub async fn update(
+    State(state): State<IamState>,
+    CallerPrincipal(caller): CallerPrincipal,
+    ApiPath(id): ApiPath<String>,
+    headers: VersionedWriteHeaders,
+    ValidatedJson(body): ValidatedJson<UpdateUserRoleRequest>,
+) -> Result<(WriteHeaders, Json<UserRoleResponse>), Problem> {
+    let (user_role, receipt) =
+        update_user_role(&state, &caller, parse_user_role_id(&id)?, headers, body).await?;
+    Ok((
+        change_headers(&receipt),
+        Json(UserRoleResponse::from(user_role)),
+    ))
+}
+
+/// Revokes an assignment.
+///
+/// # Errors
+///
+/// A problem document: 401 without a valid token, 404 for an unknown or already revoked
+/// assignment, 412 for a stale `If-Match`, 422 for an id that is not a UUID or a reused
+/// idempotency key, 428 without `If-Match`, 500 when the storage fails.
+#[utoipa::path(
+    delete,
+    path = "/user-roles/{id}",
+    operation_id = "api_user_roles_id_delete",
+    tag = "iam",
+    summary = "Revokes a role assignment.",
+    description = "Revokes the assignment when `If-Match` holds the current `ETag`: it leaves the active listings at once, the next policy version is committed, and `iam.user_role.revoked` and an audit record are written in the same transaction. A repeated `Idempotency-Key` with the same request within 24 hours returns the original result.",
+    security(("bearerAuth" = [])),
+    params(
+        ("id" = String, Path, format = Uuid, description = "Assignment identifier"),
+        ("If-Match" = String, Header, description = "The `ETag` of the version the revocation ends, such as `\"3\"`."),
+        ("Idempotency-Key" = Option<String>, Header, description = "Makes the revocation safe to repeat for 24 hours; 1 to 255 visible ASCII characters.")
+    ),
+    responses(
+        (
+            status = 204,
+            description = "The assignment was revoked.",
+            headers(
+                ("etag" = String, description = "The final version of the assignment in double quotes."),
+                ("iam-policy-version" = String, description = "The policy version that the change produced.")
+            )
+        ),
+        (status = 400, description = "Invalid identifier.", body = Problem, content_type = "application/problem+json"),
+        (
+            status = 401,
+            description = "The caller presented no valid bearer token.",
+            body = Problem,
+            content_type = "application/problem+json",
+            headers(("www-authenticate" = String, description = "The `Bearer` challenge."))
+        ),
+        (status = 404, description = "Assignment not found or already revoked.", body = Problem, content_type = "application/problem+json"),
+        (status = 412, description = "`If-Match` is not the current version.", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Validation failed, or the idempotency key was used for another request.", body = Problem, content_type = "application/problem+json"),
+        (status = 428, description = "`If-Match` is missing.", body = Problem, content_type = "application/problem+json"),
+        (status = "default", description = "Problem response.", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+pub async fn revoke(
+    State(state): State<IamState>,
+    CallerPrincipal(caller): CallerPrincipal,
+    ApiPath(id): ApiPath<String>,
+    headers: VersionedWriteHeaders,
+) -> Result<(StatusCode, WriteHeaders), Problem> {
+    let receipt = revoke_user_role(&state, &caller, parse_user_role_id(&id)?, headers).await?;
+    Ok((StatusCode::NO_CONTENT, change_headers(&receipt)))
 }
 
 /// Lists assignments.

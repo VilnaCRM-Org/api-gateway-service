@@ -2,7 +2,7 @@
 
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
-use axum::http::header::CONTENT_TYPE;
+use axum::http::header::{CONTENT_TYPE, WWW_AUTHENTICATE};
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
@@ -12,6 +12,8 @@ use validator::{ValidationErrors, ValidationErrorsKind};
 
 /// Media type of every error response.
 pub const PROBLEM_CONTENT_TYPE: &str = "application/problem+json";
+/// The `WWW-Authenticate` challenge of every 401 problem (RFC 9110, section 15.5.2).
+pub const BEARER_CHALLENGE: &str = "Bearer";
 /// `type` of a problem whose status says everything.
 pub const TYPE_BLANK: &str = "about:blank";
 /// `type` of a constraint violation in a body or a query.
@@ -151,6 +153,11 @@ impl IntoResponse for Problem {
         response
             .headers_mut()
             .insert(CONTENT_TYPE, HeaderValue::from_static(PROBLEM_CONTENT_TYPE));
+        if status == StatusCode::UNAUTHORIZED {
+            response
+                .headers_mut()
+                .insert(WWW_AUTHENTICATE, HeaderValue::from_static(BEARER_CHALLENGE));
+        }
         response
     }
 }

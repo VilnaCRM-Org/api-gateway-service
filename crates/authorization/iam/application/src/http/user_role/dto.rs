@@ -6,10 +6,10 @@
 use std::time::SystemTime;
 
 use iam_domain::{
-    AssignmentScope, InvalidIamValue, ProjectId, RoleId, SubjectKind, SubjectRef, UserRoleId,
-    UserRoleParts,
+    AssignmentScope, EntityVersion, InvalidIamValue, ProjectId, RoleId, SubjectKind, SubjectRef,
+    UserRoleId, UserRoleParts,
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use shared_application::http::Violation;
 use utoipa::{IntoParams, ToSchema};
 use validator::Validate;
@@ -218,6 +218,57 @@ fn violation_of(property_path: &str, error: InvalidIamValue) -> Violation {
         message: error.to_string(),
         code: error.code().to_owned(),
     }
+}
+
+/// The member of an update that must be present: a time, or `null` to clear the expiry.
+fn required_expiry<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    Option::<String>::deserialize(deserializer)
+}
+
+/// Body of the assignment-update operation.
+#[derive(Debug, Clone, Deserialize, ToSchema, Validate)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schema(as = UpdateUserRoleRequest)]
+pub struct UpdateUserRoleRequest {
+    /// The new expiry, as an RFC 3339 UTC time in the future; `null` clears the expiry. The member
+    /// is required, so that an empty body never clears an expiry by accident.
+    #[serde(deserialize_with = "required_expiry")]
+    #[schema(required = true, nullable = true, value_type = Option<String>, format = DateTime, example = "2027-01-15T08:00:00Z")]
+    #[validate(length(max = 40, message = "This value must contain 40 characters or fewer."))]
+    pub expires_at: Option<String>,
+}
+
+impl UpdateUserRoleRequest {
+    /// The text that the idempotency digest covers: the operation, the assignment, the version and
+    /// the expiry.
+    #[must_use]
+    pub fn canonical_form(&self, id: UserRoleId, expected: EntityVersion) -> String {
+        format!(
+            "user_role.update:{:?}",
+            (id.to_string(), expected.value(), &self.expires_at)
+        )
+    }
+
+    /// Parses the expiry; `None` clears it.
+    ///
+    /// # Errors
+    ///
+    /// [`IamError::Invalid`] with a violation of `expiresAt` when the text is not an RFC 3339 UTC
+    /// time.
+    pub fn parse(&self) -> Result<Option<SystemTime>, IamError> {
+        self.expires_at
+            .as_deref()
+            .map(parse_expiry)
+            .transpose()
+            .map_err(|violation| IamError::Invalid(vec![violation]))
+    }
+}
+
+/// The text that the idempotency digest of a revocation covers: the operation, the assignment and
+/// the version.
+#[must_use]
+pub fn revoke_canonical_form(id: UserRoleId, expected: EntityVersion) -> String {
+    format!("user_role.revoke:{:?}", (id.to_string(), expected.value()))
 }
 
 /// A role assignment.

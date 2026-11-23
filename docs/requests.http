@@ -170,6 +170,58 @@ Content-Type: application/json
   "variables": { "input": { "service": "billing", "sdl": "type Query { invoices: [String!]! }" } }
 }
 
+### Load an OpenAPI specification over REST: a draft version with its hash, operation count and the diff against the active versions (201); the same document again returns that version (200). The document is JSON text of at most 5 MiB with internal references only; a violation carries the JSON pointer of the fault (422). The service iam is reserved (403); a body is limited to 6 MiB (413)
+POST {{baseUrl}}/api/openapi-specs
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "service": "billing",
+  "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{\"operationId\":\"listInvoices\"}},\"/invoices/{invoiceId}\":{\"post\":{\"operationId\":\"payInvoice\",\"x-iam-sensitive\":true}}}}"
+}
+
+### Load an OpenAPI specification over GraphQL: the same data as the REST operation; the error codes FORBIDDEN and VALIDATION_FAILED
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: LoadOpenapiSpecInput!) { loadOpenapiSpec(input: $input) { id service contentHash status uploadedBy createdAt operationCount diff { added removed removedGrants { operation roles } wildcardGains { role pattern operations } flagDowngrades { operation before { sensitive auditAlways } after { sensitive auditAlways } } } } }",
+  "variables": { "input": { "service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{}}}}" } }
+}
+
+### List GraphQL specifications over REST: one page in a stable order with nextCursor; filters service and status; the SDL only with includeSdl=true; 422 for an invalid parameter
+GET {{baseUrl}}/api/graphql-specs?service=billing&status=draft&limit=10&includeSdl=false
+Authorization: Bearer <caller token>
+
+### Read a GraphQL specification over REST: service, hash, status, uploader, timestamps and coordinate count; the SDL only with includeSdl=true; 404 for an unknown version
+GET {{baseUrl}}/api/graphql-specs/01a1c6b5-cb86-7134-868a-7608036facfd?includeSdl=true
+Authorization: Bearer <caller token>
+
+### Read the diff of a GraphQL specification over REST: the added and removed coordinates, the removed coordinates that roles grant, the wildcard grants that gain coordinates and the flag downgrades such as a dropped @iamSensitive; 404 for an unknown version
+GET {{baseUrl}}/api/graphql-specs/01a1c6b5-cb86-7134-868a-7608036facfd/diff
+Authorization: Bearer <caller token>
+
+### Read GraphQL specifications over GraphQL: the same data as the REST operations; graphqlSpec is null for an unknown version, and sdl and diff are read only when they are selected
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($filter: GraphqlSpecFilter) { graphqlSpecs(first: 10, filter: $filter) { items { id service contentHash status uploadedBy createdAt activatedAt retiredAt coordinateCount diff { added removed removedGrants { coordinate roles } wildcardGains { role pattern coordinates } flagDowngrades { coordinate before { sensitive auditAlways } after { sensitive auditAlways } } } } nextCursor } }",
+  "variables": { "filter": { "service": "billing", "status": "draft" } }
+}
+
+### Read one GraphQL specification over GraphQL, with its SDL
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($id: ID!) { graphqlSpec(id: $id) { id service status coordinateCount sdl diff { removed removedGrants { coordinate roles } } } }",
+  "variables": { "id": "01a1c6b5-cb86-7134-868a-7608036facfd" }
+}
+
 ### Assign a role over REST: 201 with Location, ETag and Iam-Policy-Version; 409 for a duplicate assignment; 422 for an invalid value, an unknown role (roleId) or a past expiry (expiresAt)
 # The subject is a user (a UUID) or a service (a service name such as billing-worker); the scope is global or a project (with projectId). A role that grants a wildcard or an iam: key also records iam.privileged_role.assigned.
 POST {{baseUrl}}/api/user-roles
@@ -206,6 +258,44 @@ Content-Type: application/json
 {
   "query": "query ($id: ID!) { userRole(id: $id) { id subject { kind id } roleId roleName scope { kind projectId } expiresAt version createdAt updatedAt } }",
   "variables": { "id": "01a1c6b5-cb86-7134-868a-7608036facff" }
+}
+
+### Update an assignment's expiry over REST: 200 with the new ETag and Iam-Policy-Version; 428 without If-Match; 412 for a stale If-Match; 404 for an unknown or revoked assignment; 422 for an expiry that is not in the future
+# expiresAt is required: a time in the future sets, extends or shortens the expiry, and null clears it.
+PATCH {{baseUrl}}/api/user-roles/01a1c6b5-cb86-7134-868a-7608036facff
+Authorization: Bearer <caller token>
+If-Match: "1"
+Idempotency-Key: extend-billing-assignment
+Content-Type: application/json
+
+{
+  "expiresAt": "2027-06-01T00:00:00Z"
+}
+
+### Update an assignment's expiry over GraphQL: the same data as the REST operation; the error codes PRECONDITION_REQUIRED, PRECONDITION_FAILED, NOT_FOUND and VALIDATION_FAILED
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: UpdateUserRoleInput!) { updateUserRole(input: $input) { id subject { kind id } roleId roleName scope { kind projectId } expiresAt version createdAt updatedAt } }",
+  "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facff", "expectedVersion": 1, "expiresAt": null } }
+}
+
+### Revoke an assignment over REST: 204 with the final ETag and Iam-Policy-Version; 428 without If-Match; 412 for a stale If-Match; 404 for an unknown or already revoked assignment
+DELETE {{baseUrl}}/api/user-roles/01a1c6b5-cb86-7134-868a-7608036facff
+Authorization: Bearer <caller token>
+If-Match: "1"
+Idempotency-Key: revoke-billing-assignment
+
+### Revoke an assignment over GraphQL: the id, the final version and the policy version; the error codes PRECONDITION_REQUIRED, PRECONDITION_FAILED and NOT_FOUND
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: RevokeUserRoleInput!) { revokeUserRole(input: $input) { id version policyVersion } }",
+  "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facff", "expectedVersion": 1 } }
 }
 
 ### List assignments over REST: a page of 1 to 100 assignments with the nextCursor of the next page, filtered by subjectKind, subjectId, roleId, projectId and includeExpired

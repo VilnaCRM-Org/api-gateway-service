@@ -70,7 +70,7 @@ fn documents_every_operation(
 }
 
 #[test]
-fn documents_exactly_the_thirteen_operations() {
+fn documents_exactly_the_nineteen_operations() {
     let json = json_document();
     let mut operations = Vec::new();
     for (path, item) in json["paths"].as_object().unwrap() {
@@ -85,8 +85,12 @@ fn documents_exactly_the_thirteen_operations() {
             "get /api/example_api_resources",
             "post /api/example_api_resources",
             "get /api/example_api_resources/{id}",
+            "get /api/graphql-specs",
             "post /api/graphql-specs",
+            "get /api/graphql-specs/{id}",
+            "get /api/graphql-specs/{id}/diff",
             "get /api/health",
+            "post /api/openapi-specs",
             "get /api/roles",
             "post /api/roles",
             "get /api/roles/{id}",
@@ -95,6 +99,8 @@ fn documents_exactly_the_thirteen_operations() {
             "get /api/user-roles",
             "post /api/user-roles",
             "get /api/user-roles/{id}",
+            "delete /api/user-roles/{id}",
+            "patch /api/user-roles/{id}",
         ]
     );
 }
@@ -286,6 +292,114 @@ fn documents_the_graphql_specification_upload_with_its_statuses_and_schemas() {
 }
 
 #[test]
+fn documents_the_openapi_specification_upload_with_its_statuses_and_schemas() {
+    let json = json_document();
+    let operation = &json["paths"]["/api/openapi-specs"]["post"];
+
+    assert_eq!(operation["operationId"], "api_openapi_specs_post");
+    assert_eq!(operation["tags"], json!(["iam"]));
+    assert_eq!(operation["security"], json!([{ "bearerAuth": [] }]));
+    let mut documented: Vec<&str> = operation["responses"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    documented.sort_unstable();
+    assert_eq!(
+        documented,
+        [
+            "200", "201", "400", "401", "403", "409", "413", "415", "422", "default"
+        ]
+    );
+    assert_eq!(
+        operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/LoadOpenApiSpecRequest"
+    );
+    for status in ["200", "201"] {
+        assert_eq!(
+            operation["responses"][status]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/OpenApiSpec",
+            "{status}"
+        );
+        assert!(operation["responses"][status]["headers"]["location"].is_object());
+    }
+    let request = &json["components"]["schemas"]["LoadOpenApiSpecRequest"];
+    assert_eq!(request["additionalProperties"], false);
+    assert_eq!(request["required"], json!(["service", "document"]));
+}
+
+#[test]
+fn documents_the_graphql_specification_reads_with_the_bearer_requirement_and_the_iam_tag() {
+    let json = json_document();
+    let cases = [
+        (
+            "/api/graphql-specs",
+            "api_graphql_specs_get",
+            ["200", "400", "401", "422", "default"].as_slice(),
+            "#/components/schemas/GraphQlSpecPage",
+        ),
+        (
+            "/api/graphql-specs/{id}",
+            "api_graphql_specs_id_get",
+            ["200", "400", "401", "404", "422", "default"].as_slice(),
+            "#/components/schemas/GraphQlSpecSummary",
+        ),
+        (
+            "/api/graphql-specs/{id}/diff",
+            "api_graphql_specs_id_diff_get",
+            ["200", "400", "401", "404", "422", "default"].as_slice(),
+            "#/components/schemas/GraphQlSpecDiff",
+        ),
+    ];
+
+    for (path, operation_id, statuses, schema) in cases {
+        let operation = &json["paths"][path]["get"];
+        assert_eq!(operation["operationId"], operation_id);
+        assert_eq!(operation["tags"], json!(["iam"]), "{operation_id}");
+        assert_eq!(
+            operation["security"],
+            json!([{ "bearerAuth": [] }]),
+            "{operation_id}"
+        );
+        let mut documented: Vec<&str> = operation["responses"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        documented.sort_unstable();
+        assert_eq!(documented, statuses, "{operation_id}");
+        assert_eq!(
+            operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"], schema,
+            "{operation_id}"
+        );
+    }
+}
+
+#[test]
+fn the_graphql_specification_reads_document_their_query_parameters() {
+    let json = json_document();
+    let names = |path: &str| -> Vec<String> {
+        let mut names: Vec<String> = json["paths"][path]["get"]["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|parameter| parameter["name"].as_str().unwrap().to_owned())
+            .collect();
+        names.sort_unstable();
+        names
+    };
+
+    assert_eq!(
+        names("/api/graphql-specs"),
+        ["after", "includeSdl", "limit", "service", "status"]
+    );
+    assert_eq!(names("/api/graphql-specs/{id}"), ["id", "includeSdl"]);
+    assert_eq!(names("/api/graphql-specs/{id}/diff"), ["id"]);
+}
+
+#[test]
 fn the_role_creation_documents_its_request_headers_and_schemas() {
     let json = json_document();
     let operation = &json["paths"]["/api/roles"]["post"];
@@ -415,6 +529,21 @@ fn documents_the_assignment_operations_with_the_bearer_requirement_and_the_iam_t
             "api_user_roles_id_get",
             ["200", "400", "401", "404", "422", "default"].as_slice(),
         ),
+        (
+            "/api/user-roles/{id}",
+            "patch",
+            "api_user_roles_id_patch",
+            [
+                "200", "400", "401", "404", "412", "413", "415", "422", "428", "default",
+            ]
+            .as_slice(),
+        ),
+        (
+            "/api/user-roles/{id}",
+            "delete",
+            "api_user_roles_id_delete",
+            ["204", "400", "401", "404", "412", "422", "428", "default"].as_slice(),
+        ),
     ];
 
     for (path, method, operation_id, statuses) in cases {
@@ -434,16 +563,17 @@ fn documents_the_assignment_operations_with_the_bearer_requirement_and_the_iam_t
             .collect();
         documented.sort_unstable();
         assert_eq!(documented, statuses, "{operation_id}");
-        for status in statuses
-            .iter()
-            .filter(|status| **status != "200" && **status != "201")
-        {
+        for status in statuses.iter().filter(|status| !status.starts_with('2')) {
             assert_eq!(
                 operation["responses"][status]["content"]["application/problem+json"]["schema"]["$ref"],
                 "#/components/schemas/Problem",
                 "{operation_id} {status}"
             );
         }
+        assert!(
+            operation["responses"]["204"].get("content").is_none(),
+            "{operation_id}"
+        );
     }
 }
 
@@ -489,6 +619,36 @@ fn the_assignment_creation_documents_its_request_headers_and_schemas() {
             .get("nextCursor")
             .is_some()
     );
+}
+
+#[test]
+fn the_assignment_update_and_revocation_document_their_versioning_headers_and_schemas() {
+    let json = json_document();
+    let patch = &json["paths"]["/api/user-roles/{id}"]["patch"];
+    let delete = &json["paths"]["/api/user-roles/{id}"]["delete"];
+
+    assert_eq!(
+        patch["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/UpdateUserRoleRequest"
+    );
+    assert_eq!(
+        patch["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/UserRole"
+    );
+    assert!(delete.get("requestBody").is_none());
+    for operation in [patch, delete] {
+        let mut names: Vec<&str> = operation["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|parameter| parameter["name"].as_str().unwrap())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(names, ["Idempotency-Key", "If-Match", "id"]);
+    }
+    let schema = &json["components"]["schemas"]["UpdateUserRoleRequest"];
+    assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(schema["required"], json!(["expiresAt"]));
 }
 
 #[test]
@@ -582,7 +742,7 @@ fn carries_the_server_the_tags_and_only_the_bearer_scheme() {
 }
 
 #[test]
-fn defines_exactly_the_twenty_three_schemas() {
+fn defines_exactly_the_documented_schemas() {
     let json = json_document();
     let schemas = json["components"]["schemas"].as_object().unwrap();
 
@@ -601,14 +761,24 @@ fn defines_exactly_the_twenty_three_schemas() {
             "FlagDowngrade",
             "GraphQlSpec",
             "GraphQlSpecDiff",
+            "GraphQlSpecPage",
+            "GraphQlSpecSummary",
             "LoadGraphQlSpecRequest",
+            "LoadOpenApiSpecRequest",
+            "OpenApiSpec",
+            "OpenApiSpecDiff",
+            "OperationFlagDowngrade",
+            "OperationFlags",
+            "OperationWildcardGain",
             "Problem",
             "RemovedGrant",
+            "RemovedOperationGrant",
             "Role",
             "RolePage",
             "TokenResolution",
             "TokenResolutionRequest",
             "UpdateRoleRequest",
+            "UpdateUserRoleRequest",
             "UserRole",
             "UserRolePage",
             "Violation",

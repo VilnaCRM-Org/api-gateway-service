@@ -3,18 +3,21 @@
 //! The resolvers share the use-case calls and the response shapes of the REST handlers, so both
 //! transports apply one set of rules.
 
-use async_graphql::{Context, ID, InputObject, SimpleObject};
-use shared_application::http::Problem;
+use async_graphql::{Context, ID, InputObject, MaybeUndefined, SimpleObject};
+use shared_application::http::{Problem, Violation};
 use validator::Validate as _;
 
-use super::{idempotency_key, require_caller, state};
+use super::{expected_version, idempotency_key, require_caller, state};
+use crate::error::IamError;
 use crate::http::dto::DEFAULT_PAGE_SIZE;
+use crate::http::extract::VersionedWriteHeaders;
 use crate::http::user_role::dto::{
-    AssignUserRoleRequest, ListUserRolesParams, ScopeDto, SubjectDto, UserRolePageResponse,
-    UserRoleResponse,
+    AssignUserRoleRequest, ListUserRolesParams, ScopeDto, SubjectDto, UpdateUserRoleRequest,
+    UserRolePageResponse, UserRoleResponse,
 };
 use crate::http::user_role::{
-    assign_user_role, find_user_role, list_user_roles, parse_user_role_id,
+    assign_user_role, find_user_role, list_user_roles, parse_user_role_id, revoke_user_role,
+    update_user_role,
 };
 
 /// Who receives a role, as an input.
@@ -51,6 +54,44 @@ pub struct AssignUserRoleInput {
     pub expires_at: Option<String>,
     /// Makes the assignment safe to repeat for 24 hours: 1 to 255 visible ASCII characters.
     pub idempotency_key: Option<String>,
+}
+
+/// Input of the assignment-update mutation.
+#[derive(Debug, InputObject)]
+#[graphql(name = "UpdateUserRoleInput")]
+pub struct UpdateUserRoleInput {
+    /// The assignment to change.
+    pub id: ID,
+    /// The version the caller read; required, and the update is refused when it is not the current one.
+    pub expected_version: Option<i64>,
+    /// The new expiry, as an RFC 3339 UTC time in the future; null clears the expiry. The field is required.
+    pub expires_at: MaybeUndefined<String>,
+    /// Makes the update safe to repeat for 24 hours: 1 to 255 visible ASCII characters.
+    pub idempotency_key: Option<String>,
+}
+
+/// Input of the assignment-revocation mutation.
+#[derive(Debug, InputObject)]
+#[graphql(name = "RevokeUserRoleInput")]
+pub struct RevokeUserRoleInput {
+    /// The assignment to revoke.
+    pub id: ID,
+    /// The version the caller read; required, and the revocation is refused when it is not the current one.
+    pub expected_version: Option<i64>,
+    /// Makes the revocation safe to repeat for 24 hours: 1 to 255 visible ASCII characters.
+    pub idempotency_key: Option<String>,
+}
+
+/// The result of a revocation.
+#[derive(Debug, Clone, PartialEq, Eq, SimpleObject)]
+#[graphql(name = "RevokeUserRolePayload")]
+pub struct RevokeUserRolePayload {
+    /// The identifier of the revoked assignment.
+    pub id: ID,
+    /// The final version of the assignment.
+    pub version: i64,
+    /// The policy version that the revocation produced.
+    pub policy_version: Option<i64>,
 }
 
 /// Filters of the assignment list.
@@ -220,4 +261,56 @@ pub(super) async fn user_roles_field(
     params.validate()?;
     let page = list_user_roles(state(ctx)?, params).await?;
     Ok(UserRolePageObject::from(UserRolePageResponse::from(page)))
+}
+
+/// The expiry member of an update input: a missing field is a violation of `expiresAt`, because
+/// an update that names no expiry would otherwise clear it by accident.
+fn required_expiry(field: MaybeUndefined<String>) -> Result<Option<String>, IamError> {
+    match field {
+        MaybeUndefined::Undefined => Err(IamError::Invalid(vec![Violation {
+            property_path: "expiresAt".to_owned(),
+            message: "This value should not be missing; use null to clear the expiry.".to_owned(),
+            code: "required".to_owned(),
+        }])),
+        MaybeUndefined::Null => Ok(None),
+        MaybeUndefined::Value(text) => Ok(Some(text)),
+    }
+}
+
+/// Changes the expiry of an assignment as the caller of the request.
+pub(super) async fn update_user_role_field(
+    ctx: &Context<'_>,
+    input: UpdateUserRoleInput,
+) -> Result<UserRoleObject, Problem> {
+    let caller = require_caller(ctx)?;
+    let expected = expected_version(input.expected_version)?;
+    let id = parse_user_role_id(input.id.as_str())?;
+    let key = idempotency_key(input.idempotency_key.as_deref())?;
+    let request = UpdateUserRoleRequest {
+        expires_at: required_expiry(input.expires_at)?,
+    };
+    request.validate()?;
+    let headers = VersionedWriteHeaders { expected, key };
+    let (user_role, _receipt) = update_user_role(state(ctx)?, caller, id, headers, request).await?;
+    Ok(UserRoleObject::from(UserRoleResponse::from(user_role)))
+}
+
+/// Revokes an assignment as the caller of the request.
+pub(super) async fn revoke_user_role_field(
+    ctx: &Context<'_>,
+    input: RevokeUserRoleInput,
+) -> Result<RevokeUserRolePayload, Problem> {
+    let caller = require_caller(ctx)?;
+    let expected = expected_version(input.expected_version)?;
+    let id = parse_user_role_id(input.id.as_str())?;
+    let key = idempotency_key(input.idempotency_key.as_deref())?;
+    let headers = VersionedWriteHeaders { expected, key };
+    let receipt = revoke_user_role(state(ctx)?, caller, id, headers).await?;
+    Ok(RevokeUserRolePayload {
+        id: ID::from(receipt.target().target_id()),
+        version: receipt.entity_version().value(),
+        policy_version: receipt
+            .policy_version()
+            .map(iam_domain::PolicyVersion::value),
+    })
 }

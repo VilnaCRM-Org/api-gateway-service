@@ -13,7 +13,7 @@ use crate::http::IamState;
 use crate::principal::Principal;
 use crate::query::list_user_roles::{ListUserRolesQuery, UserRolePage};
 use crate::user_role_fixtures::{
-    Answers, PROJECT, SUBJECT, USER_ROLE, receipt, scenario, user_role,
+    Answers, PROJECT, SUBJECT, USER_ROLE, receipt, receipt_at, scenario, user_role,
 };
 
 type IamSchema = Schema<IamQuery, IamMutation, EmptySubscription>;
@@ -21,6 +21,10 @@ type IamSchema = Schema<IamQuery, IamMutation, EmptySubscription>;
 const ASSIGN: &str = "mutation($input: AssignUserRoleInput!) { assignUserRole(input: $input) \
     { id subject { kind id } roleId roleName scope { kind projectId } expiresAt version \
     createdAt updatedAt } }";
+const UPDATE: &str = "mutation($input: UpdateUserRoleInput!) { updateUserRole(input: $input) \
+    { id roleName expiresAt version } }";
+const REVOKE: &str = "mutation($input: RevokeUserRoleInput!) { revokeUserRole(input: $input) \
+    { id version policyVersion } }";
 const USER_ROLE_BY_ID: &str = "query($id: ID!) { userRole(id: $id) { id roleName version } }";
 const USER_ROLES: &str = "query($first: Int, $after: String, $filter: UserRoleFilter) \
     { userRoles(first: $first, after: $after, filter: $filter) \
@@ -639,5 +643,308 @@ fn the_assignment_inputs_are_read_from_graphql_objects_and_reject_other_values()
     ] {
         let wrong = object(vec![(field, Value::List(Vec::new()))]);
         assert!(UserRoleFilterInput::parse(Some(wrong)).is_err(), "{field}");
+    }
+}
+
+fn updated(version: i64) -> Answers {
+    Answers {
+        receipt: receipt_at(version, Some(5)),
+        user_role: Ok(Some(user_role(version))),
+        ..Answers::default()
+    }
+}
+
+#[tokio::test]
+async fn an_updated_assignment_returns_its_data_and_dispatches_the_command() {
+    let (state, commands, queries, asked) = scenario(updated(2));
+    let variables = json!({ "input": {
+        "id": USER_ROLE,
+        "expectedVersion": 1,
+        "expiresAt": "2027-01-15T08:00:00Z",
+    } });
+
+    let response = run(&schema(Some(state)), Caller::Valid, UPDATE, variables).await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    assert_eq!(
+        response.data.into_json().unwrap(),
+        json!({ "updateUserRole": {
+            "id": USER_ROLE,
+            "roleName": "Billing",
+            "expiresAt": null,
+            "version": 2,
+        } })
+    );
+    assert_eq!(commands.dispatched(), ["UpdateUserRoleCommand"]);
+    assert_eq!(
+        queries.asked(),
+        ["GetChangeReceiptQuery", "GetUserRoleQuery"]
+    );
+    let sent = recorded(&asked.updates);
+    assert_eq!(sent[0].actor, ActorRef::User(Uuid::parse(USER).unwrap()));
+    assert_eq!(sent[0].user_role_id, UserRoleId::parse(USER_ROLE).unwrap());
+    assert_eq!(sent[0].expected.value(), 1);
+    assert!(sent[0].expires_at.is_some());
+    assert_eq!(sent[0].idempotency, None);
+}
+
+#[tokio::test]
+async fn a_null_expiry_clears_the_expiry_and_the_key_travels_with_the_command() {
+    let (state, _commands, _queries, asked) = scenario(updated(2));
+    let variables = json!({ "input": {
+        "id": USER_ROLE,
+        "expectedVersion": 1,
+        "expiresAt": null,
+        "idempotencyKey": "clear-billing",
+    } });
+
+    let response = run(&schema(Some(state)), Caller::Valid, UPDATE, variables).await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    let sent = recorded(&asked.updates);
+    assert_eq!(sent[0].expires_at, None);
+    assert_eq!(
+        sent[0]
+            .idempotency
+            .as_ref()
+            .map(|request| request.key.as_str()),
+        Some("clear-billing")
+    );
+}
+
+#[rstest]
+#[case::missing_expiry(json!({ "id": USER_ROLE, "expectedVersion": 1 }), "VALIDATION_FAILED")]
+#[case::invalid_expiry(json!({ "id": USER_ROLE, "expectedVersion": 1, "expiresAt": "soon" }), "VALIDATION_FAILED")]
+#[case::missing_version(json!({ "id": USER_ROLE, "expiresAt": null }), "PRECONDITION_REQUIRED")]
+#[case::stale_version(json!({ "id": USER_ROLE, "expectedVersion": 0, "expiresAt": null }), "PRECONDITION_FAILED")]
+#[case::bad_id(json!({ "id": "x", "expectedVersion": 1, "expiresAt": null }), "VALIDATION_FAILED")]
+#[case::bad_key(json!({ "id": USER_ROLE, "expectedVersion": 1, "expiresAt": null, "idempotencyKey": "" }), "VALIDATION_FAILED")]
+#[tokio::test]
+async fn an_invalid_update_input_is_refused_before_any_command(
+    #[case] input: serde_json::Value,
+    #[case] expected: &str,
+) {
+    let (state, commands, _queries, _asked) = scenario(updated(2));
+
+    let response = run(
+        &schema(Some(state)),
+        Caller::Valid,
+        UPDATE,
+        json!({ "input": input }),
+    )
+    .await;
+
+    assert_eq!(error_code(&response), Some(code_of(expected)));
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}
+
+#[tokio::test]
+async fn a_missing_expiry_is_a_violation_of_expires_at() {
+    let (state, _commands, _queries, _asked) = scenario(updated(2));
+    let variables = json!({ "input": { "id": USER_ROLE, "expectedVersion": 1 } });
+
+    let response = run(&schema(Some(state)), Caller::Valid, UPDATE, variables).await;
+
+    assert_eq!(violation_paths(&response), ["\"expiresAt\""]);
+}
+
+#[rstest]
+#[case::stale(Answers { update: Err(|| IamError::PreconditionFailed), ..updated(2) }, "PRECONDITION_FAILED")]
+#[case::unknown(Answers { update: Err(|| IamError::NotFound), ..updated(2) }, "NOT_FOUND")]
+#[case::conflict(Answers { update: Err(|| IamError::Conflict), ..updated(2) }, "CONFLICT")]
+#[case::past_expiry(
+    Answers {
+        update: Err(|| IamError::invalid_property("expiresAt", "in the past", "future")),
+        ..updated(2)
+    },
+    "VALIDATION_FAILED"
+)]
+#[case::replay_mismatch(
+    Answers { replay: Err(|| IamError::IdempotencyMismatch), ..updated(2) },
+    "VALIDATION_FAILED"
+)]
+#[tokio::test]
+async fn a_refused_update_has_the_code_of_its_error(
+    #[case] answers: Answers,
+    #[case] expected: &str,
+) {
+    let (state, _commands, _queries, _asked) = scenario(answers);
+    let variables = json!({ "input": {
+        "id": USER_ROLE,
+        "expectedVersion": 1,
+        "expiresAt": "2027-01-15T08:00:00Z",
+        "idempotencyKey": "k",
+    } });
+
+    let response = run(&schema(Some(state)), Caller::Valid, UPDATE, variables).await;
+
+    assert_eq!(error_code(&response), Some(code_of(expected)));
+}
+
+#[tokio::test]
+async fn a_revoked_assignment_returns_its_final_version_and_the_policy_version() {
+    let (state, commands, queries, asked) = scenario(updated(2));
+    let variables = json!({ "input": { "id": USER_ROLE, "expectedVersion": 1 } });
+
+    let response = run(&schema(Some(state)), Caller::Valid, REVOKE, variables).await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    assert_eq!(
+        response.data.into_json().unwrap(),
+        json!({ "revokeUserRole": { "id": USER_ROLE, "version": 2, "policyVersion": 5 } })
+    );
+    assert_eq!(commands.dispatched(), ["RevokeUserRoleCommand"]);
+    assert_eq!(queries.asked(), ["GetChangeReceiptQuery"]);
+    let sent = recorded(&asked.revocations);
+    assert_eq!(sent[0].user_role_id, UserRoleId::parse(USER_ROLE).unwrap());
+    assert_eq!(sent[0].expected.value(), 1);
+    assert_eq!(sent[0].idempotency, None);
+}
+
+#[tokio::test]
+async fn a_replayed_revocation_returns_the_original_result_without_a_command() {
+    let answers = Answers {
+        replay: Ok(Some(receipt_at(2, None))),
+        ..updated(2)
+    };
+    let (state, commands, _queries, _asked) = scenario(answers);
+    let variables = json!({ "input": {
+        "id": USER_ROLE,
+        "expectedVersion": 1,
+        "idempotencyKey": "revoke-billing",
+    } });
+
+    let response = run(&schema(Some(state)), Caller::Valid, REVOKE, variables).await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    assert_eq!(
+        response.data.into_json().unwrap(),
+        json!({ "revokeUserRole": { "id": USER_ROLE, "version": 2, "policyVersion": null } })
+    );
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}
+
+#[rstest]
+#[case::missing_version(json!({ "id": USER_ROLE }), "PRECONDITION_REQUIRED")]
+#[case::stale_version(json!({ "id": USER_ROLE, "expectedVersion": 0 }), "PRECONDITION_FAILED")]
+#[case::bad_id(json!({ "id": "x", "expectedVersion": 1 }), "VALIDATION_FAILED")]
+#[tokio::test]
+async fn an_invalid_revocation_input_is_refused_before_any_command(
+    #[case] input: serde_json::Value,
+    #[case] expected: &str,
+) {
+    let (state, commands, _queries, _asked) = scenario(updated(2));
+
+    let response = run(
+        &schema(Some(state)),
+        Caller::Valid,
+        REVOKE,
+        json!({ "input": input }),
+    )
+    .await;
+
+    assert_eq!(error_code(&response), Some(code_of(expected)));
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}
+
+#[rstest]
+#[case::stale(Answers { revoke: Err(|| IamError::PreconditionFailed), ..updated(2) }, "PRECONDITION_FAILED")]
+#[case::unknown(Answers { revoke: Err(|| IamError::NotFound), ..updated(2) }, "NOT_FOUND")]
+#[case::storage(
+    Answers { revoke: Err(|| IamError::Storage("disk on fire".into())), ..updated(2) },
+    "INTERNAL_SERVER_ERROR"
+)]
+#[tokio::test]
+async fn a_refused_revocation_has_the_code_of_its_error(
+    #[case] answers: Answers,
+    #[case] expected: &str,
+) {
+    let (state, _commands, _queries, _asked) = scenario(answers);
+    let variables = json!({ "input": { "id": USER_ROLE, "expectedVersion": 1 } });
+
+    let response = run(&schema(Some(state)), Caller::Valid, REVOKE, variables).await;
+
+    assert_eq!(error_code(&response), Some(code_of(expected)));
+}
+
+#[rstest]
+#[case::refused(Caller::Refused)]
+#[case::absent(Caller::Absent)]
+#[tokio::test]
+async fn the_change_fields_need_an_authenticated_caller(#[case] caller: Caller) {
+    let (state, commands, queries, _asked) = scenario(updated(2));
+    let schema = schema(Some(state));
+
+    let update = run(
+        &schema,
+        caller,
+        UPDATE,
+        json!({ "input": { "id": USER_ROLE, "expectedVersion": 1, "expiresAt": null } }),
+    )
+    .await;
+    let revoke = run(
+        &schema,
+        Caller::Absent,
+        REVOKE,
+        json!({ "input": { "id": USER_ROLE, "expectedVersion": 1 } }),
+    )
+    .await;
+
+    for response in [update, revoke] {
+        assert_eq!(error_code(&response), Some(code_of("UNAUTHENTICATED")));
+    }
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+    assert_eq!(queries.asked(), Vec::<&str>::new());
+}
+
+#[test]
+fn the_update_and_revocation_inputs_are_read_from_graphql_objects_and_reject_other_values() {
+    use async_graphql::{InputType as _, MaybeUndefined, Name};
+
+    use crate::graphql::user_role::{RevokeUserRoleInput, UpdateUserRoleInput};
+
+    let object = |fields: Vec<(&str, Value)>| {
+        Value::Object(
+            fields
+                .into_iter()
+                .map(|(name, value)| (Name::new(name), value))
+                .collect(),
+        )
+    };
+    let update = object(vec![
+        ("id", Value::String(USER_ROLE.to_owned())),
+        ("expectedVersion", Value::from(3)),
+        ("expiresAt", Value::Null),
+        ("idempotencyKey", Value::String("clear".to_owned())),
+    ]);
+    let revoke = object(vec![
+        ("id", Value::String(USER_ROLE.to_owned())),
+        ("expectedVersion", Value::from(4)),
+    ]);
+
+    let parsed_update = UpdateUserRoleInput::parse(Some(update)).unwrap();
+    let parsed_revoke = RevokeUserRoleInput::parse(Some(revoke)).unwrap();
+
+    assert_eq!(parsed_update.id.as_str(), USER_ROLE);
+    assert_eq!(parsed_update.expected_version, Some(3));
+    assert!(matches!(parsed_update.expires_at, MaybeUndefined::Null));
+    assert_eq!(parsed_update.idempotency_key.as_deref(), Some("clear"));
+    assert_eq!(parsed_revoke.id.as_str(), USER_ROLE);
+    assert_eq!(parsed_revoke.expected_version, Some(4));
+    assert!(UpdateUserRoleInput::parse(Some(Value::Boolean(true))).is_err());
+    assert!(RevokeUserRoleInput::parse(Some(Value::Boolean(true))).is_err());
+    for field in ["expectedVersion", "expiresAt", "idempotencyKey"] {
+        let wrong = object(vec![
+            ("id", Value::String(USER_ROLE.to_owned())),
+            (field, Value::List(Vec::new())),
+        ]);
+        assert!(UpdateUserRoleInput::parse(Some(wrong)).is_err(), "{field}");
+    }
+    for field in ["expectedVersion", "idempotencyKey"] {
+        let wrong = object(vec![
+            ("id", Value::String(USER_ROLE.to_owned())),
+            (field, Value::List(Vec::new())),
+        ]);
+        assert!(RevokeUserRoleInput::parse(Some(wrong)).is_err(), "{field}");
     }
 }

@@ -119,14 +119,18 @@ fn disallowed_parameters(source: &str) -> Vec<String> {
 fn handlers_use_only_the_problem_aware_extractors() {
     let sources = [
         (include_str!("../handler.rs"), vec!["resolve"]),
-        (include_str!("../graphql_spec.rs"), vec!["load"]),
+        (
+            include_str!("../graphql_spec.rs"),
+            vec!["load", "list", "get_one", "get_diff"],
+        ),
+        (include_str!("../openapi_spec.rs"), vec!["load"]),
         (
             include_str!("../role.rs"),
             vec!["create", "get_one", "update", "list"],
         ),
         (
             include_str!("../user_role.rs"),
-            vec!["assign", "get_one", "list"],
+            vec!["assign", "get_one", "update", "revoke", "list"],
         ),
     ];
 

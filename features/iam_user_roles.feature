@@ -413,6 +413,250 @@ Feature: IAM role assignments
       """
     Then the GraphQL error code should be "VALIDATION_FAILED"
 
+  Scenario: Setting, shortening and clearing an expiry over REST commits each update, its event, its audit record and a policy version
+    Given a caller authenticated with a valid service token
+    And an assignable role "Billing administrator"
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    Given the If-Match header is the ETag of the last response
+    When PATCH request is sent to "/api/user-roles/{id}" with body:
+      """
+      {"expiresAt": "2099-01-01T00:00:00Z"}
+      """
+    Then the response status code should be 200
+    And the response header "etag" should contain '"2"'
+    And the response header "iam-policy-version" should contain "2"
+    And the JSON pointer "/expiresAt" should equal "2099-01-01T00:00:00.000000Z"
+    And the JSON pointer "/version" should equal the number 2
+    Given the If-Match header is the ETag of the last response
+    When PATCH request is sent to "/api/user-roles/{id}" with body:
+      """
+      {"expiresAt": "2098-01-01T00:00:00Z"}
+      """
+    Then the response status code should be 200
+    And the JSON pointer "/expiresAt" should equal "2098-01-01T00:00:00.000000Z"
+    And the JSON pointer "/version" should equal the number 3
+    Given the If-Match header is the ETag of the last response
+    When PATCH request is sent to "/api/user-roles/{id}" with body:
+      """
+      {"expiresAt": null}
+      """
+    Then the response status code should be 200
+    And the JSON pointer "/expiresAt" should be absent
+    And the JSON pointer "/version" should equal the number 4
+    And the IAM policy version should be 4
+    And the outbox should hold 3 "iam.user_role.updated" events
+    And the audit log should hold 3 committed "user_role.update" records
+    When GET request is sent to "/api/user-roles/{id}"
+    Then the response status code should be 200
+    And the JSON pointer "/version" should equal the number 4
+
+  Scenario: Changing an expiry over GraphQL returns the new expiry and version
+    Given a caller authenticated with a valid service token
+    And an assignable role "Billing administrator"
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "{role}", "scope": {"kind": "global"}, "expiresAt": "2099-01-01T00:00:00Z"}
+      """
+    Then the response status code should be 201
+    When the GraphQL operation is sent:
+      """
+      mutation { updateUserRole(input: {id: "{id}", expectedVersion: 1, expiresAt: "2098-06-01T00:00:00Z"}) { id expiresAt version } }
+      """
+    Then the GraphQL response should have no errors
+    And the JSON pointer "/data/updateUserRole/expiresAt" should equal "2098-06-01T00:00:00.000000Z"
+    And the JSON pointer "/data/updateUserRole/version" should equal the number 2
+    When the GraphQL operation is sent:
+      """
+      mutation { updateUserRole(input: {id: "{id}", expectedVersion: 2, expiresAt: null}) { id expiresAt version } }
+      """
+    Then the GraphQL response should have no errors
+    And the JSON pointer "/data/updateUserRole/expiresAt" should be null
+    And the JSON pointer "/data/updateUserRole/version" should equal the number 3
+    And the IAM policy version should be 3
+    And the outbox should hold 2 "iam.user_role.updated" events
+    And the audit log should hold 2 committed "user_role.update" records
+
+  Scenario: An expiry that is not in the future is a validation failure on update over REST and GraphQL
+    Given a caller authenticated with a valid service token
+    And an assignable role "Billing administrator"
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    Given the If-Match header is the ETag of the last response
+    When PATCH request is sent to "/api/user-roles/{id}" with body:
+      """
+      {"expiresAt": "2000-01-01T00:00:00Z"}
+      """
+    Then the response status code should be 422
+    When the GraphQL operation is sent:
+      """
+      mutation { updateUserRole(input: {id: "{id}", expectedVersion: 1, expiresAt: "2000-01-01T00:00:00Z"}) { id } }
+      """
+    Then the GraphQL error code should be "VALIDATION_FAILED"
+    And the outbox should hold 0 "iam.user_role.updated" events
+    And the IAM policy version should be 1
+
+  Scenario: An update without a version or with a stale version is refused over REST and GraphQL
+    Given a caller authenticated with a valid service token
+    And an assignable role "Billing administrator"
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    When PATCH request is sent to "/api/user-roles/{id}" with body:
+      """
+      {"expiresAt": "2099-01-01T00:00:00Z"}
+      """
+    Then the response status code should be 428
+    When the GraphQL operation is sent:
+      """
+      mutation { updateUserRole(input: {id: "{id}", expiresAt: "2099-01-01T00:00:00Z"}) { id } }
+      """
+    Then the GraphQL error code should be "PRECONDITION_REQUIRED"
+    Given the If-Match header '"7"'
+    When PATCH request is sent to "/api/user-roles/{id}" with body:
+      """
+      {"expiresAt": "2099-01-01T00:00:00Z"}
+      """
+    Then the response status code should be 412
+    When the GraphQL operation is sent:
+      """
+      mutation { updateUserRole(input: {id: "{id}", expectedVersion: 7, expiresAt: "2099-01-01T00:00:00Z"}) { id } }
+      """
+    Then the GraphQL error code should be "PRECONDITION_FAILED"
+    And the outbox should hold 0 "iam.user_role.updated" events
+
+  Scenario: Revoking an assignment over REST removes it from the listings and commits its event, its audit record and a policy version
+    Given a caller authenticated with a valid service token
+    And an assignable role "Billing administrator"
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    Given the If-Match header is the ETag of the last response
+    When DELETE request is sent to "/api/user-roles/{id}"
+    Then the response status code should be 204
+    And the response header "iam-policy-version" should contain "2"
+    And the IAM policy version should be 2
+    And the store should hold 0 assignments of subject kind "user"
+    And the outbox should hold 1 "iam.user_role.revoked" event
+    And the "iam.user_role.revoked" event should carry "Billing administrator" in its payload
+    And the audit log should hold 1 committed "user_role.revoke" record
+    When GET request is sent to "/api/user-roles/{id}"
+    Then the response status code should be 404
+    When GET request is sent to "/api/user-roles?includeExpired=true"
+    Then the response status code should be 200
+    And the JSON array at "/items" should have 0 items
+
+  Scenario: Revoking an assignment over GraphQL removes it from the listings and commits its event, its audit record and a policy version
+    Given a caller authenticated with a valid service token
+    And an assignable role "Billing administrator"
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    When the GraphQL operation is sent:
+      """
+      mutation { revokeUserRole(input: {id: "{id}", expectedVersion: 1}) { id version policyVersion } }
+      """
+    Then the GraphQL response should have no errors
+    And the JSON pointer "/data/revokeUserRole/id" should be present
+    And the JSON pointer "/data/revokeUserRole/version" should equal the number 2
+    And the JSON pointer "/data/revokeUserRole/policyVersion" should equal the number 2
+    And the IAM policy version should be 2
+    And the store should hold 0 assignments of subject kind "user"
+    And the outbox should hold 1 "iam.user_role.revoked" event
+    And the audit log should hold 1 committed "user_role.revoke" record
+    When the GraphQL operation is sent:
+      """
+      query { userRole(id: "{id}") { id } }
+      """
+    Then the JSON pointer "/data/userRole" should be null
+    When the GraphQL operation is sent:
+      """
+      { userRoles(filter: {includeExpired: true}) { items { id } } }
+      """
+    Then the JSON array at "/data/userRoles/items" should have 0 items
+
+  Scenario: A revocation without a version, with a stale version or of an assignment that is already revoked is refused
+    Given a caller authenticated with a valid service token
+    And an assignable role "Billing administrator"
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    When DELETE request is sent to "/api/user-roles/{id}"
+    Then the response status code should be 428
+    When the GraphQL operation is sent:
+      """
+      mutation { revokeUserRole(input: {id: "{id}"}) { id } }
+      """
+    Then the GraphQL error code should be "PRECONDITION_REQUIRED"
+    Given the If-Match header '"7"'
+    When DELETE request is sent to "/api/user-roles/{id}"
+    Then the response status code should be 412
+    When the GraphQL operation is sent:
+      """
+      mutation { revokeUserRole(input: {id: "{id}", expectedVersion: 7}) { id } }
+      """
+    Then the GraphQL error code should be "PRECONDITION_FAILED"
+    And the outbox should hold 0 "iam.user_role.revoked" events
+    And the IAM policy version should be 1
+    Given the If-Match header '"1"'
+    When DELETE request is sent to "/api/user-roles/{id}"
+    Then the response status code should be 204
+    When DELETE request is sent to "/api/user-roles/{id}"
+    Then the response status code should be 404
+    When the GraphQL operation is sent:
+      """
+      mutation { revokeUserRole(input: {id: "{id}", expectedVersion: 1}) { id } }
+      """
+    Then the GraphQL error code should be "NOT_FOUND"
+    And the outbox should hold 1 "iam.user_role.revoked" event
+
+  Scenario: Repeating a revocation with the same idempotency key returns the original result
+    Given a caller authenticated with a valid service token
+    And an assignable role "Billing administrator"
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    Given the If-Match header '"1"'
+    And the idempotency key "revoke-billing"
+    When DELETE request is sent to "/api/user-roles/{id}"
+    Then the response status code should be 204
+    When DELETE request is sent to "/api/user-roles/{id}"
+    Then the response status code should be 204
+    And the response header "iam-policy-version" should contain "2"
+    And the outbox should hold 1 "iam.user_role.revoked" event
+    And the audit log should hold 1 committed "user_role.revoke" record
+    And the IAM policy version should be 2
+
+  Scenario: Updating and revoking an assignment need a valid bearer token
+    When PATCH request is sent to "/api/user-roles/0190f2a8-7b3c-7d4e-8f10-1234567890ab" with body:
+      """
+      {"expiresAt": null}
+      """
+    Then the response status code should be 401
+    When DELETE request is sent to "/api/user-roles/0190f2a8-7b3c-7d4e-8f10-1234567890ab"
+    Then the response status code should be 401
+    When the GraphQL operation is sent:
+      """
+      mutation { revokeUserRole(input: {id: "0190f2a8-7b3c-7d4e-8f10-1234567890ab", expectedVersion: 1}) { id } }
+      """
+    Then the GraphQL error code should be "UNAUTHENTICATED"
+
   Scenario: Assignment operations need a valid bearer token
     When GET request is sent to "/api/user-roles"
     Then the response status code should be 401

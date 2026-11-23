@@ -2,8 +2,8 @@
 
 use axum::http::StatusCode;
 use iam_domain::{
-    InvalidEventEnvelope, InvalidIamValue, InvalidRole, InvalidSpec, RepositoryError,
-    RoleChangeRefused, TokenRejection, VersionConflict,
+    InvalidEventEnvelope, InvalidIamValue, InvalidRole, InvalidSpec, InvalidUserRole,
+    RepositoryError, RoleChangeRefused, TokenRejection, UserRoleChangeRefused, VersionConflict,
 };
 use shared_application::http::{Problem, Violation};
 use shared_domain::BoxError;
@@ -141,6 +141,30 @@ impl From<RoleChangeRefused> for IamError {
             RoleChangeRefused::Deleted => Self::NotFound,
             RoleChangeRefused::Version(conflict) => Self::from(conflict),
             RoleChangeRefused::Invalid(invalid) => Self::from(invalid),
+        }
+    }
+}
+
+impl From<InvalidUserRole> for IamError {
+    /// The violation of an assignment value, with the `property_path` and `code` of the domain.
+    fn from(invalid: InvalidUserRole) -> Self {
+        Self::Invalid(vec![Violation {
+            property_path: invalid.property_path().to_owned(),
+            message: invalid.to_string(),
+            code: invalid.code().to_owned(),
+        }])
+    }
+}
+
+impl From<UserRoleChangeRefused> for IamError {
+    /// A revoked assignment is not found, a missing or stale version is a failed precondition, an
+    /// expiry that is not in the future is invalid, and a version that cannot grow is a defect.
+    fn from(refusal: UserRoleChangeRefused) -> Self {
+        match refusal {
+            UserRoleChangeRefused::Revoked => Self::NotFound,
+            UserRoleChangeRefused::Version(conflict) => Self::from(conflict),
+            UserRoleChangeRefused::Range(invalid) => Self::from(invalid),
+            UserRoleChangeRefused::Invalid(invalid) => Self::from(invalid),
         }
     }
 }

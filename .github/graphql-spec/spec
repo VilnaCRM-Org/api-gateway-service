@@ -100,12 +100,14 @@ type GraphqlSpec {
   coordinateCount: Int!
   "When the version was loaded, as an RFC 3339 UTC time."
   createdAt: String!
-  "What the version changes against the active versions of its service."
+  "What the version changes against the union of the active versions of its service."
   diff: GraphqlSpecDiff!
   "The identifier of the version."
   id: ID!
   "When the version was retired."
   retiredAt: String
+  "The SDL document, read only when the query selects it."
+  sdl: String
   "The service the schema belongs to."
   service: String!
   "`draft`, `active` or `retired`."
@@ -128,11 +130,35 @@ type GraphqlSpecDiff {
   wildcardGains: [WildcardGain!]!
 }
 
+"Filters of the version list."
+input GraphqlSpecFilter {
+  "Only versions of this service."
+  service: String
+  "Only versions in this status: `draft`, `active` or `retired`."
+  status: String
+}
+
+"One page of GraphQL specification versions."
+type GraphqlSpecPage {
+  "The versions of the page."
+  items: [GraphqlSpec!]!
+  "The `after` value of the next page; null on the last page."
+  nextCursor: String
+}
+
 "Input of the mutation that loads a GraphQL specification."
 input LoadGraphqlSpecInput {
   "The SDL document, at most 5 MiB."
   sdl: String!
   "The name of the service the schema belongs to: lower-case letters, digits and hyphens, at most 63 characters; `iam` is reserved for IAM's own schema."
+  service: String!
+}
+
+"Input of the mutation that loads an `OpenAPI` specification."
+input LoadOpenapiSpecInput {
+  "The `OpenAPI` 3.0.x or 3.1.x document as JSON text, at most 5 MiB."
+  document: String!
+  "The name of the service the document belongs to: lower-case letters, digits and hyphens, at most 63 characters; `iam` is reserved for IAM's own document."
   service: String!
 }
 
@@ -146,8 +172,80 @@ type Mutation {
   createRole(input: CreateRoleInput!): Role!
   "Loads the SDL of a service as a draft version and returns it with its diff against the active versions; an SDL that the service already holds returns its version and changes nothing. The service `iam` is reserved."
   loadGraphqlSpec(input: LoadGraphqlSpecInput!): GraphqlSpec!
+  "Loads the `OpenAPI` document of a service as a draft version and returns it with its diff against the active versions; a document that the service already holds returns its version and changes nothing. The service `iam` is reserved."
+  loadOpenapiSpec(input: LoadOpenapiSpecInput!): OpenApiSpec!
+  "Revokes an assignment when `expectedVersion` is the current version: it leaves the active listings at once, the next policy version is committed, and `iam.user_role.revoked` and an audit record are written in the same transaction."
+  revokeUserRole(input: RevokeUserRoleInput!): RevokeUserRolePayload!
   "Renames a custom role or changes its description when `expectedVersion` is the current version, increases the version and records `iam.role.updated`."
   updateRole(input: UpdateRoleInput!): Role!
+  "Sets, extends, shortens or clears the expiry of an assignment when `expectedVersion` is the current version, increases the version, takes the next policy version and records `iam.user_role.updated`. `expiresAt` is required: a time in the future, or null to clear the expiry."
+  updateUserRole(input: UpdateUserRoleInput!): UserRole!
+}
+
+"An `OpenAPI` specification version with its diff."
+type OpenApiSpec {
+  "When the version became active."
+  activatedAt: String
+  "The SHA-256 hash of the document, in lower-case hexadecimal."
+  contentHash: String!
+  "When the version was loaded, as an RFC 3339 UTC time."
+  createdAt: String!
+  "What the version changes against the active versions of its service."
+  diff: OpenApiSpecDiff!
+  "The identifier of the version."
+  id: ID!
+  "The number of operations of the document."
+  operationCount: Int!
+  "When the version was retired."
+  retiredAt: String
+  "The service the document belongs to."
+  service: String!
+  "`draft`, `active` or `retired`."
+  status: String!
+  "Who loaded the version, as `user:<id>`, `service:<name>` or `system:<component>`."
+  uploadedBy: String!
+}
+
+"What a version changes against the union of the active versions of its service."
+type OpenApiSpecDiff {
+  "The operations the version adds."
+  added: [String!]!
+  "The operations that would lose a flag."
+  flagDowngrades: [OperationFlagDowngrade!]!
+  "The operations the version removes."
+  removed: [String!]!
+  "The removed operations that roles grant by their exact key."
+  removedGrants: [RemovedOperationGrant!]!
+  "The wildcard grants that would cover added operations."
+  wildcardGains: [OperationWildcardGain!]!
+}
+
+"An operation that would lose a flag."
+type OperationFlagDowngrade {
+  "Its flags in the new version."
+  after: OperationFlags!
+  "Its flags in the active versions."
+  before: OperationFlags!
+  "The operation, `{METHOD} {template}`."
+  operation: String!
+}
+
+"The two flags of an operation."
+type OperationFlags {
+  "Whether every use of the operation is audited (`x-iam-audit: always`)."
+  auditAlways: Boolean!
+  "Whether a wildcard grant never covers the operation (`x-iam-sensitive`)."
+  sensitive: Boolean!
+}
+
+"A wildcard grant that would cover added operations."
+type OperationWildcardGain {
+  "The added operations the pattern would cover."
+  operations: [String!]!
+  "The wildcard pattern, such as `rest:billing:GET *`."
+  pattern: String!
+  "The identifier of the role that holds the grant."
+  role: String!
 }
 
 "Query root."
@@ -161,6 +259,17 @@ type Query {
     "Page number, from 1."
     page: Int! = 1
   ): [ExampleApiResource!]!
+  "Retrieves a GraphQL specification version by id; null when it is unknown. The fields `sdl` and `diff` are read only when the query selects them."
+  graphqlSpec(id: ID!): GraphqlSpec
+  "Retrieves one page of GraphQL specification versions in a stable order, filtered by service and status."
+  graphqlSpecs(
+    "The nextCursor of the previous page."
+    after: String,
+    "Only versions that match the filter."
+    filter: GraphqlSpecFilter,
+    "Page size, from 1 to 100."
+    first: Int = 30
+  ): GraphqlSpecPage!
   "Resolves a User service token into its subject, or says why it is refused."
   resolveToken(input: ResolveTokenInput!): TokenResolution!
   "Retrieves a role by id; null when it is unknown or deleted."
@@ -195,10 +304,38 @@ type RemovedGrant {
   roles: [String!]!
 }
 
+"A removed operation that roles grant by its exact key."
+type RemovedOperationGrant {
+  "The removed operation, `{METHOD} {template}`."
+  operation: String!
+  "The identifiers of the roles that grant it."
+  roles: [String!]!
+}
+
 "Input of the token-resolution query."
 input ResolveTokenInput {
   "The User service token to resolve; an empty one resolves as `token_missing`."
   credential: String!
+}
+
+"Input of the assignment-revocation mutation."
+input RevokeUserRoleInput {
+  "The version the caller read; required, and the revocation is refused when it is not the current one."
+  expectedVersion: Int
+  "The assignment to revoke."
+  id: ID!
+  "Makes the revocation safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+}
+
+"The result of a revocation."
+type RevokeUserRolePayload {
+  "The identifier of the revoked assignment."
+  id: ID!
+  "The policy version that the revocation produced."
+  policyVersion: Int
+  "The final version of the assignment."
+  version: Int!
 }
 
 "A role."
@@ -267,6 +404,18 @@ input UpdateRoleInput {
   idempotencyKey: String
   "The new name of the role: 1 to 100 characters, unique without regard to case among the roles that are not deleted."
   name: String
+}
+
+"Input of the assignment-update mutation."
+input UpdateUserRoleInput {
+  "The version the caller read; required, and the update is refused when it is not the current one."
+  expectedVersion: Int
+  "The new expiry, as an RFC 3339 UTC time in the future; null clears the expiry. The field is required."
+  expiresAt: String
+  "The assignment to change."
+  id: ID!
+  "Makes the update safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
 }
 
 "A role assignment."

@@ -2,7 +2,7 @@ use http_body_util::BodyExt as _;
 use std::fmt;
 
 use axum::http::StatusCode;
-use axum::http::header::CONTENT_TYPE;
+use axum::http::header::{CONTENT_TYPE, WWW_AUTHENTICATE};
 use axum::response::IntoResponse as _;
 use rstest::rstest;
 use serde_json::{Value, json};
@@ -12,8 +12,8 @@ use tracing::Level;
 use validator::Validate;
 
 use super::{
-    DependencyFailure, PROBLEM_CONTENT_TYPE, Problem, TYPE_BLANK, TYPE_DEPENDENCY_UNAVAILABLE,
-    TYPE_VALIDATION_FAILED, Violation, camel_case,
+    BEARER_CHALLENGE, DependencyFailure, PROBLEM_CONTENT_TYPE, Problem, TYPE_BLANK,
+    TYPE_DEPENDENCY_UNAVAILABLE, TYPE_VALIDATION_FAILED, Violation, camel_case,
 };
 
 async fn body_of(problem: Problem) -> (StatusCode, String, Value) {
@@ -358,4 +358,26 @@ fn a_missing_handler_is_an_internal_problem() {
         lines.first().unwrap().field("error"),
         Some("no handler is registered for `Ping`")
     );
+}
+
+#[test]
+fn a_401_problem_carries_the_bearer_challenge() {
+    let response = Problem::new(StatusCode::UNAUTHORIZED).into_response();
+
+    assert_eq!(
+        response
+            .headers()
+            .get(WWW_AUTHENTICATE)
+            .and_then(|value| value.to_str().ok()),
+        Some(BEARER_CHALLENGE)
+    );
+}
+
+#[rstest]
+#[case::forbidden(StatusCode::FORBIDDEN)]
+#[case::not_found(StatusCode::NOT_FOUND)]
+fn a_problem_of_another_status_carries_no_challenge(#[case] status: StatusCode) {
+    let response = Problem::new(status).into_response();
+
+    assert!(response.headers().get(WWW_AUTHENTICATE).is_none());
 }

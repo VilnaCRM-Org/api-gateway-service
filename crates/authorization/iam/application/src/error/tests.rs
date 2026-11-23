@@ -1,8 +1,8 @@
 use std::error::Error as _;
 
 use iam_domain::{
-    EntityVersion, InvalidEventEnvelope, InvalidIamValue, InvalidRole, RepositoryError,
-    RoleChangeRefused, TokenRejection, VersionConflict,
+    EntityVersion, InvalidEventEnvelope, InvalidIamValue, InvalidRole, InvalidUserRole,
+    RepositoryError, RoleChangeRefused, TokenRejection, UserRoleChangeRefused, VersionConflict,
 };
 use rstest::rstest;
 use shared_application::http::{Problem, TYPE_BLANK, Violation};
@@ -299,6 +299,53 @@ fn a_version_that_cannot_grow_is_an_internal_defect() {
     let error = IamError::from(RoleChangeRefused::Invalid(invalid));
 
     assert!(matches!(error, IamError::Internal(_)));
+}
+
+#[test]
+fn a_revoked_assignment_refusal_is_not_found() {
+    let error = IamError::from(UserRoleChangeRefused::Revoked);
+
+    assert!(matches!(error, IamError::NotFound));
+}
+
+#[test]
+fn an_assignment_refusal_for_the_version_is_a_precondition_error() {
+    let stale = VersionConflict::Stale {
+        expected: EntityVersion::new(1).unwrap(),
+        current: EntityVersion::new(2).unwrap(),
+    };
+
+    assert!(matches!(
+        IamError::from(UserRoleChangeRefused::Version(VersionConflict::Missing)),
+        IamError::PreconditionRequired
+    ));
+    assert!(matches!(
+        IamError::from(UserRoleChangeRefused::Version(stale)),
+        IamError::PreconditionFailed
+    ));
+}
+
+#[test]
+fn an_assignment_version_that_cannot_grow_is_an_internal_defect() {
+    let invalid = EntityVersion::new(i64::MAX).unwrap().next().unwrap_err();
+
+    let error = IamError::from(UserRoleChangeRefused::Range(invalid));
+
+    assert!(matches!(error, IamError::Internal(_)));
+}
+
+#[test]
+fn an_expiry_that_is_not_in_the_future_is_one_violation_of_expires_at() {
+    let error = IamError::from(UserRoleChangeRefused::Invalid(
+        InvalidUserRole::ExpiryNotInFuture,
+    ));
+
+    let IamError::Invalid(violations) = error else {
+        panic!("a validation error expected: {error:?}");
+    };
+    assert_eq!(violations.len(), 1);
+    assert_eq!(violations[0].property_path, "expiresAt");
+    assert_eq!(violations[0].code, "future");
 }
 
 #[test]

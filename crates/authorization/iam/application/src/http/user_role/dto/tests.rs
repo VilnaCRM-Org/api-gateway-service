@@ -10,8 +10,8 @@ use shared_domain::Uuid;
 use validator::Validate as _;
 
 use super::{
-    AssignUserRoleRequest, ListUserRolesParams, ScopeDto, SubjectDto, UserRolePageResponse,
-    UserRoleResponse,
+    AssignUserRoleRequest, ListUserRolesParams, ScopeDto, SubjectDto, UpdateUserRoleRequest,
+    UserRolePageResponse, UserRoleResponse, revoke_canonical_form,
 };
 use crate::error::IamError;
 use crate::query::get_user_role::UserRoleView;
@@ -424,4 +424,77 @@ fn an_invalid_cursor_kind_role_or_project_is_a_violation_each(
         .map(|(path, code)| ((*path).to_owned(), (*code).to_owned()))
         .collect();
     assert_eq!(violations(error), expected);
+}
+
+fn update(expires_at: Option<&str>) -> UpdateUserRoleRequest {
+    UpdateUserRoleRequest {
+        expires_at: expires_at.map(ToOwned::to_owned),
+    }
+}
+
+#[test]
+fn the_update_request_needs_its_expiry_member_but_accepts_null() {
+    let time: UpdateUserRoleRequest =
+        serde_json::from_value(json!({ "expiresAt": "2027-01-15T08:00:00Z" })).unwrap();
+    let null: UpdateUserRoleRequest = serde_json::from_value(json!({ "expiresAt": null })).unwrap();
+
+    assert_eq!(time.expires_at.as_deref(), Some("2027-01-15T08:00:00Z"));
+    assert_eq!(null.expires_at, None);
+    assert!(serde_json::from_value::<UpdateUserRoleRequest>(json!({})).is_err());
+    assert!(
+        serde_json::from_value::<UpdateUserRoleRequest>(json!({ "expiresAt": null, "role": 1 }))
+            .is_err()
+    );
+    assert!(serde_json::from_value::<UpdateUserRoleRequest>(json!({ "expiresAt": 3 })).is_err());
+}
+
+#[rstest]
+#[case::cleared(None, true)]
+#[case::longest(Some("x".repeat(40)), true)]
+#[case::too_long(Some("x".repeat(41)), false)]
+fn the_update_expiry_keeps_the_length_limit_of_the_assignment(
+    #[case] expires_at: Option<String>,
+    #[case] valid: bool,
+) {
+    let request = update(expires_at.as_deref());
+
+    assert_eq!(request.validate().is_ok(), valid);
+}
+
+#[test]
+fn the_update_parses_a_time_clears_on_null_and_names_a_bad_text() {
+    let parsed = update(Some("2027-01-15T08:00:00Z")).parse().unwrap();
+    let cleared = update(None).parse().unwrap();
+    let error = update(Some("soon")).parse().unwrap_err();
+
+    assert_eq!(parsed, Some(at(1_800_000_000)));
+    assert_eq!(cleared, None);
+    assert_eq!(
+        violations(error),
+        [("expiresAt".to_owned(), "format".to_owned())]
+    );
+}
+
+#[test]
+fn the_update_and_revoke_canonical_forms_tell_one_request_from_another() {
+    let id = UserRoleId::parse(USER_ROLE).unwrap();
+    let other = UserRoleId::parse(USER).unwrap();
+    let one = EntityVersion::INITIAL;
+    let two = EntityVersion::new(2).unwrap();
+    let forms = [
+        update(Some("2027-01-15T08:00:00Z")).canonical_form(id, one),
+        update(Some("2027-01-15T08:00:00Z")).canonical_form(id, two),
+        update(Some("2027-01-15T08:00:00Z")).canonical_form(other, one),
+        update(Some("2028-01-15T08:00:00Z")).canonical_form(id, one),
+        update(None).canonical_form(id, one),
+        revoke_canonical_form(id, one),
+        revoke_canonical_form(id, two),
+        revoke_canonical_form(other, one),
+    ];
+
+    for form in &forms {
+        assert_eq!(forms.iter().filter(|other| *other == form).count(), 1);
+    }
+    assert!(forms[0].starts_with("user_role.update:"));
+    assert!(forms[5].starts_with("user_role.revoke:"));
 }

@@ -15,6 +15,8 @@ use test_support::id::SequenceUuidGenerator;
 use test_support::request_digester::FakeRequestDigester;
 
 use crate::command::assign_user_role::AssignUserRoleCommand;
+use crate::command::revoke_user_role::RevokeUserRoleCommand;
+use crate::command::update_user_role::UpdateUserRoleCommand;
 use crate::fixtures::{ROLE, Refusal, USER};
 use crate::http::IamState;
 use crate::query::get_change_receipt::GetChangeReceiptQuery;
@@ -56,11 +58,16 @@ pub(crate) fn user_role(version: i64) -> UserRoleView {
 
 /// The receipt of the assignment at version 1.
 pub(crate) fn receipt(policy_version: Option<i64>) -> ChangeReceipt {
+    receipt_at(1, policy_version)
+}
+
+/// The receipt of a change that left the assignment at `version`.
+pub(crate) fn receipt_at(version: i64, policy_version: Option<i64>) -> ChangeReceipt {
     ChangeReceipt::new(
         ChangeId::parse(CHANGE).unwrap(),
         ActorRef::User(Uuid::parse(USER).unwrap()),
         AuditTarget::new("user_role", USER_ROLE).unwrap(),
-        EntityVersion::INITIAL,
+        EntityVersion::new(version).unwrap(),
         policy_version.map(|value| PolicyVersion::new(value).unwrap()),
     )
 }
@@ -77,6 +84,10 @@ pub(crate) struct Answers {
     pub page: Result<UserRolePage, Refusal>,
     /// The answer of the assign command.
     pub command: Result<(), Refusal>,
+    /// The answer of the update command.
+    pub update: Result<(), Refusal>,
+    /// The answer of the revoke command.
+    pub revoke: Result<(), Refusal>,
 }
 
 impl Default for Answers {
@@ -90,6 +101,8 @@ impl Default for Answers {
                 next_after: None,
             }),
             command: Ok(()),
+            update: Ok(()),
+            revoke: Ok(()),
         }
     }
 }
@@ -99,6 +112,10 @@ impl Default for Answers {
 pub(crate) struct Asked {
     /// The assign commands that were dispatched.
     pub commands: Arc<Mutex<Vec<AssignUserRoleCommand>>>,
+    /// The update commands that were dispatched.
+    pub updates: Arc<Mutex<Vec<UpdateUserRoleCommand>>>,
+    /// The revoke commands that were dispatched.
+    pub revocations: Arc<Mutex<Vec<RevokeUserRoleCommand>>>,
     /// The assignment queries.
     pub user_roles: Arc<Mutex<Vec<UserRoleId>>>,
     /// The assignment-list queries.
@@ -119,7 +136,10 @@ pub(crate) fn scenario(
     answers: Answers,
 ) -> (IamState, Arc<FakeCommandBus>, Arc<FakeQueryBus>, Asked) {
     let asked = Asked::default();
-    let commands = Arc::new(command_bus(answers.command, &asked));
+    let commands = Arc::new(command_bus(
+        (answers.command, answers.update, answers.revoke),
+        &asked,
+    ));
     let queries = Arc::new(query_bus(answers, &asked));
     let command_bus: Arc<dyn CommandBus> = Arc::<FakeCommandBus>::clone(&commands);
     let query_bus: Arc<dyn QueryBus> = Arc::<FakeQueryBus>::clone(&queries);
@@ -133,11 +153,29 @@ pub(crate) fn scenario(
     (state, commands, queries, asked)
 }
 
-fn command_bus(answer: Result<(), Refusal>, asked: &Asked) -> FakeCommandBus {
+/// The answers of the assign, update and revoke commands.
+type CommandAnswers = (
+    Result<(), Refusal>,
+    Result<(), Refusal>,
+    Result<(), Refusal>,
+);
+
+fn command_bus(answers: CommandAnswers, asked: &Asked) -> FakeCommandBus {
+    let (assign, update, revoke) = answers;
     let log = Arc::clone(&asked.commands);
+    let updates = Arc::clone(&asked.updates);
+    let revocations = Arc::clone(&asked.revocations);
     FakeCommandBus::handling(move |command: AssignUserRoleCommand| {
         record(&log, command);
-        answer.map_err(|refusal| refusal())
+        assign.map_err(|refusal| refusal())
+    })
+    .and_handling(move |command: UpdateUserRoleCommand| {
+        record(&updates, command);
+        update.map_err(|refusal| refusal())
+    })
+    .and_handling(move |command: RevokeUserRoleCommand| {
+        record(&revocations, command);
+        revoke.map_err(|refusal| refusal())
     })
 }
 
