@@ -8,7 +8,7 @@ use axum::http::{Request, StatusCode, header};
 use clap::Parser as _;
 use health_check_domain::Dependency;
 use http_body_util::BodyExt as _;
-use iam_domain::AuditChainHead;
+use iam_domain::{AuditChainHead, ServiceName, SubjectRef};
 use serde_json::Value;
 use service::bootstrap::{Adapters, router};
 use service::cli::{Cli, Command};
@@ -92,6 +92,25 @@ async fn the_production_wiring_reads_the_seeded_policy_epoch(pool: sqlx::PgPool)
     let epoch = adapters.policy_epochs.current().await.unwrap();
 
     assert_eq!(epoch, seeded_policy_epoch());
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn the_production_wiring_reads_policy_data_with_the_seeded_policy_version(
+    pool: sqlx::PgPool,
+) {
+    let mut config = config();
+    config.database.url = database_url(&pool).await;
+    let adapters = Adapters::connect(&config).await.unwrap();
+    let subject = SubjectRef::service(ServiceName::new("orders").unwrap());
+
+    let policy = adapters
+        .policy_reads
+        .read_subject_policy(&subject)
+        .await
+        .unwrap();
+
+    assert_eq!(policy.epoch(), seeded_policy_epoch());
+    assert_eq!(policy.assignments(), []);
 }
 
 #[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]

@@ -54,21 +54,21 @@ struct SpecRow {
     retired_at: Option<OffsetDateTime>,
 }
 
-/// The stored field row; it never leaves this module.
-struct FieldRow {
-    spec_id: SqlUuid,
-    type_name: String,
-    field_name: String,
-    return_type: String,
-    sensitive: bool,
-    audit_always: bool,
+/// The stored field row; it never leaves this crate.
+pub(crate) struct FieldRow {
+    pub(crate) spec_id: SqlUuid,
+    pub(crate) type_name: String,
+    pub(crate) field_name: String,
+    pub(crate) return_type: String,
+    pub(crate) sensitive: bool,
+    pub(crate) audit_always: bool,
 }
 
-/// The stored possible type row; it never leaves this module.
-struct PossibleTypeRow {
-    spec_id: SqlUuid,
-    abstract_type: String,
-    possible_type: String,
+/// The stored possible type row; it never leaves this crate.
+pub(crate) struct PossibleTypeRow {
+    pub(crate) spec_id: SqlUuid,
+    pub(crate) abstract_type: String,
+    pub(crate) possible_type: String,
 }
 
 impl PgGraphQlSpecRepository {
@@ -213,7 +213,7 @@ impl PgGraphQlSpecRepository {
 }
 
 /// Groups `rows` by the key of each row.
-fn group<R>(rows: Vec<R>, key: impl Fn(&R) -> SqlUuid) -> BTreeMap<SqlUuid, Vec<R>> {
+pub(crate) fn group<R>(rows: Vec<R>, key: impl Fn(&R) -> SqlUuid) -> BTreeMap<SqlUuid, Vec<R>> {
     let mut grouped: BTreeMap<SqlUuid, Vec<R>> = BTreeMap::new();
     for row in rows {
         grouped.entry(key(&row)).or_default().push(row);
@@ -424,7 +424,7 @@ async fn insert_possible_types(
 }
 
 /// Rebuilds the type graph of the stored fields and possible types through the value objects.
-fn graph(
+pub(crate) fn graph(
     fields: &[FieldRow],
     possible: &[PossibleTypeRow],
 ) -> Result<GraphQlTypeGraph, RepositoryError> {

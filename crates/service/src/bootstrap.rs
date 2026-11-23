@@ -35,7 +35,7 @@ use iam_domain::RoleRepository;
 use iam_domain::UserRoleRepository;
 use iam_domain::{
     AccessTokenVerifier, ChangeReceiptRepository, IdempotencyRepository, PolicyEpochRepository,
-    SecurityAuditLog,
+    PolicyReadRepository, SecurityAuditLog,
 };
 use iam_domain::{IamUnitOfWork, RequestDigester};
 use iam_domain::{RevocationRepository, RevocationView, TokenMemo, TokenRepository};
@@ -50,7 +50,7 @@ use iam_infrastructure::{
 };
 use iam_infrastructure::{
     JwtAccessTokenVerifier, JwtKeyFileError, PgChangeReceiptRepository, PgIdempotencyRepository,
-    PgPolicyEpochRepository, PgSecurityAuditLog,
+    PgPolicyEpochRepository, PgPolicyReadRepository, PgSecurityAuditLog,
 };
 use iam_infrastructure::{PgIamUnitOfWork, Sha256RequestDigester};
 use shared_domain::{Clock, CommandBus, EventBus, QueryBus, UuidGenerator};
@@ -82,6 +82,8 @@ pub struct Adapters {
     pub repository: Arc<dyn ExampleApiResourceRepository>,
     /// Repository of the IAM policy epoch.
     pub policy_epochs: Arc<dyn PolicyEpochRepository>,
+    /// Reader of the policy data of a decision in repeatable-read snapshots.
+    pub policy_reads: Arc<dyn PolicyReadRepository>,
     /// The hash-chained IAM security audit log.
     pub security_audit_log: Arc<dyn SecurityAuditLog>,
     /// Reader of the receipts of committed IAM changes.
@@ -157,6 +159,7 @@ impl Adapters {
         Ok(Self {
             repository: Arc::new(PgExampleApiResourceRepository::new(pool.clone())),
             policy_epochs: Arc::new(PgPolicyEpochRepository::new(pool.clone())),
+            policy_reads: Arc::new(PgPolicyReadRepository::new(pool.clone())),
             security_audit_log: Arc::new(PgSecurityAuditLog::new(pool.clone())),
             change_receipts: Arc::new(PgChangeReceiptRepository::new(pool.clone())),
             idempotency_records: Arc::new(PgIdempotencyRepository::new(pool.clone())),

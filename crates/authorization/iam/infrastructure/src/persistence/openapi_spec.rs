@@ -54,14 +54,14 @@ struct SpecRow {
     retired_at: Option<OffsetDateTime>,
 }
 
-/// The stored operation row; it never leaves this module.
-struct OperationRow {
-    spec_id: SqlUuid,
-    method: String,
-    path_template: String,
-    label: Option<String>,
-    sensitive: bool,
-    audit_always: bool,
+/// The stored operation row; it never leaves this crate.
+pub(crate) struct OperationRow {
+    pub(crate) spec_id: SqlUuid,
+    pub(crate) method: String,
+    pub(crate) path_template: String,
+    pub(crate) label: Option<String>,
+    pub(crate) sensitive: bool,
+    pub(crate) audit_always: bool,
 }
 
 impl PgOpenApiSpecRepository {
@@ -189,7 +189,7 @@ impl PgOpenApiSpecRepository {
 }
 
 /// Groups `rows` by the key of each row.
-fn group<R>(rows: Vec<R>, key: impl Fn(&R) -> SqlUuid) -> BTreeMap<SqlUuid, Vec<R>> {
+pub(crate) fn group<R>(rows: Vec<R>, key: impl Fn(&R) -> SqlUuid) -> BTreeMap<SqlUuid, Vec<R>> {
     let mut grouped: BTreeMap<SqlUuid, Vec<R>> = BTreeMap::new();
     for row in rows {
         grouped.entry(key(&row)).or_default().push(row);
@@ -397,7 +397,7 @@ async fn insert_unlabelled_operations(
 }
 
 /// Rebuilds the operation set of the stored operations through the value objects.
-fn operation_set(rows: &[OperationRow]) -> Result<RestOperationSet, RepositoryError> {
+pub(crate) fn operation_set(rows: &[OperationRow]) -> Result<RestOperationSet, RepositoryError> {
     let mut set = RestOperationSet::new();
     for row in rows {
         set.insert(operation(row)?)

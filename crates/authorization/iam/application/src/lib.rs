@@ -16,6 +16,7 @@ mod graphql_spec_fixtures;
 pub mod http;
 pub mod principal;
 pub mod query;
+pub mod service_catalog_loader;
 pub mod subscriber;
 #[cfg(test)]
 mod user_role_fixtures;
@@ -41,3 +42,4 @@ pub use query::resolve_subject_token::{
     ResolveSubjectTokenQuery, ResolveSubjectTokenQueryHandler, TokenResolution,
 };
 pub use query::resolve_token::{ResolveTokenQuery, ResolveTokenQueryHandler};
+pub use service_catalog_loader::ServiceCatalogLoader;

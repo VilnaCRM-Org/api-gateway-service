@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT r.id AS \"role_id!\", p.permission_key AS \"permission_key?\", p.active AS \"active?\"\n        FROM iam_roles r\n        LEFT JOIN iam_role_permissions p ON p.role_id = r.id\n        WHERE r.deleted_at IS NULL AND r.id = ANY($1::uuid[])\n        ORDER BY r.id, p.permission_key",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role_id!",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "iam_roles",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "permission_key?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "iam_role_permissions",
+            "name": "permission_key"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "active?",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "iam_role_permissions",
+            "name": "active"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1cd84928df1890b5af6366b03e9a7fb976ef88449d4ab8c1ad09e2865b1f2193"
+}
