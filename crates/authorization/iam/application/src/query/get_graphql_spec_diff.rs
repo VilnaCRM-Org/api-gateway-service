@@ -92,23 +92,29 @@ impl GetGraphQlSpecDiffQueryHandler {
 
     /// Every role that is not deleted, read page by page.
     async fn all_roles(&self) -> Result<Vec<Role>, IamError> {
-        let mut all = Vec::new();
-        let mut after = None;
-        loop {
-            let query = RolePageQuery {
-                limit: ROLE_PAGE_SIZE,
-                after,
-                name_prefix: None,
-                kind: None,
-            };
-            let page = self.roles.find_page(&query).await?;
-            let last = page.last().map(|role| role.parts().id);
-            let full = u32::try_from(page.len()).is_ok_and(|length| length >= ROLE_PAGE_SIZE);
-            all.extend(page);
-            match last {
-                Some(id) if full => after = Some(id),
-                _ => return Ok(all),
-            }
+        all_roles(self.roles.as_ref()).await
+    }
+}
+
+/// Every role that is not deleted, read page by page; the diffs of both kinds of specification
+/// weigh the grants of all of them.
+pub(crate) async fn all_roles(roles: &dyn RoleRepository) -> Result<Vec<Role>, IamError> {
+    let mut all = Vec::new();
+    let mut after = None;
+    loop {
+        let query = RolePageQuery {
+            limit: ROLE_PAGE_SIZE,
+            after,
+            name_prefix: None,
+            kind: None,
+        };
+        let page = roles.find_page(&query).await?;
+        let last = page.last().map(|role| role.parts().id);
+        let full = u32::try_from(page.len()).is_ok_and(|length| length >= ROLE_PAGE_SIZE);
+        all.extend(page);
+        match last {
+            Some(id) if full => after = Some(id),
+            _ => return Ok(all),
         }
     }
 }

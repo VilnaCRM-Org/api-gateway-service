@@ -58,6 +58,9 @@ pub use policy::orphan_policy::{OrphanPolicy, RenameMap};
 pub use policy::path_normalizer::{MalformedPath, PathNormalizer};
 pub use policy::permission_catalogue::PermissionCatalogue;
 pub use policy::rest_operation_matcher::{RestOperationMatcher, UnknownOperation};
+pub use policy::rest_spec_diff::{
+    RemovedRestGrant, RestFlagDowngrade, RestSpecDiff, RestWildcardGain,
+};
 pub use policy::service_catalog::ServiceCatalog;
 pub use policy::spec_diff::{FlagDowngrade, RemovedGrant, RoleGrants, SpecDiff, WildcardGain};
 pub use policy::subject_policy::SubjectPolicy;

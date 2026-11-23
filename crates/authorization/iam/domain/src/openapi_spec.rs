@@ -4,11 +4,13 @@
 pub mod event;
 pub mod statement;
 
+use std::any::Any;
 use std::time::SystemTime;
 
-use shared_domain::{AggregateRoot, RecordedEvents};
+use shared_domain::{AggregateRoot, DomainEvent, RecordedEvents};
 
-use crate::error::SpecTransitionRefused;
+use crate::entity::event_envelope::EventEnvelope;
+use crate::error::{InvalidEventEnvelope, SpecTransitionRefused};
 use crate::graphql_spec::{SpecActivation, SpecStamp};
 use crate::value_object::actor_ref::ActorRef;
 use crate::value_object::content_hash::ContentHash;
@@ -149,6 +151,21 @@ impl OpenApiSpec {
         Ok(())
     }
 
+    /// Drains the recorded events as envelopes of `iam.events.v1`, in recording order, for the
+    /// change that commits them.
+    ///
+    /// # Errors
+    ///
+    /// The [`InvalidEventEnvelope`] of the first event that cannot be enveloped:
+    /// [`InvalidEventEnvelope::EventType`] for an event that is neither [`OpenApiSpecLoaded`] nor
+    /// [`OpenApiSpecRetired`], which a version never records itself.
+    pub fn pull_envelopes(&mut self) -> Result<Vec<EventEnvelope>, InvalidEventEnvelope> {
+        self.pull_domain_events()
+            .iter()
+            .map(|event| envelope_of(event.as_ref()))
+            .collect()
+    }
+
     /// The refusal of a transition from the current status to `to`.
     const fn refused(&self, to: SpecStatus) -> SpecTransitionRefused {
         SpecTransitionRefused {
@@ -162,6 +179,18 @@ impl AggregateRoot for OpenApiSpec {
     fn recorded_events(&mut self) -> &mut RecordedEvents {
         &mut self.events
     }
+}
+
+/// The envelope of one of the two events of a version.
+fn envelope_of(event: &dyn DomainEvent) -> Result<EventEnvelope, InvalidEventEnvelope> {
+    let event: &dyn Any = event;
+    if let Some(loaded) = event.downcast_ref::<OpenApiSpecLoaded>() {
+        return EventEnvelope::of(loaded);
+    }
+    if let Some(retired) = event.downcast_ref::<OpenApiSpecRetired>() {
+        return EventEnvelope::of(retired);
+    }
+    Err(InvalidEventEnvelope::EventType)
 }
 
 #[cfg(test)]

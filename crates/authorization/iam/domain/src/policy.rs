@@ -8,6 +8,7 @@ pub mod orphan_policy;
 pub mod path_normalizer;
 pub mod permission_catalogue;
 pub mod rest_operation_matcher;
+pub mod rest_spec_diff;
 pub mod service_catalog;
 pub mod spec_diff;
 pub mod subject_policy;

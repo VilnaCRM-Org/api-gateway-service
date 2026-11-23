@@ -132,3 +132,74 @@ fn a_key_displays_as_the_method_and_the_template() {
 
     assert_eq!(key.to_string(), "DELETE /a/{}/b");
 }
+
+fn key(method: HttpMethod, path: &str) -> RestOperationKey {
+    RestOperationKey {
+        method,
+        template: template(path),
+    }
+}
+
+fn flagged(method: HttpMethod, path: &str, label: &str, flags: PermissionFlags) -> RestOperation {
+    RestOperation {
+        method,
+        template: template(path),
+        label: Some(label.to_owned()),
+        flags,
+    }
+}
+
+#[test]
+fn contains_and_get_key_find_an_operation_by_its_key() {
+    let mut set = RestOperationSet::new();
+    set.insert(operation(HttpMethod::Get, "/roles")).unwrap();
+
+    assert!(set.contains(&key(HttpMethod::Get, "/roles")));
+    assert!(!set.contains(&key(HttpMethod::Post, "/roles")));
+    assert_eq!(
+        set.get_key(&key(HttpMethod::Get, "/roles"))
+            .map(|details| details.flags),
+        Some(PermissionFlags::NONE)
+    );
+    assert_eq!(set.get_key(&key(HttpMethod::Get, "/other")), None);
+}
+
+#[test]
+fn the_union_keeps_every_operation_the_first_label_and_the_restrictive_flags() {
+    let mut left = RestOperationSet::new();
+    left.insert(flagged(
+        HttpMethod::Get,
+        "/a",
+        "left",
+        PermissionFlags::NONE.with_audit_always(),
+    ))
+    .unwrap();
+    left.insert(operation(HttpMethod::Get, "/only-left"))
+        .unwrap();
+    let mut right = RestOperationSet::new();
+    right
+        .insert(flagged(
+            HttpMethod::Get,
+            "/a",
+            "right",
+            PermissionFlags::NONE.with_sensitive(),
+        ))
+        .unwrap();
+    right
+        .insert(operation(HttpMethod::Get, "/only-right"))
+        .unwrap();
+
+    let union = left.union(&right);
+
+    assert_eq!(union.len(), 3);
+    assert_eq!(
+        union.get_key(&key(HttpMethod::Get, "/a")),
+        Some(&RestOperationDetails {
+            label: Some("left".to_owned()),
+            flags: PermissionFlags::NONE.with_sensitive().with_audit_always(),
+        })
+    );
+    assert!(union.contains(&key(HttpMethod::Get, "/only-left")));
+    assert!(union.contains(&key(HttpMethod::Get, "/only-right")));
+    assert_eq!(left.len(), 2);
+}

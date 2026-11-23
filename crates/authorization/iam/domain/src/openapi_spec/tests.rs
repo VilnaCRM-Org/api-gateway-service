@@ -6,7 +6,7 @@ use shared_domain::{AggregateRoot as _, DomainEvent, Uuid};
 
 use super::event::{OpenApiSpecLoaded, OpenApiSpecRetired};
 use super::{OpenApiSpec, OpenApiSpecContent, OpenApiSpecParts};
-use crate::error::SpecTransitionRefused;
+use crate::error::{InvalidEventEnvelope, SpecTransitionRefused};
 use crate::graphql_spec::{SpecActivation, SpecStamp};
 use crate::value_object::actor_ref::ActorRef;
 use crate::value_object::content_hash::ContentHash;
@@ -218,4 +218,64 @@ fn retiring_a_version_that_is_not_active_is_refused(#[case] status: SpecStatus) 
     );
     assert_eq!(spec.parts(), &before);
     assert_eq!(event_names(&mut spec), Vec::<&str>::new());
+}
+
+#[test]
+fn pulling_envelopes_names_the_loaded_event_and_drains_it() {
+    let mut spec = OpenApiSpec::load(spec_id(), content(), stamp(10));
+
+    let envelopes = spec.pull_envelopes().unwrap();
+
+    assert_eq!(envelopes.len(), 1);
+    let parts = envelopes[0].parts();
+    assert_eq!(parts.event_type.as_str(), "iam.openapi_spec.loaded");
+    assert_eq!(parts.aggregate_id, spec_id().as_uuid());
+    assert_eq!(parts.entity_version, None);
+    assert_eq!(spec.pull_envelopes().unwrap().len(), 0);
+}
+
+#[test]
+fn pulling_envelopes_names_the_retired_event() {
+    let mut spec = stored(SpecStatus::Active);
+    spec.retire(stamp(30)).unwrap();
+
+    let envelopes = spec.pull_envelopes().unwrap();
+
+    assert_eq!(envelopes.len(), 1);
+    assert_eq!(
+        envelopes[0].parts().event_type.as_str(),
+        "iam.openapi_spec.retired"
+    );
+}
+
+/// An event that is not one of the two events of a version.
+#[derive(Debug)]
+struct Foreign;
+
+impl DomainEvent for Foreign {
+    fn event_id(&self) -> Uuid {
+        Uuid::parse(EVENT).unwrap()
+    }
+
+    fn aggregate_id(&self) -> Uuid {
+        Uuid::parse(SPEC).unwrap()
+    }
+
+    fn occurred_at(&self) -> SystemTime {
+        at(1)
+    }
+
+    fn event_name(&self) -> &'static str {
+        "iam.foreign"
+    }
+}
+
+#[test]
+fn pulling_envelopes_refuses_an_event_that_a_version_never_records() {
+    let mut spec = stored(SpecStatus::Draft);
+    spec.recorded_events().record(Foreign);
+
+    let refused = spec.pull_envelopes();
+
+    assert_eq!(refused, Err(InvalidEventEnvelope::EventType));
 }
