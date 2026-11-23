@@ -280,6 +280,31 @@ impl AppWorld {
         connection.close().await.expect("close");
     }
 
+    /// Stores the inactive REST catalogue entry `key` in the scenario database, as a fixture: the
+    /// state that an earlier, retired version leaves behind.
+    pub(crate) async fn seed_inactive_rest_catalogue_entry(&mut self, key: &str, sensitive: bool) {
+        let url = self.database_url().await;
+        let options = PgConnectOptions::from_str(&url).expect("valid database URL");
+        let mut connection = options
+            .connect()
+            .await
+            .expect("connect to the scenario database");
+        sqlx::query(
+            "INSERT INTO iam_rest_permissions (id, permission_key, service, method, \
+             path_template, sensitive, audit_always, active, orphaned_at, created_at) \
+             VALUES (gen_random_uuid(), $1, split_part($1, ':', 2), \
+             split_part(split_part($1, ':', 3), ' ', 1), \
+             substr(split_part($1, ':', 3), strpos(split_part($1, ':', 3), ' ') + 1), \
+             $2, FALSE, FALSE, NULL, now())",
+        )
+        .bind(key.to_owned())
+        .bind(sensitive)
+        .execute(&mut connection)
+        .await
+        .expect("seed the catalogue entry");
+        connection.close().await.expect("close");
+    }
+
     /// Makes every update of an assignment row of the scenario database fail, as a fixture: the
     /// statement that a role deletion runs after it has updated the role row, so that the whole
     /// change must roll back.

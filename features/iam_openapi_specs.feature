@@ -318,3 +318,239 @@ Feature: IAM OpenAPI specifications
     Then the response status code should be 401
     When GET request is sent to "/api/openapi-specs/0190f2a8-7b3c-7d4e-8f10-1234567890ad/diff"
     Then the response status code should be 401
+
+  Scenario: Activating a draft over REST makes its operations grantable and commits its event and audit record
+    Given a caller authenticated with a valid service token
+    When POST request is sent to "/api/openapi-specs" with body:
+      """
+      {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{}},\"/invoices/{invoiceId}/pay\":{\"post\":{\"x-iam-sensitive\":true}}}}"}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/openapi-specs/{id}/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 201
+    And the response header "iam-policy-version" should contain "1"
+    And the JSON pointer "/service" should equal "billing"
+    And the JSON pointer "/status" should equal "active"
+    And the JSON array at "/createdKeys" should have 2 items
+    And the JSON pointer "/policyVersion" should equal the number 1
+    And the response body should contain "rest:billing:GET /invoices"
+    And the response body should contain "rest:billing:POST /invoices/{}/pay"
+    And the catalogue of the service "billing" should hold 2 active REST permissions
+    And the REST key "rest:billing:POST /invoices/{}/pay" should be an active catalogue entry that is sensitive
+    And the IAM policy version should be 1
+    And the outbox should hold 1 "iam.rest_permissions.created" event
+    And the audit log should hold 1 committed "openapi_spec.activate" record
+    When GET request is sent to "/api/openapi-specs/{id}"
+    Then the response status code should be 200
+    And the JSON pointer "/status" should equal "active"
+    And the JSON pointer "/activatedAt" should be present
+
+  Scenario: Activating a draft over GraphQL returns the same data
+    Given a caller authenticated with a valid service token
+    When POST request is sent to "/api/openapi-specs" with body:
+      """
+      {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{}},\"/invoices/{invoiceId}/pay\":{\"post\":{\"x-iam-sensitive\":true}}}}"}
+      """
+    Then the response status code should be 201
+    When the GraphQL operation is sent:
+      """
+      mutation { createRestPermissions(input: {id: "{id}"}) { id service status createdKeys policyVersion } }
+      """
+    Then the response status code should be 200
+    And the GraphQL response should have no errors
+    And the JSON pointer "/data/createRestPermissions/service" should equal "billing"
+    And the JSON pointer "/data/createRestPermissions/status" should equal "active"
+    And the JSON array at "/data/createRestPermissions/createdKeys" should have 2 items
+    And the JSON pointer "/data/createRestPermissions/policyVersion" should equal the number 1
+    And the catalogue of the service "billing" should hold 2 active REST permissions
+    And the outbox should hold 1 "iam.rest_permissions.created" event
+    And the audit log should hold 1 committed "openapi_spec.activate" record
+
+  Scenario: An activation that would drop a sensitive flag needs confirmFlagDowngrade over REST and GraphQL
+    Given a caller authenticated with a valid service token
+    And the catalogue holds the inactive sensitive REST key "rest:billing:POST /invoices/{}/pay"
+    When POST request is sent to "/api/openapi-specs" with body:
+      """
+      {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{}},\"/invoices/{invoiceId}/pay\":{\"post\":{}}}}"}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/openapi-specs/{id}/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 409
+    And the response body should contain "/problems/flag-downgrade-confirmation-required"
+    And the response body should contain "rest:billing:POST /invoices/{}/pay"
+    And the outbox should hold 0 "iam.rest_permissions.created" events
+    And the IAM policy version should be 0
+    When the GraphQL operation is sent:
+      """
+      mutation { createRestPermissions(input: {id: "{id}"}) { id } }
+      """
+    Then the GraphQL error code should be "FLAG_DOWNGRADE_CONFIRMATION_REQUIRED"
+    When POST request is sent to "/api/openapi-specs/{id}/permissions" with body:
+      """
+      {"confirmFlagDowngrade": true}
+      """
+    Then the response status code should be 201
+    And the REST key "rest:billing:POST /invoices/{}/pay" should be an active catalogue entry that is not sensitive
+    And the outbox should hold 1 "iam.rest_permissions.created" event
+    And the "iam.rest_permissions.created" event should carry "flagChanges" in its payload
+
+  Scenario: Repeating an activation with the same idempotency key returns the original result and no second event
+    Given a caller authenticated with a valid service token
+    When POST request is sent to "/api/openapi-specs" with body:
+      """
+      {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{}}}}"}
+      """
+    Then the response status code should be 201
+    Given the idempotency key "activate-billing-rest-operations"
+    When POST request is sent to "/api/openapi-specs/{id}/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/openapi-specs/{id}/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 201
+    And the last two responses should have the same body
+    And the IAM policy version should be 1
+    And the outbox should hold 1 "iam.rest_permissions.created" event
+    And the audit log should hold 1 committed "openapi_spec.activate" record
+
+  Scenario: An activation that would orphan grants needs confirmOrphans over REST and GraphQL
+    Given a caller authenticated with a valid service token
+    And an assignable role "Payer" that grants "rest:billing:POST /invoices/{}/pay"
+    When POST request is sent to "/api/openapi-specs" with body:
+      """
+      {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{}}}}"}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/openapi-specs/{id}/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 409
+    And the response body should contain "/problems/orphan-confirmation-required"
+    And the response body should contain "rest:billing:POST /invoices/{}/pay"
+    And the seeded role should hold 0 orphaned grants
+    And the outbox should hold 0 "iam.rest_permissions.created" events
+    When the GraphQL operation is sent:
+      """
+      mutation { createRestPermissions(input: {id: "{id}"}) { id } }
+      """
+    Then the GraphQL error code should be "ORPHAN_CONFIRMATION_REQUIRED"
+    When POST request is sent to "/api/openapi-specs/{id}/permissions" with body:
+      """
+      {"confirmOrphans": true}
+      """
+    Then the response status code should be 201
+    And the seeded role should hold 1 orphaned grant
+    And the outbox should hold 1 "iam.rest_permissions.created" event
+    And the outbox should hold 1 "iam.permissions.orphaned" event
+
+  Scenario: A rename moves the grants of the old key to the new key instead of orphaning them
+    Given a caller authenticated with a valid service token
+    And an assignable role "Biller" that grants "rest:billing:GET /bills"
+    When POST request is sent to "/api/openapi-specs" with body:
+      """
+      {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{}}}}"}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/openapi-specs/{id}/permissions" with body:
+      """
+      {"renames": [{"from": "rest:billing:GET /bills", "to": "rest:billing:GET /invoices"}]}
+      """
+    Then the response status code should be 201
+    And the seeded role should hold 1 active grant
+    And the seeded role should hold 0 orphaned grants
+    And the outbox should hold 0 "iam.permissions.orphaned" events
+    And the "iam.rest_permissions.created" event should carry "rest:billing:GET /bills" in its payload
+
+  Scenario: Activating a version that is active already is a no-op
+    Given a caller authenticated with a valid service token
+    When POST request is sent to "/api/openapi-specs" with body:
+      """
+      {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{}}}}"}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/openapi-specs/{id}/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/openapi-specs/{id}/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 200
+    And the JSON array at "/createdKeys" should have 0 items
+    And the IAM policy version should be 1
+    And the outbox should hold 1 "iam.rest_permissions.created" event
+    And the audit log should hold 1 committed "openapi_spec.activate" record
+
+  Scenario: Two active versions of one service make the catalogue their union
+    Given a caller authenticated with a valid service token
+    When POST request is sent to "/api/openapi-specs" with body:
+      """
+      {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{}}}}"}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/openapi-specs/{id}/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/openapi-specs" with body:
+      """
+      {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/orders\":{\"get\":{}}}}"}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/openapi-specs/{id}/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 201
+    And the JSON array at "/createdKeys" should have 1 items
+    And the JSON pointer "/createdKeys/0" should equal "rest:billing:GET /orders"
+    And the catalogue of the service "billing" should hold 2 active REST permissions
+    When GET request is sent to "/api/openapi-specs?service=billing&status=active"
+    Then the response status code should be 200
+    And the JSON array at "/items" should have 2 items
+
+  Scenario: An unknown version, an invalid identifier or rename and a missing token are refused
+    Given a caller authenticated with a valid service token
+    When POST request is sent to "/api/openapi-specs/0190f2a8-7b3c-7d4e-8f10-1234567890ad/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 404
+    When POST request is sent to "/api/openapi-specs/not-a-uuid/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 422
+    When POST request is sent to "/api/openapi-specs/0190f2a8-7b3c-7d4e-8f10-1234567890ad/permissions" with body:
+      """
+      {"renames": [{"from": "nonsense", "to": "rest:billing:GET /invoices"}]}
+      """
+    Then the response status code should be 422
+    And the response body should contain '"propertyPath":"renames[0].from"'
+    When the GraphQL operation is sent:
+      """
+      mutation { createRestPermissions(input: {id: "0190f2a8-7b3c-7d4e-8f10-1234567890ad"}) { id } }
+      """
+    Then the GraphQL error code should be "NOT_FOUND"
+    And the outbox should hold 0 "iam.rest_permissions.created" events
+
+  Scenario: The REST activation needs a valid token
+    When POST request is sent to "/api/openapi-specs/0190f2a8-7b3c-7d4e-8f10-1234567890ad/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 401

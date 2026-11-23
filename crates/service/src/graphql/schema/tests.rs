@@ -89,6 +89,20 @@ input CreateGraphqlPermissionsInput {
   renames: [KeyRenameInput!]! = []
 }
 
+"Input of the mutation that activates an `OpenAPI` specification version."
+input CreateRestPermissionsInput {
+  "Accepts that keys lose the sensitive or the always-audit flag; without it, an activation that would remove a flag fails with `FLAG_DOWNGRADE_CONFIRMATION_REQUIRED`."
+  confirmFlagDowngrade: Boolean! = false
+  "Accepts that grants of keys that leave the catalogue become inactive; without it, an activation that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED`."
+  confirmOrphans: Boolean! = false
+  "The version to activate."
+  id: ID!
+  "Makes the activation safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+  "The operations that the version renames; the grants of each old key move to its new key before anything is orphaned."
+  renames: [KeyRenameInput!]! = []
+}
+
 "Input of the role-creation mutation."
 input CreateRoleInput {
   "What the role is for, at most 1,000 characters."
@@ -139,6 +153,50 @@ type FlagDowngrade {
   before: CoordinateFlags!
   "The coordinate, `Type.field`."
   coordinate: String!
+}
+
+"A GraphQL catalogue entry."
+type GraphqlPermission {
+  "Whether some active version holds the key."
+  active: Boolean!
+  "The field of the key; `__introspection` for the introspection key."
+  field: String!
+  "The flags of the entry: the most restrictive ones across the active versions."
+  flags: CoordinateFlags!
+  "The identifier of the entry."
+  id: ID!
+  "The permission key, `gql:{service}:{Type}.{field}` or `gql:{service}:__introspection`."
+  key: String!
+  "The identifiers of the roles that grant the key by its exact key; wildcard grants are not listed."
+  roles: [String!]!
+  "The service of the key."
+  service: String!
+  "The GraphQL type of the key; `__introspection` for the introspection key."
+  type: String!
+  "The identifiers of the active versions that contain the key."
+  versions: [String!]!
+}
+
+"Filters of the permission list."
+input GraphqlPermissionFilter {
+  "Only active (`true`) or only inactive (`false`) permissions."
+  active: Boolean
+  "Only permissions whose key starts with this text."
+  keyPrefix: String
+  "Only permissions that are sensitive (`true`) or not (`false`)."
+  sensitive: Boolean
+  "Only permissions of this service."
+  service: String
+  "Only permissions of this GraphQL type."
+  type: String
+}
+
+"One page of GraphQL catalogue entries."
+type GraphqlPermissionPage {
+  "The entries of the page."
+  items: [GraphqlPermission!]!
+  "The `after` value of the next page; null on the last page."
+  nextCursor: String
 }
 
 "The result of an activation."
@@ -243,6 +301,8 @@ type Mutation {
   createExampleApiResource(input: CreateExampleApiResourceInput!): ExampleApiResource!
   "Activates a draft GraphQL specification version and makes its fields grantable permissions: the catalogue of the service becomes the union of its active versions, the next policy version is taken and `iam.graphql_permissions.created` is recorded. An activation that would remove the sensitive or always-audit flag from a key fails with `FLAG_DOWNGRADE_CONFIRMATION_REQUIRED` unless `confirmFlagDowngrade` is true, and one that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED` unless `confirmOrphans` is true. A version that is active already is a no-op."
   createGraphqlPermissions(input: CreateGraphqlPermissionsInput!): GraphqlPermissionsActivation!
+  "Activates a draft `OpenAPI` specification version and makes its operations grantable permissions: the catalogue of the service becomes the union of its active versions, the next policy version is taken and `iam.rest_permissions.created` is recorded. An activation that would remove the sensitive or always-audit flag from a key fails with `FLAG_DOWNGRADE_CONFIRMATION_REQUIRED` unless `confirmFlagDowngrade` is true, and one that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED` unless `confirmOrphans` is true. A version that is active already is a no-op."
+  createRestPermissions(input: CreateRestPermissionsInput!): RestPermissionsActivation!
   "Creates a custom role without grants at version 1 and records `iam.role.created`."
   createRole(input: CreateRoleInput!): Role!
   "Deletes a custom role when `expectedVersion` is the current version and revokes every assignment of it in the same transaction: the role and its assignments leave the active listings at once, the next policy version is committed, and `iam.role.deleted`, one `iam.user_role.revoked` per revoked assignment and the audit records are written. The payload reports the number of revoked assignments."
@@ -354,6 +414,17 @@ type Query {
     "Page number, from 1."
     page: Int! = 1
   ): [ExampleApiResource!]!
+  "Retrieves a GraphQL permission by id with the active versions that contain its key and the roles that grant it by its exact key; null when it is unknown."
+  graphqlPermission(id: ID!): GraphqlPermission
+  "Retrieves one page of GraphQL permissions in a stable order, filtered by service, type, active state, the sensitive flag and key prefix."
+  graphqlPermissions(
+    "The nextCursor of the previous page."
+    after: String,
+    "Only permissions that match the filter."
+    filter: GraphqlPermissionFilter,
+    "Page size, from 1 to 100."
+    first: Int = 30
+  ): GraphqlPermissionPage!
   "Retrieves a GraphQL specification version by id; null when it is unknown. The fields `sdl` and `diff` are read only when the query selects them."
   graphqlSpec(id: ID!): GraphqlSpec
   "Retrieves one page of GraphQL specification versions in a stable order, filtered by service and status."
@@ -422,6 +493,20 @@ type RemovedOperationGrant {
 input ResolveTokenInput {
   "The User service token to resolve; an empty one resolves as `token_missing`."
   credential: String!
+}
+
+"The result of an activation."
+type RestPermissionsActivation {
+  "The keys that the activation added to the catalogue, in key order; empty for a version that was active already."
+  createdKeys: [String!]!
+  "The identifier of the activated version."
+  id: ID!
+  "The policy version that the activation produced; for a version that was active already, the current policy version."
+  policyVersion: Int!
+  "The service the document belongs to."
+  service: String!
+  "`active`."
+  status: String!
 }
 
 "Input of the assignment-revocation mutation."
@@ -605,6 +690,9 @@ fn the_sdl_has_the_template_and_iam_operations_and_nothing_else_to_call() {
     assert!(text.contains(
         "createGraphqlPermissions(input: CreateGraphqlPermissionsInput!): GraphqlPermissionsActivation!"
     ));
+    assert!(text.contains(
+        "createRestPermissions(input: CreateRestPermissionsInput!): RestPermissionsActivation!"
+    ));
     assert!(text.contains("updateRole(input: UpdateRoleInput!): Role!"));
     assert!(text.contains("deleteRole(input: DeleteRoleInput!): DeleteRolePayload!"));
     assert!(text.contains("role(id: ID!): Role"));
@@ -615,6 +703,8 @@ fn the_sdl_has_the_template_and_iam_operations_and_nothing_else_to_call() {
     assert!(text.contains("userRole(id: ID!): UserRole"));
     assert!(text.contains("userRoles("));
     assert!(text.contains("graphqlSpec("));
+    assert!(text.contains("graphqlPermission(id: ID!): GraphqlPermission"));
+    assert!(text.contains("graphqlPermissions("));
     assert!(text.contains("graphqlSpecs("));
     assert!(text.contains("loadOpenapiSpec(input: LoadOpenapiSpecInput!): OpenApiSpec!"));
     for absent in [

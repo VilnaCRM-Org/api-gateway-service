@@ -111,7 +111,7 @@ fn the_router_documents_the_role_operations_under_the_iam_tag_behind_the_bearer_
     }
     assert!(collection.put.is_none() && collection.delete.is_none() && collection.patch.is_none());
     assert!(item.post.is_none() && item.put.is_none());
-    assert_eq!(document.paths.paths.len(), 6);
+    assert_eq!(document.paths.paths.len(), 9);
 }
 
 #[test]

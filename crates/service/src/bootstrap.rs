@@ -24,6 +24,9 @@ use iam_application::{
     RevokeUserRoleCommandHandler, UpdateUserRoleCommandHandler,
 };
 use iam_application::{
+    CreateRestPermissionsCommandHandler, GetRestPermissionsCreatedQueryHandler, RestActivationReads,
+};
+use iam_application::{
     CreateRoleCommandHandler, DeleteRoleCommandHandler, GetRoleQueryHandler, ListRolesQueryHandler,
     UpdateRoleCommandHandler,
 };
@@ -37,6 +40,9 @@ use iam_application::{
 };
 use iam_application::{
     GetChangeReceiptQueryHandler, GetIdempotentReplayQueryHandler, GetPolicyEpochQueryHandler,
+};
+use iam_application::{
+    GetGraphQlPermissionQueryHandler, GetGraphQlPermissionsQueryHandler, PermissionReads,
 };
 use iam_application::{ResolveSubjectTokenQueryHandler, ResolveTokenQueryHandler};
 use iam_domain::GraphQlPermissionRepository;
@@ -406,6 +412,52 @@ fn register_graphql_activation_queries(
     Ok(bus.register(created)?)
 }
 
+/// Registers the query handlers that read the GraphQL permission catalogue: the list and one entry.
+fn register_graphql_permission_queries(
+    bus: InMemoryQueryBus,
+    adapters: &Adapters,
+) -> Result<InMemoryQueryBus, BootstrapError> {
+    let reads = PermissionReads {
+        permissions: Arc::clone(&adapters.graphql_permissions),
+        specs: Arc::clone(&adapters.graphql_specs),
+        roles: Arc::clone(&adapters.roles),
+    };
+    let list = GetGraphQlPermissionsQueryHandler::new(reads.clone());
+    let one = GetGraphQlPermissionQueryHandler::new(reads);
+    Ok(bus.register(list)?.register(one)?)
+}
+
+/// Registers the command handler that activates `OpenAPI` specifications.
+fn register_rest_activation_commands(
+    bus: InMemoryCommandBus,
+    adapters: &Adapters,
+) -> Result<InMemoryCommandBus, BootstrapError> {
+    let reads = RestActivationReads {
+        specs: Arc::clone(&adapters.openapi_specs),
+        permissions: Arc::clone(&adapters.rest_permissions),
+        roles: Arc::clone(&adapters.roles),
+        policy_epochs: Arc::clone(&adapters.policy_epochs),
+    };
+    let activate = CreateRestPermissionsCommandHandler::new(
+        reads,
+        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    Ok(bus.register(activate)?)
+}
+
+/// Registers the query handler that reads the keys an activation of an `OpenAPI` specification
+/// created.
+fn register_rest_activation_queries(
+    bus: InMemoryQueryBus,
+    adapters: &Adapters,
+) -> Result<InMemoryQueryBus, BootstrapError> {
+    let created =
+        GetRestPermissionsCreatedQueryHandler::new(Arc::clone(&adapters.rest_permissions));
+    Ok(bus.register(created)?)
+}
+
 /// Registers the command handler that loads `OpenAPI` specifications.
 fn register_openapi_spec_commands(
     bus: InMemoryCommandBus,
@@ -501,6 +553,7 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
     let commands = register_graphql_spec_commands(commands, adapters)?;
     let commands = register_graphql_activation_commands(commands, adapters)?;
     let commands = register_openapi_spec_commands(commands, adapters)?;
+    let commands = register_rest_activation_commands(commands, adapters)?;
     let commands = register_user_role_commands(commands, adapters)?;
     let queries = InMemoryQueryBus::new();
     let queries = register_queries(queries, &adapters.repository, &adapters.policy_epochs)?;
@@ -509,7 +562,9 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
     let queries = register_role_queries(queries, &adapters.roles)?;
     let queries = register_graphql_spec_queries(queries, adapters)?;
     let queries = register_graphql_activation_queries(queries, adapters)?;
+    let queries = register_graphql_permission_queries(queries, adapters)?;
     let queries = register_openapi_spec_queries(queries, adapters)?;
+    let queries = register_rest_activation_queries(queries, adapters)?;
     let queries = register_user_role_queries(queries, adapters)?;
     let queries = register_token_queries(queries, &adapters.tokens, config)?;
     Ok((Arc::new(commands), Arc::new(queries)))

@@ -146,7 +146,13 @@ impl CreateGraphQlPermissionsCommandHandler {
         let mut activation = OrphanPolicy::apply(&previous, &next, &renames, &grants)
             .map_err(|refusal| rename_refused(&refusal))?;
         let entries = self.entries(&stored, &next, &mut activation);
-        confirmed(&activation, command)?;
+        confirmed(
+            &activation,
+            Confirmations {
+                flag_downgrade: command.confirm_flag_downgrade,
+                orphans: command.confirm_orphans,
+            },
+        )?;
         Ok(Plan {
             spec_id: spec.parts().id,
             service,
@@ -157,62 +163,17 @@ impl CreateGraphQlPermissionsCommandHandler {
     }
 
     /// The entries the activation creates, reactivates and re-flags.
-    ///
-    /// A stored entry that is inactive keeps its old flags until the activation makes it active
-    /// again, so the flags it takes then count as flag changes of the activation.
     fn entries(
         &self,
         stored: &[GraphQlPermission],
         next: &PermissionCatalogue,
         activation: &mut CatalogueActivation,
     ) -> Entries {
-        let known: BTreeMap<&PermissionKey, PermissionFlags> = stored
+        let known = stored
             .iter()
             .map(|entry| (&entry.parts().key, entry.parts().flags))
             .collect();
-        let reactivated: Vec<PermissionKey> = activation
-            .created_keys
-            .iter()
-            .filter(|key| known.contains_key(key))
-            .cloned()
-            .collect();
-        let created = activation
-            .created_keys
-            .iter()
-            .filter(|key| !known.contains_key(key))
-            .filter_map(|key| {
-                next.flags(key).map(|flags| EntryInsert {
-                    id: PermissionId::from_uuid(self.uuid_generator.generate()),
-                    key: key.clone(),
-                    flags,
-                })
-            })
-            .collect();
-        activation
-            .flag_changes
-            .extend(regained_flags(&known, next, &reactivated));
-        activation
-            .flag_changes
-            .sort_by(|left, right| left.key.cmp(&right.key));
-        activation.flag_downgrades = activation
-            .flag_changes
-            .iter()
-            .filter(|change| change.is_downgrade())
-            .cloned()
-            .collect();
-        let reflagged = activation
-            .flag_changes
-            .iter()
-            .map(|change| EntryFlags {
-                key: change.key.clone(),
-                flags: change.after,
-            })
-            .collect();
-        Entries {
-            created,
-            reflagged,
-            reactivated,
-        }
+        plan_entries(&known, next, activation, self.uuid_generator.as_ref())
     }
 
     /// The change that activates the version: the guard, the catalogue statement, the events and
@@ -232,7 +193,7 @@ impl CreateGraphQlPermissionsCommandHandler {
         };
         let events = self.events(&context, &plan.activation)?;
         let audit = self.audit(&context, &plan.activation, command.idempotency.as_ref())?;
-        let statement = catalogue_statement(plan, now)?;
+        let statement = catalogue_statement(PermissionKeyKind::Gql, plan, now)?;
         Ok(IamChange::new(IamChangeParts {
             change_id: command.change_id,
             effect: DecisionEffect::Affected,
@@ -286,57 +247,132 @@ impl CreateGraphQlPermissionsCommandHandler {
         activation: &CatalogueActivation,
         idempotency: Option<&IdempotencyRequest>,
     ) -> Result<SecurityAuditEvent, IamError> {
-        let after = format!(
-            "service={} status=active created={} renamed={} flag_changes={} orphaned={}",
-            context.service,
-            activation.created_keys.len(),
-            activation.renames.len(),
-            activation.flag_changes.len(),
-            activation.orphaned_grants.len()
-        );
-        let parts = SecurityAuditEventParts {
-            id: SecurityAuditEventId::from_uuid(self.uuid_generator.generate()),
-            occurred_at: context.at,
-            actor: context.actor.clone(),
-            caller_service: None,
-            action: AuditAction::new(AUDIT_ACTION)?,
-            target: AuditTarget::new("graphql_spec", &context.spec_id.to_string())?,
-            scope: None,
-            before: Some(AuditSummary::new("status=draft")?),
-            after: Some(AuditSummary::new(&after)?),
-            idempotency_key: idempotency.map(|request| request.key.clone()),
-            outcome: AuditOutcome::Committed,
-            reason: None,
-            policy_version: None,
-            request_id: None,
-        };
-        Ok(SecurityAuditEvent::record(parts)?)
+        let target = AuditTarget::new("graphql_spec", &context.spec_id.to_string())?;
+        activation_audit(
+            self.uuid_generator.as_ref(),
+            AuditAction::new(AUDIT_ACTION)?,
+            target,
+            (context, activation),
+            idempotency,
+        )
     }
 }
 
 /// Who activates which version of which service, and when.
-struct Context {
-    spec_id: SpecId,
-    service: ServiceName,
-    actor: ActorRef,
-    at: SystemTime,
+pub(crate) struct Context {
+    pub(crate) spec_id: SpecId,
+    pub(crate) service: ServiceName,
+    pub(crate) actor: ActorRef,
+    pub(crate) at: SystemTime,
 }
 
 /// What the activation changes: the version, the effect on the catalogue and the entries.
-struct Plan {
-    spec_id: SpecId,
-    service: ServiceName,
-    activated_at: Option<SystemTime>,
-    activation: CatalogueActivation,
-    entries: Entries,
+pub(crate) struct Plan {
+    pub(crate) spec_id: SpecId,
+    pub(crate) service: ServiceName,
+    pub(crate) activated_at: Option<SystemTime>,
+    pub(crate) activation: CatalogueActivation,
+    pub(crate) entries: Entries,
 }
 
 /// The catalogue entries an activation writes.
 #[derive(Debug, Default)]
-struct Entries {
-    created: Vec<EntryInsert>,
-    reflagged: Vec<EntryFlags>,
-    reactivated: Vec<PermissionKey>,
+pub(crate) struct Entries {
+    pub(crate) created: Vec<EntryInsert>,
+    pub(crate) reflagged: Vec<EntryFlags>,
+    pub(crate) reactivated: Vec<PermissionKey>,
+}
+
+/// The entries the activation creates, reactivates and re-flags, against the `known` stored
+/// entries and their flags.
+///
+/// A stored entry that is inactive keeps its old flags until the activation makes it active
+/// again, so the flags it takes then count as flag changes of the activation. Both catalogue forms
+/// share it.
+pub(crate) fn plan_entries(
+    known: &BTreeMap<&PermissionKey, PermissionFlags>,
+    next: &PermissionCatalogue,
+    activation: &mut CatalogueActivation,
+    uuid_generator: &dyn UuidGenerator,
+) -> Entries {
+    let reactivated: Vec<PermissionKey> = activation
+        .created_keys
+        .iter()
+        .filter(|key| known.contains_key(key))
+        .cloned()
+        .collect();
+    let created = activation
+        .created_keys
+        .iter()
+        .filter(|key| !known.contains_key(key))
+        .filter_map(|key| {
+            next.flags(key).map(|flags| EntryInsert {
+                id: PermissionId::from_uuid(uuid_generator.generate()),
+                key: key.clone(),
+                flags,
+            })
+        })
+        .collect();
+    activation
+        .flag_changes
+        .extend(regained_flags(known, next, &reactivated));
+    activation
+        .flag_changes
+        .sort_by(|left, right| left.key.cmp(&right.key));
+    activation.flag_downgrades = activation
+        .flag_changes
+        .iter()
+        .filter(|change| change.is_downgrade())
+        .cloned()
+        .collect();
+    let reflagged = activation
+        .flag_changes
+        .iter()
+        .map(|change| EntryFlags {
+            key: change.key.clone(),
+            flags: change.after,
+        })
+        .collect();
+    Entries {
+        created,
+        reflagged,
+        reactivated,
+    }
+}
+
+/// The committed audit record of an activation of `action` on `target`.
+pub(crate) fn activation_audit(
+    uuid_generator: &dyn UuidGenerator,
+    action: AuditAction,
+    target: AuditTarget,
+    (context, activation): (&Context, &CatalogueActivation),
+    idempotency: Option<&IdempotencyRequest>,
+) -> Result<SecurityAuditEvent, IamError> {
+    let after = format!(
+        "service={} status=active created={} renamed={} flag_changes={} orphaned={}",
+        context.service,
+        activation.created_keys.len(),
+        activation.renames.len(),
+        activation.flag_changes.len(),
+        activation.orphaned_grants.len()
+    );
+    let parts = SecurityAuditEventParts {
+        id: SecurityAuditEventId::from_uuid(uuid_generator.generate()),
+        occurred_at: context.at,
+        actor: context.actor.clone(),
+        caller_service: None,
+        action,
+        target,
+        scope: None,
+        before: Some(AuditSummary::new("status=draft")?),
+        after: Some(AuditSummary::new(&after)?),
+        idempotency_key: idempotency.map(|request| request.key.clone()),
+        outcome: AuditOutcome::Committed,
+        reason: None,
+        policy_version: None,
+        request_id: None,
+    };
+    Ok(SecurityAuditEvent::record(parts)?)
 }
 
 /// The flag changes of the stored entries that the activation makes active again: their stored
@@ -361,7 +397,11 @@ fn regained_flags(
 }
 
 /// The catalogue statement of the plan, taking effect at `now`.
-fn catalogue_statement(plan: Plan, now: SystemTime) -> Result<CatalogueStatement, IamError> {
+pub(crate) fn catalogue_statement(
+    kind: PermissionKeyKind,
+    plan: Plan,
+    now: SystemTime,
+) -> Result<CatalogueStatement, IamError> {
     let Plan {
         spec_id,
         service,
@@ -370,7 +410,7 @@ fn catalogue_statement(plan: Plan, now: SystemTime) -> Result<CatalogueStatement
         entries,
     } = plan;
     CatalogueStatement::new(CatalogueStatementParts {
-        kind: PermissionKeyKind::Gql,
+        kind,
         service,
         transition: SpecTransition {
             spec_id,
@@ -390,6 +430,15 @@ fn catalogue_statement(plan: Plan, now: SystemTime) -> Result<CatalogueStatement
     .map_err(IamError::from)
 }
 
+/// What the caller confirmed.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Confirmations {
+    /// Whether the caller accepts that keys lose the sensitive or the always-audit flag.
+    pub(crate) flag_downgrade: bool,
+    /// Whether the caller accepts that grants become inactive.
+    pub(crate) orphans: bool,
+}
+
 /// Checks that the caller confirmed the flag downgrades and the orphaned grants the activation
 /// causes.
 ///
@@ -397,11 +446,11 @@ fn catalogue_statement(plan: Plan, now: SystemTime) -> Result<CatalogueStatement
 ///
 /// [`IamError::ConfirmationRequired`] that lists the keys of the first unconfirmed kind: the flag
 /// downgrades, then the orphaned grants.
-fn confirmed(
+pub(crate) fn confirmed(
     activation: &CatalogueActivation,
-    command: &CreateGraphQlPermissionsCommand,
+    confirmations: Confirmations,
 ) -> Result<(), IamError> {
-    if !command.confirm_flag_downgrade && !activation.flag_downgrades.is_empty() {
+    if !confirmations.flag_downgrade && !activation.flag_downgrades.is_empty() {
         let items = activation
             .flag_downgrades
             .iter()
@@ -416,7 +465,7 @@ fn confirmed(
             items,
         ));
     }
-    if !command.confirm_orphans && !activation.orphaned_grants.is_empty() {
+    if !confirmations.orphans && !activation.orphaned_grants.is_empty() {
         let items = activation
             .orphaned_grants
             .iter()
@@ -432,7 +481,7 @@ fn confirmed(
 }
 
 /// The violation of `renames` that a refused rename is.
-fn rename_refused(refusal: &RenameRefused) -> IamError {
+pub(crate) fn rename_refused(refusal: &RenameRefused) -> IamError {
     IamError::invalid_property("renames", &refusal.to_string(), "rename")
 }
 

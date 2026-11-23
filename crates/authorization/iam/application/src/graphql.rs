@@ -9,8 +9,10 @@
 //! second.
 
 pub mod graphql_activation;
+pub mod graphql_permission;
 pub mod graphql_spec;
 pub mod openapi_spec;
+pub mod rest_activation;
 pub mod role_deletion;
 pub mod schema_parser;
 pub mod user_role;
@@ -39,6 +41,10 @@ use graphql_activation::{
     CreateGraphQlPermissionsInput, GraphQlPermissionsActivationObject,
     create_graphql_permissions_field,
 };
+use graphql_permission::{
+    GraphQlPermissionFilterInput, GraphQlPermissionObject, GraphQlPermissionPageObject,
+    graphql_permission_field, graphql_permissions_field,
+};
 use graphql_spec::{
     GraphQlSpecFilterInput, GraphQlSpecObject, GraphQlSpecPageObject, LoadGraphQlSpecInput,
     graphql_spec_field, graphql_specs_field, load_graphql_spec_field,
@@ -46,6 +52,9 @@ use graphql_spec::{
 use openapi_spec::{
     LoadOpenApiSpecInput, OpenApiSpecFilterInput, OpenApiSpecObject, OpenApiSpecPageObject,
     load_openapi_spec_field, openapi_spec_field, openapi_specs_field,
+};
+use rest_activation::{
+    CreateRestPermissionsInput, RestPermissionsActivationObject, create_rest_permissions_field,
 };
 use role_deletion::{DeleteRoleInput, DeleteRolePayload, delete_role_field};
 use user_role::{
@@ -383,6 +392,17 @@ impl IamMutation {
             .map_err(iam_problem_to_graphql_error)
     }
 
+    /// Activates a draft `OpenAPI` specification version and makes its operations grantable permissions: the catalogue of the service becomes the union of its active versions, the next policy version is taken and `iam.rest_permissions.created` is recorded. An activation that would remove the sensitive or always-audit flag from a key fails with `FLAG_DOWNGRADE_CONFIRMATION_REQUIRED` unless `confirmFlagDowngrade` is true, and one that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED` unless `confirmOrphans` is true. A version that is active already is a no-op.
+    async fn create_rest_permissions(
+        &self,
+        ctx: &Context<'_>,
+        input: CreateRestPermissionsInput,
+    ) -> async_graphql::Result<RestPermissionsActivationObject> {
+        create_rest_permissions_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
     /// Loads the SDL of a service as a draft version and returns it with its diff against the active versions; an SDL that the service already holds returns its version and changes nothing. The service `iam` is reserved.
     async fn load_graphql_spec(
         &self,
@@ -511,6 +531,33 @@ impl IamQuery {
         >,
     ) -> async_graphql::Result<OpenApiSpecPageObject> {
         openapi_specs_field(ctx, first, after, filter.unwrap_or_default())
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves a GraphQL permission by id with the active versions that contain its key and the roles that grant it by its exact key; null when it is unknown.
+    async fn graphql_permission(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> async_graphql::Result<Option<GraphQlPermissionObject>> {
+        graphql_permission_field(ctx, &id)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves one page of GraphQL permissions in a stable order, filtered by service, type, active state, the sensitive flag and key prefix.
+    #[graphql(complexity = "page_complexity(first, child_complexity)")]
+    async fn graphql_permissions(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 30, desc = "Page size, from 1 to 100.")] first: Option<i32>,
+        #[graphql(desc = "The nextCursor of the previous page.")] after: Option<String>,
+        #[graphql(desc = "Only permissions that match the filter.")] filter: Option<
+            GraphQlPermissionFilterInput,
+        >,
+    ) -> async_graphql::Result<GraphQlPermissionPageObject> {
+        graphql_permissions_field(ctx, first, after, filter.unwrap_or_default())
             .await
             .map_err(iam_problem_to_graphql_error)
     }

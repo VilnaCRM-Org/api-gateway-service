@@ -261,6 +261,34 @@ Content-Type: application/json
   "variables": { "id": "01a1c6b5-cb86-7134-868a-7608036facfd" }
 }
 
+### List GraphQL permissions over REST: one page of the catalogue in a stable order with nextCursor; filters service, type, active, sensitive and keyPrefix; each entry shows its key, service, type, field, flags, active state, the active versions that contain it and the roles that grant it by its exact key; 422 for an invalid parameter
+GET {{baseUrl}}/api/graphql-permissions?service=billing&type=Mutation&active=true&sensitive=true&keyPrefix=gql:billing:Mutation.&limit=10
+Authorization: Bearer <caller token>
+
+### Read a GraphQL permission over REST: the same entry as a list item; 404 for an unknown permission, 422 for an identifier that is not a UUID
+GET {{baseUrl}}/api/graphql-permissions/01a1c6b5-cb86-7134-868a-7608036facfe
+Authorization: Bearer <caller token>
+
+### List GraphQL permissions over GraphQL: the same data as the REST operation; pass the nextCursor as after for the next page
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($first: Int, $after: String, $filter: GraphqlPermissionFilter) { graphqlPermissions(first: $first, after: $after, filter: $filter) { items { id key service type field flags { sensitive auditAlways } active versions roles } nextCursor } }",
+  "variables": { "first": 10, "filter": { "service": "billing", "type": "Mutation", "active": true, "sensitive": true, "keyPrefix": "gql:billing:Mutation." } }
+}
+
+### Read one GraphQL permission over GraphQL: graphqlPermission is null for an unknown permission
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($id: ID!) { graphqlPermission(id: $id) { id key service type field flags { sensitive auditAlways } active versions roles } }",
+  "variables": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe" }
+}
+
 ### List OpenAPI specifications over REST: one page in a stable order with nextCursor; filters service and status; the document only with includeDocument=true; 422 for an invalid parameter
 GET {{baseUrl}}/api/openapi-specs?service=billing&status=draft&limit=10&includeDocument=false
 Authorization: Bearer <caller token>
@@ -272,6 +300,28 @@ Authorization: Bearer <caller token>
 ### Read the diff of an OpenAPI specification over REST: the added and removed operations, the removed operations that roles grant, the wildcard grants that gain operations and the flag downgrades such as a dropped x-iam-sensitive; 404 for an unknown version
 GET {{baseUrl}}/api/openapi-specs/01a1c6b5-cb86-7134-868a-7608036facfd/diff
 Authorization: Bearer <caller token>
+
+### Activate an OpenAPI specification over REST: the draft becomes active and its operations grantable permissions with keys such as rest:billing:GET /invoices (201 with the created keys and the policy version); an active version returns 200 and changes nothing. 409 lists the keys that would lose a flag until confirmFlagDowngrade is true and the grants that would be orphaned until confirmOrphans is true; renames move the grants of an old key to its new key; a repeated Idempotency-Key with the same body returns the original result
+POST {{baseUrl}}/api/openapi-specs/01a1c6b5-cb86-7134-868a-7608036facfd/permissions
+Authorization: Bearer <caller token>
+Idempotency-Key: activate-billing-operations-1
+Content-Type: application/json
+
+{
+  "confirmOrphans": false,
+  "confirmFlagDowngrade": false,
+  "renames": [{ "from": "rest:billing:GET /bills", "to": "rest:billing:GET /invoices" }]
+}
+
+### Activate an OpenAPI specification over GraphQL: the same data as the REST operation; the error codes FLAG_DOWNGRADE_CONFIRMATION_REQUIRED, ORPHAN_CONFIRMATION_REQUIRED, CONFLICT, NOT_FOUND and VALIDATION_FAILED
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: CreateRestPermissionsInput!) { createRestPermissions(input: $input) { id service status createdKeys policyVersion } }",
+  "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facfd", "confirmOrphans": false, "confirmFlagDowngrade": false, "renames": [], "idempotencyKey": "activate-billing-operations-1" } }
+}
 
 ### Read OpenAPI specifications over GraphQL: the same data as the REST operations; openapiSpec is null for an unknown version, and document and diff are read only when they are selected
 POST {{baseUrl}}/api/graphql

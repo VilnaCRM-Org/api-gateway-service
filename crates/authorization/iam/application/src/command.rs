@@ -5,6 +5,7 @@
 
 pub mod assign_user_role;
 pub mod create_graphql_permissions;
+pub mod create_rest_permissions;
 pub mod create_role;
 pub mod delete_role;
 pub mod load_graphql_spec;

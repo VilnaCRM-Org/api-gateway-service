@@ -4,11 +4,13 @@
 pub mod dto;
 pub mod extract;
 pub mod graphql_activation;
+pub mod graphql_permission;
 pub mod graphql_spec;
 pub mod handler;
 pub mod openapi_document_parser;
 pub mod openapi_spec;
 pub mod response;
+pub mod rest_activation;
 pub mod role;
 pub mod user_role;
 
@@ -49,8 +51,31 @@ where
         .routes(routes!(handler::resolve))
         .routes(routes!(role::create, role::list))
         .routes(routes!(role::get_one, role::update, role::delete))
-        .routes(routes!(graphql_activation::create))
+        .merge(graphql_permission_router())
+        .merge(activation_router())
         .merge(user_role_router())
+}
+
+/// The routes that read the GraphQL permission catalogue, merged into [`router`].
+fn graphql_permission_router<S>() -> OpenApiRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+    IamState: FromRef<S>,
+{
+    OpenApiRouter::new()
+        .routes(routes!(graphql_permission::list))
+        .routes(routes!(graphql_permission::get_one))
+}
+
+/// The routes that activate specification versions, merged into [`router`].
+fn activation_router<S>() -> OpenApiRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+    IamState: FromRef<S>,
+{
+    OpenApiRouter::new()
+        .routes(routes!(graphql_activation::create))
+        .routes(routes!(rest_activation::create))
 }
 
 /// The routes of the role assignments, merged into [`router`].

@@ -124,6 +124,11 @@ fn handlers_use_only_the_problem_aware_extractors() {
             vec!["load", "list", "get_one", "get_diff"],
         ),
         (include_str!("../graphql_activation.rs"), vec!["create"]),
+        (include_str!("../rest_activation.rs"), vec!["create"]),
+        (
+            include_str!("../graphql_permission.rs"),
+            vec!["list", "get_one"],
+        ),
         (
             include_str!("../openapi_spec.rs"),
             vec!["load", "list", "get_one", "get_diff"],
