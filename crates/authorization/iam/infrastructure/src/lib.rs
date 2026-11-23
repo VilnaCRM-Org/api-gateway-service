@@ -14,6 +14,7 @@ pub use persistence::graphql_permission::PgGraphQlPermissionRepository;
 pub use persistence::graphql_spec::PgGraphQlSpecRepository;
 pub use persistence::idempotency::PgIdempotencyRepository;
 pub use persistence::openapi_spec::PgOpenApiSpecRepository;
+pub use persistence::policy_read::{PgPolicyReadRepository, PolicyReadHook};
 pub use persistence::rest_permission::PgRestPermissionRepository;
 pub use persistence::revocation::PgRevocationRepository;
 pub use persistence::revocation_view::PgRevocationView;

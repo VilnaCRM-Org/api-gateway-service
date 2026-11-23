@@ -16,6 +16,7 @@ use test_support::id::SequenceUuidGenerator;
 use test_support::idempotency::FakeIdempotencyRepository;
 use test_support::openapi_spec::FakeOpenApiSpecRepository;
 use test_support::policy_epoch::FakePolicyEpochRepository;
+use test_support::policy_read::FakePolicyReadRepository;
 use test_support::probe::StubProbe;
 use test_support::repository::InMemoryExampleApiResourceRepository;
 use test_support::request_digester::FakeRequestDigester;
@@ -66,6 +67,7 @@ fn adapters() -> Adapters {
     Adapters {
         repository: Arc::new(InMemoryExampleApiResourceRepository::new()),
         policy_epochs: Arc::new(FakePolicyEpochRepository::new()),
+        policy_reads: Arc::new(FakePolicyReadRepository::new()),
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
         change_receipts: Arc::new(FakeChangeReceiptRepository::new()),
         idempotency_records: Arc::new(FakeIdempotencyRepository::new()),

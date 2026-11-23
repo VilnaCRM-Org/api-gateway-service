@@ -12,6 +12,8 @@ mod migration;
 #[cfg(test)]
 mod openapi_spec_repository;
 #[cfg(test)]
+mod policy_read_repository;
+#[cfg(test)]
 mod replay;
 #[cfg(test)]
 mod repository;

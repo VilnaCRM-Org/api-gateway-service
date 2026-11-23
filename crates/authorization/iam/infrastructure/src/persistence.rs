@@ -8,6 +8,7 @@ pub mod graphql_permission;
 pub mod graphql_spec;
 pub mod idempotency;
 pub mod openapi_spec;
+pub mod policy_read;
 pub mod rest_permission;
 pub mod revocation;
 pub mod revocation_view;

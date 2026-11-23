@@ -12,6 +12,7 @@ pub mod openapi_document_parser;
 pub mod openapi_spec_repository;
 pub mod permission_page_query;
 pub mod policy_epoch_repository;
+pub mod policy_read_repository;
 pub mod request_digester;
 pub mod rest_permission_repository;
 pub mod revocation_repository;

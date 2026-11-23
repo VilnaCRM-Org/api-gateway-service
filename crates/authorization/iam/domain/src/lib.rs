@@ -55,8 +55,12 @@ pub use policy::decision_policy::{
     DecisionPolicy, DecisionRequest, RequiredKey, RoleAssignment, RoleSets,
 };
 pub use policy::orphan_policy::{OrphanPolicy, RenameMap};
+pub use policy::path_normalizer::{MalformedPath, PathNormalizer};
 pub use policy::permission_catalogue::PermissionCatalogue;
+pub use policy::rest_operation_matcher::{RestOperationMatcher, UnknownOperation};
+pub use policy::service_catalog::ServiceCatalog;
 pub use policy::spec_diff::{FlagDowngrade, RemovedGrant, RoleGrants, SpecDiff, WildcardGain};
+pub use policy::subject_policy::SubjectPolicy;
 pub use policy::token_lifetime_rule::{TokenLifetimeRule, TokenTimes};
 pub use policy::wildcard_matcher::WildcardMatcher;
 pub use port::RepositoryError;
@@ -72,6 +76,7 @@ pub use port::openapi_document_parser::OpenApiDocumentParser;
 pub use port::openapi_spec_repository::{OpenApiSpecPageQuery, OpenApiSpecRepository};
 pub use port::permission_page_query::PermissionPageQuery;
 pub use port::policy_epoch_repository::PolicyEpochRepository;
+pub use port::policy_read_repository::PolicyReadRepository;
 pub use port::request_digester::RequestDigester;
 pub use port::rest_permission_repository::RestPermissionRepository;
 pub use port::revocation_repository::RevocationRepository;
@@ -114,6 +119,7 @@ pub use value_object::audit_reason::AuditReason;
 pub use value_object::audit_summary::AuditSummary;
 pub use value_object::audit_target::AuditTarget;
 pub use value_object::boot_instant::BootInstant;
+pub use value_object::canonical_path::CanonicalPath;
 pub use value_object::change_statement::ChangeStatement;
 pub use value_object::content_hash::ContentHash;
 pub use value_object::coordinate_set::CoordinateSet;
@@ -136,6 +142,7 @@ pub use value_object::identifier::{
     SessionRevocationId, SpecId, UserRoleId,
 };
 pub use value_object::log_epoch::LogEpoch;
+pub use value_object::normalized_path::NormalizedPath;
 pub use value_object::path_template::PathTemplate;
 pub use value_object::permission_flags::PermissionFlags;
 pub use value_object::permission_grant::PermissionGrant;

@@ -16,6 +16,7 @@ pub mod idempotency;
 pub mod log;
 pub mod openapi_spec;
 pub mod policy_epoch;
+pub mod policy_read;
 pub mod probe;
 pub mod repository;
 pub mod request_digester;
