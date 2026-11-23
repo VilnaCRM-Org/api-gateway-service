@@ -7,6 +7,9 @@ use crate::error::InvalidIamValue;
 pub struct LogEpoch(i64);
 
 impl LogEpoch {
+    /// The first epoch of the policy log.
+    pub const ZERO: Self = Self(0);
+
     /// Validates the number.
     ///
     /// # Errors

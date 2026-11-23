@@ -23,6 +23,7 @@ pub mod outbox_store;
 pub mod policy_epoch;
 pub mod policy_log_producer;
 pub mod policy_read;
+pub mod policy_view;
 pub mod probe;
 pub mod rate_limit_store;
 pub mod rate_policy;

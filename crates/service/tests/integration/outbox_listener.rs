@@ -131,7 +131,10 @@ async fn a_lost_connection_that_cannot_be_opened_again_keeps_the_listener_until_
     .await
     .unwrap();
     until_listeners(&pool, 0).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Past the reconnect delay of one second the listener tries to open its connection again,
+    // fails on the closed pool and waits once more, still running.
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    assert!(!handle.is_finished());
     stop.send_replace(true);
 
     tokio::time::timeout(DEADLINE, handle)

@@ -7,6 +7,9 @@ use crate::error::InvalidIamValue;
 pub struct PolicyVersion(i64);
 
 impl PolicyVersion {
+    /// The version before the first change.
+    pub const ZERO: Self = Self(0);
+
     /// Validates the number.
     ///
     /// # Errors

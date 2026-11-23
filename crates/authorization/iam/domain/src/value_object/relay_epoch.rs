@@ -7,6 +7,9 @@ use crate::error::InvalidIamValue;
 pub struct RelayEpoch(i64);
 
 impl RelayEpoch {
+    /// The epoch before any relay took over.
+    pub const ZERO: Self = Self(0);
+
     /// Validates the number.
     ///
     /// # Errors

@@ -40,3 +40,9 @@ proptest::proptest! {
         proptest::prop_assert_eq!(RelayEpoch::new(value).map(RelayEpoch::value), expected);
     }
 }
+
+#[test]
+fn zero_is_the_value_zero() {
+    assert_eq!(RelayEpoch::ZERO.value(), 0);
+    assert_eq!(RelayEpoch::new(0), Ok(RelayEpoch::ZERO));
+}

@@ -46,3 +46,9 @@ proptest::proptest! {
         proptest::prop_assert_eq!(PolicyVersion::new(value).map(PolicyVersion::value), expected);
     }
 }
+
+#[test]
+fn zero_is_the_value_zero() {
+    assert_eq!(PolicyVersion::ZERO.value(), 0);
+    assert_eq!(PolicyVersion::new(0), Ok(PolicyVersion::ZERO));
+}

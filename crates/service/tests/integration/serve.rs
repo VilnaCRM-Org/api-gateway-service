@@ -427,7 +427,9 @@ async fn entries_inside_nested_spans_carry_the_request_id(pool: PgPool) {
     assert_eq!(finished.code, Some(0));
     // The one request is the only work of a request between the start-up marker and the signal;
     // entries of start-up (the AWS configuration is read in spans of its own) come before the
-    // marker, and the batches of the singleton tasks write inside a `singleton.batch` span.
+    // marker, the batches of the singleton tasks write inside a `singleton.batch` span and the
+    // outbox listener, which starts whenever this replica takes the lead, inside an
+    // `outbox.listener` span.
     let listening = finished
         .lines
         .iter()
@@ -438,7 +440,12 @@ async fn entries_inside_nested_spans_carry_the_request_id(pool: PgPool) {
         .position(|line| line["message"] == "shutdown signal received");
     let inside: Vec<&Value> = finished.lines[listening.unwrap().saturating_add(1)..signal.unwrap()]
         .iter()
-        .filter(|line| line["spans"][0]["name"] != "singleton.batch")
+        .filter(|line| {
+            !matches!(
+                line["spans"][0]["name"].as_str(),
+                Some("singleton.batch" | "outbox.listener")
+            )
+        })
         .collect();
     assert!(
         inside

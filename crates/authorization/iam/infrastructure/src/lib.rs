@@ -8,6 +8,7 @@ pub mod bucket_local_rate_limiter;
 pub mod kafka;
 pub mod kubernetes;
 pub mod persistence;
+pub mod policy_snapshot;
 pub mod policy_state;
 pub mod request_digest;
 pub mod rng;
@@ -45,6 +46,9 @@ pub use persistence::task_state::PgTaskStateRepository;
 pub use persistence::unit_of_work::PgIamUnitOfWork;
 pub use persistence::upstream::PgUpstreamRepository;
 pub use persistence::user_role::PgUserRoleRepository;
+pub use policy_snapshot::{
+    ArcSwapPolicySnapshot, MatchitRouteTableCompiler, PolicySnapshotBuilder, SnapshotPorts,
+};
 pub use policy_state::json_state_record_codec::JsonStateRecordCodec;
 pub use policy_state::sha256_policy_digest::Sha256PolicyDigest;
 pub use request_digest::Sha256RequestDigester;

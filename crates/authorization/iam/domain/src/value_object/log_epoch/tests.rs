@@ -37,3 +37,9 @@ proptest::proptest! {
         proptest::prop_assert_eq!(LogEpoch::new(value).map(LogEpoch::value), expected);
     }
 }
+
+#[test]
+fn zero_is_the_value_zero() {
+    assert_eq!(LogEpoch::ZERO.value(), 0);
+    assert_eq!(LogEpoch::new(0), Ok(LogEpoch::ZERO));
+}

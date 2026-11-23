@@ -83,6 +83,75 @@ paths:
                 $ref: '#/components/schemas/Problem'
       security:
       - bearerAuth: []
+  /api/access-validations/batch:
+    post:
+      tags:
+      - iam
+      summary: Validates a batch of access checks.
+      description: 'Decides 1 to 100 checks of the shape of `POST /access-validations` and returns one result per check, in the order of the request, each with its own `decisionId`. The checks are decided independently: a check that cannot be read produces a `deny` result with the reason `malformed_operation` and does not fail the others, and each distinct credential is resolved once per batch. A batch of no check or of more than 100 is refused with 422. The credentials are never echoed.'
+      operationId: api_access_validations_batch_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidateAccessBatchRequest'
+        required: true
+      responses:
+        '200':
+          description: The decisions, in request order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessValidationBatch'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller may not validate access.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
   /api/example_api_resources:
     get:
       tags:
@@ -2798,6 +2867,17 @@ components:
           - $ref: '#/components/schemas/AccessSubject'
             description: The subject of the token; absent when no token resolved.
           - type: 'null'
+    AccessValidationBatch:
+      type: object
+      description: The results of the batch access-validation operation.
+      required:
+      - results
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/AccessValidation'
+          description: One decision per check, in the order of the request; each has its own `decisionId`.
     AccessValidationGraphQlTarget:
       type: object
       description: |-
@@ -4175,6 +4255,26 @@ components:
           - 'null'
           format: uuid
           description: The `after` value of the next page; absent on the last page.
+    ValidateAccessBatchRequest:
+      type: object
+      description: |-
+        Body of the batch access-validation operation: 1 to 100 checks of the single-check shape.
+
+        Its `Debug` output never shows a credential.
+      required:
+      - checks
+      properties:
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidateAccessRequest'
+          description: |-
+            The checks to decide, 1 to 100; each one has the shape of the single check, and the
+            results come back in this order. A check that breaks a rule of its own is decided as a
+            `deny` with the reason `malformed_operation` and does not fail the others.
+          maxItems: 100
+          minItems: 1
+      additionalProperties: false
     ValidateAccessRequest:
       type: object
       description: |-

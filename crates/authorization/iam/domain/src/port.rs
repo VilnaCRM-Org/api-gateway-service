@@ -21,6 +21,7 @@ pub mod policy_digest;
 pub mod policy_epoch_repository;
 pub mod policy_log_producer;
 pub mod policy_read_repository;
+pub mod policy_view;
 pub mod rate_limit_store;
 pub mod rate_policy_repository;
 pub mod request_digester;

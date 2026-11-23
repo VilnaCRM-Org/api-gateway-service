@@ -2199,6 +2199,7 @@ dependencies = [
 name = "iam-infrastructure"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "async-trait",
  "aws-lc-rs",
  "bytes",
@@ -2210,6 +2211,7 @@ dependencies = [
  "iam-domain",
  "jsonwebtoken",
  "krafka",
+ "matchit",
  "moka",
  "rand 0.10.3",
  "rstest",

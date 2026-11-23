@@ -9,6 +9,7 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
+arc-swap.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 http.workspace = true
@@ -19,6 +20,7 @@ hyper-util.workspace = true
 iam-domain.workspace = true
 jsonwebtoken.workspace = true
 krafka.workspace = true
+matchit.workspace = true
 moka.workspace = true
 rand.workspace = true
 rustls.workspace = true

@@ -25,6 +25,7 @@ pub mod rest_permission;
 pub mod revocation;
 pub mod role;
 pub mod route;
+pub mod snapshot;
 pub mod state;
 pub mod upstream;
 pub mod user_role;
@@ -126,6 +127,7 @@ pub use port::policy_log_producer::{
     LOG_SCHEMA, PolicyLogError, PolicyLogProducer, PolicyLogRecord, STATE_PARTITION,
 };
 pub use port::policy_read_repository::PolicyReadRepository;
+pub use port::policy_view::PolicyView;
 pub use port::rate_limit_store::{RateLimitStore, RateLimitStoreError};
 pub use port::rate_policy_repository::{RatePolicyPageQuery, RatePolicyRepository};
 pub use port::request_digester::RequestDigester;
@@ -172,6 +174,10 @@ pub use route::settings::{
 };
 pub use route::statement::RouteStatement;
 pub use route::{Route, RouteParts, RouteStamp};
+pub use snapshot::assembly::{Completeness, Offer, VersionAssembly, VersionedRecord};
+pub use snapshot::read::{FreshnessProof, PolicySnapshot};
+pub use snapshot::ring::{DIGEST_RING_CAPACITY, DigestRing};
+pub use snapshot::rules::{ApplyPosition, ApplyRules, FenceVerdict, RecordVerdict};
 pub use state::batch::{StateBatch, StateChange, StateRow};
 pub use state::key::{CATALOGUE_CHUNK_VERSION, ChunkId, StateKey};
 pub use state::layout::{CatalogueLayout, MAX_CHUNK_BYTES};
