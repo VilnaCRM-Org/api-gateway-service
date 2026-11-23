@@ -228,11 +228,12 @@ fn rest_of(bytes: &[u8], start: usize) -> &[u8] {
     bytes.get(start..).unwrap_or_default()
 }
 
-/// The index after the comment that starts at `start`.
+/// The index after the comment that starts at `start`; `\n` and `\r` both end it, as they do
+/// for the parser.
 fn skip_comment(bytes: &[u8], start: usize) -> usize {
     rest_of(bytes, start)
         .iter()
-        .position(|byte| *byte == b'\n')
+        .position(|byte| matches!(byte, b'\n' | b'\r'))
         .map_or(bytes.len(), |offset| {
             start.saturating_add(offset).saturating_add(1)
         })
@@ -267,7 +268,7 @@ fn skip_line_string(bytes: &[u8], mut index: usize) -> usize {
     while let Some(byte) = bytes.get(index) {
         match byte {
             b'\\' => index = index.saturating_add(2),
-            b'"' | b'\n' => return index.saturating_add(1),
+            b'"' | b'\n' | b'\r' => return index.saturating_add(1),
             _ => index = index.saturating_add(1),
         }
     }

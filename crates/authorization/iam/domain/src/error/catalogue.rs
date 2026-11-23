@@ -13,6 +13,12 @@ pub enum InvalidCatalogueEntry {
         /// The form of the key that was given.
         found: PermissionKeyKind,
     },
+    /// The key belongs to another service than the catalogue change it is part of.
+    #[error("The key {key} does not belong to the service of this catalogue change.")]
+    OutsideService {
+        /// The key.
+        key: String,
+    },
 }
 
 /// A rename map that cannot be built or that does not fit the activation it is applied to.

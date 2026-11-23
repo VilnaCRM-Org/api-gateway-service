@@ -2,6 +2,8 @@
 //! database.
 
 #[cfg(test)]
+mod catalogue_activation;
+#[cfg(test)]
 mod graphql_spec_repository;
 #[cfg(test)]
 mod jwt_access_token_verifier;

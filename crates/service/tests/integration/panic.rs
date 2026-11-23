@@ -20,6 +20,7 @@ use service::telemetry;
 use test_support::access_token::{DEVELOPMENT_PUBLIC_KEYS_FILE, FakeAccessTokenVerifier};
 use test_support::change_receipt::FakeChangeReceiptRepository;
 use test_support::clock::FixedClock;
+use test_support::graphql_permission::FakeGraphQlPermissionRepository;
 use test_support::graphql_spec::FakeGraphQlSpecRepository;
 use test_support::id::SequenceUuidGenerator;
 use test_support::idempotency::FakeIdempotencyRepository;
@@ -28,6 +29,7 @@ use test_support::policy_epoch::FakePolicyEpochRepository;
 use test_support::probe::StubProbe;
 use test_support::repository::InMemoryExampleApiResourceRepository;
 use test_support::request_digester::FakeRequestDigester;
+use test_support::rest_permission::FakeRestPermissionRepository;
 use test_support::revocation::FakeRevocationRepository;
 use test_support::role::FakeRoleRepository;
 use test_support::security_audit::FakeSecurityAuditLog;
@@ -83,6 +85,8 @@ async fn a_panic_is_one_json_line_with_the_request_id_and_a_500_problem() {
         user_roles: Arc::new(FakeUserRoleRepository::new()),
         graphql_specs: Arc::new(FakeGraphQlSpecRepository::new()),
         openapi_specs: Arc::new(FakeOpenApiSpecRepository::new()),
+        graphql_permissions: Arc::new(FakeGraphQlPermissionRepository::new()),
+        rest_permissions: Arc::new(FakeRestPermissionRepository::new()),
         access_tokens: Arc::new(FakeAccessTokenVerifier::new()),
         tokens: Arc::new(FakeTokenRepository::new()),
         revocations: Arc::new(FakeRevocationRepository::new()),

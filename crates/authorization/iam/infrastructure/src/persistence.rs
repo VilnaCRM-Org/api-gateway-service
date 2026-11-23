@@ -1,11 +1,14 @@
 //! PostgreSQL implementation of the policy epoch repository port: the SQL, the row mapping and the
 //! translation of database errors.
 
+pub mod catalogue;
 pub mod change_receipt;
 pub mod event_encoding;
+pub mod graphql_permission;
 pub mod graphql_spec;
 pub mod idempotency;
 pub mod openapi_spec;
+pub mod rest_permission;
 pub mod revocation;
 pub mod revocation_view;
 pub mod role;

@@ -1,5 +1,6 @@
 //! The statements and guards that a change runs inside its transaction.
 
+use crate::catalogue_statement::CatalogueStatement;
 use crate::graphql_spec::statement::GraphQlSpecStatement;
 use crate::openapi_spec::statement::OpenApiSpecStatement;
 use crate::role::statement::RoleStatement;
@@ -33,6 +34,11 @@ pub enum ChangeStatement {
     /// Insert a new `OpenAPI` specification version with its document; a duplicate id, or a version
     /// of the same service with the same content hash, refuses the change as a duplicate.
     SaveOpenApiSpec(Box<OpenApiSpecStatement>),
+    /// Activate or retire a specification version: move its status, create and update the
+    /// catalogue entries, set `orphaned_at` on the grants that lose their key, apply the renames
+    /// and take the next catalogue epoch; a version that is no longer in the expected status
+    /// refuses the change as a conflict.
+    ApplyCatalogue(Box<CatalogueStatement>),
 }
 
 impl ChangeStatement {
@@ -45,7 +51,8 @@ impl ChangeStatement {
             Self::SaveRole(_)
             | Self::SaveUserRole(_)
             | Self::SaveGraphQlSpec(_)
-            | Self::SaveOpenApiSpec(_) => true,
+            | Self::SaveOpenApiSpec(_)
+            | Self::ApplyCatalogue(_) => true,
         }
     }
 }

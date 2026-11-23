@@ -5,6 +5,7 @@
 //! kernel, never another bounded context.
 
 pub mod catalogue_event;
+pub mod catalogue_statement;
 pub mod entity;
 pub mod error;
 pub mod graphql_permission;
@@ -20,6 +21,9 @@ pub mod user_role;
 pub mod value_object;
 
 pub use catalogue_event::{GraphQlPermissionsCreated, PermissionsOrphaned, RestPermissionsCreated};
+pub use catalogue_statement::{
+    CatalogueStatement, CatalogueStatementParts, EntryFlags, EntryInsert, SpecTransition,
+};
 pub use entity::change_receipt::ChangeReceipt;
 pub use entity::event_envelope::{EventEnvelope, EventEnvelopeParts, IamDomainEvent};
 pub use entity::iam_change::{IamChange, IamChangeParts};

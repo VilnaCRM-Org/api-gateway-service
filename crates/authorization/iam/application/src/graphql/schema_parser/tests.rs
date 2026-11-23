@@ -414,3 +414,12 @@ fn another_directive_sets_no_flag() {
     let (_, field) = graph.fields().next().unwrap();
     assert!(!field.flags.is_sensitive() && !field.flags.is_audit_always());
 }
+
+#[test]
+fn a_carriage_return_ends_a_comment_for_the_nesting_check() {
+    let sdl = format!("#\r{}Int{}", "[".repeat(65), "]".repeat(65));
+
+    let error = parse(&format!("type Query {{ a: {sdl} }}")).unwrap_err();
+
+    assert!(matches!(error, InvalidSpec::Malformed { .. }));
+}

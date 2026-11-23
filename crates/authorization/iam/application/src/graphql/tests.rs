@@ -25,6 +25,7 @@ use crate::principal::Principal;
 use crate::query::resolve_subject_token::{ResolveSubjectTokenQuery, TokenResolution};
 
 mod roles;
+mod user_roles;
 
 fn default_of<T: Default>() -> T {
     T::default()

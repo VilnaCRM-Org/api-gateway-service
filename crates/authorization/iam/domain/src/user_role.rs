@@ -4,11 +4,13 @@
 pub mod event;
 pub mod statement;
 
+use std::any::Any;
 use std::time::SystemTime;
 
-use shared_domain::{AggregateRoot, RecordedEvents, Uuid};
+use shared_domain::{AggregateRoot, DomainEvent, RecordedEvents, Uuid};
 
-use crate::error::{InvalidUserRole, UserRoleChangeRefused};
+use crate::entity::event_envelope::{EventEnvelope, IamDomainEvent};
+use crate::error::{InvalidEventEnvelope, InvalidUserRole, UserRoleChangeRefused};
 use crate::value_object::actor_ref::ActorRef;
 use crate::value_object::assignment_expiry::AssignmentExpiry;
 use crate::value_object::assignment_scope::AssignmentScope;
@@ -281,6 +283,21 @@ impl UserRole {
         Ok(())
     }
 
+    /// Drains the recorded events as envelopes of `iam.events.v1`, in recording order, for the
+    /// change that commits them.
+    ///
+    /// # Errors
+    ///
+    /// The [`InvalidEventEnvelope`] of the first event that cannot be enveloped:
+    /// [`InvalidEventEnvelope::EventType`] for an event that is not one of the four events of an
+    /// assignment, which an assignment never records itself.
+    pub fn pull_envelopes(&mut self) -> Result<Vec<EventEnvelope>, InvalidEventEnvelope> {
+        self.pull_domain_events()
+            .iter()
+            .map(|event| envelope_of(event.as_ref()))
+            .collect()
+    }
+
     /// The version after a change, once the assignment is known not to be revoked and `expected`
     /// is current.
     fn next_version(
@@ -305,6 +322,35 @@ impl AggregateRoot for UserRole {
     fn recorded_events(&mut self) -> &mut RecordedEvents {
         &mut self.events
     }
+}
+
+/// The envelope of an event of one type, when the event has that type.
+type Enveloper = fn(&dyn Any) -> Option<Result<EventEnvelope, InvalidEventEnvelope>>;
+
+/// The envelope of `event` when it is an `E`.
+fn envelope_as<E: IamDomainEvent>(
+    event: &dyn Any,
+) -> Option<Result<EventEnvelope, InvalidEventEnvelope>> {
+    event
+        .downcast_ref::<E>()
+        .map(|event| EventEnvelope::of(event))
+}
+
+/// The four events of an assignment, each with its way to an envelope.
+const ENVELOPERS: [Enveloper; 4] = [
+    envelope_as::<UserRoleAssigned>,
+    envelope_as::<PrivilegedRoleAssigned>,
+    envelope_as::<UserRoleUpdated>,
+    envelope_as::<UserRoleRevoked>,
+];
+
+/// The envelope of one of the four events of an assignment.
+fn envelope_of(event: &dyn DomainEvent) -> Result<EventEnvelope, InvalidEventEnvelope> {
+    let event: &dyn Any = event;
+    ENVELOPERS
+        .iter()
+        .find_map(|enveloper| enveloper(event))
+        .unwrap_or(Err(InvalidEventEnvelope::EventType))
 }
 
 /// The expiry of a write at `now`; `None` keeps the assignment without an expiry.

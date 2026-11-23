@@ -127,3 +127,37 @@ fn an_openapi_specification_write_holds_under_every_locked_version() {
     assert!(statement.holds(PolicyVersion::new(1).unwrap()));
     assert!(statement.holds(PolicyVersion::new(9).unwrap()));
 }
+
+#[test]
+fn a_catalogue_write_holds_under_every_locked_version() {
+    use crate::catalogue_statement::{CatalogueStatement, CatalogueStatementParts, SpecTransition};
+    use crate::value_object::identifier::SpecId;
+    use crate::value_object::permission_key::PermissionKeyKind;
+    use crate::value_object::service_name::ServiceName;
+    use crate::value_object::spec_status::SpecStatus;
+
+    let statement = ChangeStatement::ApplyCatalogue(Box::new(
+        CatalogueStatement::new(CatalogueStatementParts {
+            kind: PermissionKeyKind::Rest,
+            service: ServiceName::new("billing").unwrap(),
+            transition: SpecTransition {
+                spec_id: SpecId::parse("5b2e8c1d-3f4a-4b6c-8d9e-0a1b2c3d4e5f").unwrap(),
+                from: SpecStatus::Draft,
+                to: SpecStatus::Active,
+                activated_at: Some(SystemTime::UNIX_EPOCH),
+                retired_at: None,
+            },
+            created: Vec::new(),
+            reflagged: Vec::new(),
+            reactivated: Vec::new(),
+            deactivated: Vec::new(),
+            orphaned: Vec::new(),
+            renames: Vec::new(),
+            at: SystemTime::UNIX_EPOCH,
+        })
+        .unwrap(),
+    ));
+
+    assert!(statement.holds(PolicyVersion::new(1).unwrap()));
+    assert!(statement.holds(PolicyVersion::new(9).unwrap()));
+}

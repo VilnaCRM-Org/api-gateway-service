@@ -1,5 +1,6 @@
 //! The `OpenAPI` document of the REST API (AD-16).
 
+use axum::extract::DefaultBodyLimit;
 use shared_domain::BoxError;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
@@ -93,10 +94,22 @@ pub fn template_api_router() -> OpenApiRouter<AppState> {
         .nest("/api", some_module_application::http::router())
 }
 
+/// The largest body of a request to a route that uploads a specification document: 6 MiB, which
+/// leaves room above the 5 MiB document limit for the JSON envelope and its escapes.
+pub const SPECIFICATION_BODY_LIMIT_BYTES: usize = 6 * 1024 * 1024;
+
 /// The REST operations of the IAM context, nested under `/api`.
+///
+/// The routes that upload specification documents take [`SPECIFICATION_BODY_LIMIT_BYTES`]; every
+/// other route keeps the limit of the whole router.
 #[must_use]
 pub fn iam_api_router() -> OpenApiRouter<AppState> {
-    OpenApiRouter::new().nest("/api", iam_application::http::router())
+    let specifications = OpenApiRouter::new()
+        .nest("/api", iam_application::http::specification_router())
+        .layer(DefaultBodyLimit::max(SPECIFICATION_BODY_LIMIT_BYTES));
+    OpenApiRouter::new()
+        .nest("/api", iam_application::http::router())
+        .merge(specifications)
 }
 
 /// The document.

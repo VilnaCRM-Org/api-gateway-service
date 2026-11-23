@@ -14,6 +14,7 @@ use sqlx::PgConnection;
 use sqlx::types::Uuid as SqlUuid;
 use sqlx::types::time::OffsetDateTime;
 
+use crate::persistence::catalogue;
 use crate::persistence::event_encoding::encode;
 use crate::persistence::graphql_spec;
 use crate::persistence::openapi_spec;
@@ -34,7 +35,9 @@ const NANOS_PER_MICRO: i128 = 1_000;
 /// `iam_roles` and `iam_role_permissions`, the assignment statements against `iam_user_roles` and
 /// the specification statements against `iam_graphql_specs`, `iam_graphql_spec_fields` and
 /// `iam_graphql_spec_possible_types`, and the `OpenAPI` specification statements against
-/// `iam_openapi_specs` and `iam_openapi_spec_operations`.
+/// `iam_openapi_specs` and `iam_openapi_spec_operations`, and the catalogue statements against
+/// `iam_graphql_permissions`, `iam_rest_permissions`, `iam_role_permissions` and the catalogue epoch
+/// of `iam_policy_epoch`, together with the status of the activated version.
 #[derive(Debug)]
 pub struct PgIamUnitOfWork {
     pool: sqlx::PgPool,
@@ -177,6 +180,9 @@ async fn run(
             }
             ChangeStatement::SaveOpenApiSpec(version) => {
                 openapi_spec::save_within(connection, version).await?;
+            }
+            ChangeStatement::ApplyCatalogue(activation) => {
+                catalogue::apply_within(connection, activation).await?;
             }
         }
     }

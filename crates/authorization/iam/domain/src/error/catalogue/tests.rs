@@ -52,3 +52,15 @@ fn an_entry_of_the_wrong_form_names_the_expected_form() {
 fn a_refused_rename_names_the_keys_involved(#[case] error: RenameRefused, #[case] message: &str) {
     assert_eq!(error.to_string(), message);
 }
+
+#[test]
+fn a_key_of_another_service_names_the_key() {
+    let error = InvalidCatalogueEntry::OutsideService {
+        key: key("gql:orders:Query.a").to_string(),
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "The key gql:orders:Query.a does not belong to the service of this catalogue change."
+    );
+}
