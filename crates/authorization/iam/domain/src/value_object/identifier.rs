@@ -89,5 +89,20 @@ uuid_identifier! {
     SessionRevocationId
 }
 
+uuid_identifier! {
+    /// The identifier of an upstream.
+    UpstreamId
+}
+
+uuid_identifier! {
+    /// The identifier of a route.
+    RouteId
+}
+
+uuid_identifier! {
+    /// The identifier of a rate policy.
+    RatePolicyId
+}
+
 #[cfg(test)]
 mod tests;

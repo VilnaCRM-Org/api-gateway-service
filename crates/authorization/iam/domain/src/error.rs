@@ -1,9 +1,14 @@
 //! Domain errors of the IAM context.
 
 mod catalogue;
+mod gateway;
 mod spec;
 
 pub use catalogue::{InvalidCatalogueEntry, RenameRefused};
+pub use gateway::{
+    ConfigChangeRefused, InvalidRatePolicy, InvalidRoute, InvalidUpstream, ReferencedByRoute,
+    RouteConflict, UpstreamChangeRefused,
+};
 pub use spec::{InvalidSpec, SpecPosition, SpecTransitionRefused};
 
 use crate::value_object::entity_version::EntityVersion;
