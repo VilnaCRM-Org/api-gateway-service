@@ -2205,6 +2205,7 @@ dependencies = [
  "jsonwebtoken",
  "krafka",
  "moka",
+ "rand 0.10.3",
  "rstest",
  "serde",
  "serde_json",
@@ -3598,6 +3599,7 @@ dependencies = [
 name = "service"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "async-graphql",
  "async-graphql-parser",
  "async-trait",
@@ -3617,6 +3619,8 @@ dependencies = [
  "jsonwebtoken",
  "pem",
  "rstest",
+ "rustls",
+ "rustls-pki-types",
  "serde_json",
  "shared-application",
  "shared-domain",
@@ -3628,6 +3632,7 @@ dependencies = [
  "test-support",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-rustls",
  "tower",
  "tower-http",
  "tracing",

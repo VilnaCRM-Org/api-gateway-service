@@ -7,6 +7,7 @@
 pub mod kafka;
 pub mod persistence;
 pub mod request_digest;
+pub mod rng;
 pub mod token;
 
 pub use kafka::{KafkaSecret, KafkaSecurity, KafkaSettings, KrafkaTopicInspector, SaslMechanism};
@@ -28,6 +29,7 @@ pub use persistence::task_state::PgTaskStateRepository;
 pub use persistence::unit_of_work::PgIamUnitOfWork;
 pub use persistence::user_role::PgUserRoleRepository;
 pub use request_digest::Sha256RequestDigester;
+pub use rng::SeededRng;
 pub use token::caching_token_repository::CachingTokenRepository;
 pub use token::jwt_access_token_verifier::{JwtAccessTokenVerifier, JwtSettings};
 pub use token::jwt_key_set::{JwtKeyFileError, JwtKeySet};

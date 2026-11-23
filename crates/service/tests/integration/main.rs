@@ -9,6 +9,8 @@ mod check_config;
 #[cfg(test)]
 mod export;
 #[cfg(test)]
+mod gateway;
+#[cfg(test)]
 mod healthcheck;
 #[cfg(test)]
 mod iam_bootstrap;

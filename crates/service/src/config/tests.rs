@@ -1475,3 +1475,265 @@ fn a_kafka_problem_never_contains_the_password() {
             .all(|problem| !problem.reason.contains("hunter2-kafka"))
     );
 }
+
+fn valid_gateway() -> GatewayArgs {
+    let mut args = GatewayArgs::default();
+    args.service.app_env = some("test");
+    args.service.tokens.public_keys_file = some(DEVELOPMENT_PUBLIC_KEYS_FILE);
+    args
+}
+
+fn gateway_problems(args: &GatewayArgs) -> Vec<(&'static str, String)> {
+    GatewayConfig::from_args(args)
+        .unwrap_err()
+        .problems()
+        .iter()
+        .map(|problem| (problem.variable, problem.reason.clone()))
+        .collect()
+}
+
+fn gateway_variables(args: &GatewayArgs) -> Vec<&'static str> {
+    gateway_problems(args)
+        .into_iter()
+        .map(|(variable, _reason)| variable)
+        .collect()
+}
+
+fn certificate_pair(name: &str) -> (String, String) {
+    let directory =
+        std::env::temp_dir().join(format!("service-gateway-config-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let files = test_support::tls::self_signed(&directory, name, name);
+    (
+        files.cert.to_string_lossy().into_owned(),
+        files.key.to_string_lossy().into_owned(),
+    )
+}
+
+#[test]
+fn the_gateway_defaults_are_the_documented_ones() {
+    let config = GatewayConfig::from_args(&valid_gateway()).unwrap();
+
+    assert_eq!(config.app_env, AppEnv::Test);
+    assert_eq!(config.log_level, "info");
+    assert_eq!(config.shutdown_grace_period, Duration::from_secs(10));
+    assert_eq!(config.listen, "0.0.0.0:8443".parse::<SocketAddr>().unwrap());
+    assert_eq!(
+        config.internal_listen,
+        "0.0.0.0:9090".parse::<SocketAddr>().unwrap()
+    );
+    assert_eq!(
+        config.probe_listen,
+        "0.0.0.0:9092".parse::<SocketAddr>().unwrap()
+    );
+    assert_eq!(config.tls, None);
+    assert_eq!(config.pod_name, None);
+    assert_eq!(config.pod_namespace, None);
+    assert_eq!(
+        config.tokens.public_keys_file,
+        PathBuf::from(DEVELOPMENT_PUBLIC_KEYS_FILE)
+    );
+}
+
+#[test]
+fn the_gateway_needs_no_database_queue_or_kafka_setting() {
+    let mut args = valid_gateway();
+    args.service.database.url = some("not-a-url");
+    args.service.aws_region = None;
+    args.service.kafka.bootstrap_servers = some("???");
+
+    assert!(GatewayConfig::from_args(&args).is_ok());
+}
+
+#[test]
+fn the_control_configuration_still_names_the_database() {
+    let args = valid_gateway();
+
+    let problems = problems(args.service);
+
+    assert!(
+        problems
+            .iter()
+            .any(|(variable, _reason)| *variable == "DATABASE_URL")
+    );
+}
+
+#[test]
+fn the_gateway_takes_the_listeners_pod_and_grace_period_it_is_given() {
+    let mut args = valid_gateway();
+    args.listen = some("127.0.0.1:1");
+    args.internal_listen = some("[::1]:2");
+    args.probe_listen = some("127.0.0.1:3");
+    args.pod_name = some("gateway-0");
+    args.pod_namespace = some("iam");
+    args.service.shutdown_grace_period = some("3s");
+
+    let config = GatewayConfig::from_args(&args).unwrap();
+
+    assert_eq!(config.listen.port(), 1);
+    assert_eq!(
+        config.internal_listen,
+        "[::1]:2".parse::<SocketAddr>().unwrap()
+    );
+    assert_eq!(config.probe_listen.port(), 3);
+    assert_eq!(config.pod_name.as_deref(), Some("gateway-0"));
+    assert_eq!(config.pod_namespace.as_deref(), Some("iam"));
+    assert_eq!(config.shutdown_grace_period, Duration::from_secs(3));
+}
+
+#[rstest]
+#[case::internal_equals_public(
+    "127.0.0.1:5000",
+    "127.0.0.1:5000",
+    "127.0.0.1:5002",
+    "GATEWAY_INTERNAL_LISTEN"
+)]
+#[case::probe_equals_public(
+    "127.0.0.1:5000",
+    "127.0.0.1:5001",
+    "127.0.0.1:5000",
+    "GATEWAY_PROBE_LISTEN"
+)]
+#[case::probe_equals_internal(
+    "127.0.0.1:5000",
+    "127.0.0.1:5001",
+    "127.0.0.1:5001",
+    "GATEWAY_PROBE_LISTEN"
+)]
+fn equal_listener_addresses_are_refused_naming_the_variable(
+    #[case] public: &str,
+    #[case] internal: &str,
+    #[case] probe: &str,
+    #[case] variable: &str,
+) {
+    let mut args = valid_gateway();
+    args.listen = some(public);
+    args.internal_listen = some(internal);
+    args.probe_listen = some(probe);
+
+    assert_eq!(gateway_variables(&args), vec![variable]);
+}
+
+#[test]
+fn port_0_never_clashes() {
+    let mut args = valid_gateway();
+    args.listen = some("127.0.0.1:0");
+    args.internal_listen = some("127.0.0.1:0");
+    args.probe_listen = some("127.0.0.1:0");
+
+    assert!(GatewayConfig::from_args(&args).is_ok());
+}
+
+#[rstest]
+#[case::public("GATEWAY_LISTEN")]
+#[case::internal("GATEWAY_INTERNAL_LISTEN")]
+#[case::probe("GATEWAY_PROBE_LISTEN")]
+fn an_address_without_a_port_is_refused(#[case] variable: &str) {
+    let mut args = valid_gateway();
+    match variable {
+        "GATEWAY_LISTEN" => args.listen = some("0.0.0.0"),
+        "GATEWAY_INTERNAL_LISTEN" => args.internal_listen = some("0.0.0.0"),
+        _ => args.probe_listen = some("0.0.0.0"),
+    }
+
+    assert_eq!(gateway_variables(&args), vec![variable]);
+}
+
+#[test]
+fn tls_files_are_required_outside_dev_and_test() {
+    let mut args = valid_gateway();
+    args.service.app_env = None;
+
+    assert_eq!(
+        gateway_problems(&args),
+        vec![
+            (
+                "GATEWAY_TLS_CERT_FILE",
+                "is required outside APP_ENV dev and test".to_owned()
+            ),
+            (
+                "GATEWAY_TLS_KEY_FILE",
+                "is required outside APP_ENV dev and test".to_owned()
+            ),
+        ]
+    );
+}
+
+#[rstest]
+#[case::dev("dev")]
+#[case::test("test")]
+fn dev_and_test_accept_plain_http_without_the_files(#[case] env: &str) {
+    let mut args = valid_gateway();
+    args.service.app_env = some(env);
+
+    assert_eq!(GatewayConfig::from_args(&args).unwrap().tls, None);
+}
+
+#[test]
+fn a_certificate_without_a_key_and_a_key_without_a_certificate_are_refused() {
+    let mut cert_only = valid_gateway();
+    cert_only.tls_cert_file = some("cert.pem");
+    let mut key_only = valid_gateway();
+    key_only.tls_key_file = some("key.pem");
+
+    assert_eq!(gateway_variables(&cert_only), vec!["GATEWAY_TLS_KEY_FILE"]);
+    assert_eq!(gateway_variables(&key_only), vec!["GATEWAY_TLS_CERT_FILE"]);
+}
+
+#[test]
+fn an_unusable_pair_is_refused_without_reading_it_back() {
+    let mut args = valid_gateway();
+    args.tls_cert_file = some("/nonexistent/cert.pem");
+    args.tls_key_file = some("/nonexistent/key.pem");
+
+    let problems = gateway_problems(&args);
+
+    assert_eq!(problems.len(), 1);
+    assert_eq!(problems[0].0, "GATEWAY_TLS_CERT_FILE");
+    assert!(
+        problems[0]
+            .1
+            .starts_with("must name a PEM certificate chain"),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn a_usable_pair_is_accepted_in_every_environment() {
+    let (cert, key) = certificate_pair("accepted");
+    let mut args = valid_gateway();
+    args.service.app_env = some("prod");
+    args.tls_cert_file = Some(cert.clone());
+    args.tls_key_file = Some(key.clone());
+
+    let config = GatewayConfig::from_args(&args).unwrap();
+
+    assert_eq!(
+        config.tls,
+        Some(TlsFiles {
+            cert: PathBuf::from(cert),
+            key: PathBuf::from(key),
+        })
+    );
+}
+
+#[test]
+fn the_gateway_needs_a_key_file_of_the_tokens() {
+    let mut args = valid_gateway();
+    args.service.tokens.public_keys_file = None;
+
+    assert_eq!(gateway_variables(&args), vec!["JWT_PUBLIC_KEYS_FILE"]);
+}
+
+#[test]
+fn an_empty_pod_name_and_an_invalid_environment_are_refused() {
+    let mut args = valid_gateway();
+    args.pod_name = some("");
+    args.pod_namespace = some(" ");
+    args.service.app_env = some("staging");
+
+    assert_eq!(
+        gateway_variables(&args),
+        vec!["APP_ENV", "POD_NAME", "POD_NAMESPACE"]
+    );
+}

@@ -730,3 +730,115 @@ fn the_sasl_password_is_never_printed() {
     assert!(stdout(&help).contains("[env: KAFKA_SASL_PASSWORD]"));
     assert!(!stdout(&help).contains("hunter2-kafka"));
 }
+
+const GATEWAY_ENVIRONMENT: [(&str, &str); 1] = [("APP_ENV", "test")];
+
+#[test]
+fn the_gateway_mode_needs_no_database_setting() {
+    let scratch = Scratch::new();
+
+    let output = scratch.run(&["check-config", "--mode", "gateway"], &GATEWAY_ENVIRONMENT);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout(&output), "configuration OK\n");
+    assert_eq!(stderr(&output), "");
+}
+
+#[test]
+fn the_same_configuration_in_control_mode_names_the_database() {
+    let scratch = Scratch::new();
+
+    let default = scratch.run(&["check-config"], &GATEWAY_ENVIRONMENT);
+    let control = scratch.run(&["check-config", "--mode", "control"], &GATEWAY_ENVIRONMENT);
+
+    for output in [default, control] {
+        assert_eq!(output.status.code(), Some(2));
+        assert_eq!(stdout(&output), "");
+        assert!(
+            stderr(&output).contains("DATABASE_URL: is required"),
+            "{}",
+            stderr(&output)
+        );
+    }
+}
+
+#[rstest]
+#[case::internal_equals_public(
+    ("GATEWAY_INTERNAL_LISTEN", "127.0.0.1:9100"),
+    "GATEWAY_INTERNAL_LISTEN: must differ from GATEWAY_LISTEN\n"
+)]
+#[case::probe_equals_public(
+    ("GATEWAY_PROBE_LISTEN", "127.0.0.1:9100"),
+    "GATEWAY_PROBE_LISTEN: must differ from GATEWAY_LISTEN\n"
+)]
+fn equal_listener_addresses_exit_2_naming_the_variable(
+    #[case] other: (&str, &str),
+    #[case] expected: &str,
+) {
+    let scratch = Scratch::new();
+
+    let output = scratch.run(
+        &["check-config", "--mode", "gateway"],
+        &[
+            GATEWAY_ENVIRONMENT[0],
+            ("GATEWAY_LISTEN", "127.0.0.1:9100"),
+            other,
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stderr(&output), expected);
+}
+
+#[test]
+fn missing_tls_files_outside_dev_and_test_exit_2_naming_both_variables() {
+    let scratch = Scratch::new();
+
+    let output = scratch.run(
+        &["check-config", "--mode", "gateway"],
+        &[("APP_ENV", "prod")],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        stderr(&output),
+        "GATEWAY_TLS_CERT_FILE: is required outside APP_ENV dev and test\nGATEWAY_TLS_KEY_FILE: is required outside APP_ENV dev and test\n"
+    );
+}
+
+#[test]
+fn a_usable_tls_pair_is_accepted_in_prod() {
+    let scratch = Scratch::new();
+    let pair = test_support::tls::self_signed(scratch.path(), "gateway", "check");
+
+    let output = scratch.run(
+        &["check-config", "--mode", "gateway"],
+        &[
+            ("APP_ENV", "prod"),
+            ("GATEWAY_TLS_CERT_FILE", pair.cert.to_str().unwrap()),
+            ("GATEWAY_TLS_KEY_FILE", pair.key.to_str().unwrap()),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+}
+
+#[test]
+fn a_missing_key_file_of_the_tokens_exits_2_naming_the_variable() {
+    let scratch = Scratch::new();
+
+    let output = scratch.run(
+        &["check-config", "--mode", "gateway"],
+        &[
+            GATEWAY_ENVIRONMENT[0],
+            ("JWT_PUBLIC_KEYS_FILE", "/nonexistent/keys.pem"),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stderr(&output).starts_with("JWT_PUBLIC_KEYS_FILE: "),
+        "{}",
+        stderr(&output)
+    );
+}

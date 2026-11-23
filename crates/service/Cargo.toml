@@ -9,6 +9,7 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
+arc-swap.workspace = true
 async-graphql.workspace = true
 async-trait.workspace = true
 axum.workspace = true
@@ -21,6 +22,8 @@ humantime.workspace = true
 iam-application.workspace = true
 iam-domain.workspace = true
 iam-infrastructure.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
 serde_json.workspace = true
 shared-application.workspace = true
 shared-domain.workspace = true
@@ -31,6 +34,7 @@ some-module-infrastructure.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-rustls.workspace = true
 tower.workspace = true
 tower-http.workspace = true
 tracing.workspace = true

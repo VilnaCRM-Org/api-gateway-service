@@ -28,6 +28,7 @@ pub mod security_audit;
 pub mod seed;
 pub mod singleton_leadership;
 pub mod startup_lock;
+pub mod tls;
 pub mod token;
 pub mod unit_of_work;
 pub mod user_role;

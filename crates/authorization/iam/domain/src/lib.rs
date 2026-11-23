@@ -15,9 +15,12 @@ mod micros;
 pub mod openapi_spec;
 pub mod policy;
 pub mod port;
+pub mod rate_policy;
 pub mod rest_permission;
 pub mod revocation;
 pub mod role;
+pub mod route;
+pub mod upstream;
 pub mod user_role;
 pub mod value_object;
 
@@ -31,6 +34,10 @@ pub use entity::iam_change::{IamChange, IamChangeParts};
 pub use entity::idempotency_record::{IdempotencyRecord, IdempotencyRequest};
 pub use entity::security_audit_event::{
     SecurityAuditEvent, SecurityAuditEventParts, StoredSecurityAuditEvent,
+};
+pub use error::{
+    ConfigChangeRefused, InvalidRatePolicy, InvalidRoute, InvalidUpstream, ReferencedByRoute,
+    RouteConflict, UpstreamChangeRefused,
 };
 pub use error::{
     InvalidAccessCheck, InvalidEventEnvelope, InvalidIamValue, InvalidPermissionKey, InvalidRole,
@@ -51,6 +58,7 @@ pub use kafka_topic::{
 pub use openapi_spec::event::{OpenApiSpecLoaded, OpenApiSpecRetired};
 pub use openapi_spec::statement::OpenApiSpecStatement;
 pub use openapi_spec::{OpenApiSpec, OpenApiSpecContent, OpenApiSpecParts};
+pub use policy::anonymous_route_guard::{AnonymousRouteGuard, AnonymousRouteRefused};
 pub use policy::caller_token_rule::CallerTokenRule;
 pub use policy::catalogue_activation::{
     CatalogueActivation, FlagChange, GrantRecord, KeyRename, OrphanedGrant,
@@ -68,6 +76,9 @@ pub use policy::rest_operation_matcher::{RestOperationMatcher, UnknownOperation}
 pub use policy::rest_spec_diff::{
     RemovedRestGrant, RestFlagDowngrade, RestSpecDiff, RestWildcardGain,
 };
+pub use policy::route_conflict_guard::RouteConflictGuard;
+pub use policy::route_revocation_rule::{RouteChangeClass, RouteRevocationRule};
+pub use policy::route_scope_guard::{RouteScopeGuard, RouteScopeRefused};
 pub use policy::service_catalog::ServiceCatalog;
 pub use policy::spec_diff::{FlagDowngrade, RemovedGrant, RoleGrants, SpecDiff, WildcardGain};
 pub use policy::subject_policy::SubjectPolicy;
@@ -89,12 +100,15 @@ pub use port::openapi_spec_repository::{OpenApiSpecPageQuery, OpenApiSpecReposit
 pub use port::permission_page_query::PermissionPageQuery;
 pub use port::policy_epoch_repository::PolicyEpochRepository;
 pub use port::policy_read_repository::PolicyReadRepository;
+pub use port::rate_policy_repository::{RatePolicyPageQuery, RatePolicyRepository};
 pub use port::request_digester::RequestDigester;
 pub use port::rest_permission_repository::RestPermissionRepository;
 pub use port::revocation_repository::RevocationRepository;
 pub use port::revocation_view::RevocationView;
 pub use port::rng::Rng;
 pub use port::role_repository::{RoleGrant, RolePageQuery, RoleRepository};
+pub use port::route_repository::{RoutePageQuery, RouteRepository};
+pub use port::route_table_compiler::{RouteMatcher, RouteTableCompiler};
 pub use port::security_audit_log::SecurityAuditLog;
 pub use port::singleton_leadership::{LeaderBatch, Leadership, SingletonLeadership, SingletonTask};
 pub use port::startup_lock::{
@@ -103,7 +117,11 @@ pub use port::startup_lock::{
 pub use port::task_state_repository::{TaskState, TaskStateRepository};
 pub use port::token_memo::{TokenMemo, Verification};
 pub use port::token_repository::TokenRepository;
+pub use port::upstream_repository::{UpstreamPageQuery, UpstreamRepository};
 pub use port::user_role_repository::{UserRolePageQuery, UserRoleRepository};
+pub use rate_policy::event::{RatePolicyCreated, RatePolicyDeleted, RatePolicyUpdated};
+pub use rate_policy::fields::{RateFallback, RateKeyKind, RatePolicyDraft, RatePolicyFields};
+pub use rate_policy::{RatePolicy, RatePolicyParts, RatePolicyStamp};
 pub use rest_permission::{RestPermission, RestPermissionParts};
 pub use revocation::global_token_cutoff::GlobalTokenCutoff;
 pub use revocation::inbound_event::{InboundEvent, InboundOutcome};
@@ -114,6 +132,18 @@ pub use revocation::user_token_cutoff::UserTokenCutoff;
 pub use role::event::{RoleCreated, RoleDeleted, RolePermissionsChanged, RoleUpdated};
 pub use role::statement::RoleStatement;
 pub use role::{Role, RoleDescriptionChange, RoleFields, RoleParts, RolePatch, RoleStamp};
+pub use route::cors::{CorsDraft, CorsPolicy};
+pub use route::event::{RouteConfigurationApplied, RouteCreated, RouteDeleted, RouteUpdated};
+pub use route::fields::{RouteDraft, RouteFields};
+pub use route::settings::{
+    BodyLimit, EnforcementMode, RetryPolicy, RouteFlag, RouteFlags, RouteTimeouts,
+};
+pub use route::{Route, RouteParts, RouteStamp};
+pub use upstream::event::{UpstreamCreated, UpstreamDeleted, UpstreamUpdated};
+pub use upstream::settings::{
+    UpstreamFields, UpstreamProtocol, UpstreamSettings, UpstreamSettingsDraft,
+};
+pub use upstream::{Upstream, UpstreamParts, UpstreamStamp};
 pub use user_role::event::{
     AssignedRole, PrivilegedRoleAssigned, UserRoleAssigned, UserRoleRevoked, UserRoleUpdated,
 };
@@ -159,11 +189,12 @@ pub use value_object::graphql_type_graph::{GraphQlField, GraphQlTypeGraph};
 pub use value_object::http_method::HttpMethod;
 pub use value_object::idempotency_key::IdempotencyKey;
 pub use value_object::identifier::{
-    ChangeId, DecisionId, PermissionId, ProjectId, RoleId, SecurityAuditEventId,
-    SessionRevocationId, SpecId, UserRoleId,
+    ChangeId, DecisionId, PermissionId, ProjectId, RatePolicyId, RoleId, RouteId,
+    SecurityAuditEventId, SessionRevocationId, SpecId, UpstreamId, UserRoleId,
 };
 pub use value_object::log_epoch::LogEpoch;
 pub use value_object::normalized_path::NormalizedPath;
+pub use value_object::path_pattern::{PathPattern, PathSegment};
 pub use value_object::path_template::PathTemplate;
 pub use value_object::permission_flags::PermissionFlags;
 pub use value_object::permission_grant::PermissionGrant;
@@ -183,6 +214,7 @@ pub use value_object::rest_template::RestTemplate;
 pub use value_object::role_description::RoleDescription;
 pub use value_object::role_kind::RoleKind;
 pub use value_object::role_name::RoleName;
+pub use value_object::route_host::RouteHost;
 pub use value_object::scope_set::ScopeSet;
 pub use value_object::service_name::ServiceName;
 pub use value_object::session_id::SessionId;
@@ -191,4 +223,5 @@ pub use value_object::subject::{SubjectId, SubjectKind, SubjectRef};
 pub use value_object::token_id::TokenId;
 pub use value_object::token_identity::TokenIdentity;
 pub use value_object::token_rejection::TokenRejection;
+pub use value_object::upstream_name::UpstreamName;
 pub use value_object::wildcard_pattern::WildcardPattern;
