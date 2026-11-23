@@ -35,6 +35,29 @@ services:
         max-size: 10m
         max-file: '3'
 
+  iam-gateway:
+    environment:
+      APP_ENV: prod
+      # The pair is mounted from a directory of the host; the gateway reloads it when the files change.
+      GATEWAY_TLS_CERT_FILE: ${GATEWAY_TLS_CERT_FILE:-/etc/service/tls/tls.crt}
+      GATEWAY_TLS_KEY_FILE: ${GATEWAY_TLS_KEY_FILE:-/etc/service/tls/tls.key}
+    volumes: !override
+      - ${JWT_PUBLIC_KEYS_HOST_FILE:?JWT_PUBLIC_KEYS_HOST_FILE is required}:/etc/service/jwt-public-keys.pem:ro
+      - ${GATEWAY_TLS_HOST_DIR:?GATEWAY_TLS_HOST_DIR is required}:/etc/service/tls:ro
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 256M
+          pids: 256
+        reservations:
+          memory: 64M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+
   migrate:
     depends_on: !reset null
     environment:

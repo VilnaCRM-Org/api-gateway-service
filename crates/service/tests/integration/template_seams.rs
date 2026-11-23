@@ -11,7 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Seam files: changed away from the template, so the template sync must not overwrite them.
-const SEAM_FILES: [&str; 21] = [
+const SEAM_FILES: [&str; 26] = [
     ".github/workflows/tests.yml",
     "docs/operations.md",
     "docs/make-targets.md",
@@ -26,7 +26,12 @@ const SEAM_FILES: [&str; 21] = [
     "crates/service/src/graphql/handler/tests.rs",
     "crates/service/src/command.rs",
     "crates/service/src/command/serve.rs",
+    "crates/service/src/command/check_config.rs",
+    "crates/service/src/command/healthcheck.rs",
+    "crates/service/src/command/healthcheck/tests.rs",
     "crates/service/tests/integration/serve.rs",
+    "crates/service/tests/integration/healthcheck.rs",
+    "Dockerfile",
     "docker-compose.prod.yml",
     "docker-compose.load_test.override.yml",
     "crates/shared/application/src/http/problem.rs",

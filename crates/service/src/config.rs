@@ -5,7 +5,7 @@
 //! malformed is not echoed.
 
 use std::fmt::Display;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::ops::RangeInclusive;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -25,7 +25,8 @@ use shared_infrastructure::persistence::{
 use sqlx::postgres::PgConnectOptions;
 use tracing_subscriber::EnvFilter;
 
-use crate::cli::{DatabaseArgs, KafkaArgs, MigrateArgs, ServeArgs, TokenArgs};
+use crate::bootstrap::gateway::listener;
+use crate::cli::{DatabaseArgs, GatewayArgs, KafkaArgs, MigrateArgs, ServeArgs, TokenArgs};
 
 /// The largest accepted `JWT_CLOCK_SKEW`.
 const MAX_CLOCK_SKEW: Duration = Duration::from_mins(1);
@@ -204,6 +205,203 @@ impl MigrateSettings {
     }
 }
 
+/// The certificate chain and the private key of the public listener of the gateway.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TlsFiles {
+    /// `GATEWAY_TLS_CERT_FILE`: the PEM certificate chain.
+    pub cert: PathBuf,
+    /// `GATEWAY_TLS_KEY_FILE`: the PEM private key.
+    pub key: PathBuf,
+}
+
+/// The validated configuration of `gateway` and of `check-config --mode gateway`: no database,
+/// queue or Kafka setting.
+#[derive(Debug, Clone)]
+pub struct GatewayConfig {
+    /// Deployment environment.
+    pub app_env: AppEnv,
+    /// `tracing` filter directives.
+    pub log_level: String,
+    /// Time the in-flight requests get to finish after a termination signal.
+    pub shutdown_grace_period: Duration,
+    /// Offline validation of User service access tokens.
+    pub tokens: TokenSettings,
+    /// `GATEWAY_LISTEN`: the public listener.
+    pub listen: SocketAddr,
+    /// `GATEWAY_INTERNAL_LISTEN`: the internal listener.
+    pub internal_listen: SocketAddr,
+    /// `GATEWAY_PROBE_LISTEN`: the probe listener.
+    pub probe_listen: SocketAddr,
+    /// The certificate and key of the public listener; `None` serves plain HTTP, which only
+    /// `APP_ENV` `dev` and `test` accept.
+    pub tls: Option<TlsFiles>,
+    /// `POD_NAME`: the name of the pod, when the downward API provides it.
+    pub pod_name: Option<String>,
+    /// `POD_NAMESPACE`: the namespace of the pod, when the downward API provides it.
+    pub pod_namespace: Option<String>,
+}
+
+impl GatewayConfig {
+    /// Parses and validates the gateway variables and the variables of `serve` that it shares.
+    ///
+    /// # Errors
+    ///
+    /// Returns every problem found, each naming its environment variable.
+    pub fn from_args(args: &GatewayArgs) -> Result<Self, ConfigErrors> {
+        let mut collector = Collector::default();
+        let service = &args.service;
+        let app_env = collector.collect("APP_ENV", app_env(service.app_env.as_deref()));
+        let log_level = collector.collect("LOG_LEVEL", log_level(service.log_level.as_deref()));
+        let grace = collector.collect(
+            "SHUTDOWN_GRACE_PERIOD",
+            duration(
+                service.shutdown_grace_period.as_deref(),
+                Duration::from_secs(10),
+            ),
+        );
+        let tokens = tokens(&mut collector, &service.tokens);
+        let listeners = listeners(&mut collector, args);
+        let tls = tls_files(&mut collector, args, app_env);
+        let pod_name = collector.collect("POD_NAME", optional(args.pod_name.as_deref()));
+        let pod_namespace =
+            collector.collect("POD_NAMESPACE", optional(args.pod_namespace.as_deref()));
+        match (app_env, log_level, grace, tokens, listeners, tls) {
+            (
+                Some(app_env),
+                Some(log_level),
+                Some(shutdown_grace_period),
+                Some(tokens),
+                Some(listeners),
+                Some(tls),
+            ) if collector.problems.is_empty() => Ok(Self {
+                app_env,
+                log_level,
+                shutdown_grace_period,
+                tokens,
+                listen: listeners.public,
+                internal_listen: listeners.internal,
+                probe_listen: listeners.probe,
+                tls: tls.into_files(),
+                pod_name: pod_name.flatten(),
+                pod_namespace: pod_namespace.flatten(),
+            }),
+            _ => Err(ConfigErrors(collector.problems)),
+        }
+    }
+}
+
+/// The three listener addresses of the gateway.
+struct Listeners {
+    public: SocketAddr,
+    internal: SocketAddr,
+    probe: SocketAddr,
+}
+
+/// `GATEWAY_LISTEN`, `GATEWAY_INTERNAL_LISTEN` and `GATEWAY_PROBE_LISTEN`: three addresses that
+/// differ from one another (port 0, which selects any free port, never clashes).
+fn listeners(collector: &mut Collector, args: &GatewayArgs) -> Option<Listeners> {
+    let public = collector.collect(
+        "GATEWAY_LISTEN",
+        listen_address(args.listen.as_deref(), 8443),
+    );
+    let internal = collector.collect(
+        "GATEWAY_INTERNAL_LISTEN",
+        listen_address(args.internal_listen.as_deref(), 9090),
+    );
+    let probe = collector.collect(
+        "GATEWAY_PROBE_LISTEN",
+        listen_address(args.probe_listen.as_deref(), 9092),
+    );
+    collector.distinct(
+        ("GATEWAY_INTERNAL_LISTEN", internal),
+        ("GATEWAY_LISTEN", public),
+    );
+    collector.distinct(("GATEWAY_PROBE_LISTEN", probe), ("GATEWAY_LISTEN", public));
+    collector.distinct(
+        ("GATEWAY_PROBE_LISTEN", probe),
+        ("GATEWAY_INTERNAL_LISTEN", internal),
+    );
+    Some(Listeners {
+        public: public?,
+        internal: internal?,
+        probe: probe?,
+    })
+}
+
+fn listen_address(raw: Option<&str>, default_port: u16) -> Parsed<SocketAddr> {
+    parsed(
+        raw,
+        SocketAddr::from((Ipv4Addr::UNSPECIFIED, default_port)),
+        "must be an address of the form host:port, such as 0.0.0.0:8443",
+    )
+}
+
+/// `GATEWAY_TLS_CERT_FILE` and `GATEWAY_TLS_KEY_FILE`: both or neither; neither only in `dev`
+/// and `test`; a pair must hold a usable certificate chain and its private key now, so that
+/// `check-config` refuses a pair the gateway could not start with.
+///
+/// `None` when a problem was reported or the environment is unknown.
+fn tls_files(
+    collector: &mut Collector,
+    args: &GatewayArgs,
+    app_env: Option<AppEnv>,
+) -> Option<TlsChoice> {
+    match (args.tls_cert_file.as_deref(), args.tls_key_file.as_deref()) {
+        (Some(cert), Some(key)) => tls_pair(collector, cert, key),
+        (Some(_), None) => collector.reject(
+            "GATEWAY_TLS_KEY_FILE",
+            "is required with GATEWAY_TLS_CERT_FILE",
+        ),
+        (None, Some(_)) => collector.reject(
+            "GATEWAY_TLS_CERT_FILE",
+            "is required with GATEWAY_TLS_KEY_FILE",
+        ),
+        (None, None) => match app_env? {
+            AppEnv::Dev | AppEnv::Test => Some(TlsChoice::Plain),
+            AppEnv::Prod => {
+                collector.reject::<()>("GATEWAY_TLS_CERT_FILE", TLS_REQUIRED);
+                collector.reject("GATEWAY_TLS_KEY_FILE", TLS_REQUIRED)
+            }
+        },
+    }
+}
+
+/// How the public listener of the gateway is served.
+enum TlsChoice {
+    /// Plain HTTP, accepted only in `dev` and `test`.
+    Plain,
+    /// TLS with this pair.
+    Secured(TlsFiles),
+}
+
+impl TlsChoice {
+    fn into_files(self) -> Option<TlsFiles> {
+        match self {
+            Self::Plain => None,
+            Self::Secured(files) => Some(files),
+        }
+    }
+}
+
+/// The reason of a missing TLS file.
+const TLS_REQUIRED: &str = "is required outside APP_ENV dev and test";
+
+fn tls_pair(collector: &mut Collector, cert: &str, key: &str) -> Option<TlsChoice> {
+    let files = TlsFiles {
+        cert: PathBuf::from(cert),
+        key: PathBuf::from(key),
+    };
+    match listener::load_certified_key(&files) {
+        Ok(_loaded) => Some(TlsChoice::Secured(files)),
+        Err(error) => collector.reject(
+            "GATEWAY_TLS_CERT_FILE",
+            &format!(
+                "must name a PEM certificate chain that matches the private key of GATEWAY_TLS_KEY_FILE: {error}"
+            ),
+        ),
+    }
+}
+
 struct Server {
     app_env: AppEnv,
     host: IpAddr,
@@ -231,6 +429,29 @@ impl Collector {
         outcome
             .map_err(|reason| self.problems.push(ConfigProblem { variable, reason }))
             .ok()
+    }
+
+    /// Records a problem of `variable` and returns `None`, the outcome of a rejected setting.
+    fn reject<T>(&mut self, variable: &'static str, reason: &str) -> Option<T> {
+        self.problems.push(ConfigProblem {
+            variable,
+            reason: reason.to_owned(),
+        });
+        None
+    }
+
+    /// Records a problem of the first variable when both addresses are known, equal and not port 0.
+    fn distinct(
+        &mut self,
+        (variable, address): (&'static str, Option<SocketAddr>),
+        (other, other_address): (&'static str, Option<SocketAddr>),
+    ) {
+        if let (Some(address), Some(other_address)) = (address, other_address)
+            && address == other_address
+            && address.port() != 0
+        {
+            self.reject::<()>(variable, &format!("must differ from {other}"));
+        }
     }
 
     fn credentials(&mut self, key_id: Option<&str>, secret: Option<&str>) {

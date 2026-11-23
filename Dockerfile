@@ -63,9 +63,12 @@ ENV APP_ENV=prod \
     APP_HOST=0.0.0.0 \
     APP_PORT=8081
 USER 65532:65532
-EXPOSE 8081
+# 8081: `service serve` (iam-control); 8443, 9090 and 9092: the public, internal and probe listeners of `service gateway`.
+EXPOSE 8081 8443 9090 9092
 STOPSIGNAL SIGTERM
-# distroless has no shell, curl or wget: the binary probes itself (exec form is mandatory).
+# distroless has no shell, curl or wget: the binary probes itself (exec form is mandatory). This is the check of the
+# default mode; a container that runs `service gateway` replaces it with `["/app/service", "healthcheck", "--mode",
+# "gateway"]`, which probes `/ping` on the probe listener (the compose service `iam-gateway` does).
 HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=3 CMD ["/app/service", "healthcheck"]
 ENTRYPOINT ["/app/service"]
 CMD ["serve"]

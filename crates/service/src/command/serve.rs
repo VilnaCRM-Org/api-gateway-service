@@ -16,14 +16,14 @@ use crate::config::{AppEnv, Config, ConfigErrors, ConfigProblem};
 use crate::telemetry;
 
 /// Time the runtime gets to drop what is left after a forced shutdown.
-const FORCED_EXIT_LIMIT: Duration = Duration::from_secs(1);
+pub(super) const FORCED_EXIT_LIMIT: Duration = Duration::from_secs(1);
 
 /// Level filter of the report of an invalid configuration: `LOG_LEVEL` is not known then.
 const REPORT_LOG_LEVEL: &str = "info";
 
 /// How the server stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Shutdown {
+pub(super) enum Shutdown {
     /// Every connection finished within the grace period.
     Drained,
     /// The grace period ended with a connection still open.
@@ -32,13 +32,13 @@ enum Shutdown {
 
 /// The handlers of SIGTERM and SIGINT. They are installed before the `listening` entry is
 /// written, so a signal sent as soon as that entry is read is never lost.
-struct Signals {
+pub(super) struct Signals {
     terminate: Signal,
     interrupt: Signal,
 }
 
 impl Signals {
-    fn install() -> std::io::Result<Self> {
+    pub(super) fn install() -> std::io::Result<Self> {
         Ok(Self {
             terminate: signal(SignalKind::terminate())?,
             interrupt: signal(SignalKind::interrupt())?,
@@ -46,7 +46,7 @@ impl Signals {
     }
 
     /// Waits for the first signal and names it.
-    async fn received(mut self) -> &'static str {
+    pub(super) async fn received(mut self) -> &'static str {
         tokio::select! {
             _ = self.terminate.recv() => "SIGTERM",
             _ = self.interrupt.recv() => "SIGINT",
@@ -55,7 +55,7 @@ impl Signals {
 }
 
 /// The mode of FR1 as it is written in `APP_ENV`.
-const fn mode(app_env: AppEnv) -> &'static str {
+pub(super) const fn mode(app_env: AppEnv) -> &'static str {
     match app_env {
         AppEnv::Dev => "dev",
         AppEnv::Test => "test",
@@ -67,15 +67,15 @@ fn log_listening(addr: SocketAddr, env: &str) {
     tracing::info!(%addr, env, version = env!("CARGO_PKG_VERSION"), "listening");
 }
 
-fn log_signal(name: &str) {
+pub(super) fn log_signal(name: &str) {
     tracing::info!(signal = name, "shutdown signal received");
 }
 
-fn log_forced(grace_period: Duration) {
+pub(super) fn log_forced(grace_period: Duration) {
     tracing::warn!(?grace_period, "grace period elapsed, forcing shutdown");
 }
 
-fn log_stopped() {
+pub(super) fn log_stopped() {
     tracing::info!("stopped");
 }
 
@@ -88,7 +88,7 @@ fn log_failed(error: &BoxError) {
 }
 
 /// Completes when the stop flag is set; the graceful shutdown of the server waits for it.
-async fn stopped(mut stopping: watch::Receiver<bool>) {
+pub(super) async fn stopped(mut stopping: watch::Receiver<bool>) {
     drop(stopping.wait_for(|stopping| *stopping).await);
 }
 

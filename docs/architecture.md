@@ -66,6 +66,19 @@ The design relies on the following assumptions about how the service is run. The
 - **Shutdown is bounded.** On SIGTERM or SIGINT the service stops accepting connections and drains in-flight requests for at most `SHUTDOWN_GRACE_PERIOD`. It exits with status 0 when all finished and with status 1 when the period ended with a request still open, so a cut request is visible to the platform.
 - **Start-up does not wait for dependencies.** The database pool is lazy, so `serve` starts and answers `/ping` while the database is down, and `/api/health` reports the failing dependency. Migrations are a separate step, never run by `serve`.
 
+## Run modes and socket owners
+
+One image runs in two modes ([ADR 0015](adr/0015-iam-is-the-api-gateway-split-planes-one-image-two-run-modes.md)): `service serve` is the control plane (`iam-control`, with PostgreSQL) and `service gateway` is the data plane. The gateway opens three listeners and never a PostgreSQL pool: the public listener on `GATEWAY_LISTEN` (TLS 1.3 and 1.2, ALPN `h2` and `http/1.1`, a certificate that is replaced without a restart; until the pipeline of Story 10.2 exists it answers every request with 503 `iam_stale`), the internal listener on `GATEWAY_INTERNAL_LISTEN` for `iam-control` and the gateway pods, and the probe listener on `GATEWAY_PROBE_LISTEN` with `/ping`. `service check-config --mode gateway` and `service healthcheck --mode gateway` work on the gateway; without `--mode` both keep the behaviour of `serve`.
+
+Sockets are opened by a short list of owners, each with an item-level `#[expect(clippy::disallowed_methods, reason = ...)]`; code anywhere else cannot bind or connect (`clippy.toml`). The socket-owner rule list:
+
+| Owner | What it opens |
+| --- | --- |
+| `crates/service/src/command/serve.rs` | the listening socket of `service serve` |
+| `crates/service/src/command/gateway.rs` | the three listening sockets of `service gateway` (`bind`) |
+| `crates/service/src/command/healthcheck.rs` | the loopback connection of the liveness probe |
+| integration tests (`crates/service/tests/integration/`) | the sockets their subject talks to |
+
 ## Quality gates and the decision records
 
 The architecture is held in place by gates that fail: layer and context isolation, a lint policy with complexity limits, 100% line and function coverage, mutation testing, contract snapshots and a protected-configuration guard. Run them together with `make ci`; the verification section of `AGENTS.md` lists them in order, and [`docs/make-targets.md`](make-targets.md) describes each one. The decisions behind the structure are written down as twelve records, indexed in the [decision record index](adr/README.md).

@@ -2,7 +2,7 @@
 
 use sqlx::PgPool;
 
-use crate::support::{Scratch, Server, database_url, serve, silent_listener, stack_with};
+use crate::support::{Scratch, Server, database_url, gateway, serve, silent_listener, stack_with};
 
 /// A running service on the database of `pool`, with `extra` variables after the stack's own.
 async fn serve_on(scratch: &Scratch, pool: &PgPool, extra: &[(&str, &str)]) -> Server {
@@ -127,4 +127,61 @@ async fn an_unspecified_listener_is_probed_on_the_loopback_interface(pool: PgPoo
 
     assert_eq!(alive, Some(0));
     assert_eq!(finished.code, Some(0));
+}
+
+fn gateway_probe(scratch: &Scratch, port: u16) -> Option<i32> {
+    let listen = format!("127.0.0.1:{port}");
+    scratch
+        .run(
+            &["healthcheck", "--mode", "gateway"],
+            &[("GATEWAY_PROBE_LISTEN", listen.as_str())],
+        )
+        .status
+        .code()
+}
+
+#[test]
+fn the_gateway_mode_probes_ping_on_the_probe_listener() {
+    let scratch = Scratch::new();
+    let (server, ports) = gateway(&scratch, &[]);
+
+    let probe = gateway_probe(&scratch, ports.probe);
+    let public = gateway_probe(&scratch, ports.public);
+    let internal = gateway_probe(&scratch, ports.internal);
+    let flag = scratch
+        .run(
+            &[
+                "healthcheck",
+                "--mode",
+                "gateway",
+                "--gateway-probe-listen",
+                &format!("127.0.0.1:{}", ports.probe),
+            ],
+            &[],
+        )
+        .status
+        .code();
+    let finished = server.terminate();
+    let dead = gateway_probe(&scratch, ports.probe);
+
+    assert_eq!(probe, Some(0));
+    assert_eq!(public, Some(1), "the public listener answers 503");
+    assert_eq!(internal, Some(1), "the internal listener has no /ping");
+    assert_eq!(flag, Some(0));
+    assert_eq!(finished.code, Some(0));
+    assert_eq!(dead, Some(1));
+}
+
+#[test]
+fn an_unparsable_probe_address_fails_the_gateway_check_silently() {
+    let scratch = Scratch::new();
+
+    let output = scratch.run(
+        &["healthcheck", "--mode", "gateway"],
+        &[("GATEWAY_PROBE_LISTEN", "nowhere")],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.stdout, Vec::<u8>::new());
+    assert_eq!(output.stderr, Vec::<u8>::new());
 }

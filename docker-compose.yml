@@ -49,6 +49,39 @@ services:
     restart: unless-stopped
     stop_grace_period: 15s
 
+  # The data plane: `service gateway` from the same image as `app` (ADR 0015). It needs no database, so it waits for
+  # no other service. Started with `docker compose --profile gateway up iam-gateway`; the development stack does not
+  # start it. Plain HTTP because APP_ENV is dev; docker-compose.prod.yml adds the certificate pair of production.
+  iam-gateway:
+    <<: *hardening
+    image: ${APP_IMAGE:-service:prod}
+    build: *build
+    command: ['gateway']
+    profiles: [gateway]
+    environment:
+      APP_ENV: dev
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      GATEWAY_LISTEN: 0.0.0.0:8443
+      GATEWAY_INTERNAL_LISTEN: 0.0.0.0:9090
+      GATEWAY_PROBE_LISTEN: 0.0.0.0:9092
+      POD_NAME: iam-gateway
+      POD_NAMESPACE: ${POD_NAMESPACE:-local}
+      TOKIO_WORKER_THREADS: ${TOKIO_WORKER_THREADS:-2}
+      JWT_PUBLIC_KEYS_FILE: /etc/service/jwt-public-keys.pem
+    volumes:
+      - ${JWT_PUBLIC_KEYS_HOST_FILE:-./config/jwt/dev-public-keys.pem}:/etc/service/jwt-public-keys.pem:ro
+    ports:
+      - '127.0.0.1:${GATEWAY_PORT:-8443}:8443'
+    healthcheck:
+      test: ['CMD', '/app/service', 'healthcheck', '--mode', 'gateway'] # exec form: the image has no shell
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+      start_interval: 1s
+    restart: unless-stopped
+    stop_grace_period: 15s
+
   migrate:
     <<: *hardening
     image: ${APP_IMAGE:-service:prod}

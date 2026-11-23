@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 /// Service binary of the template: serves the API and runs the maintenance commands.
 #[derive(Debug, Parser)]
@@ -24,8 +24,11 @@ pub enum Command {
     Serve(ServeArgs),
     /// Wait for the database and apply the pending migrations, or revert the last one.
     Migrate(MigrateArgs),
-    /// Validate the configuration of `serve` without opening a socket or contacting a dependency.
-    CheckConfig(ServeArgs),
+    /// Validate the configuration of a run mode without opening a socket or contacting a dependency.
+    CheckConfig(CheckConfigArgs),
+    /// Run the data plane: the TLS public listener, the internal listener and the probe listener,
+    /// until SIGTERM or SIGINT, then drain. It needs no database.
+    Gateway(GatewayArgs),
     /// Write the REST API contract (YAML) to a file or to standard output.
     OpenapiExport(ExportArgs),
     /// Write the GraphQL schema (SDL) to a file or to standard output.
@@ -35,6 +38,16 @@ pub enum Command {
     /// Create the first IAM administrator: the system role `iam-platform-admin` and its global
     /// assignment to a user or a service principal.
     IamBootstrap(IamBootstrapArgs),
+}
+
+/// The run mode a command works on: the one image runs as `iam-control` or as the gateway.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum Mode {
+    /// `service serve`: the control plane, with the database (the default).
+    #[default]
+    Control,
+    /// `service gateway`: the data plane, without a database.
+    Gateway,
 }
 
 /// What `service migrate` does besides applying the pending migrations.
@@ -167,6 +180,70 @@ pub struct ServeArgs {
     /// Settings of the control-plane Kafka connection.
     #[command(flatten)]
     pub kafka: KafkaArgs,
+}
+
+/// Settings of `gateway`: the variables it shares with `serve` and its own.
+#[derive(Debug, Clone, Default, Args)]
+pub struct GatewayArgs {
+    /// The variables of `serve`; the gateway reads `APP_ENV`, `LOG_LEVEL`, `SHUTDOWN_GRACE_PERIOD`
+    /// and the token settings of them, and ignores the rest.
+    #[command(flatten)]
+    pub service: ServeArgs,
+    /// Address of the public listener (default `0.0.0.0:8443`).
+    #[arg(
+        long = "gateway-listen",
+        env = "GATEWAY_LISTEN",
+        hide_env_values = true
+    )]
+    pub listen: Option<String>,
+    /// Address of the internal listener for `iam-control` and the gateway pods (default
+    /// `0.0.0.0:9090`).
+    #[arg(
+        long = "gateway-internal-listen",
+        env = "GATEWAY_INTERNAL_LISTEN",
+        hide_env_values = true
+    )]
+    pub internal_listen: Option<String>,
+    /// Address of the probe listener (default `0.0.0.0:9092`).
+    #[arg(
+        long = "gateway-probe-listen",
+        env = "GATEWAY_PROBE_LISTEN",
+        hide_env_values = true
+    )]
+    pub probe_listen: Option<String>,
+    /// PEM file of the certificate chain of the public listener, hot-reloaded; required with
+    /// `GATEWAY_TLS_KEY_FILE`, and outside `APP_ENV` `dev` and `test` always.
+    #[arg(
+        long = "gateway-tls-cert-file",
+        env = "GATEWAY_TLS_CERT_FILE",
+        hide_env_values = true
+    )]
+    pub tls_cert_file: Option<String>,
+    /// PEM file of the private key of the public listener, hot-reloaded; required with
+    /// `GATEWAY_TLS_CERT_FILE`, and outside `APP_ENV` `dev` and `test` always.
+    #[arg(
+        long = "gateway-tls-key-file",
+        env = "GATEWAY_TLS_KEY_FILE",
+        hide_env_values = true
+    )]
+    pub tls_key_file: Option<String>,
+    /// Name of the pod, from the Kubernetes downward API.
+    #[arg(long = "pod-name", env = "POD_NAME", hide_env_values = true)]
+    pub pod_name: Option<String>,
+    /// Namespace of the pod, from the Kubernetes downward API.
+    #[arg(long = "pod-namespace", env = "POD_NAMESPACE", hide_env_values = true)]
+    pub pod_namespace: Option<String>,
+}
+
+/// Arguments of `check-config`: the run mode and the settings of both modes.
+#[derive(Debug, Clone, Default, Args)]
+pub struct CheckConfigArgs {
+    /// The run mode to validate: `control` (default) or `gateway`.
+    #[arg(long, value_enum, default_value_t = Mode::Control)]
+    pub mode: Mode,
+    /// The settings of both modes.
+    #[command(flatten)]
+    pub gateway: GatewayArgs,
 }
 
 /// Settings of the control-plane Kafka connection and of the topics it works on.
@@ -361,6 +438,17 @@ pub struct ExportArgs {
 /// Arguments of `healthcheck`.
 #[derive(Debug, Clone, Args)]
 pub struct HealthcheckArgs {
+    /// The run mode to probe: `control` (default) probes `/ping` on the service port, `gateway`
+    /// probes `/ping` on the probe listener.
+    #[arg(long, value_enum, default_value_t = Mode::Control)]
+    pub mode: Mode,
+    /// Address of the probe listener of the gateway (default `0.0.0.0:9092`).
+    #[arg(
+        long = "gateway-probe-listen",
+        env = "GATEWAY_PROBE_LISTEN",
+        hide_env_values = true
+    )]
+    pub probe_listen: Option<String>,
     /// TCP port of the service (default 8081).
     #[arg(long = "port", env = "APP_PORT", hide_env_values = true)]
     pub port: Option<String>,

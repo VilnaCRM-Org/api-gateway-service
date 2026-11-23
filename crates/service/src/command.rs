@@ -7,13 +7,14 @@ use std::convert::Infallible;
 use std::io::Write;
 use std::process::ExitCode;
 
-use crate::cli::{Command, ServeArgs};
-use crate::config::Config;
+use crate::cli::{Command, GatewayArgs, ServeArgs};
+use crate::config::{Config, GatewayConfig};
 use crate::graphql::schema;
 use crate::openapi;
 
 pub mod check_config;
 pub mod export;
+pub mod gateway;
 pub mod healthcheck;
 pub mod iam_bootstrap;
 pub mod migrate;
@@ -30,6 +31,7 @@ pub fn run(command: Command, stdout: &mut dyn Write, stderr: &mut dyn Write) -> 
     match command {
         Command::CheckConfig(args) => check_config::run(args, stdout, stderr),
         Command::Serve(args) => start_service(args),
+        Command::Gateway(args) => start_gateway(&args),
         Command::Migrate(args) => migrate::run(&args, stdout, stderr),
         Command::OpenapiExport(args) => export::run(openapi::yaml, &args, stdout, stderr),
         Command::GraphqlExport(args) => {
@@ -71,6 +73,14 @@ pub(crate) fn failure(error: &dyn std::error::Error, stderr: &mut dyn Write) -> 
 fn start_service(args: ServeArgs) -> ExitCode {
     match Config::from_args(args) {
         Ok(config) => serve::run(&config),
+        Err(errors) => serve::reject(&errors),
+    }
+}
+
+/// Starts the gateway, or reports the invalid configuration as JSON log entries.
+fn start_gateway(args: &GatewayArgs) -> ExitCode {
+    match GatewayConfig::from_args(args) {
+        Ok(config) => gateway::run(&config),
         Err(errors) => serve::reject(&errors),
     }
 }

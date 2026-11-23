@@ -18,6 +18,7 @@ These records explain why the structure of the template is what it is. Each one 
 | [0012](0012-container-images.md) | Container images | DD-19, DD-20 |
 | [0013](0013-iam-bounded-context.md) | IAM bounded context `authorization/iam`, with the gateway as modules inside it | IAM architecture section 3, research section 2.5 (owner item D19) |
 | [0014](0014-postgresql-and-replicated-policy-snapshot.md) | PostgreSQL as system of record and an in-process replicated policy snapshot instead of DynamoDB and DAX | IAM architecture section 13, research section 5 |
+| [0015](0015-iam-is-the-api-gateway-split-planes-one-image-two-run-modes.md) | IAM is the API gateway: split planes, one image, two run modes | IAM architecture sections 3 and 20, FR-45, FR-54, FR-55, FR-67, NFR-31 |
 | [0016](0016-token-validation-without-persistence-or-liveness-calls.md) | Token validation at the gateway without token persistence or liveness calls | IAM architecture sections 4.2, 7 and 16.1, FR-15, FR-55, NFR-6, NFR-20 |
 | [0017](0017-policy-state-topic-transactional-outbox-and-fenced-relay.md) | Policy state topic, transactional outbox and fenced Kafka relay (draft) | IAM architecture sections 6.1, 9.1 to 9.3 and 15.1, FR-2, FR-46, FR-47, FR-70 |
 | [0018](0018-permission-catalogue-generated-from-specifications.md) | Permission catalogue generated from OpenAPI and GraphQL specifications | IAM architecture section on the catalogue, FR-1, FR-2, FR-32, FR-36, FR-38 |

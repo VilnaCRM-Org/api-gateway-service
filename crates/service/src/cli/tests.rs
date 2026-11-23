@@ -157,7 +157,90 @@ fn check_config_takes_the_arguments_of_serve() {
     let Command::CheckConfig(args) = cli.command else {
         panic!("expected check-config");
     };
-    assert_eq!(args.app_port.as_deref(), Some("9000"));
+    assert_eq!(args.gateway.service.app_port.as_deref(), Some("9000"));
+    assert_eq!(args.mode, Mode::Control);
+}
+
+#[test]
+fn check_config_and_healthcheck_take_a_run_mode() {
+    let check = parse(&["check-config", "--mode", "gateway"]).unwrap();
+    let probe = parse(&["healthcheck", "--mode", "gateway"]).unwrap();
+    let default = parse(&["healthcheck"]).unwrap();
+
+    let (Command::CheckConfig(check), Command::Healthcheck(probe), Command::Healthcheck(default)) =
+        (check.command, probe.command, default.command)
+    else {
+        panic!("expected check-config and healthcheck");
+    };
+    assert_eq!(check.mode, Mode::Gateway);
+    assert_eq!(probe.mode, Mode::Gateway);
+    assert_eq!(default.mode, Mode::Control);
+}
+
+#[test]
+fn an_unknown_run_mode_is_a_usage_error() {
+    let error = parse(&["check-config", "--mode", "worker"]).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::InvalidValue);
+}
+
+#[test]
+fn gateway_takes_every_gateway_setting_as_a_flag() {
+    let cli = parse(&[
+        "gateway",
+        "--gateway-listen",
+        "0.0.0.0:1",
+        "--gateway-internal-listen",
+        "0.0.0.0:2",
+        "--gateway-probe-listen",
+        "0.0.0.0:3",
+        "--gateway-tls-cert-file",
+        "cert.pem",
+        "--gateway-tls-key-file",
+        "key.pem",
+        "--pod-name",
+        "gateway-0",
+        "--pod-namespace",
+        "iam",
+        "--app-env",
+        "dev",
+    ])
+    .unwrap();
+
+    let Command::Gateway(args) = cli.command else {
+        panic!("expected gateway");
+    };
+    assert_eq!(args.listen.as_deref(), Some("0.0.0.0:1"));
+    assert_eq!(args.internal_listen.as_deref(), Some("0.0.0.0:2"));
+    assert_eq!(args.probe_listen.as_deref(), Some("0.0.0.0:3"));
+    assert_eq!(args.tls_cert_file.as_deref(), Some("cert.pem"));
+    assert_eq!(args.tls_key_file.as_deref(), Some("key.pem"));
+    assert_eq!(args.pod_name.as_deref(), Some("gateway-0"));
+    assert_eq!(args.pod_namespace.as_deref(), Some("iam"));
+    assert_eq!(args.service.app_env.as_deref(), Some("dev"));
+}
+
+#[test]
+fn the_gateway_settings_are_bound_to_their_variables_and_hide_their_values() {
+    let command = Cli::command();
+    let gateway = command.find_subcommand("gateway").unwrap();
+
+    for (id, variable) in [
+        ("listen", "GATEWAY_LISTEN"),
+        ("internal_listen", "GATEWAY_INTERNAL_LISTEN"),
+        ("probe_listen", "GATEWAY_PROBE_LISTEN"),
+        ("tls_cert_file", "GATEWAY_TLS_CERT_FILE"),
+        ("tls_key_file", "GATEWAY_TLS_KEY_FILE"),
+        ("pod_name", "POD_NAME"),
+        ("pod_namespace", "POD_NAMESPACE"),
+    ] {
+        let argument = gateway
+            .get_arguments()
+            .find(|argument| argument.get_id() == id)
+            .unwrap();
+        assert_eq!(argument.get_env().unwrap(), variable);
+        assert!(argument.is_hide_env_values_set());
+    }
 }
 
 #[test]
