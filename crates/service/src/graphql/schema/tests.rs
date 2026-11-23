@@ -311,6 +311,10 @@ type Mutation {
   loadGraphqlSpec(input: LoadGraphqlSpecInput!): GraphqlSpec!
   "Loads the `OpenAPI` document of a service as a draft version and returns it with its diff against the active versions; a document that the service already holds returns its version and changes nothing. The service `iam` is reserved."
   loadOpenapiSpec(input: LoadOpenapiSpecInput!): OpenApiSpec!
+  "Retires an active GraphQL specification version: its fields leave the catalogue of the service unless another active version holds them, the next policy version is taken and `iam.graphql_spec.retired` is recorded. A retirement that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED` unless `confirmOrphans` is true; with the confirmation the grants become inactive and `iam.permissions.orphaned` is recorded."
+  retireGraphqlSpec(input: RetireGraphqlSpecInput!): SpecRetirement!
+  "Retires an active `OpenAPI` specification version: its operations leave the catalogue of the service unless another active version holds them, the next policy version is taken and `iam.openapi_spec.retired` is recorded. A retirement that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED` unless `confirmOrphans` is true; with the confirmation the grants become inactive and `iam.permissions.orphaned` is recorded."
+  retireOpenapiSpec(input: RetireOpenapiSpecInput!): SpecRetirement!
   "Revokes an assignment when `expectedVersion` is the current version: it leaves the active listings at once, the next policy version is committed, and `iam.user_role.revoked` and an audit record are written in the same transaction."
   revokeUserRole(input: RevokeUserRoleInput!): RevokeUserRolePayload!
   "Replaces the whole grant set of a role when `expectedVersion` is the current version: every key must be in an active catalogue or be one of the four wildcard forms of a service that has a catalogue, and at most 5,000 keys are accepted; unknown keys fail with `VALIDATION_FAILED` and one violation per key. The change increases the version, updates the grant count, takes the next policy version and records `iam.role_permissions.changed` with the added and removed keys; an added wildcard is audited with `coversFutureElements=true`."
@@ -566,6 +570,26 @@ type RestPermissionsActivation {
   status: String!
 }
 
+"Input of the mutation that retires a GraphQL specification version."
+input RetireGraphqlSpecInput {
+  "Accepts that grants of keys that leave the catalogue become inactive; without it, a retirement that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED`."
+  confirmOrphans: Boolean! = false
+  "The version to retire."
+  id: ID!
+  "Makes the retirement safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+}
+
+"Input of the mutation that retires an `OpenAPI` specification version."
+input RetireOpenapiSpecInput {
+  "Accepts that grants of keys that leave the catalogue become inactive; without it, a retirement that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED`."
+  confirmOrphans: Boolean! = false
+  "The version to retire."
+  id: ID!
+  "Makes the retirement safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+}
+
 "Input of the assignment-revocation mutation."
 input RevokeUserRoleInput {
   "The version the caller read; required, and the revocation is refused when it is not the current one."
@@ -648,6 +672,18 @@ input SetRolePermissionsInput {
   idempotencyKey: String
   "The new grant set: keys of an active catalogue and the four wildcard forms of a service that has a catalogue; at most 5,000. A key that repeats counts once and an empty list removes every grant."
   keys: [String!]!
+}
+
+"The result of a retirement."
+type SpecRetirement {
+  "The identifier of the retired version."
+  id: ID!
+  "The policy version that the retirement produced."
+  policyVersion: Int!
+  "The service the specification belongs to."
+  service: String!
+  "`retired`."
+  status: String!
 }
 
 "The resolution of a credential: the subject and its token claims, or the reason it is refused."
@@ -778,6 +814,8 @@ fn the_sdl_has_the_template_and_iam_operations_and_nothing_else_to_call() {
     assert!(text.contains(
         "createRestPermissions(input: CreateRestPermissionsInput!): RestPermissionsActivation!"
     ));
+    assert!(text.contains("retireGraphqlSpec(input: RetireGraphqlSpecInput!): SpecRetirement!"));
+    assert!(text.contains("retireOpenapiSpec(input: RetireOpenapiSpecInput!): SpecRetirement!"));
     assert!(text.contains("updateRole(input: UpdateRoleInput!): Role!"));
     assert!(text.contains("setRolePermissions(input: SetRolePermissionsInput!): Role!"));
     assert!(text.contains("permissions: [RolePermission!]!"));

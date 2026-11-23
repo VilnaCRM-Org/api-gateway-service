@@ -725,6 +725,102 @@ paths:
                 $ref: '#/components/schemas/Problem'
       security:
       - bearerAuth: []
+  /api/graphql-specs/{id}/retirement:
+    post:
+      tags:
+      - iam
+      summary: Retires a GraphQL specification.
+      description: 'Retires the active version: its fields leave the catalogue of the service unless another active version holds them, the next policy version is taken and `iam.graphql_spec.retired` is recorded. A retirement that would orphan grants is refused with 409 unless `confirmOrphans` is `true`; the problem lists the grants. With the confirmation the grants become inactive, `iam.permissions.orphaned` is recorded and a grant stays inactive when its key returns with a later version until an administrator grants it again. A repeated `Idempotency-Key` with the same body within 24 hours returns the original result.'
+      operationId: api_graphql_specs_id_retirement_post
+      parameters:
+      - name: id
+        in: path
+        description: Version identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: Idempotency-Key
+        in: header
+        description: Makes the retirement safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetireSpecRequest'
+        required: true
+      responses:
+        '200':
+          description: The version was retired.
+          headers:
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpecRetirement'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Version not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: The version is not active, another change got there first, or the retirement would orphan grants (`/problems/orphan-confirmation-required`) without confirmation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: 'Validation failed: an invalid identifier or idempotency key, or the idempotency key was used for another request.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
   /api/health:
     get:
       tags:
@@ -1140,6 +1236,102 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '422':
           description: 'Validation failed: an invalid identifier, rename or idempotency key, or the idempotency key was used for another request.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+  /api/openapi-specs/{id}/retirement:
+    post:
+      tags:
+      - iam
+      summary: Retires an OpenAPI specification.
+      description: 'Retires the active version: its operations leave the catalogue of the service unless another active version holds them, the next policy version is taken and `iam.openapi_spec.retired` is recorded. A retirement that would orphan grants is refused with 409 unless `confirmOrphans` is `true`; the problem lists the grants. With the confirmation the grants become inactive, `iam.permissions.orphaned` is recorded and a grant stays inactive when its key returns with a later version until an administrator grants it again. A repeated `Idempotency-Key` with the same body within 24 hours returns the original result.'
+      operationId: api_openapi_specs_id_retirement_post
+      parameters:
+      - name: id
+        in: path
+        description: Version identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: Idempotency-Key
+        in: header
+        description: Makes the retirement safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetireSpecRequest'
+        required: true
+      responses:
+        '200':
+          description: The version was retired.
+          headers:
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpecRetirement'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Version not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: The version is not active, another change got there first, or the retirement would orphan grants (`/problems/orphan-confirmation-required`) without confirmation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: 'Validation failed: an invalid identifier or idempotency key, or the idempotency key was used for another request.'
           content:
             application/problem+json:
               schema:
@@ -3442,6 +3634,16 @@ components:
           type: string
           description: '`active`.'
           example: active
+    RetireSpecRequest:
+      type: object
+      description: Body of the operation that retires a specification version.
+      properties:
+        confirmOrphans:
+          type: boolean
+          description: |-
+            Accepts that grants of keys that leave the catalogue become inactive. Without it, a
+            retirement that would orphan grants is refused with 409 and lists them.
+      additionalProperties: false
     Role:
       type: object
       description: A role.
@@ -3582,6 +3784,32 @@ components:
           - gql:billing:*
           maxItems: 5000
       additionalProperties: false
+    SpecRetirement:
+      type: object
+      description: The result of a retirement.
+      required:
+      - id
+      - service
+      - status
+      - policyVersion
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The identifier of the retired version.
+        policyVersion:
+          type: integer
+          format: int64
+          description: The policy version that the retirement produced.
+          minimum: 0
+        service:
+          type: string
+          description: The service the specification belongs to.
+          example: billing
+        status:
+          type: string
+          description: '`retired`.'
+          example: retired
     TokenResolution:
       type: object
       description: |-

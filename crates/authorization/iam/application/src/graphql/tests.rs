@@ -19,7 +19,7 @@ use test_support::request_digester::FakeRequestDigester;
 use super::{
     IamMutation, IamQuery, ResolveTokenInput, expected_version, iam_problem_to_graphql_error,
 };
-use crate::error::IamError;
+use crate::error::{Confirmation, IamError};
 use crate::http::IamState;
 use crate::principal::Principal;
 use crate::query::resolve_subject_token::{ResolveSubjectTokenQuery, TokenResolution};
@@ -150,6 +150,49 @@ fn a_validation_problem_keeps_its_violations() {
         .and_then(|extensions| extensions.get("violations"))
         .cloned();
     assert!(matches!(violations, Some(Value::List(list)) if list.len() == 1));
+}
+
+#[test]
+fn a_confirmation_problem_keeps_the_items_it_lists() {
+    let problem = Problem::from(IamError::ConfirmationRequired(
+        Confirmation::Orphans,
+        vec![Violation {
+            property_path: "gql:billing:Query.invoices".to_owned(),
+            message: "the grant of role Payer becomes inactive".to_owned(),
+            code: "orphaned".to_owned(),
+        }],
+    ));
+
+    let graphql = iam_problem_to_graphql_error(problem);
+
+    assert_eq!(
+        code(&graphql),
+        Some(code_of("ORPHAN_CONFIRMATION_REQUIRED"))
+    );
+    let violations = graphql
+        .extensions
+        .as_ref()
+        .and_then(|extensions| extensions.get("violations"))
+        .cloned();
+    let Some(Value::List(list)) = violations else {
+        panic!("the listed items expected: {violations:?}");
+    };
+    assert_eq!(list.len(), 1);
+    assert!(list[0].to_string().contains("gql:billing:Query.invoices"));
+}
+
+#[test]
+fn a_client_error_without_items_has_no_violations() {
+    let graphql = iam_problem_to_graphql_error(Problem::new(StatusCode::CONFLICT));
+
+    assert_eq!(code(&graphql), Some(code_of("CONFLICT")));
+    assert!(
+        graphql
+            .extensions
+            .as_ref()
+            .and_then(|extensions| extensions.get("violations"))
+            .is_none()
+    );
 }
 
 #[test]

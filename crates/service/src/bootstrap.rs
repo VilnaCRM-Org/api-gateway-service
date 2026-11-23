@@ -53,6 +53,7 @@ use iam_application::{
 };
 use iam_application::{RegisterOwnSpecsCommand, RegisterOwnSpecsCommandHandler};
 use iam_application::{ResolveSubjectTokenQueryHandler, ResolveTokenQueryHandler};
+use iam_application::{RetireGraphQlSpecCommandHandler, RetireOpenApiSpecCommandHandler};
 use iam_domain::GraphQlPermissionRepository;
 use iam_domain::GraphQlSpecRepository;
 use iam_domain::OpenApiSpecRepository;
@@ -444,12 +445,18 @@ fn register_graphql_activation_commands(
         policy_epochs: Arc::clone(&adapters.policy_epochs),
     };
     let activate = CreateGraphQlPermissionsCommandHandler::new(
+        reads.clone(),
+        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    let retire = RetireGraphQlSpecCommandHandler::new(
         reads,
         Arc::clone(&adapters.unit_of_work),
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
-    Ok(bus.register(activate)?)
+    Ok(bus.register(activate)?.register(retire)?)
 }
 
 /// Registers the query handler that reads the keys an activation of a GraphQL specification created.
@@ -504,12 +511,18 @@ fn register_rest_activation_commands(
         policy_epochs: Arc::clone(&adapters.policy_epochs),
     };
     let activate = CreateRestPermissionsCommandHandler::new(
+        reads.clone(),
+        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    let retire = RetireOpenApiSpecCommandHandler::new(
         reads,
         Arc::clone(&adapters.unit_of_work),
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
-    Ok(bus.register(activate)?)
+    Ok(bus.register(activate)?.register(retire)?)
 }
 
 /// Registers the query handler that reads the keys an activation of an `OpenAPI` specification
@@ -771,6 +784,8 @@ pub fn router_with_iam_routes(
     };
     Ok(assemble_with_iam_routes(state, schema, config, iam_routes))
 }
+
+pub mod gateway;
 
 mod administrator;
 mod kafka_probe;

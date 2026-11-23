@@ -145,10 +145,31 @@ impl OrphanPolicy {
         grants: &[GrantRecord],
     ) -> Result<CatalogueActivation, RenameRefused> {
         renames.check_against(next)?;
+        Ok(Self::apply_checked(previous, next, renames, grants))
+    }
+
+    /// Applies the change from the `previous` catalogue to the `next` one without renames, as a
+    /// retirement does; with no rename there is nothing to refuse.
+    #[must_use]
+    pub fn apply_without_renames(
+        previous: &PermissionCatalogue,
+        next: &PermissionCatalogue,
+        grants: &[GrantRecord],
+    ) -> CatalogueActivation {
+        Self::apply_checked(previous, next, &RenameMap::empty(), grants)
+    }
+
+    /// Applies the change with renames that were checked against `next`.
+    fn apply_checked(
+        previous: &PermissionCatalogue,
+        next: &PermissionCatalogue,
+        renames: &RenameMap,
+        grants: &[GrantRecord],
+    ) -> CatalogueActivation {
         let (mut resolved, moved_roles) = rename_grants(renames, grants);
         let orphaned_grants = orphan_grants(next, &mut resolved);
         let flag_changes = flag_changes(previous, next);
-        Ok(CatalogueActivation {
+        CatalogueActivation {
             created_keys: next
                 .iter()
                 .filter(|(key, _flags)| !previous.contains(key))
@@ -173,7 +194,7 @@ impl OrphanPolicy {
                 .into_iter()
                 .map(|((role, key), status)| GrantRecord { role, key, status })
                 .collect(),
-        })
+        }
     }
 }
 

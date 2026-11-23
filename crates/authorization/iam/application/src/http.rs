@@ -14,6 +14,7 @@ pub mod rest_activation;
 pub mod rest_permission;
 pub mod role;
 pub mod role_permission;
+pub mod spec_retirement;
 pub mod user_role;
 
 use std::sync::Arc;
@@ -91,6 +92,8 @@ where
     OpenApiRouter::new()
         .routes(routes!(graphql_activation::create))
         .routes(routes!(rest_activation::create))
+        .routes(routes!(spec_retirement::retire_graphql))
+        .routes(routes!(spec_retirement::retire_openapi))
 }
 
 /// The routes of the grants of a role, merged into [`router`].

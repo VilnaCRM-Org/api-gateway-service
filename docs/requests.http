@@ -266,6 +266,26 @@ Content-Type: application/json
   "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facfd", "confirmOrphans": false, "confirmFlagDowngrade": false, "renames": [], "idempotencyKey": "activate-billing-1" } }
 }
 
+### Retire a GraphQL specification over REST: the active version leaves the catalogue of its service unless another active version holds its fields (200 with the policy version and iam.graphql_spec.retired). 409 lists the grants that would be orphaned until confirmOrphans is true; with it the grants become inactive and iam.permissions.orphaned is recorded, and a grant stays inactive when its key returns with a later version until an administrator grants it again; 409 for a version that is not active; a repeated Idempotency-Key with the same body returns the original result
+POST {{baseUrl}}/api/graphql-specs/01a1c6b5-cb86-7134-868a-7608036facfd/retirement
+Authorization: Bearer <caller token>
+Idempotency-Key: retire-billing-1
+Content-Type: application/json
+
+{
+  "confirmOrphans": false
+}
+
+### Retire a GraphQL specification over GraphQL: the same data as the REST operation; the error codes ORPHAN_CONFIRMATION_REQUIRED, CONFLICT, NOT_FOUND and VALIDATION_FAILED
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: RetireGraphqlSpecInput!) { retireGraphqlSpec(input: $input) { id service status policyVersion } }",
+  "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facfd", "confirmOrphans": false, "idempotencyKey": "retire-billing-1" } }
+}
+
 ### Read GraphQL specifications over GraphQL: the same data as the REST operations; graphqlSpec is null for an unknown version, and sdl and diff are read only when they are selected
 POST {{baseUrl}}/api/graphql
 Authorization: Bearer <caller token>
@@ -346,6 +366,26 @@ Content-Type: application/json
 {
   "query": "mutation ($input: CreateRestPermissionsInput!) { createRestPermissions(input: $input) { id service status createdKeys policyVersion } }",
   "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facfd", "confirmOrphans": false, "confirmFlagDowngrade": false, "renames": [], "idempotencyKey": "activate-billing-operations-1" } }
+}
+
+### Retire an OpenAPI specification over REST: the active version leaves the catalogue of its service unless another active version holds its operations (200 with the policy version and iam.openapi_spec.retired). 409 lists the grants that would be orphaned until confirmOrphans is true; with it the grants become inactive and iam.permissions.orphaned is recorded, and a grant stays inactive when its key returns with a later version until an administrator grants it again; 409 for a version that is not active; a repeated Idempotency-Key with the same body returns the original result
+POST {{baseUrl}}/api/openapi-specs/01a1c6b5-cb86-7134-868a-7608036facfd/retirement
+Authorization: Bearer <caller token>
+Idempotency-Key: retire-billing-operations-1
+Content-Type: application/json
+
+{
+  "confirmOrphans": false
+}
+
+### Retire an OpenAPI specification over GraphQL: the same data as the REST operation; the error codes ORPHAN_CONFIRMATION_REQUIRED, CONFLICT, NOT_FOUND and VALIDATION_FAILED
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: RetireOpenapiSpecInput!) { retireOpenapiSpec(input: $input) { id service status policyVersion } }",
+  "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facfd", "confirmOrphans": false, "idempotencyKey": "retire-billing-operations-1" } }
 }
 
 ### List REST permissions over REST: one page of the catalogue in a stable order with nextCursor; filters service, method, active, sensitive and templatePrefix (the normalised template, parameters written {}); each entry shows its key, service, method, template, flags, active state, the active versions that contain it and the roles that grant it by its exact key; 422 for an invalid parameter

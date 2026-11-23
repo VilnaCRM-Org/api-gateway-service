@@ -141,6 +141,21 @@ proptest! {
         prop_assert!(second.is_empty());
         prop_assert_eq!(second.grants, first.grants);
     }
+
+    #[test]
+    fn applying_without_renames_equals_applying_an_empty_rename_map(
+        before in field_set(),
+        after in field_set(),
+        held in random_grants(),
+    ) {
+        let previous = catalogue(&[&fields_version(&before)]);
+        let next = catalogue(&[&fields_version(&after)]);
+        let records = grants(&held);
+
+        let without = OrphanPolicy::apply_without_renames(&previous, &next, &records);
+
+        prop_assert_eq!(without, apply(&previous, &next, &RenameMap::empty(), &records));
+    }
 }
 
 #[test]

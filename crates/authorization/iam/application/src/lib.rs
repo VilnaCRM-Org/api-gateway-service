@@ -33,6 +33,8 @@ mod rest_permission_fixtures;
 mod role_permission_fixtures;
 pub mod service_catalog_loader;
 pub mod singleton_loop;
+#[cfg(test)]
+mod spec_retirement_fixtures;
 pub mod subscriber;
 #[cfg(test)]
 mod user_role_fixtures;
@@ -52,6 +54,8 @@ pub use command::delete_role::{DeleteRoleCommand, DeleteRoleCommandHandler};
 pub use command::load_graphql_spec::{LoadGraphQlSpecCommand, LoadGraphQlSpecCommandHandler};
 pub use command::load_openapi_spec::{LoadOpenApiSpecCommand, LoadOpenApiSpecCommandHandler};
 pub use command::register_own_specs::{RegisterOwnSpecsCommand, RegisterOwnSpecsCommandHandler};
+pub use command::retire_graphql_spec::{RetireGraphQlSpecCommand, RetireGraphQlSpecCommandHandler};
+pub use command::retire_openapi_spec::{RetireOpenApiSpecCommand, RetireOpenApiSpecCommandHandler};
 pub use command::revoke_user_role::{
     RevokeUserRoleCommand, RevokeUserRoleCommandHandler, RevokeUserRoleReads,
 };

@@ -255,21 +255,7 @@ impl Finished {
 pub(crate) fn serve(scratch: &Scratch, variables: &[(&str, &str)]) -> Server {
     let mut all = vec![("APP_PORT", "0"), ("APP_HOST", "127.0.0.1")];
     all.extend_from_slice(variables);
-    let mut child = scratch
-        .service(&["serve"], &all)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let stdout = lines_of(BufReader::new(child.stdout.take().unwrap()));
-    let stderr = child.stderr.take().unwrap();
-    let mut server = Server {
-        child,
-        stdout,
-        stderr,
-        port: 0,
-        lines: Vec::new(),
-    };
+    let mut server = spawn(scratch, &["serve"], &all);
     let listening = server.read_until("listening").pop().unwrap();
     server.port = listening["addr"]
         .as_str()
@@ -280,6 +266,67 @@ pub(crate) fn serve(scratch: &Scratch, variables: &[(&str, &str)]) -> Server {
         .parse()
         .unwrap();
     server
+}
+
+/// Starts the binary with `arguments` and the piped output of a [`Server`], and waits for nothing.
+fn spawn(scratch: &Scratch, arguments: &[&str], variables: &[(&str, &str)]) -> Server {
+    let mut child = scratch
+        .service(arguments, variables)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let stdout = lines_of(BufReader::new(child.stdout.take().unwrap()));
+    let stderr = child.stderr.take().unwrap();
+    Server {
+        child,
+        stdout,
+        stderr,
+        port: 0,
+        lines: Vec::new(),
+    }
+}
+
+/// The ports of the three listeners of a running gateway.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GatewayPorts {
+    pub(crate) public: u16,
+    pub(crate) internal: u16,
+    pub(crate) probe: u16,
+}
+
+/// The port at the end of the address in a log field.
+fn port_of(entry: &Value, field: &str) -> u16 {
+    entry[field]
+        .as_str()
+        .unwrap()
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+/// Starts `service gateway` in `APP_ENV` `test` on three ephemeral loopback ports and waits for its
+/// `listening` entry. `variables` complete or override the configuration. The server's `port` is
+/// the public one.
+pub(crate) fn gateway(scratch: &Scratch, variables: &[(&str, &str)]) -> (Server, GatewayPorts) {
+    let mut all = vec![
+        ("APP_ENV", "test"),
+        ("GATEWAY_LISTEN", "127.0.0.1:0"),
+        ("GATEWAY_INTERNAL_LISTEN", "127.0.0.1:0"),
+        ("GATEWAY_PROBE_LISTEN", "127.0.0.1:0"),
+    ];
+    all.extend_from_slice(variables);
+    let mut server = spawn(scratch, &["gateway"], &all);
+    let listening = server.read_until("listening").pop().unwrap();
+    let ports = GatewayPorts {
+        public: port_of(&listening, "public_addr"),
+        internal: port_of(&listening, "internal_addr"),
+        probe: port_of(&listening, "probe_addr"),
+    };
+    server.port = ports.public;
+    (server, ports)
 }
 
 impl Server {
@@ -303,10 +350,6 @@ impl Server {
     }
 
     /// Sends one request and reads the whole answer (the connection is closed after it).
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "integration tests open the sockets their subject talks to"
-    )]
     pub(crate) fn request(
         &self,
         method: &str,
@@ -314,25 +357,7 @@ impl Server {
         headers: &[(&str, &str)],
         body: &str,
     ) -> Answer {
-        let mut stream = TcpStream::connect(("127.0.0.1", self.port)).unwrap();
-        let extra = headers
-            .iter()
-            .map(|(name, value)| format!("{name}: {value}"))
-            .collect::<Vec<_>>()
-            .join("\r\n");
-        let extra = if extra.is_empty() {
-            extra
-        } else {
-            format!("{extra}\r\n")
-        };
-        let length = body.len();
-        let head = format!(
-            "{method} {path} HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n{extra}content-length: {length}\r\n\r\n{body}"
-        );
-        stream.write_all(head.as_bytes()).unwrap();
-        let mut raw = String::new();
-        stream.read_to_string(&mut raw).unwrap();
-        Answer::parse(&raw)
+        request_on(self.port, method, path, headers, body)
     }
 
     /// Sends a `GET`.
@@ -416,4 +441,43 @@ impl Drop for Server {
             let _reaped = self.child.wait();
         }
     }
+}
+
+/// Sends one request to `port` of the loopback interface (a listener other than the main one)
+/// and reads the whole answer.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "integration tests open the sockets their subject talks to"
+)]
+pub(crate) fn request_on(
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> Answer {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let extra = headers
+        .iter()
+        .map(|(name, value)| format!("{name}: {value}"))
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    let extra = if extra.is_empty() {
+        extra
+    } else {
+        format!("{extra}\r\n")
+    };
+    let length = body.len();
+    let head = format!(
+        "{method} {path} HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n{extra}content-length: {length}\r\n\r\n{body}"
+    );
+    stream.write_all(head.as_bytes()).unwrap();
+    let mut raw = String::new();
+    stream.read_to_string(&mut raw).unwrap();
+    Answer::parse(&raw)
+}
+
+/// Sends a `GET` to `port` of the loopback interface.
+pub(crate) fn get_on(port: u16, path: &str) -> Answer {
+    request_on(port, "GET", path, &[], "")
 }

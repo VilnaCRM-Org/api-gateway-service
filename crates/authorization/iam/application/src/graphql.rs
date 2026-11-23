@@ -18,6 +18,7 @@ pub mod rest_permission;
 pub mod role_deletion;
 pub mod role_permission;
 pub mod schema_parser;
+pub mod spec_retirement;
 pub mod user_role;
 
 use async_graphql::{
@@ -25,7 +26,7 @@ use async_graphql::{
     SimpleObject,
 };
 use iam_domain::{EntityVersion, IdempotencyKey};
-use shared_application::graphql::problem_to_error;
+use shared_application::graphql::{problem_to_error, violations_value};
 use shared_application::http::{Problem, Violation};
 use validator::Validate as _;
 
@@ -70,6 +71,10 @@ use role_deletion::{DeleteRoleInput, DeleteRolePayload, delete_role_field};
 use role_permission::{
     RolePermissionObject, SetRolePermissionsInput, role_permissions_field,
     set_role_permissions_field,
+};
+use spec_retirement::{
+    RetireGraphQlSpecInput, RetireOpenApiSpecInput, SpecRetirementObject,
+    retire_graphql_spec_field, retire_openapi_spec_field,
 };
 use user_role::{
     AssignUserRoleInput, RevokeUserRoleInput, RevokeUserRolePayload, UpdateUserRoleInput,
@@ -442,6 +447,28 @@ impl IamMutation {
             .map_err(iam_problem_to_graphql_error)
     }
 
+    /// Retires an active GraphQL specification version: its fields leave the catalogue of the service unless another active version holds them, the next policy version is taken and `iam.graphql_spec.retired` is recorded. A retirement that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED` unless `confirmOrphans` is true; with the confirmation the grants become inactive and `iam.permissions.orphaned` is recorded.
+    async fn retire_graphql_spec(
+        &self,
+        ctx: &Context<'_>,
+        input: RetireGraphQlSpecInput,
+    ) -> async_graphql::Result<SpecRetirementObject> {
+        retire_graphql_spec_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retires an active `OpenAPI` specification version: its operations leave the catalogue of the service unless another active version holds them, the next policy version is taken and `iam.openapi_spec.retired` is recorded. A retirement that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED` unless `confirmOrphans` is true; with the confirmation the grants become inactive and `iam.permissions.orphaned` is recorded.
+    async fn retire_openapi_spec(
+        &self,
+        ctx: &Context<'_>,
+        input: RetireOpenApiSpecInput,
+    ) -> async_graphql::Result<SpecRetirementObject> {
+        retire_openapi_spec_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
     /// Loads the SDL of a service as a draft version and returns it with its diff against the active versions; an SDL that the service already holds returns its version and changes nothing. The service `iam` is reserved.
     async fn load_graphql_spec(
         &self,
@@ -652,7 +679,8 @@ fn page_complexity(first: Option<i32>, child_complexity: usize) -> usize {
 /// Converts a problem of the IAM context into a GraphQL error.
 ///
 /// Its `extensions.code` follows `architecture.md` section 5.5: the client errors keep their detail (or their title) as the
-/// message, a 422 is `VALIDATION_FAILED` with its violations, and every other status is
+/// message, a confirmation problem keeps the items it lists as `extensions.violations` (the
+/// orphaned grants, for example), a 422 is `VALIDATION_FAILED` with its violations, and every other status is
 /// `INTERNAL_SERVER_ERROR` without detail, as the shared `problem_to_error` builds them.
 #[must_use]
 pub fn iam_problem_to_graphql_error(problem: Problem) -> Error {
@@ -661,7 +689,13 @@ pub fn iam_problem_to_graphql_error(problem: Problem) -> Error {
         return problem_to_error(problem);
     };
     let message = problem.detail.unwrap_or_else(|| problem.title.to_owned());
-    Error::new(message).extend_with(|_error, extensions| extensions.set("code", code))
+    let violations = problem.violations;
+    Error::new(message).extend_with(|_error, extensions| {
+        extensions.set("code", code);
+        if !violations.is_empty() {
+            extensions.set("violations", violations_value(violations));
+        }
+    })
 }
 
 /// The GraphQL code of the 409 problem that asks for a confirmation; none for any other type.

@@ -121,7 +121,16 @@ fn the_router_documents_the_role_operations_under_the_iam_tag_behind_the_bearer_
     assert!(permissions.post.is_none() && permissions.delete.is_none());
     assert!(collection.put.is_none() && collection.delete.is_none() && collection.patch.is_none());
     assert!(item.post.is_none() && item.put.is_none());
-    assert_eq!(document.paths.paths.len(), 12);
+    for retirement in [
+        "/graphql-specs/{id}/retirement",
+        "/openapi-specs/{id}/retirement",
+    ] {
+        assert!(
+            document.paths.paths[retirement].post.is_some(),
+            "{retirement}"
+        );
+    }
+    assert_eq!(document.paths.paths.len(), 14);
 }
 
 #[test]

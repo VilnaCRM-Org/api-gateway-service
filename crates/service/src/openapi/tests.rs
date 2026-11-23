@@ -93,12 +93,14 @@ fn documents_exactly_the_twenty_four_operations() {
             "get /api/graphql-specs/{id}",
             "get /api/graphql-specs/{id}/diff",
             "post /api/graphql-specs/{id}/permissions",
+            "post /api/graphql-specs/{id}/retirement",
             "get /api/health",
             "get /api/openapi-specs",
             "post /api/openapi-specs",
             "get /api/openapi-specs/{id}",
             "get /api/openapi-specs/{id}/diff",
             "post /api/openapi-specs/{id}/permissions",
+            "post /api/openapi-specs/{id}/retirement",
             "get /api/rest-permissions",
             "get /api/rest-permissions/{id}",
             "get /api/roles",
@@ -640,6 +642,61 @@ fn the_rest_activation_documents_its_responses_headers_and_schemas() {
     assert!(request["properties"]["renames"].is_object());
 }
 
+#[rstest]
+#[case::graphql(
+    "/api/graphql-specs/{id}/retirement",
+    "api_graphql_specs_id_retirement_post"
+)]
+#[case::openapi(
+    "/api/openapi-specs/{id}/retirement",
+    "api_openapi_specs_id_retirement_post"
+)]
+fn the_retirements_document_their_responses_headers_and_schemas(
+    #[case] path: &str,
+    #[case] operation_id: &str,
+) {
+    let json = json_document();
+    let operation = &json["paths"][path]["post"];
+
+    assert_eq!(operation["operationId"], operation_id);
+    assert_eq!(operation["tags"], json!(["iam"]));
+    assert_eq!(operation["security"], json!([{ "bearerAuth": [] }]));
+    let mut documented: Vec<&str> = operation["responses"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    documented.sort_unstable();
+    assert_eq!(
+        documented,
+        [
+            "200", "400", "401", "404", "409", "413", "415", "422", "default"
+        ]
+    );
+    assert_eq!(
+        operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/RetireSpecRequest"
+    );
+    assert_eq!(
+        operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/SpecRetirement"
+    );
+    assert!(operation["responses"]["200"]["headers"]["iam-policy-version"].is_object());
+    let names: Vec<&str> = operation["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|parameter| parameter["name"].as_str())
+        .collect();
+    assert_eq!(names, ["id", "Idempotency-Key"]);
+    let request = &json["components"]["schemas"]["RetireSpecRequest"];
+    assert_eq!(request["additionalProperties"], false);
+    assert!(request["properties"]["confirmOrphans"].is_object());
+    let response = &json["components"]["schemas"]["SpecRetirement"];
+    assert!(response["properties"]["policyVersion"].is_object());
+}
+
 #[test]
 fn the_graphql_specification_reads_document_their_query_parameters() {
     let json = json_document();
@@ -1048,11 +1105,13 @@ fn defines_exactly_the_documented_schemas() {
             "RestPermission",
             "RestPermissionPage",
             "RestPermissionsActivation",
+            "RetireSpecRequest",
             "Role",
             "RolePage",
             "RolePermission",
             "RolePermissions",
             "SetRolePermissionsRequest",
+            "SpecRetirement",
             "TokenResolution",
             "TokenResolutionRequest",
             "UpdateRoleRequest",

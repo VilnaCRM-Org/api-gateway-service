@@ -23,15 +23,18 @@ pub fn problem_to_error(problem: Problem) -> Error {
 
 fn validation_error(problem: Problem) -> Error {
     let message = problem.detail.unwrap_or_else(|| problem.title.to_owned());
-    let violations = problem
-        .violations
-        .into_iter()
-        .map(violation_value)
-        .collect();
+    let violations = violations_value(problem.violations);
     Error::new(message).extend_with(|_error, extensions| {
         extensions.set("code", VALIDATION_FAILED);
-        extensions.set("violations", Value::List(violations));
+        extensions.set("violations", violations);
     })
+}
+
+/// The violations of a problem as the list that `extensions.violations` holds: one object with
+/// `propertyPath`, `message` and `code` per violation.
+#[must_use]
+pub fn violations_value(violations: Vec<Violation>) -> Value {
+    Value::List(violations.into_iter().map(violation_value).collect())
 }
 
 fn violation_value(violation: Violation) -> Value {

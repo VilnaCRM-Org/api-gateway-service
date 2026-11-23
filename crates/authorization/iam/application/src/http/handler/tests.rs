@@ -146,6 +146,10 @@ fn handlers_use_only_the_problem_aware_extractors() {
             vec!["list", "replace"],
         ),
         (
+            include_str!("../spec_retirement.rs"),
+            vec!["retire_graphql", "retire_openapi"],
+        ),
+        (
             include_str!("../user_role.rs"),
             vec!["assign", "get_one", "update", "revoke", "list"],
         ),
