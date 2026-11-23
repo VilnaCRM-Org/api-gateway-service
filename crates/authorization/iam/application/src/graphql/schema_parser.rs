@@ -196,7 +196,18 @@ impl Collector {
 /// Refuses SDL whose `[`, `{` or `(` nesting outside strings and comments exceeds
 /// [`MAX_NESTING`], at the opener that crosses it.
 fn check_nesting(sdl: &str) -> Result<(), InvalidSpec> {
-    let bytes = sdl.as_bytes();
+    nesting_crossing(sdl, MAX_NESTING).map_or(Ok(()), |index| {
+        Err(malformed(
+            format!("The document nests deeper than {MAX_NESTING} levels."),
+            position_of(sdl, index),
+        ))
+    })
+}
+
+/// The byte index of the first `[`, `{` or `(` outside strings and comments that nests deeper
+/// than `max` levels; `None` when the text stays within `max`.
+pub(super) fn nesting_crossing(text: &str, max: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
     let mut depth = 0_usize;
     let mut index = 0_usize;
     while let Some(byte) = bytes.get(index) {
@@ -205,11 +216,8 @@ fn check_nesting(sdl: &str) -> Result<(), InvalidSpec> {
             b'"' => skip_string(bytes, index),
             b'[' | b'{' | b'(' => {
                 depth = depth.saturating_add(1);
-                if depth > MAX_NESTING {
-                    return Err(malformed(
-                        format!("The document nests deeper than {MAX_NESTING} levels."),
-                        position_of(sdl, index),
-                    ));
+                if depth > max {
+                    return Some(index);
                 }
                 index.saturating_add(1)
             }
@@ -220,7 +228,7 @@ fn check_nesting(sdl: &str) -> Result<(), InvalidSpec> {
             _ => index.saturating_add(1),
         };
     }
-    Ok(())
+    None
 }
 
 /// The bytes from `start` on, empty past the end.

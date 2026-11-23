@@ -212,3 +212,55 @@ fn refuses_one_type_more_than_the_limit() {
 
     assert_eq!(result, Err(InvalidSpec::TooManyTypes { limit: 10_000 }));
 }
+
+fn overlap_graph() -> GraphQlTypeGraph {
+    GraphQlTypeGraph::new(
+        [
+            field("Query.node", "Node", PermissionFlags::NONE),
+            field("Node.id", "ID", PermissionFlags::NONE),
+            field("User.id", "ID", PermissionFlags::NONE),
+            field("Order.id", "ID", PermissionFlags::NONE),
+            field("Zed.id", "ID", PermissionFlags::NONE),
+        ],
+        [
+            possible("Node", "User"),
+            possible("Node", "Order"),
+            possible("Hit", "User"),
+            possible("Hit", "Zed"),
+            possible("Search", "Zed"),
+        ],
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_type_declares_fields_only_when_it_has_some() {
+    let graph = overlap_graph();
+
+    assert!(graph.declares_fields(&name("User")));
+    assert!(graph.declares_fields(&name("Query")));
+    assert!(!graph.declares_fields(&name("Search")));
+    assert!(!graph.declares_fields(&name("ID")));
+    assert!(!graph.declares_fields(&name("Aaa")));
+}
+
+#[test]
+fn a_type_is_composite_with_fields_or_possible_types() {
+    let graph = overlap_graph();
+
+    assert!(graph.is_composite(&name("User")));
+    assert!(graph.is_composite(&name("Search")));
+    assert!(!graph.is_composite(&name("ID")));
+}
+
+#[test]
+fn types_overlap_by_equality_membership_or_a_shared_member() {
+    let graph = overlap_graph();
+
+    assert!(graph.types_overlap(&name("User"), &name("User")));
+    assert!(graph.types_overlap(&name("Node"), &name("User")));
+    assert!(graph.types_overlap(&name("User"), &name("Node")));
+    assert!(graph.types_overlap(&name("Node"), &name("Hit")));
+    assert!(!graph.types_overlap(&name("Node"), &name("Search")));
+    assert!(!graph.types_overlap(&name("User"), &name("Order")));
+}

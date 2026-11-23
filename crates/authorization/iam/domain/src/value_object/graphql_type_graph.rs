@@ -113,6 +113,42 @@ impl GraphQlTypeGraph {
         self.fields.get(coordinate)
     }
 
+    /// Whether the type declares at least one field.
+    #[must_use]
+    pub fn declares_fields(&self, type_name: &GqlName) -> bool {
+        // `A` sorts before every other valid name, so the first coordinate at or after
+        // `{type}.A` is the first field of the type, if it has one.
+        GqlName::parse("A").is_some_and(|lowest| {
+            self.fields
+                .range(GraphQlCoordinate::new(type_name.clone(), lowest)..)
+                .next()
+                .is_some_and(|(coordinate, _)| coordinate.type_name() == type_name)
+        })
+    }
+
+    /// Whether selections on the type name fields: it declares fields or is an interface or union
+    /// with possible types.
+    #[must_use]
+    pub fn is_composite(&self, type_name: &GqlName) -> bool {
+        self.possible_types.contains_key(type_name) || self.declares_fields(type_name)
+    }
+
+    /// Whether a fragment on `condition` can apply where the type is `parent`: the names are
+    /// equal, one is a possible type of the other or both share a possible type.
+    #[must_use]
+    pub fn types_overlap(&self, parent: &GqlName, condition: &GqlName) -> bool {
+        parent == condition
+            || self
+                .possible_types(parent)
+                .any(|member| member == condition)
+            || self
+                .possible_types(condition)
+                .any(|member| member == parent)
+            || self
+                .possible_types(parent)
+                .any(|member| self.possible_types(condition).any(|other| other == member))
+    }
+
     /// The fields in coordinate order.
     pub fn fields(&self) -> impl Iterator<Item = (&GraphQlCoordinate, &GraphQlField)> {
         self.fields.iter()

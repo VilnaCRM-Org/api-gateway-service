@@ -3,6 +3,7 @@
 pub mod access_check;
 pub mod access_token;
 pub mod actor_ref;
+pub mod analyzed_document;
 pub mod assignment_expiry;
 pub mod assignment_scope;
 pub mod audit_action;
@@ -23,6 +24,9 @@ pub mod decision;
 pub mod decision_effect;
 pub mod decision_outcome;
 pub mod decision_reason;
+pub mod document_key;
+pub mod document_limits;
+pub mod document_refusal;
 pub mod entity_version;
 pub mod event_data;
 pub mod event_type;

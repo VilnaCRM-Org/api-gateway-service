@@ -3,6 +3,7 @@
 pub mod access_token_verifier;
 pub mod boot_clock;
 pub mod change_receipt_repository;
+pub mod graphql_document_analyzer;
 pub mod graphql_permission_repository;
 pub mod graphql_schema_parser;
 pub mod graphql_spec_repository;
@@ -20,6 +21,7 @@ pub mod revocation_view;
 pub mod rng;
 pub mod role_repository;
 pub mod security_audit_log;
+pub mod startup_lock;
 pub mod token_memo;
 pub mod token_repository;
 pub mod user_role_repository;
