@@ -20,7 +20,9 @@ use crate::error::IamError;
 use crate::fixtures::USER;
 use crate::http::IamState;
 use crate::query::find_graphql_spec::FindGraphQlSpecQuery;
+use crate::query::get_graphql_spec::GetGraphQlSpecQuery;
 use crate::query::get_graphql_spec_diff::{GetGraphQlSpecDiffQuery, GraphQlSpecView};
+use crate::query::get_graphql_specs::{GetGraphQlSpecsQuery, GraphQlSpecPage, GraphQlSpecSummary};
 
 /// The version that every answer names.
 pub(crate) const SPEC: &str = "0190f2a8-7b3c-7d4e-8f10-1234567890ad";
@@ -140,6 +142,82 @@ pub(crate) fn scenario(answers: Answers) -> (IamState, Asked) {
     );
     let state = IamState {
         command_bus,
+        query_bus,
+        uuid_generator: Arc::new(SequenceUuidGenerator::starting_at(1)),
+        clock: Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH)),
+        request_digester: Arc::new(FakeRequestDigester),
+    };
+    (state, asked)
+}
+
+/// What the doubles of the read operations answer.
+pub(crate) struct ReadAnswers {
+    /// The answer of the list query.
+    pub page: Result<GraphQlSpecPage, Refusal>,
+    /// The answer of the query of one version.
+    pub one: Result<Option<GraphQlSpecSummary>, Refusal>,
+    /// The answer of the diff query.
+    pub diff: Result<Option<GraphQlSpecView>, Refusal>,
+}
+
+impl Default for ReadAnswers {
+    fn default() -> Self {
+        Self {
+            page: Ok(GraphQlSpecPage {
+                specs: vec![summary()],
+                next_after: Some(SpecId::parse(SPEC).unwrap()),
+            }),
+            one: Ok(Some(summary())),
+            diff: Ok(Some(view())),
+        }
+    }
+}
+
+/// What the doubles of the read operations were asked.
+#[derive(Debug, Default)]
+pub(crate) struct ReadAsked {
+    /// The list queries.
+    pub pages: Arc<Mutex<Vec<GetGraphQlSpecsQuery>>>,
+    /// The queries of one version.
+    pub ones: Arc<Mutex<Vec<GetGraphQlSpecQuery>>>,
+    /// The diff queries.
+    pub diffs: Arc<Mutex<Vec<SpecId>>>,
+}
+
+/// The version of [`view`] without its diff and without an SDL.
+pub(crate) fn summary() -> GraphQlSpecSummary {
+    let view = view();
+    GraphQlSpecSummary {
+        spec: view.spec,
+        coordinate_count: view.coordinate_count,
+        sdl: None,
+    }
+}
+
+/// The state over doubles that answer the read queries as `answers` say and record what they were
+/// asked.
+pub(crate) fn read_scenario(answers: ReadAnswers) -> (IamState, ReadAsked) {
+    let asked = ReadAsked::default();
+    let ReadAnswers { page, one, diff } = answers;
+    let pages = Arc::clone(&asked.pages);
+    let ones = Arc::clone(&asked.ones);
+    let diffs = Arc::clone(&asked.diffs);
+    let query_bus: Arc<dyn QueryBus> = Arc::new(
+        FakeQueryBus::answering(move |query: GetGraphQlSpecsQuery| {
+            record(&pages, query);
+            page.clone().map_err(|refusal| refusal())
+        })
+        .and_answering(move |query: GetGraphQlSpecQuery| {
+            record(&ones, query);
+            one.clone().map_err(|refusal| refusal())
+        })
+        .and_answering(move |query: GetGraphQlSpecDiffQuery| {
+            record(&diffs, query.id);
+            diff.clone().map_err(|refusal| refusal())
+        }),
+    );
+    let state = IamState {
+        command_bus: Arc::new(FakeCommandBus::unregistered()),
         query_bus,
         uuid_generator: Arc::new(SequenceUuidGenerator::starting_at(1)),
         clock: Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH)),

@@ -3,16 +3,21 @@
 //! The resolver shares the use-case call and the response shapes of the REST handler, so both
 //! transports apply one set of rules.
 
-use async_graphql::{Context, ID, InputObject, SimpleObject};
+use async_graphql::{ComplexObject, Context, ID, InputObject, SimpleObject};
 use shared_application::http::Problem;
 use validator::Validate as _;
 
-use super::{require_caller, state};
+use super::{iam_problem_to_graphql_error, require_caller, state};
+use crate::error::IamError;
+use crate::http::dto::DEFAULT_PAGE_SIZE;
 use crate::http::graphql_spec::dto::{
-    CoordinateFlagsResponse, FlagDowngradeResponse, GraphQlSpecResponse, LoadGraphQlSpecRequest,
+    CoordinateFlagsResponse, FlagDowngradeResponse, GraphQlSpecPageResponse, GraphQlSpecResponse,
+    GraphQlSpecSummaryResponse, ListGraphQlSpecsParams, LoadGraphQlSpecRequest,
     RemovedGrantResponse, SpecDiffResponse, WildcardGainResponse,
 };
-use crate::http::graphql_spec::load_graphql_spec;
+use crate::http::graphql_spec::{
+    find_graphql_spec, find_graphql_spec_diff, list_graphql_specs, load_graphql_spec, parse_spec_id,
+};
 
 /// Input of the mutation that loads a GraphQL specification.
 #[derive(InputObject)]
@@ -30,6 +35,16 @@ impl std::fmt::Debug for LoadGraphQlSpecInput {
             .field("service", &self.service)
             .finish_non_exhaustive()
     }
+}
+
+/// Filters of the version list.
+#[derive(Debug, Default, InputObject)]
+#[graphql(name = "GraphqlSpecFilter")]
+pub struct GraphQlSpecFilterInput {
+    /// Only versions of this service.
+    pub service: Option<String>,
+    /// Only versions in this status: `draft`, `active` or `retired`.
+    pub status: Option<String>,
 }
 
 /// The two flags of a coordinate.
@@ -144,7 +159,7 @@ impl From<SpecDiffResponse> for SpecDiffObject {
 
 /// A GraphQL specification version with its diff.
 #[derive(Debug, Clone, PartialEq, Eq, SimpleObject)]
-#[graphql(name = "GraphqlSpec")]
+#[graphql(name = "GraphqlSpec", complex)]
 pub struct GraphQlSpecObject {
     /// The identifier of the version.
     pub id: ID,
@@ -164,8 +179,26 @@ pub struct GraphQlSpecObject {
     pub retired_at: Option<String>,
     /// The number of field coordinates of the schema.
     pub coordinate_count: i64,
-    /// What the version changes against the active versions of its service.
-    pub diff: SpecDiffObject,
+    /// The diff that the operation already computed, so that the field does not read it again.
+    #[graphql(skip)]
+    pub loaded_diff: Option<SpecDiffObject>,
+}
+
+#[ComplexObject]
+impl GraphQlSpecObject {
+    /// What the version changes against the union of the active versions of its service.
+    async fn diff(&self, ctx: &Context<'_>) -> async_graphql::Result<SpecDiffObject> {
+        diff_field(ctx, &self.id, self.loaded_diff.as_ref())
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// The SDL document, read only when the query selects it.
+    async fn sdl(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<String>> {
+        sdl_field(ctx, &self.id)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
 }
 
 impl From<GraphQlSpecResponse> for GraphQlSpecObject {
@@ -180,7 +213,47 @@ impl From<GraphQlSpecResponse> for GraphQlSpecObject {
             activated_at: spec.activated_at,
             retired_at: spec.retired_at,
             coordinate_count: spec.coordinate_count,
-            diff: SpecDiffObject::from(spec.diff),
+            loaded_diff: Some(SpecDiffObject::from(spec.diff)),
+        }
+    }
+}
+
+impl From<GraphQlSpecSummaryResponse> for GraphQlSpecObject {
+    fn from(spec: GraphQlSpecSummaryResponse) -> Self {
+        Self {
+            id: ID::from(spec.id),
+            service: spec.service,
+            content_hash: spec.content_hash,
+            status: spec.status,
+            uploaded_by: spec.uploaded_by,
+            created_at: spec.created_at,
+            activated_at: spec.activated_at,
+            retired_at: spec.retired_at,
+            coordinate_count: spec.coordinate_count,
+            loaded_diff: None,
+        }
+    }
+}
+
+/// One page of GraphQL specification versions.
+#[derive(Debug, Clone, PartialEq, Eq, SimpleObject)]
+#[graphql(name = "GraphqlSpecPage")]
+pub struct GraphQlSpecPageObject {
+    /// The versions of the page.
+    pub items: Vec<GraphQlSpecObject>,
+    /// The `after` value of the next page; null on the last page.
+    pub next_cursor: Option<String>,
+}
+
+impl From<GraphQlSpecPageResponse> for GraphQlSpecPageObject {
+    fn from(page: GraphQlSpecPageResponse) -> Self {
+        Self {
+            items: page
+                .items
+                .into_iter()
+                .map(GraphQlSpecObject::from)
+                .collect(),
+            next_cursor: page.next_cursor,
         }
     }
 }
@@ -200,6 +273,61 @@ pub(super) async fn load_graphql_spec_field(
     let loaded = load_graphql_spec(state(ctx)?, caller, request).await?;
     Ok(GraphQlSpecObject::from(GraphQlSpecResponse::from(
         &loaded.view,
+    )))
+}
+
+/// The diff of a version: the one the operation already computed, or the one read now. The
+/// operations that return a version have authenticated the caller already.
+async fn diff_field(
+    ctx: &Context<'_>,
+    id: &ID,
+    loaded: Option<&SpecDiffObject>,
+) -> Result<SpecDiffObject, Problem> {
+    if let Some(diff) = loaded {
+        return Ok(diff.clone());
+    }
+    let view = find_graphql_spec_diff(state(ctx)?, parse_spec_id(id.as_str())?)
+        .await?
+        .ok_or(IamError::NotFound)?;
+    Ok(SpecDiffObject::from(SpecDiffResponse::from(&view.diff)))
+}
+
+/// The SDL of a version; none when the version vanished. The operations that return a version have
+/// authenticated the caller already.
+async fn sdl_field(ctx: &Context<'_>, id: &ID) -> Result<Option<String>, Problem> {
+    let summary = find_graphql_spec(state(ctx)?, parse_spec_id(id.as_str())?, true).await?;
+    Ok(summary.and_then(|summary| summary.sdl))
+}
+
+/// Reads one version, without its SDL and its diff; none when it is unknown.
+pub(super) async fn graphql_spec_field(
+    ctx: &Context<'_>,
+    id: &ID,
+) -> Result<Option<GraphQlSpecObject>, Problem> {
+    require_caller(ctx)?;
+    let summary = find_graphql_spec(state(ctx)?, parse_spec_id(id.as_str())?, false).await?;
+    Ok(summary.map(|summary| GraphQlSpecObject::from(GraphQlSpecSummaryResponse::from(summary))))
+}
+
+/// Reads one page of versions.
+pub(super) async fn graphql_specs_field(
+    ctx: &Context<'_>,
+    first: Option<i32>,
+    after: Option<String>,
+    filter: GraphQlSpecFilterInput,
+) -> Result<GraphQlSpecPageObject, Problem> {
+    require_caller(ctx)?;
+    let params = ListGraphQlSpecsParams {
+        limit: first.unwrap_or(DEFAULT_PAGE_SIZE),
+        after,
+        service: filter.service,
+        status: filter.status,
+        include_sdl: false,
+    };
+    params.validate()?;
+    let page = list_graphql_specs(state(ctx)?, params).await?;
+    Ok(GraphQlSpecPageObject::from(GraphQlSpecPageResponse::from(
+        page,
     )))
 }
 

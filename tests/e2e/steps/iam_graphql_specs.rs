@@ -1,7 +1,8 @@
 //! The steps of the IAM GraphQL specification scenarios: oversized bodies and the versions that a
 //! scenario left in its database.
 
-use cucumber::{then, when};
+use cucumber::{given, then, when};
+use serde_json::Value;
 
 use crate::world::AppWorld;
 
@@ -46,4 +47,29 @@ fn created_then_found_the_same_version(world: &mut AppWorld) {
     };
     assert_eq!((created.status, found.status), (201, 200));
     assert_eq!(created.json(), found.json());
+}
+
+#[given("the remembered GraphQL specification is active")]
+async fn remembered_specification_is_active(world: &mut AppWorld) {
+    world.activate_remembered_graphql_spec().await;
+}
+
+#[then(expr = "the JSON pointer {string} should be the seeded role")]
+#[expect(
+    clippy::needless_pass_by_ref_mut,
+    reason = "cucumber fixes the step signature"
+)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "cucumber fixes the step signature"
+)]
+fn pointer_is_the_seeded_role(world: &mut AppWorld, pointer: String) {
+    let role = world.seeded_role().to_owned();
+    let json = world.reply().json();
+    assert_eq!(
+        json.pointer(&pointer).and_then(Value::as_str),
+        Some(role.as_str()),
+        "body: {}",
+        world.reply().body
+    );
 }

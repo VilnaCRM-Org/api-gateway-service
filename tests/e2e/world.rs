@@ -256,6 +256,42 @@ impl AppWorld {
         self.role = Some(id);
     }
 
+    /// Marks the GraphQL specification version that `{id}` stands for as active in the scenario
+    /// database, as a fixture: the only way to have an active version before the activation
+    /// operation exists.
+    pub(crate) async fn activate_remembered_graphql_spec(&mut self) {
+        let id = self
+            .remembered
+            .clone()
+            .expect("a step remembered a GraphQL specification");
+        let url = self.database_url().await;
+        let options = PgConnectOptions::from_str(&url).expect("valid database URL");
+        let mut connection = options
+            .connect()
+            .await
+            .expect("connect to the scenario database");
+        let activated = sqlx::query(
+            "UPDATE iam_graphql_specs SET status = 'active', activated_at = now() \
+             WHERE id = $1::text::uuid AND status = 'draft'",
+        )
+        .bind(id)
+        .execute(&mut connection)
+        .await
+        .expect("activate the version")
+        .rows_affected();
+        assert_eq!(activated, 1, "the remembered id names a draft version");
+        connection.close().await.expect("close");
+    }
+
+    /// The id of the role that a step seeded.
+    ///
+    /// # Panics
+    ///
+    /// When no step seeded a role.
+    pub(crate) fn seeded_role(&self) -> &str {
+        self.role.as_deref().expect("a step seeded a role")
+    }
+
     /// Sets the page cursor that `{cursor}` stands for.
     pub(crate) fn set_cursor(&mut self, cursor: String) {
         self.cursor = Some(cursor);

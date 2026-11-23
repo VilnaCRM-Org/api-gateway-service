@@ -1,9 +1,9 @@
-//! REST handler that loads GraphQL specifications, and the use-case call that the GraphQL
-//! resolver shares.
+//! REST handlers that load and read GraphQL specifications, and the use-case calls that the GraphQL
+//! resolvers share.
 //!
-//! A handler takes the IAM state and the problem-aware extractors only (`ValidatedJson` and the
-//! IAM extractor `CallerPrincipal`); the test of the `handler` module checks every handler against
-//! that rule.
+//! A handler takes the IAM state and the problem-aware extractors only (`ApiPath`,
+//! `ValidatedQuery`, `ValidatedJson` and the IAM extractor `CallerPrincipal`); the test of the
+//! `handler` module checks every handler against that rule.
 
 pub mod dto;
 
@@ -13,7 +13,7 @@ use axum::http::StatusCode;
 use axum::http::header::LOCATION;
 use axum::response::AppendHeaders;
 use iam_domain::{ChangeId, SpecId};
-use shared_application::http::{Problem, ValidatedJson};
+use shared_application::http::{ApiPath, Problem, ValidatedJson, ValidatedQuery, Violation};
 
 use super::IamState;
 use super::extract::CallerPrincipal;
@@ -24,8 +24,13 @@ use crate::command::load_graphql_spec::{
 use crate::error::IamError;
 use crate::principal::Principal;
 use crate::query::find_graphql_spec::FindGraphQlSpecQuery;
+use crate::query::get_graphql_spec::GetGraphQlSpecQuery;
 use crate::query::get_graphql_spec_diff::{GetGraphQlSpecDiffQuery, GraphQlSpecView};
-use dto::{GraphQlSpecResponse, LoadGraphQlSpecRequest};
+use crate::query::get_graphql_specs::{GraphQlSpecPage, GraphQlSpecSummary};
+use dto::{
+    GetGraphQlSpecParams, GraphQlSpecPageResponse, GraphQlSpecResponse, GraphQlSpecSummaryResponse,
+    ListGraphQlSpecsParams, LoadGraphQlSpecRequest, SpecDiffResponse,
+};
 
 /// The path of the specification collection, under which a version has its `Location`.
 const GRAPHQL_SPECS_PATH: &str = "/api/graphql-specs";
@@ -87,6 +92,63 @@ pub(crate) async fn load_graphql_spec(
     Ok(LoadedGraphQlSpec { view, created })
 }
 
+/// The version id of a path or an argument.
+///
+/// # Errors
+///
+/// [`IamError::Invalid`] with a violation of `id` when the text is not a UUID.
+pub(crate) fn parse_spec_id(text: &str) -> Result<SpecId, IamError> {
+    SpecId::parse(text).map_err(|_error| {
+        IamError::Invalid(vec![Violation {
+            property_path: "id".to_owned(),
+            message: "This value is not a valid UUID.".to_owned(),
+            code: "uuid".to_owned(),
+        }])
+    })
+}
+
+/// One page of versions for validated parameters.
+///
+/// # Errors
+///
+/// The 422 problem of an invalid cursor, service or status, the 500 problem of a storage failure.
+pub(crate) async fn list_graphql_specs(
+    state: &IamState,
+    params: ListGraphQlSpecsParams,
+) -> Result<GraphQlSpecPage, Problem> {
+    Ok(state.query_bus.ask(params.into_query()?).await?)
+}
+
+/// The version with the identifier, with its SDL when `include_sdl` is set; none when it is
+/// unknown.
+///
+/// # Errors
+///
+/// The 500 problem of a storage failure.
+pub(crate) async fn find_graphql_spec(
+    state: &IamState,
+    id: SpecId,
+    include_sdl: bool,
+) -> Result<Option<GraphQlSpecSummary>, Problem> {
+    Ok(state
+        .query_bus
+        .ask(GetGraphQlSpecQuery { id, include_sdl })
+        .await?)
+}
+
+/// The version with the identifier and its diff against the active versions of its service; none
+/// when it is unknown.
+///
+/// # Errors
+///
+/// The 500 problem of a storage failure.
+pub(crate) async fn find_graphql_spec_diff(
+    state: &IamState,
+    id: SpecId,
+) -> Result<Option<GraphQlSpecView>, Problem> {
+    Ok(state.query_bus.ask(GetGraphQlSpecDiffQuery { id }).await?)
+}
+
 /// Loads a GraphQL specification.
 ///
 /// # Errors
@@ -146,6 +208,130 @@ pub async fn load(
     let location = format!("{GRAPHQL_SPECS_PATH}/{}", response.id);
     let headers = AppendHeaders(vec![(LOCATION, location)]);
     Ok((status, headers, Json(response)))
+}
+
+/// Lists GraphQL specification versions.
+///
+/// # Errors
+///
+/// A problem document: 401 without a valid token, 422 for invalid parameters.
+#[utoipa::path(
+    get,
+    path = "/graphql-specs",
+    operation_id = "api_graphql_specs_get",
+    tag = "iam",
+    summary = "Retrieves the collection of GraphQL specifications.",
+    description = "Returns one page of versions in a stable order, with the `nextCursor` of the next page. Filters: `service` and `status`. Each version carries its service, hash, status, uploader, timestamps and coordinate count; the SDL only when `includeSdl` is `true`.",
+    security(("bearerAuth" = [])),
+    params(ListGraphQlSpecsParams),
+    responses(
+        (status = 200, description = "One page of versions.", body = GraphQlSpecPageResponse),
+        (status = 400, description = "Invalid query parameter.", body = Problem, content_type = "application/problem+json"),
+        (
+            status = 401,
+            description = "The caller presented no valid bearer token.",
+            body = Problem,
+            content_type = "application/problem+json",
+            headers(("www-authenticate" = String, description = "The `Bearer` challenge."))
+        ),
+        (status = 422, description = "Validation failed.", body = Problem, content_type = "application/problem+json"),
+        (status = "default", description = "Problem response.", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+pub async fn list(
+    State(state): State<IamState>,
+    CallerPrincipal(_caller): CallerPrincipal,
+    ValidatedQuery(params): ValidatedQuery<ListGraphQlSpecsParams>,
+) -> Result<Json<GraphQlSpecPageResponse>, Problem> {
+    Ok(Json(GraphQlSpecPageResponse::from(
+        list_graphql_specs(&state, params).await?,
+    )))
+}
+
+/// Reads a GraphQL specification version.
+///
+/// # Errors
+///
+/// A problem document: 401 without a valid token, 404 for an unknown version, 422 for an id that
+/// is not a UUID.
+#[utoipa::path(
+    get,
+    path = "/graphql-specs/{id}",
+    operation_id = "api_graphql_specs_id_get",
+    tag = "iam",
+    summary = "Retrieves a GraphQL specification.",
+    description = "Returns the version with the identifier: its service, hash, status, uploader, timestamps and coordinate count, and its SDL only when `includeSdl` is `true`.",
+    security(("bearerAuth" = [])),
+    params(
+        ("id" = String, Path, format = Uuid, description = "Version identifier"),
+        GetGraphQlSpecParams
+    ),
+    responses(
+        (status = 200, description = "The version.", body = GraphQlSpecSummaryResponse),
+        (status = 400, description = "Invalid identifier or query parameter.", body = Problem, content_type = "application/problem+json"),
+        (
+            status = 401,
+            description = "The caller presented no valid bearer token.",
+            body = Problem,
+            content_type = "application/problem+json",
+            headers(("www-authenticate" = String, description = "The `Bearer` challenge."))
+        ),
+        (status = 404, description = "Version not found.", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Validation failed.", body = Problem, content_type = "application/problem+json"),
+        (status = "default", description = "Problem response.", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+pub async fn get_one(
+    State(state): State<IamState>,
+    CallerPrincipal(_caller): CallerPrincipal,
+    ApiPath(id): ApiPath<String>,
+    ValidatedQuery(params): ValidatedQuery<GetGraphQlSpecParams>,
+) -> Result<Json<GraphQlSpecSummaryResponse>, Problem> {
+    let summary = find_graphql_spec(&state, parse_spec_id(&id)?, params.include_sdl)
+        .await?
+        .ok_or(IamError::NotFound)?;
+    Ok(Json(GraphQlSpecSummaryResponse::from(summary)))
+}
+
+/// Reads what a GraphQL specification version changes.
+///
+/// # Errors
+///
+/// A problem document: 401 without a valid token, 404 for an unknown version, 422 for an id that
+/// is not a UUID.
+#[utoipa::path(
+    get,
+    path = "/graphql-specs/{id}/diff",
+    operation_id = "api_graphql_specs_id_diff_get",
+    tag = "iam",
+    summary = "Retrieves the diff of a GraphQL specification.",
+    description = "Returns the coordinates the version adds and removes against the union of the active versions of its service, the removed coordinates that roles grant, the wildcard grants that would cover added coordinates and the coordinates that would lose a flag such as `@iamSensitive`.",
+    security(("bearerAuth" = [])),
+    params(("id" = String, Path, format = Uuid, description = "Version identifier")),
+    responses(
+        (status = 200, description = "The diff of the version.", body = SpecDiffResponse),
+        (status = 400, description = "Invalid identifier.", body = Problem, content_type = "application/problem+json"),
+        (
+            status = 401,
+            description = "The caller presented no valid bearer token.",
+            body = Problem,
+            content_type = "application/problem+json",
+            headers(("www-authenticate" = String, description = "The `Bearer` challenge."))
+        ),
+        (status = 404, description = "Version not found.", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Validation failed.", body = Problem, content_type = "application/problem+json"),
+        (status = "default", description = "Problem response.", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+pub async fn get_diff(
+    State(state): State<IamState>,
+    CallerPrincipal(_caller): CallerPrincipal,
+    ApiPath(id): ApiPath<String>,
+) -> Result<Json<SpecDiffResponse>, Problem> {
+    let view = find_graphql_spec_diff(&state, parse_spec_id(&id)?)
+        .await?
+        .ok_or(IamError::NotFound)?;
+    Ok(Json(SpecDiffResponse::from(&view.diff)))
 }
 
 #[cfg(test)]

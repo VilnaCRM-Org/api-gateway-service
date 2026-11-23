@@ -1,9 +1,13 @@
 //! Queries of the IAM context.
 
 pub mod find_graphql_spec;
+pub mod find_openapi_spec;
 pub mod get_change_receipt;
+pub mod get_graphql_spec;
 pub mod get_graphql_spec_diff;
+pub mod get_graphql_specs;
 pub mod get_idempotent_replay;
+pub mod get_openapi_spec_diff;
 pub mod get_policy_epoch;
 pub mod get_role;
 pub mod get_user_role;
