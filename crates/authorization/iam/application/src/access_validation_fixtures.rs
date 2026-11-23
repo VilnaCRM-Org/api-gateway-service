@@ -18,6 +18,7 @@ use test_support::request_digester::FakeRequestDigester;
 use crate::error::IamError;
 use crate::http::IamState;
 use crate::query::validate_access::ValidateAccessQuery;
+use crate::query::validate_access_batch::{BatchCheck, ValidateAccessBatchQuery};
 
 /// The subject that every decision names.
 pub(crate) const SUBJECT: &str = "0190f2a8-7b3c-7d4e-8f10-1234567890ab";
@@ -89,13 +90,41 @@ pub(crate) fn scenario(answer: Result<DecisionOutcome, Refusal>) -> (IamState, A
             answer.clone().map_err(|refusal| refusal())
         },
     ));
+    (state_over(query_bus), asked)
+}
+
+/// The batches that the double was asked, in order, as the items they held.
+pub(crate) type AskedBatches = Arc<Mutex<Vec<Vec<BatchCheck>>>>;
+
+/// The batches a double recorded, in order.
+pub(crate) fn recorded_batches(log: &AskedBatches) -> Vec<Vec<BatchCheck>> {
+    log.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+/// The state over a query bus that answers `answer` to every batch and records what it was asked.
+pub(crate) fn batch_scenario(
+    answer: Result<Vec<DecisionOutcome>, Refusal>,
+) -> (IamState, AskedBatches) {
+    let asked = AskedBatches::default();
+    let log = Arc::clone(&asked);
+    let query_bus: Arc<dyn QueryBus> = Arc::new(FakeQueryBus::answering(
+        move |query: ValidateAccessBatchQuery| {
+            log.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(query.checks);
+            answer.clone().map_err(|refusal| refusal())
+        },
+    ));
+    (state_over(query_bus), asked)
+}
+
+fn state_over(query_bus: Arc<dyn QueryBus>) -> IamState {
     let command_bus: Arc<dyn CommandBus> = Arc::new(FakeCommandBus::unregistered());
-    let state = IamState {
+    IamState {
         command_bus,
         query_bus,
         uuid_generator: Arc::new(SequenceUuidGenerator::starting_at(1)),
         clock: Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH)),
         request_digester: Arc::new(FakeRequestDigester),
-    };
-    (state, asked)
+    }
 }

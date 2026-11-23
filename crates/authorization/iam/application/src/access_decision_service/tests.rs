@@ -382,3 +382,35 @@ async fn the_unavailable_outcome_is_a_deny_with_a_new_identifier_and_no_facts() 
     assert_eq!(first.policy_version(), None);
     assert_ne!(first.decision_id(), second.decision_id());
 }
+
+#[tokio::test]
+async fn a_decision_with_another_token_repository_resolves_through_that_repository() {
+    let service = service_over(FakeTokenRepository::new(), repository(None));
+    let other = tokens();
+
+    let outcome = service
+        .decide_with(
+            &other,
+            &Credential::new("valid".to_owned()),
+            &rest_check("/api/orders/42"),
+        )
+        .await;
+
+    assert_eq!(outcome.subject(), Some(&user()));
+    assert_eq!(other.calls(), 1);
+}
+
+#[test]
+fn the_malformed_outcome_is_a_deny_with_a_new_identifier_and_no_facts() {
+    let service = service_over(tokens(), repository(None));
+
+    let first = service.malformed();
+    let second = service.malformed();
+
+    assert_eq!(first.decision(), Decision::Deny);
+    assert_eq!(first.reason(), DecisionReason::MalformedOperation);
+    assert_eq!(first.denied(), Vec::<String>::new());
+    assert_eq!(first.subject(), None);
+    assert_eq!(first.policy_version(), None);
+    assert_ne!(first.decision_id(), second.decision_id());
+}

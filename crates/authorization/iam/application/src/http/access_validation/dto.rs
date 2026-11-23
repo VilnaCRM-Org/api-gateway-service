@@ -316,6 +316,13 @@ impl AccessValidationResponse {
     /// The body for `outcome` and the request id of the check.
     #[must_use]
     pub fn new(outcome: &DecisionOutcome, request_id: &RequestId) -> Self {
+        Self::echoing(outcome, request_id.to_string())
+    }
+
+    /// The body for `outcome` that echoes `request_id` as the caller sent it, which a batch does
+    /// for an item that did not parse.
+    #[must_use]
+    pub fn echoing(outcome: &DecisionOutcome, request_id: String) -> Self {
         Self {
             decision: outcome.decision().as_str().to_owned(),
             reason: outcome.reason().as_str().to_owned(),
@@ -324,7 +331,7 @@ impl AccessValidationResponse {
             subject: outcome.subject().map(AccessSubjectDto::from),
             decision_id: outcome.decision_id().to_string(),
             policy_version: outcome.policy_version().map(PolicyVersion::value),
-            request_id: request_id.to_string(),
+            request_id,
         }
     }
 }

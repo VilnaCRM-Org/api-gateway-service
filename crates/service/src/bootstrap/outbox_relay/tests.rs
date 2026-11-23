@@ -9,7 +9,7 @@ use test_support::policy_log_producer::FakePolicyLogProducer;
 use test_support::topic_inspector::FakeTopicInspector;
 use tokio::sync::{Notify, watch};
 
-use super::{OutboxRelayAdapters, forward_notifications};
+use super::{OutboxRelayAdapters, RECONNECT_DELAY, forward_notifications, pause};
 
 /// A pool that points at a database that does not exist, so every connection attempt fails.
 fn unreachable_pool() -> PgPool {
@@ -63,4 +63,24 @@ async fn a_leader_whose_connection_fails_waits_before_it_tries_again_and_ends_wi
     stop.send_replace(true);
 
     handle.await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pause_lasts_the_reconnect_delay_while_the_service_runs() {
+    let (_stop, mut stopping) = watch::channel(false);
+    let started = tokio::time::Instant::now();
+
+    pause(&mut stopping).await;
+
+    assert_eq!(started.elapsed(), RECONNECT_DELAY);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pause_ends_early_when_the_service_stops() {
+    let (_stop, mut stopping) = watch::channel(true);
+    let started = tokio::time::Instant::now();
+
+    pause(&mut stopping).await;
+
+    assert_eq!(started.elapsed(), Duration::ZERO);
 }

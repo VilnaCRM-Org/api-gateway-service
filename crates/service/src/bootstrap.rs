@@ -16,7 +16,10 @@ use iam_application::MaintenanceSettings;
 use iam_application::graphql::AsyncGraphQlSchemaParser;
 use iam_application::http::IamState;
 use iam_application::http::JsonOpenApiDocumentParser;
-use iam_application::{AccessDecisionService, ServiceCatalogLoader, ValidateAccessQueryHandler};
+use iam_application::{
+    AccessDecisionService, ServiceCatalogLoader, ValidateAccessBatchQueryHandler,
+    ValidateAccessQueryHandler,
+};
 use iam_application::{
     ActivationReads, CreateGraphQlPermissionsCommandHandler,
     GetGraphQlPermissionsCreatedQueryHandler,
@@ -431,7 +434,7 @@ fn register_token_queries(
     Ok(bus.register(resolve)?.register(subject)?)
 }
 
-/// Registers the handler behind the access-validation operation.
+/// Registers the handlers behind the access-validation operations, single and batch.
 ///
 /// The decision path reads the subject's token through the token repository and the catalogue and
 /// the policy of the subject through the policy read repository, with the `Clock` and
@@ -448,9 +451,17 @@ fn register_access_validation_queries(
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
-    let validate =
-        ValidateAccessQueryHandler::new(Arc::new(decisions), Arc::clone(&adapters.policy_epochs));
-    Ok(bus.register(validate)?)
+    let decisions = Arc::new(decisions);
+    let validate = ValidateAccessQueryHandler::new(
+        Arc::clone(&decisions),
+        Arc::clone(&adapters.policy_epochs),
+    );
+    let batch = ValidateAccessBatchQueryHandler::new(
+        decisions,
+        Arc::clone(&adapters.policy_epochs),
+        Arc::clone(&adapters.tokens),
+    );
+    Ok(bus.register(validate)?.register(batch)?)
 }
 
 /// Registers the command handler that loads GraphQL specifications.

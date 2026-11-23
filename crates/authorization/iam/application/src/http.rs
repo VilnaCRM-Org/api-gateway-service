@@ -53,14 +53,31 @@ where
 {
     OpenApiRouter::new()
         .routes(routes!(handler::resolve))
-        .routes(routes!(access_validation::validate))
         .routes(routes!(role::create, role::list))
         .routes(routes!(role::get_one, role::update, role::delete))
+        .merge(access_validation_router())
         .merge(graphql_permission_router())
         .merge(rest_permission_router())
         .merge(activation_router())
         .merge(user_role_router())
         .merge(role_permission_router())
+}
+
+/// The routes of the access validation, single and batch, merged into [`router`].
+fn access_validation_router<S>() -> OpenApiRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+    IamState: FromRef<S>,
+{
+    OpenApiRouter::new()
+        .routes(routes!(access_validation::validate))
+        .merge(
+            OpenApiRouter::new()
+                .routes(routes!(access_validation::validate_batch))
+                .layer(DefaultBodyLimit::max(
+                    access_validation::ACCESS_VALIDATION_BATCH_BODY_LIMIT_BYTES,
+                )),
+        )
 }
 
 /// The routes that read the GraphQL permission catalogue, merged into [`router`].

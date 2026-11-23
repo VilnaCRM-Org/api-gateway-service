@@ -119,7 +119,10 @@ fn disallowed_parameters(source: &str) -> Vec<String> {
 fn handlers_use_only_the_problem_aware_extractors() {
     let sources = [
         (include_str!("../handler.rs"), vec!["resolve"]),
-        (include_str!("../access_validation.rs"), vec!["validate"]),
+        (
+            include_str!("../access_validation.rs"),
+            vec!["validate", "validate_batch"],
+        ),
         (
             include_str!("../graphql_spec.rs"),
             vec!["load", "list", "get_one", "get_diff"],

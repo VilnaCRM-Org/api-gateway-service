@@ -46,20 +46,43 @@ impl ValidateAccessQueryHandler {
     }
 
     async fn validate(&self, query: &ValidateAccessQuery) -> Result<DecisionOutcome, IamError> {
-        if let Some(minimum) = query.check.min_policy_version() {
-            match self.epochs.current().await {
-                Ok(epoch) if minimum > epoch.version() => {
-                    return Err(IamError::invalid_property(
-                        "minPolicyVersion",
-                        "This value must not be greater than the current policy version.",
-                        "range",
-                    ));
-                }
-                Ok(_current) => {}
-                Err(_unavailable) => return Ok(self.decisions.unavailable()),
+        match check_minimum(self.epochs.as_ref(), &query.check).await {
+            MinimumVersion::Held => {
+                Ok(self.decisions.decide(&query.credential, &query.check).await)
             }
+            MinimumVersion::Unissued => Err(IamError::invalid_property(
+                "minPolicyVersion",
+                "This value must not be greater than the current policy version.",
+                "range",
+            )),
+            MinimumVersion::Unreadable => Ok(self.decisions.unavailable()),
         }
-        Ok(self.decisions.decide(&query.credential, &query.check).await)
+    }
+}
+
+/// What the policy epoch says about the policy version that a check must reflect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MinimumVersion {
+    /// The check names no version, or IAM has issued it.
+    Held,
+    /// The check names a version that IAM has not issued yet.
+    Unissued,
+    /// The epoch cannot be read, so the check cannot be decided on fresh policy.
+    Unreadable,
+}
+
+/// Compares the policy version that `check` must reflect with the current one.
+pub(crate) async fn check_minimum(
+    epochs: &dyn PolicyEpochRepository,
+    check: &AccessCheck,
+) -> MinimumVersion {
+    let Some(minimum) = check.min_policy_version() else {
+        return MinimumVersion::Held;
+    };
+    match epochs.current().await {
+        Ok(epoch) if minimum > epoch.version() => MinimumVersion::Unissued,
+        Ok(_current) => MinimumVersion::Held,
+        Err(_unavailable) => MinimumVersion::Unreadable,
     }
 }
 

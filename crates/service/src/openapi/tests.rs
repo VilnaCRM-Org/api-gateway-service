@@ -84,6 +84,7 @@ fn documents_exactly_the_twenty_four_operations() {
         operations,
         [
             "post /api/access-validations",
+            "post /api/access-validations/batch",
             "get /api/example_api_resources",
             "post /api/example_api_resources",
             "get /api/example_api_resources/{id}",
@@ -1074,6 +1075,7 @@ fn defines_exactly_the_documented_schemas() {
             "AccessScopes",
             "AccessSubject",
             "AccessValidation",
+            "AccessValidationBatch",
             "AccessValidationGraphQlTarget",
             "AccessValidationRestTarget",
             "AllProjects",
@@ -1125,6 +1127,7 @@ fn defines_exactly_the_documented_schemas() {
             "UpdateUserRoleRequest",
             "UserRole",
             "UserRolePage",
+            "ValidateAccessBatchRequest",
             "ValidateAccessRequest",
             "Violation",
             "WildcardGain",
@@ -1325,4 +1328,40 @@ fn the_role_permissions_document_their_responses_headers_and_schemas() {
     for field in ["key", "kind", "service", "active", "wildcard"] {
         assert!(grant["properties"][field].is_object(), "{field}");
     }
+}
+
+#[test]
+fn documents_the_batch_access_validation_operation() {
+    let json = json_document();
+    let operation = &json["paths"]["/api/access-validations/batch"]["post"];
+
+    assert_eq!(
+        operation["operationId"],
+        "api_access_validations_batch_post"
+    );
+    assert_eq!(operation["tags"], json!(["iam"]));
+    assert_eq!(operation["security"], json!([{ "bearerAuth": [] }]));
+    assert_eq!(
+        operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/ValidateAccessBatchRequest"
+    );
+    assert_eq!(
+        operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/AccessValidationBatch"
+    );
+    let mut documented: Vec<&str> = operation["responses"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    documented.sort_unstable();
+    assert_eq!(
+        documented,
+        ["200", "400", "401", "403", "413", "415", "422", "default"]
+    );
+    let checks =
+        &json["components"]["schemas"]["ValidateAccessBatchRequest"]["properties"]["checks"];
+    assert_eq!(checks["minItems"], 1);
+    assert_eq!(checks["maxItems"], 100);
 }

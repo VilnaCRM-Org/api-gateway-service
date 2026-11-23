@@ -17,6 +17,7 @@ use iam_application::{
 };
 use tokio::sync::watch;
 use tokio::task::JoinSet;
+use tracing::Instrument as _;
 
 use super::{Adapters, OutboxRelayAdapters, forward_notifications};
 
@@ -206,8 +207,11 @@ pub fn start_tasks(
     if mode == TaskMode::Serve {
         supervisor.spawn_singletons(singleton_set(adapters));
         if let Some(relay) = adapters.outbox_relay.clone() {
+            // The listener writes inside an `outbox.listener` span, so its entries are told apart
+            // from those of a request.
             supervisor.spawn("outbox-listener", |shutdown| {
                 forward_notifications(relay, shutdown)
+                    .instrument(tracing::info_span!("outbox.listener"))
             });
         }
     }

@@ -6,6 +6,7 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::middleware::{from_fn, from_fn_with_state};
 use axum::routing::{get, post};
+use iam_application::http::access_validation::ACCESS_VALIDATION_BATCH_BODY_LIMIT_BYTES;
 use shared_application::http::fallback::{method_not_allowed, not_found, panic_response};
 use shared_application::http::middleware::request_timeout;
 use tower::ServiceBuilder;
@@ -22,6 +23,10 @@ use crate::http::ping::ping;
 use crate::http::request_id::{REQUEST_ID_HEADER, sanitize_request_id};
 use crate::http::{AppState, security_headers, trace};
 use crate::openapi::{iam_api_router, template_api_router};
+
+/// The largest body of a GraphQL request: room for the batch access validation of 100 checks,
+/// above the limit of the other routes, as on the REST batch route.
+pub const GRAPHQL_BODY_LIMIT_BYTES: usize = ACCESS_VALIDATION_BATCH_BODY_LIMIT_BYTES;
 
 /// Builds the complete router, with `iam_routes` added to the IAM router.
 ///
@@ -47,7 +52,11 @@ pub fn assemble_with_iam_routes(
     if config.app_env == AppEnv::Dev {
         graphql = graphql.get(explorer);
     }
-    let graphql = graphql.layer(from_fn_with_state(authenticator, resolve_principal));
+    let graphql = graphql.layer(
+        ServiceBuilder::new()
+            .layer(DefaultBodyLimit::max(GRAPHQL_BODY_LIMIT_BYTES))
+            .layer(from_fn_with_state(authenticator, resolve_principal)),
+    );
     let middleware = ServiceBuilder::new()
         .layer(from_fn(sanitize_request_id))
         .layer(SetRequestIdLayer::new(REQUEST_ID_HEADER, MakeRequestUuid))

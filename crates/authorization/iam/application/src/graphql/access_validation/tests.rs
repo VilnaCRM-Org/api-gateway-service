@@ -3,14 +3,15 @@ use iam_domain::{AccessTarget, DecisionReason, HttpMethod};
 use serde_json::json;
 
 use crate::access_validation_fixtures::{
-    DECISION, PROJECT, SUBJECT, allowed, allowed_in_project, denied, recorded, scenario,
-    token_refused,
+    DECISION, PROJECT, SUBJECT, allowed, allowed_in_project, batch_scenario, denied, recorded,
+    recorded_batches, scenario, token_refused,
 };
 use crate::error::IamError;
 use crate::fixtures::principal;
 use crate::graphql::{IamMutation, IamQuery};
 use crate::http::IamState;
 use crate::principal::Principal;
+use crate::query::validate_access_batch::BatchCheck;
 
 type IamSchema = Schema<IamQuery, IamMutation, EmptySubscription>;
 
@@ -40,6 +41,22 @@ async fn validate(
     let mut request = Request::new(VALIDATE).variables(Variables::from_json(json!({
         "input": input
     })));
+    if let Caller::Data(caller) = caller {
+        request = request.data(caller);
+    }
+    schema.execute(request).await
+}
+
+const VALIDATE_BATCH: &str = "query($inputs: [ValidateAccessInput!]!) { \
+    validateAccessBatch(inputs: $inputs) { decision reason denied decisionId requestId } }";
+
+async fn validate_batch(
+    schema: &IamSchema,
+    caller: Caller,
+    inputs: Vec<serde_json::Value>,
+) -> async_graphql::Response {
+    let mut request =
+        Request::new(VALIDATE_BATCH).variables(Variables::from_json(json!({ "inputs": inputs })));
     if let Caller::Data(caller) = caller {
         request = request.data(caller);
     }
@@ -418,4 +435,135 @@ fn the_graphql_target_is_read_from_a_graphql_object_and_printed_with_its_documen
     assert!(AccessGraphQlTargetInput::parse(Some(Value::Boolean(true))).is_err());
     assert!(AccessGraphQlTargetInput::parse(Some(wrong_document)).is_err());
     assert!(AccessGraphQlTargetInput::parse(Some(wrong_operation)).is_err());
+}
+
+fn input_of(request_id: &str) -> serde_json::Value {
+    let mut input = rest_input();
+    input["requestId"] = json!(request_id);
+    input
+}
+
+#[tokio::test]
+async fn a_batch_returns_one_decision_per_input_in_the_order_of_the_inputs() {
+    let outcomes = vec![
+        allowed(),
+        denied(DecisionReason::PermissionMissing, &["key"]),
+        token_refused(),
+    ];
+    let (state, asked) = batch_scenario(Ok(outcomes));
+
+    let response = validate_batch(
+        &schema(Some(state)),
+        Caller::Data(Some(principal())),
+        vec![input_of("a"), input_of("b"), input_of("c")],
+    )
+    .await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    let data = response.data.into_json().unwrap();
+    let results = data["validateAccessBatch"].as_array().unwrap();
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0]["decision"], json!("allow"));
+    assert_eq!(results[0]["requestId"], json!("a"));
+    assert_eq!(results[0]["decisionId"], json!(DECISION));
+    assert_eq!(results[1]["reason"], json!("permission_missing"));
+    assert_eq!(results[1]["denied"], json!(["key"]));
+    assert_eq!(results[2]["reason"], json!("token_expired"));
+    assert_eq!(results[2]["requestId"], json!("c"));
+    let [batch] = recorded_batches(&asked).try_into().unwrap();
+    assert_eq!(batch.len(), 3);
+}
+
+#[tokio::test]
+async fn a_malformed_input_is_asked_as_malformed_without_failing_the_others() {
+    let (state, asked) = batch_scenario(Ok(vec![
+        allowed(),
+        denied(DecisionReason::MalformedOperation, &[]),
+    ]));
+    let mut broken = input_of("broken");
+    broken["rest"]["method"] = json!("FETCH");
+
+    let response = validate_batch(
+        &schema(Some(state)),
+        Caller::Data(Some(principal())),
+        vec![input_of("fine"), broken],
+    )
+    .await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    let data = response.data.into_json().unwrap();
+    assert_eq!(
+        data["validateAccessBatch"][1]["reason"],
+        json!("malformed_operation")
+    );
+    assert_eq!(data["validateAccessBatch"][1]["requestId"], json!("broken"));
+    let [batch] = recorded_batches(&asked).try_into().unwrap();
+    assert!(matches!(
+        batch.as_slice(),
+        [BatchCheck::Valid(_), BatchCheck::Malformed]
+    ));
+}
+
+#[tokio::test]
+async fn a_batch_of_no_input_or_of_too_many_is_validation_failed_and_asks_nothing() {
+    for count in [0_usize, 101] {
+        let (state, asked) = batch_scenario(Ok(Vec::new()));
+        let inputs = (0..count)
+            .map(|index| input_of(&index.to_string()))
+            .collect();
+
+        let response = validate_batch(
+            &schema(Some(state)),
+            Caller::Data(Some(principal())),
+            inputs,
+        )
+        .await;
+
+        assert_eq!(error_code(&response), Some(code_of("VALIDATION_FAILED")));
+        assert_eq!(recorded_batches(&asked).len(), 0);
+    }
+}
+
+#[tokio::test]
+async fn a_storage_failure_of_the_bus_is_an_internal_error_for_a_batch() {
+    let (state, _asked) = batch_scenario(Err(|| IamError::Storage("down".into())));
+
+    let response = validate_batch(
+        &schema(Some(state)),
+        Caller::Data(Some(principal())),
+        vec![input_of("a")],
+    )
+    .await;
+
+    assert_eq!(
+        error_code(&response),
+        Some(code_of("INTERNAL_SERVER_ERROR"))
+    );
+}
+
+#[tokio::test]
+async fn a_batch_without_an_authenticated_caller_is_unauthenticated() {
+    for caller in [Caller::Absent, Caller::Data(None)] {
+        let (state, asked) = batch_scenario(Ok(vec![allowed()]));
+
+        let response = validate_batch(&schema(Some(state)), caller, vec![input_of("a")]).await;
+
+        assert_eq!(error_code(&response), Some(code_of("UNAUTHENTICATED")));
+        assert_eq!(recorded_batches(&asked).len(), 0);
+    }
+}
+
+#[tokio::test]
+async fn a_batch_on_a_schema_without_the_iam_state_is_an_internal_error() {
+    let response = validate_batch(
+        &schema(None),
+        Caller::Data(Some(principal())),
+        vec![input_of("a")],
+    )
+    .await;
+
+    assert_eq!(
+        error_code(&response),
+        Some(code_of("INTERNAL_SERVER_ERROR"))
+    );
 }

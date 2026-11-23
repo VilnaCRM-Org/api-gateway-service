@@ -126,6 +126,9 @@ pub use query::resolve_subject_token::{
 };
 pub use query::resolve_token::{ResolveTokenQuery, ResolveTokenQueryHandler};
 pub use query::validate_access::{ValidateAccessQuery, ValidateAccessQueryHandler};
+pub use query::validate_access_batch::{
+    BatchCheck, ValidateAccessBatchQuery, ValidateAccessBatchQueryHandler,
+};
 pub use required_key_resolver::RequiredKeyResolver;
 pub use service_catalog_loader::ServiceCatalogLoader;
 pub use singleton_loop::{

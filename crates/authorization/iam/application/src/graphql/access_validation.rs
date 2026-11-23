@@ -8,11 +8,12 @@ use shared_application::http::Problem;
 use validator::Validate as _;
 
 use super::{require_caller, state};
+use crate::http::access_validation::batch::ValidateAccessBatchRequest;
 use crate::http::access_validation::dto::{
     AccessSubjectDto, AccessValidationResponse, GraphQlTargetDto, RestTargetDto, ScopesResponse,
     ValidateAccessRequest,
 };
-use crate::http::access_validation::validate_access;
+use crate::http::access_validation::{validate_access, validate_access_batch};
 
 /// The REST request that a check names.
 #[derive(Debug, InputObject)]
@@ -176,6 +177,27 @@ pub(super) async fn validate_access_field(
     request.validate()?;
     let response = validate_access(state(ctx)?, request).await?;
     Ok(AccessValidationObject::from(response))
+}
+
+/// Decides a batch of checks, one decision per input in the order of the inputs.
+pub(super) async fn validate_access_batch_field(
+    ctx: &Context<'_>,
+    inputs: Vec<ValidateAccessInput>,
+) -> Result<Vec<AccessValidationObject>, Problem> {
+    require_caller(ctx)?;
+    let request = ValidateAccessBatchRequest {
+        checks: inputs
+            .into_iter()
+            .map(ValidateAccessRequest::from)
+            .collect(),
+    };
+    request.validate()?;
+    let response = validate_access_batch(state(ctx)?, request).await?;
+    Ok(response
+        .results
+        .into_iter()
+        .map(AccessValidationObject::from)
+        .collect())
 }
 
 #[cfg(test)]

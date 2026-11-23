@@ -440,8 +440,71 @@ Feature: IAM access validation
     Then the REST and GraphQL access validations should be the same
     And both access validations should be an allow for every project
 
+  Scenario: A batch of mixed checks is decided in request order over REST and GraphQL
+    Given a caller authenticated with a valid service token
+    And an assignable role "Invoice reader" that grants "rest:billing:GET /invoices/{}"
+    And a subject token of a user in session "e2e-validate-16"
+    When POST request is sent to "/api/openapi-specs" with body:
+      """
+      {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices/{invoiceId}\":{\"get\":{}},\"/refunds\":{\"post\":{}}}}"}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/openapi-specs/{id}/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    When a batch of mixed checks is sent over REST and GraphQL
+    Then the REST status of the check should be 200
+    And the GraphQL response should have no errors
+    And both batches should have 7 results
+    And the REST and GraphQL batch results should be the same and have the reasons "allowed, permission_missing, unknown_operation, malformed_operation, malformed_operation, token_invalid, unknown_service"
+    And no response should contain the subject token
+
+  Scenario Outline: A batch of no check or of too many is refused over REST and GraphQL
+    Given a caller authenticated with a valid service token
+    And a subject token of a user in session "e2e-validate-17"
+    When a batch of <count> checks is sent over REST and GraphQL
+    Then the REST status of the check should be 422
+    And the GraphQL batch should fail with the code "VALIDATION_FAILED"
+
+    Examples:
+      | count |
+      | 0     |
+      | 101   |
+
+  Scenario: A batch of one hundred checks over two credentials is decided in request order
+    Given a caller authenticated with a valid service token
+    And an assignable role "Invoice reader" that grants "rest:billing:GET /invoices/{}"
+    And a subject token of a user in session "e2e-validate-18"
+    When POST request is sent to "/api/openapi-specs" with body:
+      """
+      {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices/{invoiceId}\":{\"get\":{}}}}"}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/openapi-specs/{id}/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    When a batch of 100 checks that alternate between the subject token and an invalid one is sent over REST and GraphQL
+    Then the REST status of the check should be 200
+    And both batches should have 100 results
+    And the REST and GraphQL batch results should be the same and alternate "allowed" and "token_invalid"
+
   Scenario: The access-validation operation is documented with its security requirement
     When GET request is sent to "/api/docs/openapi.json"
     Then the response status code should be 200
     And the response body should contain "api_access_validations_post"
+    And the response body should contain "api_access_validations_batch_post"
     And the response body should contain "bearerAuth"

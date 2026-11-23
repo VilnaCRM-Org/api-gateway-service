@@ -80,8 +80,20 @@ impl AccessDecisionService {
     /// Decides whether the bearer of `credential` may do what `check` names; the outcome carries
     /// a new decision id whatever the result.
     pub async fn decide(&self, credential: &Credential, check: &AccessCheck) -> DecisionOutcome {
+        self.decide_with(self.tokens.as_ref(), credential, check)
+            .await
+    }
+
+    /// Decides like [`Self::decide`], resolving the credential through `tokens` instead of the
+    /// service's own repository; a batch passes a repository that remembers what it resolved.
+    pub async fn decide_with(
+        &self,
+        tokens: &dyn TokenRepository,
+        credential: &Credential,
+        check: &AccessCheck,
+    ) -> DecisionOutcome {
         let decision_id = DecisionId::from_uuid(self.ids.generate());
-        let decided = self.decide_check(credential, check).await;
+        let decided = self.decide_check(tokens, credential, check).await;
         DecisionOutcome::new(
             decided.verdict,
             decision_id,
@@ -105,8 +117,26 @@ impl AccessDecisionService {
         )
     }
 
-    async fn decide_check(&self, credential: &Credential, check: &AccessCheck) -> Decided {
-        match self.tokens.resolve(credential).await {
+    /// The outcome of a check that cannot be read: the deny `malformed_operation` with a new
+    /// decision id, no subject and no policy version.
+    #[must_use]
+    pub fn malformed(&self) -> DecisionOutcome {
+        let decision_id = DecisionId::from_uuid(self.ids.generate());
+        DecisionOutcome::new(
+            DecisionVerdict::deny(DecisionReason::MalformedOperation, Vec::new()),
+            decision_id,
+            None,
+            None,
+        )
+    }
+
+    async fn decide_check(
+        &self,
+        tokens: &dyn TokenRepository,
+        credential: &Credential,
+        check: &AccessCheck,
+    ) -> Decided {
+        match tokens.resolve(credential).await {
             Ok(identity) => self.decide_subject(subject_of(&identity), check).await,
             Err(rejection) => Decided::of(
                 DecisionVerdict::deny(DecisionReason::from(rejection), Vec::new()),

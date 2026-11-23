@@ -542,6 +542,8 @@ type Query {
   ): UserRolePage!
   "Decides whether a subject may perform a REST operation or hold permission keys; a valid request always gets a decision."
   validateAccess(input: ValidateAccessInput!): AccessValidation!
+  "Decides 1 to 100 checks of the shape of `validateAccess` and returns one decision per input, in the order of the inputs, each with its own `decisionId`; an input that cannot be read is a `deny` with the reason `malformed_operation` and does not fail the others. A batch of no input or of more than 100 fails with `VALIDATION_FAILED`."
+  validateAccessBatch(inputs: [ValidateAccessInput!]!): [AccessValidation!]!
 }
 
 "A removed coordinate that roles grant by its exact key."
@@ -878,6 +880,9 @@ fn the_sdl_has_the_template_and_iam_operations_and_nothing_else_to_call() {
     let text = sdl();
 
     assert!(text.contains("resolveToken(input: ResolveTokenInput!): TokenResolution!"));
+    assert!(
+        text.contains("validateAccessBatch(inputs: [ValidateAccessInput!]!): [AccessValidation!]!")
+    );
     assert!(text.contains("exampleApiResource(id: ID!)"));
     assert!(text.contains("exampleApiResources("));
     assert!(text.contains("createExampleApiResource(input: CreateExampleApiResourceInput!)"));

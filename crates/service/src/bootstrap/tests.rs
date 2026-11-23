@@ -1029,6 +1029,134 @@ mod access_validation {
         );
     }
 
+    fn batch_item(path: &str, request_id: &str) -> Value {
+        json!({
+            "credential": "subject-token", "service": "orders", "requestId": request_id,
+            "rest": {"method": "GET", "path": path}
+        })
+    }
+
+    /// The router over a token repository that the test keeps, so that it can count resolutions.
+    fn counting_wiring() -> (Router, Arc<FakeTokenRepository>) {
+        let tokens = Arc::new(
+            FakeTokenRepository::new()
+                .accepting(
+                    "caller-token",
+                    user_identity("caller-session", &["vilnacrm-api"]),
+                )
+                .accepting(
+                    "subject-token",
+                    user_identity("subject-session", &["vilnacrm-api"]),
+                ),
+        );
+        let mut wired = adapters();
+        wired.tokens = Arc::<FakeTokenRepository>::clone(&tokens);
+        wired.policy_reads = Arc::new(holding_policy());
+        (app(wired), tokens)
+    }
+
+    fn batch_request(checks: &[Value]) -> Request<Body> {
+        post(
+            "/api/access-validations/batch",
+            Some("caller-token"),
+            json!({ "checks": checks }).to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_batch_is_decided_in_request_order() {
+        let (app, _tokens) = counting_wiring();
+        let checks = [
+            batch_item("/api/orders/42", "first"),
+            batch_item("/api/orders/latest", "second"),
+            batch_item("/api/orders/../42", "third"),
+        ];
+
+        let answer = send(&app, batch_request(&checks)).await;
+
+        assert_eq!(answer.status, StatusCode::OK);
+        let results = answer.json()["results"].as_array().unwrap().clone();
+        let reasons: Vec<&str> = results
+            .iter()
+            .map(|result| result["reason"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            reasons,
+            ["allowed", "permission_missing", "malformed_operation"]
+        );
+        assert_eq!(results[0]["requestId"], "first");
+        assert_eq!(results[2]["requestId"], "third");
+    }
+
+    #[tokio::test]
+    async fn a_batch_resolves_its_subject_token_once_however_many_checks_it_holds() {
+        let (app, tokens) = counting_wiring();
+        let one = [batch_item("/api/orders/42", "one")];
+        let many: Vec<Value> = (0..50)
+            .map(|index| batch_item("/api/orders/42", &index.to_string()))
+            .collect();
+
+        let before = tokens.calls();
+        let _single = send(&app, batch_request(&one)).await;
+        let single_calls = tokens.calls().saturating_sub(before);
+        let before = tokens.calls();
+        let answer = send(&app, batch_request(&many)).await;
+        let many_calls = tokens.calls().saturating_sub(before);
+
+        assert_eq!(answer.json()["results"].as_array().unwrap().len(), 50);
+        assert!(single_calls >= 1);
+        assert_eq!(many_calls, single_calls);
+    }
+
+    #[tokio::test]
+    async fn a_batch_of_no_check_or_of_too_many_is_a_422_and_validation_failed() {
+        let app = wiring(holding_policy(), FakePolicyEpochRepository::new());
+        let many: Vec<Value> = (0..101)
+            .map(|index| batch_item("/api/orders/42", &index.to_string()))
+            .collect();
+
+        for checks in [Vec::new(), many] {
+            let body = json!({ "checks": checks });
+            let over_rest = send(
+                &app,
+                post(
+                    "/api/access-validations/batch",
+                    Some("caller-token"),
+                    body.to_string(),
+                ),
+            )
+            .await;
+
+            assert_eq!(over_rest.status, StatusCode::UNPROCESSABLE_ENTITY);
+        }
+        let inputs: Vec<String> = (0..101)
+            .map(|index| {
+                format!(
+                    "{{credential: \"subject-token\", service: \"orders\", requestId: \"r{index}\", \
+                     rest: {{method: \"GET\", path: \"/api/orders/42\"}}}}"
+                )
+            })
+            .collect();
+        let query = format!(
+            "{{ validateAccessBatch(inputs: [{}]) {{ decision }} }}",
+            inputs.join(",")
+        );
+        let over_graphql = send(
+            &app,
+            post(
+                "/api/graphql",
+                Some("caller-token"),
+                json!({ "query": query }).to_string(),
+            ),
+        )
+        .await;
+
+        assert_eq!(
+            over_graphql.json()["errors"][0]["extensions"]["code"],
+            "VALIDATION_FAILED"
+        );
+    }
+
     #[tokio::test]
     async fn a_request_without_a_bearer_token_is_unauthenticated() {
         let app = wiring(holding_policy(), FakePolicyEpochRepository::new());

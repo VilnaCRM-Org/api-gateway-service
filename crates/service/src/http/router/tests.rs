@@ -343,6 +343,37 @@ async fn a_body_over_the_limit_is_the_413_problem() {
     assert_common_headers(&answer, DEFAULT_CONTENT_SECURITY_POLICY, "413");
 }
 
+#[tokio::test]
+async fn a_graphql_body_is_read_up_to_the_limit_of_its_route() {
+    let mut config = config("test");
+    config.max_body_bytes = 1024;
+    let app = router(adapters(), &config).unwrap();
+    let query = |padding: usize| {
+        format!(
+            r#"{{"query":"{{ __typename }}","variables":{{"padding":"{}"}}}}"#,
+            "x".repeat(padding)
+        )
+    };
+
+    let read = send_to(
+        &app,
+        request(Method::POST, "/api/graphql", Some(&query(2048))),
+    )
+    .await;
+    let refused = send_to(
+        &app,
+        request(
+            Method::POST,
+            "/api/graphql",
+            Some(&query(super::GRAPHQL_BODY_LIMIT_BYTES)),
+        ),
+    )
+    .await;
+
+    assert_ne!(read.status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(refused.status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_request_over_its_budget_is_the_503_problem() {
     let mut config = config("test");

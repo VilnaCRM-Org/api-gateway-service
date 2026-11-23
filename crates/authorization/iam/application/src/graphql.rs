@@ -45,7 +45,9 @@ use crate::http::handler::resolve_credential;
 use crate::http::role::{create_role, find_role, list_roles, parse_role_id, update_role};
 use crate::principal::Principal;
 
-use access_validation::{AccessValidationObject, ValidateAccessInput, validate_access_field};
+use access_validation::{
+    AccessValidationObject, ValidateAccessInput, validate_access_batch_field, validate_access_field,
+};
 use graphql_activation::{
     CreateGraphQlPermissionsInput, GraphQlPermissionsActivationObject,
     create_graphql_permissions_field,
@@ -664,6 +666,17 @@ impl IamQuery {
         input: ValidateAccessInput,
     ) -> async_graphql::Result<AccessValidationObject> {
         validate_access_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Decides 1 to 100 checks of the shape of `validateAccess` and returns one decision per input, in the order of the inputs, each with its own `decisionId`; an input that cannot be read is a `deny` with the reason `malformed_operation` and does not fail the others. A batch of no input or of more than 100 fails with `VALIDATION_FAILED`.
+    async fn validate_access_batch(
+        &self,
+        ctx: &Context<'_>,
+        inputs: Vec<ValidateAccessInput>,
+    ) -> async_graphql::Result<Vec<AccessValidationObject>> {
+        validate_access_batch_field(ctx, inputs)
             .await
             .map_err(iam_problem_to_graphql_error)
     }

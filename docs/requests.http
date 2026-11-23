@@ -156,6 +156,54 @@ Content-Type: application/json
   }
 }
 
+### Validate a batch of checks over REST: 200 with one result per check in request order, each with its own decisionId; a check that cannot be read is a deny with the reason malformed_operation and does not fail the others; each distinct credential is resolved once per batch; 422 for no check or more than 100; 401 without a valid bearer token
+# Replace both tokens: the bearer token of the caller and the credential of each check. Each check has the shape of the single check.
+POST {{baseUrl}}/api/access-validations/batch
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "checks": [
+    {
+      "credential": "<subject token>",
+      "service": "billing",
+      "rest": { "method": "GET", "path": "/api/invoices/42" },
+      "requestId": "req-0101"
+    },
+    {
+      "credential": "<subject token>",
+      "service": "billing",
+      "permissions": ["rest:billing:GET /api/invoices"],
+      "requestId": "req-0102"
+    }
+  ]
+}
+
+### Validate a batch of checks over GraphQL: the same results as the REST operation; the error code VALIDATION_FAILED for no input or more than 100, UNAUTHENTICATED without a valid bearer token
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($inputs: [ValidateAccessInput!]!) { validateAccessBatch(inputs: $inputs) { decision reason denied scopes { all projects } subject { id kind } decisionId policyVersion requestId } }",
+  "variables": {
+    "inputs": [
+      {
+        "credential": "<subject token>",
+        "service": "billing",
+        "rest": { "method": "GET", "path": "/api/invoices/42" },
+        "requestId": "req-0103"
+      },
+      {
+        "credential": "<subject token>",
+        "service": "billing",
+        "permissions": ["rest:billing:GET /api/invoices"],
+        "requestId": "req-0104"
+      }
+    ]
+  }
+}
+
 ### Create a role over REST: 201 with Location, ETag, the id and version 1; 409 for a duplicate name; 422 for an invalid name or a reused Idempotency-Key; 401 without a valid bearer token
 # A repeated Idempotency-Key with the same body within 24 hours returns the original result and creates nothing again.
 POST {{baseUrl}}/api/roles
