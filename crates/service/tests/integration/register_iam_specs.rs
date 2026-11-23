@@ -275,13 +275,16 @@ fn bare_supervisor(stopping: watch::Receiver<bool>) -> service::bootstrap::TaskS
 }
 
 #[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
-async fn the_supervisor_of_the_production_wiring_starts_the_maintenance_task(pool: PgPool) {
+async fn the_supervisor_of_the_production_wiring_starts_the_maintenance_task_and_the_outbox_relay(
+    pool: PgPool,
+) {
     let adapters = instance(&pool).await;
     let (stop, stopping) = watch::channel(false);
 
     let supervisor = start_tasks(&adapters, TaskMode::Serve, stopping);
 
-    assert_eq!(supervisor.len(), 1);
+    // The maintenance loop, the outbox relay loop and the listener of `iam_outbox`.
+    assert_eq!(supervisor.len(), 3);
     stop.send_replace(true);
     assert_eq!(
         supervisor.stop(Duration::from_secs(5)).await,

@@ -86,6 +86,9 @@ fn entries_fill_chunks_up_to_the_limit_and_each_one_lands_in_exactly_one_chunk()
             PolicyState::Role(_)
             | PolicyState::Subject(_)
             | PolicyState::Manifest(_)
+            | PolicyState::Upstream(_)
+            | PolicyState::Route(_)
+            | PolicyState::RatePolicy(_)
             | PolicyState::Head(_) => None,
         })
         .collect();

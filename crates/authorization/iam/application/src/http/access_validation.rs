@@ -41,7 +41,7 @@ pub(crate) async fn validate_access(
     operation_id = "api_access_validations_post",
     tag = "iam",
     summary = "Validates whether a subject may perform an operation or hold permission keys.",
-    description = "Decides one check for the bearer of `credential` on the target `service`: a REST request (`rest`) or a list of permission keys (`permissions`), exactly one of them. A valid request always returns 200 with a decision body: `allow`, or `deny` with the `reason` and the `denied` keys. A `minPolicyVersion` above the current policy version is refused with 422. The credential is never echoed.",
+    description = "Decides one check for the bearer of `credential` on the target `service`: a REST request (`rest`), a GraphQL document (`graphql`) or a list of permission keys (`permissions`), exactly one of them. A GraphQL document is allowed only when the subject holds every coordinate it selects; `denied` lists every coordinate it does not hold, and a document over a limit is a deny with `limits_exceeded`. A valid request always returns 200 with a decision body: `allow`, or `deny` with the `reason` and the `denied` keys or coordinates. A `minPolicyVersion` above the current policy version is refused with 422. The credential is never echoed.",
     security(("bearerAuth" = [])),
     request_body(content = ValidateAccessRequest, content_type = "application/json"),
     responses(

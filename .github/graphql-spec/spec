@@ -1,3 +1,11 @@
+"The GraphQL document that a check names."
+input AccessGraphQlTargetInput {
+  "The document as the caller received it; IAM resolves every field it selects against the active GraphQL versions of the service. A document over a limit is decided as a deny with `limits_exceeded`."
+  document: String!
+  "The operation to check; optional when the document holds exactly one operation."
+  operationName: String
+}
+
 "The REST request that a check names."
 input AccessRestTargetInput {
   "The HTTP method, in upper case: `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE` or `OPTIONS`."
@@ -809,15 +817,17 @@ type UserRolePage {
 input ValidateAccessInput {
   "The subject's access token as the caller received it; an empty one is decided as `token_missing`."
   credential: String!
+  "A GraphQL document to check; exactly one of `rest`, `graphql` and `permissions` is given. The decision is all-or-nothing and `denied` lists every coordinate the subject does not hold."
+  graphql: AccessGraphQlTargetInput
   "The policy version that the decision must reflect at least; a version that IAM has not issued yet fails with `VALIDATION_FAILED`."
   minPolicyVersion: Int
-  "The permission keys to check, 1 to 100; exactly one of `rest` and `permissions` is given."
+  "The permission keys to check, 1 to 100; exactly one of `rest`, `graphql` and `permissions` is given."
   permissions: [String!]
   "The project in which the check is made; without it, project assignments contribute their projects to `scopes`."
   projectId: String
   "An opaque identifier of the caller's request, 1 to 128 visible ASCII characters; the response echoes it."
   requestId: String!
-  "A REST request to check; exactly one of `rest` and `permissions` is given."
+  "A REST request to check; exactly one of `rest`, `graphql` and `permissions` is given."
   rest: AccessRestTargetInput
   "The target service, as registered in IAM."
   service: String!

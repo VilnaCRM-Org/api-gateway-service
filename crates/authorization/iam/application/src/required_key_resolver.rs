@@ -1,18 +1,25 @@
 //! Turns an access check into the keys it requires, against the catalogue of its service (FR-6,
 //! FR-7, FR-9).
 
+use std::borrow::Cow;
+
 use iam_domain::{
-    AccessCheck, AccessTarget, CoordinateSet, DecisionReason, DecisionVerdict, GraphQlTypeGraph,
-    PathNormalizer, PermissionCatalogue, PermissionFlags, PermissionKey, PermissionsTarget,
-    RequiredKey, RestOperationMatcher, RestOperationSet, RestTarget, ServiceCatalog, ServiceName,
+    AccessCheck, AccessTarget, CoordinateSet, DecisionReason, DecisionVerdict, DocumentLimits,
+    GqlCoordinate, GraphQlDocumentAnalyzer as _, GraphQlTarget, GraphQlTypeGraph, PathNormalizer,
+    PermissionCatalogue, PermissionFlags, PermissionKey, PermissionsTarget, RequiredKey,
+    RestOperationMatcher, RestOperationSet, RestTarget, ServiceCatalog, ServiceName,
 };
+
+use crate::graphql::document_analyzer::AsyncGraphQlDocumentAnalyzer;
 
 /// Resolves the keys a check requires.
 ///
 /// A REST target is normalised and matched against the templates of the active `OpenAPI` versions
 /// of the service. Permission keys are parsed and looked up in the catalogue of the service;
-/// reserved `iam:` keys are accepted without a catalogue entry. The GraphQL branch follows in
-/// Story 6.7; until then a GraphQL target is refused as `unavailable`, which fails closed.
+/// reserved `iam:` keys are accepted without a catalogue entry. A GraphQL document is analysed
+/// against the union of the active GraphQL versions of the service, under the limits of the
+/// decision API, and requires the key of every coordinate it selects, plus `__introspection` when
+/// it reads the schema.
 ///
 /// A check that cannot be resolved is a verdict, never an error: the `Err` side holds the deny.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -25,8 +32,10 @@ impl RequiredKeyResolver {
     ///
     /// The deny verdict of a check that cannot be resolved: `malformed_operation` for a path that
     /// breaks the path rules, `unknown_operation` for a path no template matches or for permission
-    /// keys that are unknown or belong to another service (the verdict lists them in `denied`) and
-    /// `unavailable` for a GraphQL target.
+    /// keys that are unknown or belong to another service (the verdict lists them in `denied`); for a
+    /// GraphQL document the reason of its refusal: `limits_exceeded` for a document over a limit,
+    /// `malformed_operation` for one that cannot be read and `unknown_operation` for a field no
+    /// active version has, or for a service without a GraphQL version.
     pub fn resolve(
         check: &AccessCheck,
         catalog: &ServiceCatalog,
@@ -36,8 +45,40 @@ impl RequiredKeyResolver {
             AccessTarget::Permissions(target) => {
                 Self::resolve_permissions(check.service(), target, catalog)
             }
-            AccessTarget::GraphQl(_) => Err(deny(DecisionReason::Unavailable, Vec::new())),
+            AccessTarget::GraphQl(target) => {
+                Self::resolve_graphql(check.service(), target, catalog)
+            }
         }
+    }
+
+    fn resolve_graphql(
+        service: &ServiceName,
+        target: &GraphQlTarget,
+        catalog: &ServiceCatalog,
+    ) -> Result<Vec<RequiredKey>, DecisionVerdict> {
+        let graph = active_graph(catalog.type_graphs())
+            .ok_or_else(|| deny(DecisionReason::UnknownOperation, Vec::new()))?;
+        let analyzed = AsyncGraphQlDocumentAnalyzer
+            .analyze(
+                target.document(),
+                target.operation_name(),
+                &graph,
+                &DocumentLimits::decision_api(),
+            )
+            .map_err(|refusal| deny(refusal.reason(), Vec::new()))?;
+        let mut required: Vec<RequiredKey> = analyzed
+            .coordinates()
+            .iter()
+            .map(|(coordinate, flags)| RequiredKey::new(coordinate.permission_key(service), flags))
+            .collect();
+        if analyzed.introspection() {
+            let key = PermissionKey::Gql {
+                service: service.clone(),
+                coordinate: GqlCoordinate::Introspection,
+            };
+            required.push(RequiredKey::new(key, PermissionFlags::NONE));
+        }
+        Ok(required)
     }
 
     fn resolve_rest(
@@ -85,6 +126,16 @@ impl RequiredKeyResolver {
             Err(deny(DecisionReason::UnknownOperation, unknown))
         }
     }
+}
+
+/// The graph a document is read against: the only active version, or the union of several;
+/// `None` for a service without a GraphQL version.
+fn active_graph(graphs: &[GraphQlTypeGraph]) -> Option<Cow<'_, GraphQlTypeGraph>> {
+    let mut versions = graphs.iter();
+    let first = versions.next()?;
+    Some(versions.fold(Cow::Borrowed(first), |merged, version| {
+        Cow::Owned(merged.union(version))
+    }))
 }
 
 /// The key `raw` names with its flags; `None` when it is not a key, or not one of the catalogues.

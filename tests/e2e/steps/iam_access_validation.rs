@@ -128,6 +128,22 @@ fn validations_should_deny_the_key(world: &mut AppWorld, key: String) {
     }
 }
 
+#[then(expr = "both access validations should deny the keys {string}")]
+#[expect(
+    clippy::needless_pass_by_ref_mut,
+    reason = "cucumber fixes the step signature"
+)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "cucumber fixes the step signature"
+)]
+fn validations_should_deny_the_keys(world: &mut AppWorld, keys: String) {
+    let expected: Vec<&str> = keys.split(", ").collect();
+    for decision in decisions(world) {
+        assert_eq!(decision["denied"], json!(expected), "{decision}");
+    }
+}
+
 #[then(expr = "both access validations should be an allow in the projects {string}")]
 #[expect(
     clippy::needless_pass_by_ref_mut,
@@ -203,6 +219,39 @@ async fn check_of_many_keys(world: &mut AppWorld, count: u32) {
     let query = format!(
         "{{ validateAccess(input: {{credential: \"{{token}}\", service: \"billing\", \
          permissions: [{list}], requestId: \"req-many\"}}) {{ decision reason }} }}"
+    );
+    let body = json!({"query": query}).to_string();
+    world
+        .send("POST", "/api/graphql", Some("application/json"), &body)
+        .await;
+}
+
+#[when(expr = "a check of a GraphQL document of {int} aliases is sent over REST and GraphQL")]
+async fn check_of_aliased_document(world: &mut AppWorld, count: u32) {
+    let selections = (0..count)
+        .map(|number| format!("a{number}: invoice {{ id }} "))
+        .collect::<Vec<_>>()
+        .concat();
+    let document = format!("{{ {selections}}}");
+    let rest = json!({
+        "credential": "{token}",
+        "service": "billing",
+        "graphql": {"document": document},
+        "requestId": "req-aliases"
+    });
+    world
+        .send(
+            "POST",
+            "/api/access-validations",
+            Some("application/json"),
+            &rest.to_string(),
+        )
+        .await;
+    let query = format!(
+        "{{ validateAccess(input: {{credential: \"{{token}}\", service: \"billing\", \
+         graphql: {{document: {document:?}}}, requestId: \"req-aliases\"}}) \
+         {{ decision reason denied scopes {{ all projects }} subject {{ id kind }} decisionId \
+         policyVersion requestId }} }}"
     );
     let body = json!({"query": query}).to_string();
     world

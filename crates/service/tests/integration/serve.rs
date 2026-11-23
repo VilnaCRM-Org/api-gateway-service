@@ -27,11 +27,13 @@ const OUTSIDE_REQUESTS: [&str; 3] = ["listening", "shutdown signal received", "s
 /// the security audit log, which a fresh database receives before the service listens.
 const AUDIT_EVENT: &str = "security audit event";
 
-/// The entries of the service itself: every entry but the security audit records.
+/// The entries of the service itself: every entry but the security audit records and the entries
+/// of the per-replica tasks (the maintenance task, the outbox relay and its listener), which run
+/// beside the server in a span that names the task.
 fn service_entries(lines: &[Value]) -> Vec<&Value> {
     lines
         .iter()
-        .filter(|line| line["message"] != AUDIT_EVENT)
+        .filter(|line| line["message"] != AUDIT_EVENT && !line["span"]["task"].is_string())
         .collect()
 }
 

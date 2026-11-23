@@ -156,6 +156,61 @@ async fn a_denied_check_is_a_decision_with_the_reason_and_the_denied_keys() {
 }
 
 #[tokio::test]
+async fn a_graphql_document_is_asked_with_its_operation_name() {
+    let (state, asked) = scenario(Ok(allowed()));
+    let input = json!({
+        "credential": "subject-token", "service": "billing", "requestId": "req-doc",
+        "graphql": {"document": "query Get { invoice { id } }", "operationName": "Get"}
+    });
+
+    let response = validate(&schema(Some(state)), Caller::Data(Some(principal())), input).await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    let [query] = recorded(&asked).try_into().unwrap();
+    let AccessTarget::GraphQl(target) = query.check.target() else {
+        panic!("expected a GraphQL target");
+    };
+    assert_eq!(target.document(), "query Get { invoice { id } }");
+    assert_eq!(target.operation_name(), Some("Get"));
+}
+
+#[tokio::test]
+async fn a_denied_document_lists_every_denied_coordinate() {
+    let outcome = denied(
+        DecisionReason::PermissionMissing,
+        &["gql:billing:Invoice.total", "gql:billing:Query.invoice"],
+    );
+    let (state, _asked) = scenario(Ok(outcome));
+    let input = json!({
+        "credential": "subject-token", "service": "billing", "requestId": "req-doc",
+        "graphql": {"document": "{ invoice { total } }"}
+    });
+
+    let response = validate(&schema(Some(state)), Caller::Data(Some(principal())), input).await;
+
+    let data = response.data.into_json().unwrap();
+    assert_eq!(data["validateAccess"]["decision"], json!("deny"));
+    assert_eq!(
+        data["validateAccess"]["denied"],
+        json!(["gql:billing:Invoice.total", "gql:billing:Query.invoice"])
+    );
+}
+
+#[tokio::test]
+async fn a_graphql_target_beside_a_rest_target_is_validation_failed_and_asks_nothing() {
+    let (state, asked) = scenario(Ok(allowed()));
+    let input = json!({
+        "credential": "t", "service": "billing", "requestId": "r",
+        "rest": {"method": "GET", "path": "/"}, "graphql": {"document": "{ a }"}
+    });
+
+    let response = validate(&schema(Some(state)), Caller::Data(Some(principal())), input).await;
+
+    assert_eq!(error_code(&response), Some(code_of("VALIDATION_FAILED")));
+    assert_eq!(recorded(&asked).len(), 0);
+}
+
+#[tokio::test]
 async fn a_refused_token_has_no_subject_and_no_policy_version() {
     let (state, _asked) = scenario(Ok(token_refused()));
 
@@ -266,6 +321,7 @@ fn the_input_does_not_print_the_credential() {
         credential: "raw-secret-token".to_owned(),
         service: "billing".to_owned(),
         rest: None,
+        graphql: None,
         permissions: None,
         project_id: None,
         min_policy_version: None,
@@ -320,4 +376,46 @@ fn the_inputs_are_read_from_a_graphql_object_and_a_wrong_last_field_is_refused()
     assert!(ValidateAccessInput::parse(Some(Value::Boolean(true))).is_err());
     assert!(AccessRestTargetInput::parse(Some(wrong_path)).is_err());
     assert!(ValidateAccessInput::parse(Some(input(Value::Null, Value::List(Vec::new())))).is_err());
+}
+
+#[test]
+fn the_graphql_target_is_read_from_a_graphql_object_and_printed_with_its_document() {
+    use async_graphql::{InputType as _, Name};
+
+    use super::AccessGraphQlTargetInput;
+
+    let graphql = Value::Object(
+        [
+            (
+                Name::new("document"),
+                Value::String("{ invoice { id } }".to_owned()),
+            ),
+            (Name::new("operationName"), Value::Null),
+        ]
+        .into_iter()
+        .collect(),
+    );
+
+    let target = AccessGraphQlTargetInput::parse(Some(graphql)).unwrap();
+
+    assert_eq!(target.document, "{ invoice { id } }");
+    assert!(target.operation_name.is_none());
+    assert!(format!("{target:?}").contains("{ invoice { id } }"));
+    let wrong_document =
+        Value::Object(std::iter::once((Name::new("document"), Value::List(Vec::new()))).collect());
+    let wrong_operation = Value::Object(
+        [
+            (
+                Name::new("document"),
+                Value::String("{ invoice { id } }".to_owned()),
+            ),
+            (Name::new("operationName"), Value::List(Vec::new())),
+        ]
+        .into_iter()
+        .collect(),
+    );
+
+    assert!(AccessGraphQlTargetInput::parse(Some(Value::Boolean(true))).is_err());
+    assert!(AccessGraphQlTargetInput::parse(Some(wrong_document)).is_err());
+    assert!(AccessGraphQlTargetInput::parse(Some(wrong_operation)).is_err());
 }

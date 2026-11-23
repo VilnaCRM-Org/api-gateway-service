@@ -4,9 +4,9 @@
 //! both stay equal.
 
 use iam_domain::{
-    AccessCheck, AccessTarget, Credential, DecisionOutcome, HttpMethod, InvalidIamValue,
-    PermissionsTarget, PolicyVersion, ProjectId, RequestId, RestTarget, ScopeSet, ServiceName,
-    SubjectRef,
+    AccessCheck, AccessTarget, Credential, DecisionOutcome, GraphQlTarget, HttpMethod,
+    InvalidIamValue, PermissionsTarget, PolicyVersion, ProjectId, RequestId, RestTarget, ScopeSet,
+    ServiceName, SubjectRef,
 };
 use serde::{Deserialize, Serialize};
 use shared_application::http::Violation;
@@ -36,6 +36,25 @@ pub struct RestTargetDto {
     pub path: String,
 }
 
+/// The GraphQL document that a check names.
+///
+/// A document over a limit of the decision API is not refused here: it is decided as a deny with
+/// `limits_exceeded`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, ToSchema, Validate)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schema(as = AccessValidationGraphQlTarget)]
+pub struct GraphQlTargetDto {
+    /// The document as the caller received it; IAM resolves every field it selects against the
+    /// active GraphQL versions of the service.
+    #[schema(example = "{ invoice(id: 42) { id total } }")]
+    pub document: String,
+    /// The operation to check; optional when the document holds exactly one operation.
+    #[serde(default)]
+    #[schema(max_length = 256, example = "GetInvoice")]
+    #[validate(length(max = 256, message = "This value must contain at most 256 characters."))]
+    pub operation_name: Option<String>,
+}
+
 /// Body of the access-validation operation: who asks, about which service, and what is checked.
 ///
 /// Its `Debug` output never shows the credential.
@@ -59,11 +78,18 @@ pub struct ValidateAccessRequest {
         message = "This value must contain between 1 and 63 characters."
     ))]
     pub service: String,
-    /// A REST request to check; exactly one of `rest` and `permissions` is given.
+    /// A REST request to check; exactly one of `rest`, `graphql` and `permissions` is given.
     #[serde(default)]
     #[validate(nested)]
     pub rest: Option<RestTargetDto>,
-    /// The permission keys to check, 1 to 100; exactly one of `rest` and `permissions` is given.
+    /// A GraphQL document to check; exactly one of `rest`, `graphql` and `permissions` is given.
+    /// The decision is all-or-nothing: the document is allowed only when the subject holds the key
+    /// of every coordinate it selects, and `denied` lists every coordinate it does not hold.
+    #[serde(default)]
+    #[validate(nested)]
+    pub graphql: Option<GraphQlTargetDto>,
+    /// The permission keys to check, 1 to 100; exactly one of `rest`, `graphql` and
+    /// `permissions` is given.
     #[serde(default)]
     #[schema(min_items = 1, max_items = 100)]
     #[validate(length(
@@ -119,7 +145,7 @@ impl ValidateAccessRequest {
     /// policy version, request id.
     pub fn parse(self) -> Result<ParsedValidation, IamError> {
         let service = ServiceName::new(&self.service).map_err(|error| violation_of(error, None));
-        let target = parse_target(self.rest.as_ref(), self.permissions);
+        let target = parse_target(self.rest.as_ref(), self.graphql, self.permissions);
         let project = self
             .project_id
             .as_deref()
@@ -157,13 +183,14 @@ impl ValidateAccessRequest {
     }
 }
 
-/// The one target of a request: a request with none or with two is a violation of `target`.
+/// The one target of a request: a request with none or with several is a violation of `target`.
 fn parse_target(
     rest: Option<&RestTargetDto>,
+    graphql: Option<GraphQlTargetDto>,
     permissions: Option<Vec<String>>,
 ) -> Result<AccessTarget, Violation> {
-    match (rest, permissions) {
-        (Some(rest), None) => HttpMethod::parse(&rest.method)
+    match (rest, graphql, permissions) {
+        (Some(rest), None, None) => HttpMethod::parse(&rest.method)
             .map(|method| AccessTarget::Rest(RestTarget::new(method, rest.path.clone())))
             .ok_or_else(|| Violation {
                 property_path: "rest.method".to_owned(),
@@ -172,16 +199,20 @@ fn parse_target(
                         .to_owned(),
                 code: "choice".to_owned(),
             }),
-        (None, Some(keys)) => PermissionsTarget::new(keys)
+        (None, Some(graphql), None) => Ok(AccessTarget::GraphQl(GraphQlTarget::new(
+            graphql.document,
+            graphql.operation_name,
+        ))),
+        (None, None, Some(keys)) => PermissionsTarget::new(keys)
             .map(AccessTarget::Permissions)
             .map_err(|error| Violation {
                 property_path: error.property_path().to_owned(),
                 message: error.to_string(),
                 code: error.code().to_owned(),
             }),
-        (None, None) | (Some(_), Some(_)) => Err(Violation {
+        _ => Err(Violation {
             property_path: "target".to_owned(),
-            message: "Exactly one of rest and permissions must be given.".to_owned(),
+            message: "Exactly one of rest, graphql and permissions must be given.".to_owned(),
             code: "choice".to_owned(),
         }),
     }

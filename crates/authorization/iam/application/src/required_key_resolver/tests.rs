@@ -1,7 +1,7 @@
 use iam_domain::{
     AccessCheck, AccessTarget, DecisionReason, DecisionVerdict, GqlName, GraphQlCoordinate,
-    GraphQlField, GraphQlTypeGraph, HttpMethod, PathTemplate, PermissionFlags, PermissionsTarget,
-    RestOperation, RestOperationSet, RestTarget, ServiceCatalog, ServiceName,
+    GraphQlField, GraphQlTarget, GraphQlTypeGraph, HttpMethod, PathTemplate, PermissionFlags,
+    PermissionsTarget, RestOperation, RestOperationSet, RestTarget, ServiceCatalog, ServiceName,
 };
 use rstest::rstest;
 use test_support::policy_epoch::seeded_policy_epoch;
@@ -276,16 +276,233 @@ fn a_service_without_a_graphql_version_has_no_graphql_key_not_even_introspection
     assert_eq!(verdict.denied(), ["gql:orders:__introspection".to_owned()]);
 }
 
-#[test]
-fn a_graphql_target_fails_closed_until_its_branch_exists() {
-    let check = AccessCheck::new(
+fn document_field(
+    coordinate: &str,
+    return_type: &str,
+    flags: PermissionFlags,
+) -> (GraphQlCoordinate, GraphQlField) {
+    (
+        GraphQlCoordinate::parse(coordinate).unwrap(),
+        GraphQlField {
+            return_type: GqlName::parse(return_type).unwrap(),
+            flags,
+        },
+    )
+}
+
+/// The first active version: orders can be read, cancelled and priced.
+fn first_version() -> GraphQlTypeGraph {
+    GraphQlTypeGraph::new(
+        [
+            document_field("Query.order", "Order", PermissionFlags::NONE),
+            document_field(
+                "Mutation.cancelOrder",
+                "Order",
+                PermissionFlags::NONE.with_sensitive(),
+            ),
+            document_field("Order.id", "ID", PermissionFlags::NONE),
+            document_field(
+                "Order.total",
+                "Int",
+                PermissionFlags::NONE.with_audit_always(),
+            ),
+        ],
+        [],
+    )
+    .unwrap()
+}
+
+/// The second active version: it adds refunds and keeps the order query.
+fn second_version() -> GraphQlTypeGraph {
+    GraphQlTypeGraph::new(
+        [
+            document_field("Query.order", "Order", PermissionFlags::NONE),
+            document_field("Query.refund", "Refund", PermissionFlags::NONE),
+            document_field("Refund.id", "ID", PermissionFlags::NONE),
+        ],
+        [],
+    )
+    .unwrap()
+}
+
+fn document_catalog(versions: Vec<GraphQlTypeGraph>) -> ServiceCatalog {
+    ServiceCatalog::new(
         service(),
-        AccessTarget::GraphQl(iam_domain::GraphQlTarget::new("{ order }".to_owned(), None)),
+        seeded_policy_epoch(),
+        vec![operations()],
+        versions,
+    )
+}
+
+fn document_check(document: &str, operation_name: Option<&str>) -> AccessCheck {
+    AccessCheck::new(
+        service(),
+        AccessTarget::GraphQl(GraphQlTarget::new(
+            document.to_owned(),
+            operation_name.map(str::to_owned),
+        )),
         None,
         None,
+    )
+}
+
+fn document_keys(
+    document: &str,
+    operation_name: Option<&str>,
+    versions: Vec<GraphQlTypeGraph>,
+) -> Vec<(String, PermissionFlags)> {
+    RequiredKeyResolver::resolve(
+        &document_check(document, operation_name),
+        &document_catalog(versions),
+    )
+    .unwrap()
+    .iter()
+    .map(|required| (required.key().to_string(), required.flags()))
+    .collect()
+}
+
+fn document_refusal(
+    document: &str,
+    operation_name: Option<&str>,
+    versions: Vec<GraphQlTypeGraph>,
+) -> DecisionVerdict {
+    RequiredKeyResolver::resolve(
+        &document_check(document, operation_name),
+        &document_catalog(versions),
+    )
+    .unwrap_err()
+}
+
+#[test]
+fn a_document_requires_the_key_of_every_coordinate_it_selects_with_its_flags() {
+    let keys = document_keys("{ order { id total } }", None, vec![first_version()]);
+
+    assert_eq!(
+        keys,
+        [
+            ("gql:orders:Order.id".to_owned(), PermissionFlags::NONE),
+            (
+                "gql:orders:Order.total".to_owned(),
+                PermissionFlags::NONE.with_audit_always()
+            ),
+            ("gql:orders:Query.order".to_owned(), PermissionFlags::NONE),
+        ]
+    );
+}
+
+#[test]
+fn a_mutation_requires_its_sensitive_key() {
+    let keys = document_keys(
+        "mutation { cancelOrder { id } }",
+        None,
+        vec![first_version()],
     );
 
-    let verdict = refused(&check);
+    assert!(keys.contains(&(
+        "gql:orders:Mutation.cancelOrder".to_owned(),
+        PermissionFlags::NONE.with_sensitive()
+    )));
+}
 
-    assert_eq!(verdict.reason(), DecisionReason::Unavailable);
+#[test]
+fn the_named_operation_is_the_one_that_is_resolved() {
+    let document = "query A { order { id } } mutation B { cancelOrder { id } }";
+
+    let keys = document_keys(document, Some("B"), vec![first_version()]);
+
+    assert!(
+        keys.iter()
+            .any(|(key, _)| key == "gql:orders:Mutation.cancelOrder")
+    );
+    assert!(keys.iter().all(|(key, _)| key != "gql:orders:Query.order"));
+}
+
+#[test]
+fn introspection_requires_the_introspection_key_without_flags() {
+    let keys = document_keys(
+        "{ __schema { queryType { name } } order { id } }",
+        None,
+        vec![first_version()],
+    );
+
+    assert!(keys.contains(&(
+        "gql:orders:__introspection".to_owned(),
+        PermissionFlags::NONE
+    )));
+    assert!(keys.iter().any(|(key, _)| key == "gql:orders:Query.order"));
+}
+
+#[test]
+fn a_document_is_read_against_the_union_of_the_active_versions() {
+    let keys = document_keys(
+        "{ order { id } refund { id } }",
+        None,
+        vec![first_version(), second_version()],
+    );
+
+    let names: Vec<&str> = keys.iter().map(|(key, _)| key.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "gql:orders:Order.id",
+            "gql:orders:Query.order",
+            "gql:orders:Query.refund",
+            "gql:orders:Refund.id",
+        ]
+    );
+}
+
+#[test]
+fn a_field_of_a_new_version_is_unknown_until_that_version_is_active() {
+    let verdict = document_refusal("{ refund { id } }", None, vec![first_version()]);
+
+    assert_eq!(verdict.reason(), DecisionReason::UnknownOperation);
+}
+
+#[test]
+fn a_field_no_active_version_declares_on_a_known_type_is_an_unknown_operation() {
+    let verdict = document_refusal("{ order { missing } }", None, vec![first_version()]);
+
+    assert_eq!(verdict.reason(), DecisionReason::UnknownOperation);
+    assert_eq!(verdict.denied().len(), 0);
+}
+
+#[test]
+fn a_service_without_a_graphql_version_has_no_document_to_read() {
+    let verdict = document_refusal("{ order { id } }", None, Vec::new());
+
+    assert_eq!(verdict.reason(), DecisionReason::UnknownOperation);
+}
+
+#[rstest]
+#[case::does_not_parse("{ order { id ")]
+#[case::two_operations_without_a_name("query A { order { id } } query B { order { id } }")]
+#[case::a_leaf_with_a_selection("{ order { id { x } } }")]
+fn a_document_that_cannot_be_read_is_malformed(#[case] document: &str) {
+    let verdict = document_refusal(document, None, vec![first_version()]);
+
+    assert_eq!(verdict.reason(), DecisionReason::MalformedOperation);
+}
+
+#[test]
+fn a_document_over_a_limit_is_refused_before_any_field_is_resolved() {
+    let aliases = (0..51)
+        .map(|number| format!("a{number}: order {{ id }} "))
+        .collect::<Vec<_>>()
+        .concat();
+    let document = format!("{{ {aliases} }}");
+
+    let verdict = document_refusal(&document, None, vec![first_version()]);
+
+    assert_eq!(verdict.reason(), DecisionReason::LimitsExceeded);
+    assert_eq!(verdict.denied().len(), 0);
+}
+
+#[test]
+fn a_document_over_the_byte_limit_is_refused_as_limits_exceeded() {
+    let document = format!("{{ order {{ id }} }} # {}", "x".repeat(70 * 1024));
+
+    let verdict = document_refusal(&document, None, vec![first_version()]);
+
+    assert_eq!(verdict.reason(), DecisionReason::LimitsExceeded);
 }

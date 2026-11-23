@@ -128,18 +128,19 @@ async fn drain(
     }
 }
 
-/// Wires the application, registers IAM's own specifications, starts the per-replica tasks, binds,
+/// Wires the application, registers IAM's own specifications, binds, starts the per-replica tasks,
 /// serves and drains. The registration is the first contact with the database; it fails the start
-/// when the database cannot be reached.
+/// when the database cannot be reached. A replica that cannot bind its listener starts no task, so
+/// it never leads a singleton task such as the outbox relay.
 async fn serve(config: &Config) -> Result<Shutdown, BoxError> {
     let signals = Signals::install()?;
     let adapters = Adapters::connect(config).await?;
     bootstrap::register_iam_specs(&adapters).await?;
+    let listener = bind(config).await?;
+    let addr = listener.local_addr()?;
     let (stop, stopping) = watch::channel(false);
     let tasks = bootstrap::start_tasks(&adapters, TaskMode::Serve, stopping.clone());
     let router = bootstrap::router(adapters, config)?;
-    let listener = bind(config).await?;
-    let addr = listener.local_addr()?;
     log_listening(addr, mode(config.app_env));
     let server = axum::serve(listener, router).with_graceful_shutdown(stopped(stopping));
     let server = tokio::spawn(async move { server.await });

@@ -19,7 +19,7 @@ paths:
       tags:
       - iam
       summary: Validates whether a subject may perform an operation or hold permission keys.
-      description: 'Decides one check for the bearer of `credential` on the target `service`: a REST request (`rest`) or a list of permission keys (`permissions`), exactly one of them. A valid request always returns 200 with a decision body: `allow`, or `deny` with the `reason` and the `denied` keys. A `minPolicyVersion` above the current policy version is refused with 422. The credential is never echoed.'
+      description: 'Decides one check for the bearer of `credential` on the target `service`: a REST request (`rest`), a GraphQL document (`graphql`) or a list of permission keys (`permissions`), exactly one of them. A GraphQL document is allowed only when the subject holds every coordinate it selects; `denied` lists every coordinate it does not hold, and a document over a limit is a deny with `limits_exceeded`. A valid request always returns 200 with a decision body: `allow`, or `deny` with the `reason` and the `denied` keys or coordinates. A `minPolicyVersion` above the current policy version is refused with 422. The credential is never echoed.'
       operationId: api_access_validations_post
       requestBody:
         content:
@@ -2798,6 +2798,30 @@ components:
           - $ref: '#/components/schemas/AccessSubject'
             description: The subject of the token; absent when no token resolved.
           - type: 'null'
+    AccessValidationGraphQlTarget:
+      type: object
+      description: |-
+        The GraphQL document that a check names.
+
+        A document over a limit of the decision API is not refused here: it is decided as a deny with
+        `limits_exceeded`.
+      required:
+      - document
+      properties:
+        document:
+          type: string
+          description: |-
+            The document as the caller received it; IAM resolves every field it selects against the
+            active GraphQL versions of the service.
+          example: '{ invoice(id: 42) { id total } }'
+        operationName:
+          type:
+          - string
+          - 'null'
+          description: The operation to check; optional when the document holds exactly one operation.
+          example: GetInvoice
+          maxLength: 256
+      additionalProperties: false
     AccessValidationRestTarget:
       type: object
       description: The REST request that a check names.
@@ -4169,6 +4193,14 @@ components:
             `token_missing`.
           example: eyJhbGciOiJSUzI1NiJ9.e30.c2lnbmF0dXJl
           maxLength: 8192
+        graphql:
+          oneOf:
+          - $ref: '#/components/schemas/AccessValidationGraphQlTarget'
+            description: |-
+              A GraphQL document to check; exactly one of `rest`, `graphql` and `permissions` is given.
+              The decision is all-or-nothing: the document is allowed only when the subject holds the key
+              of every coordinate it selects, and `denied` lists every coordinate it does not hold.
+          - type: 'null'
         minPolicyVersion:
           type:
           - integer
@@ -4184,7 +4216,9 @@ components:
           - 'null'
           items:
             type: string
-          description: The permission keys to check, 1 to 100; exactly one of `rest` and `permissions` is given.
+          description: |-
+            The permission keys to check, 1 to 100; exactly one of `rest`, `graphql` and
+            `permissions` is given.
           maxItems: 100
           minItems: 1
         projectId:
@@ -4206,7 +4240,7 @@ components:
         rest:
           oneOf:
           - $ref: '#/components/schemas/AccessValidationRestTarget'
-            description: A REST request to check; exactly one of `rest` and `permissions` is given.
+            description: A REST request to check; exactly one of `rest`, `graphql` and `permissions` is given.
           - type: 'null'
         service:
           type: string

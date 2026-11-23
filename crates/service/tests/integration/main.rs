@@ -19,6 +19,8 @@ mod maintenance;
 #[cfg(test)]
 mod migrate;
 #[cfg(test)]
+mod outbox_listener;
+#[cfg(test)]
 mod panic;
 #[cfg(test)]
 mod register_iam_specs;

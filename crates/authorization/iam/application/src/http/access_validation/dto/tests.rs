@@ -115,6 +115,79 @@ fn a_request_with_two_target_forms_is_a_violation_of_the_target() {
 }
 
 #[test]
+fn a_graphql_check_parses_into_a_query_with_the_document_and_the_operation_name() {
+    let parsed = parsed(request(&json!({
+        "rest": null,
+        "graphql": {"document": "query Get { invoice { id } }", "operationName": "Get"}
+    })));
+
+    let AccessTarget::GraphQl(target) = parsed.query.check.target() else {
+        panic!("expected a GraphQL target");
+    };
+    assert_eq!(target.document(), "query Get { invoice { id } }");
+    assert_eq!(target.operation_name(), Some("Get"));
+}
+
+#[test]
+fn a_graphql_check_without_an_operation_name_names_none() {
+    let parsed = parsed(request(&json!({
+        "rest": null,
+        "graphql": {"document": "{ invoice { id } }"}
+    })));
+
+    let AccessTarget::GraphQl(target) = parsed.query.check.target() else {
+        panic!("expected a GraphQL target");
+    };
+    assert_eq!(target.operation_name(), None);
+}
+
+#[test]
+fn a_graphql_document_over_the_limits_is_not_refused_by_validation() {
+    let document = "x".repeat(200 * 1024);
+    let request = request(&json!({"rest": null, "graphql": {"document": document}}));
+
+    assert!(request.validate().is_ok());
+    assert!(request.parse().is_ok());
+}
+
+#[test]
+fn an_operation_name_beyond_256_characters_is_refused_by_validation() {
+    let request = request(&json!({
+        "rest": null,
+        "graphql": {"document": "{ a }", "operationName": "n".repeat(257)}
+    }));
+
+    assert!(request.validate().is_err());
+}
+
+#[rstest]
+#[case::with_rest(json!({"graphql": {"document": "{ a }"}}))]
+#[case::with_permissions(json!({
+    "rest": null,
+    "graphql": {"document": "{ a }"},
+    "permissions": ["iam:validate:*"]
+}))]
+#[case::with_both(json!({
+    "graphql": {"document": "{ a }"},
+    "permissions": ["iam:validate:*"]
+}))]
+fn a_graphql_target_beside_another_form_is_a_violation_of_the_target(#[case] overrides: Value) {
+    let found = violations(request(&overrides));
+
+    assert_eq!(found, [pair("target", "choice")]);
+}
+
+#[test]
+fn the_graphql_target_refuses_an_unknown_member() {
+    let body = json!({
+        "credential": "t", "service": "billing", "requestId": "r",
+        "graphql": {"document": "{ a }", "extra": 1}
+    });
+
+    assert!(serde_json::from_value::<ValidateAccessRequest>(body).is_err());
+}
+
+#[test]
 fn an_unknown_method_is_a_violation_of_the_method() {
     let found = violations(request(&json!({"rest": {"method": "get", "path": "/"}})));
 

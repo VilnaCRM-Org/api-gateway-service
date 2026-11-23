@@ -9,7 +9,7 @@ use validator::Validate as _;
 
 use super::{require_caller, state};
 use crate::http::access_validation::dto::{
-    AccessSubjectDto, AccessValidationResponse, RestTargetDto, ScopesResponse,
+    AccessSubjectDto, AccessValidationResponse, GraphQlTargetDto, RestTargetDto, ScopesResponse,
     ValidateAccessRequest,
 };
 use crate::http::access_validation::validate_access;
@@ -24,6 +24,16 @@ pub struct AccessRestTargetInput {
     pub path: String,
 }
 
+/// The GraphQL document that a check names.
+#[derive(Debug, InputObject)]
+#[graphql(name = "AccessGraphQlTargetInput")]
+pub struct AccessGraphQlTargetInput {
+    /// The document as the caller received it; IAM resolves every field it selects against the active GraphQL versions of the service. A document over a limit is decided as a deny with `limits_exceeded`.
+    pub document: String,
+    /// The operation to check; optional when the document holds exactly one operation.
+    pub operation_name: Option<String>,
+}
+
 /// Input of the access-validation query.
 // Its `Debug` output never shows the credential.
 #[derive(InputObject)]
@@ -33,9 +43,11 @@ pub struct ValidateAccessInput {
     pub credential: String,
     /// The target service, as registered in IAM.
     pub service: String,
-    /// A REST request to check; exactly one of `rest` and `permissions` is given.
+    /// A REST request to check; exactly one of `rest`, `graphql` and `permissions` is given.
     pub rest: Option<AccessRestTargetInput>,
-    /// The permission keys to check, 1 to 100; exactly one of `rest` and `permissions` is given.
+    /// A GraphQL document to check; exactly one of `rest`, `graphql` and `permissions` is given. The decision is all-or-nothing and `denied` lists every coordinate the subject does not hold.
+    pub graphql: Option<AccessGraphQlTargetInput>,
+    /// The permission keys to check, 1 to 100; exactly one of `rest`, `graphql` and `permissions` is given.
     pub permissions: Option<Vec<String>>,
     /// The project in which the check is made; without it, project assignments contribute their projects to `scopes`.
     pub project_id: Option<String>,
@@ -60,6 +72,10 @@ impl From<ValidateAccessInput> for ValidateAccessRequest {
             rest: input.rest.map(|rest| RestTargetDto {
                 method: rest.method,
                 path: rest.path,
+            }),
+            graphql: input.graphql.map(|graphql| GraphQlTargetDto {
+                document: graphql.document,
+                operation_name: graphql.operation_name,
             }),
             permissions: input.permissions,
             project_id: input.project_id,

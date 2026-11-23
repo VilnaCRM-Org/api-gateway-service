@@ -78,7 +78,7 @@ Content-Type: application/json
 }
 
 ### Validate access over REST: 200 with a decision body (allow, or deny with the reason and the denied keys), whatever the subject's rights; 422 for no target form, two target forms, more than 100 keys or a minPolicyVersion above the current policy version; 401 without a valid bearer token
-# Replace both tokens: the bearer token of the caller and the credential of the subject. Send exactly one of "rest" and "permissions".
+# Replace both tokens: the bearer token of the caller and the credential of the subject. Send exactly one of "rest", "graphql" and "permissions".
 POST {{baseUrl}}/api/access-validations
 Authorization: Bearer <caller token>
 Content-Type: application/json
@@ -104,6 +104,39 @@ Content-Type: application/json
   "permissions": ["rest:billing:GET /api/invoices"],
   "projectId": "0190f2a8-7b3c-7d4e-8f10-1234567890cd",
   "requestId": "req-0002"
+}
+
+### Validate a GraphQL document over REST: allowed only when the subject holds every coordinate it selects; "denied" lists every coordinate it does not hold; a document over a limit (64 KiB, depth 15, 500 coordinates, 50 aliases, 100 fragments) is a deny with the reason limits_exceeded
+# "operationName" is optional when the document holds exactly one operation.
+POST {{baseUrl}}/api/access-validations
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "credential": "<subject token>",
+  "service": "billing",
+  "graphql": {
+    "document": "query GetInvoice { invoice { id total } }",
+    "operationName": "GetInvoice"
+  },
+  "requestId": "req-0004"
+}
+
+### Validate a GraphQL document over GraphQL: the same decision as the REST operation
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($input: ValidateAccessInput!) { validateAccess(input: $input) { decision reason denied scopes { all projects } subject { id kind } decisionId policyVersion requestId } }",
+  "variables": {
+    "input": {
+      "credential": "<subject token>",
+      "service": "billing",
+      "graphql": { "document": "query GetInvoice { invoice { id total } }", "operationName": "GetInvoice" },
+      "requestId": "req-0005"
+    }
+  }
 }
 
 ### Validate access over GraphQL: the same decision as the REST operation; the error code VALIDATION_FAILED for an invalid request, UNAUTHENTICATED without a valid bearer token

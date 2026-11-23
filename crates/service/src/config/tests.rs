@@ -433,6 +433,7 @@ fn every_variable_accepts_a_valid_value() {
         tokens: valid().tokens,
         kafka: valid().kafka,
         maintenance: valid().maintenance,
+        relay: valid().relay,
     };
 
     let config = Config::from_args(args).unwrap();
@@ -1068,7 +1069,7 @@ type Mutator = fn(&mut ServeArgs);
 
 /// One row per variable of `ServeArgs`: the variable, a way to make it the only problem, and the
 /// variable that the problem names.
-const FIELDS: [(&str, Mutator, &str); 43] = [
+const FIELDS: [(&str, Mutator, &str); 45] = [
     ("APP_ENV", |a| a.app_env = some("x"), "APP_ENV"),
     ("APP_HOST", |a| a.app_host = some("x"), "APP_HOST"),
     ("APP_PORT", |a| a.app_port = some("x"), "APP_PORT"),
@@ -1240,6 +1241,16 @@ const FIELDS: [(&str, Mutator, &str); 43] = [
         "ORPHANED_GRANT_RETENTION",
         |a| a.maintenance.orphaned_grant_retention = some("x"),
         "ORPHANED_GRANT_RETENTION",
+    ),
+    (
+        "DATABASE_LISTEN_URL",
+        |a| a.relay.listen_url = some("mysql://x"),
+        "DATABASE_LISTEN_URL",
+    ),
+    (
+        "KAFKA_TRANSACTION_TIMEOUT",
+        |a| a.relay.transaction_timeout = some("x"),
+        "KAFKA_TRANSACTION_TIMEOUT",
     ),
     (
         "KAFKA_CONFIG_GATES",
@@ -1820,5 +1831,97 @@ fn an_orphaned_grant_retention_that_is_no_positive_duration_names_its_variable(
     assert_eq!(
         problems(args),
         [("ORPHANED_GRANT_RETENTION", reason.to_owned())]
+    );
+}
+
+#[test]
+fn the_relay_listens_on_the_database_url_by_default_with_a_ten_second_transaction_timeout() {
+    let config = Config::from_args(valid()).unwrap();
+
+    assert_eq!(
+        config.relay,
+        RelaySettings {
+            listen_url: "postgres://app:secret@localhost:5432/app".to_owned(),
+            transaction_timeout: Duration::from_secs(10),
+        }
+    );
+}
+
+#[test]
+fn the_relay_variables_accept_a_direct_url_and_a_timeout_from_one_to_ten_seconds() {
+    let args = ServeArgs {
+        relay: RelayArgs {
+            listen_url: some("postgresql://app:secret@db-direct:5432/app"),
+            transaction_timeout: some("1s"),
+        },
+        ..valid()
+    };
+
+    let config = Config::from_args(args).unwrap();
+
+    assert_eq!(
+        config.relay.listen_url,
+        "postgresql://app:secret@db-direct:5432/app"
+    );
+    assert_eq!(config.relay.transaction_timeout, Duration::from_secs(1));
+}
+
+#[test]
+fn a_listen_url_that_is_no_postgres_url_names_its_variable() {
+    let args = ServeArgs {
+        relay: RelayArgs {
+            listen_url: some("mysql://app@db/app"),
+            ..RelayArgs::default()
+        },
+        ..valid()
+    };
+
+    assert_eq!(
+        problems(args),
+        [(
+            "DATABASE_LISTEN_URL",
+            "must be a postgres:// or postgresql:// URL".to_owned()
+        )]
+    );
+}
+
+#[rstest]
+#[case("soon", "must be a duration such as 500ms, 2s or 1m")]
+#[case("0s", "must be a duration from 1s to 10s")]
+#[case("999ms", "must be a duration from 1s to 10s")]
+#[case("11s", "must be a duration from 1s to 10s")]
+fn a_transaction_timeout_outside_one_to_ten_seconds_names_its_variable(
+    #[case] raw: &str,
+    #[case] reason: &str,
+) {
+    let args = ServeArgs {
+        relay: RelayArgs {
+            transaction_timeout: some(raw),
+            ..RelayArgs::default()
+        },
+        ..valid()
+    };
+
+    assert_eq!(
+        problems(args),
+        [("KAFKA_TRANSACTION_TIMEOUT", reason.to_owned())]
+    );
+}
+
+#[test]
+fn a_missing_database_url_is_reported_once_and_not_again_for_the_listen_url() {
+    let args = ServeArgs {
+        database: DatabaseArgs::default(),
+        ..valid()
+    };
+
+    let reported = problems(args);
+
+    assert_eq!(
+        reported
+            .iter()
+            .filter(|(variable, _)| variable.starts_with("DATABASE_"))
+            .count(),
+        1
     );
 }

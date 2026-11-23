@@ -28,7 +28,8 @@ use tracing_subscriber::EnvFilter;
 
 use crate::bootstrap::gateway::listener;
 use crate::cli::{
-    DatabaseArgs, GatewayArgs, KafkaArgs, MaintenanceArgs, MigrateArgs, ServeArgs, TokenArgs,
+    DatabaseArgs, GatewayArgs, KafkaArgs, MaintenanceArgs, MigrateArgs, RelayArgs, ServeArgs,
+    TokenArgs,
 };
 
 /// The largest accepted `JWT_CLOCK_SKEW`.
@@ -110,6 +111,18 @@ pub struct Config {
     pub kafka: KafkaSettings,
     /// How often the maintenance task runs and how long orphaned grants are kept.
     pub maintenance: MaintenanceSettings,
+    /// The connection that wakes the outbox relay and the timeout of its transactions.
+    pub relay: RelaySettings,
+}
+
+/// The settings of the outbox relay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelaySettings {
+    /// `DATABASE_LISTEN_URL`: the direct connection of `LISTEN iam_outbox`; `DATABASE_URL` when
+    /// the variable is not set.
+    pub listen_url: String,
+    /// `KAFKA_TRANSACTION_TIMEOUT`: `transaction.timeout.ms` of the relay producer, 1s to 10s.
+    pub transaction_timeout: Duration,
 }
 
 /// The settings of the offline validation of User service access tokens.
@@ -154,8 +167,12 @@ impl Config {
             limits.as_ref().map(|limits| limits.health_probe_timeout),
             limits.as_ref().map(|limits| limits.request_timeout),
         );
-        let maintenance = maintenance_settings(&mut collector, &args.maintenance);
-        match (server, database, sqs, limits, tokens, kafka, maintenance) {
+        let tasks = task_settings(
+            &mut collector,
+            &args,
+            database.as_ref().map(|settings| settings.url.as_str()),
+        );
+        match (server, database, sqs, limits, tokens, kafka, tasks) {
             (
                 Some(server),
                 Some(database),
@@ -163,7 +180,7 @@ impl Config {
                 Some(limits),
                 Some(tokens),
                 Some(kafka),
-                Some(maintenance),
+                Some((maintenance, relay)),
             ) if collector.problems.is_empty() => Ok(Self {
                 app_env: server.app_env,
                 host: server.host,
@@ -178,6 +195,7 @@ impl Config {
                 tokens,
                 kafka,
                 maintenance,
+                relay,
             }),
             _ => Err(ConfigErrors(collector.problems)),
         }
@@ -1048,6 +1066,53 @@ fn maintenance_settings(
         interval: interval?,
         orphaned_grant_retention: retention?,
     })
+}
+
+/// The settings of the background tasks: the maintenance and the outbox relay.
+fn task_settings(
+    collector: &mut Collector,
+    args: &ServeArgs,
+    database_url_fallback: Option<&str>,
+) -> Option<(MaintenanceSettings, RelaySettings)> {
+    let maintenance = maintenance_settings(collector, &args.maintenance);
+    let relay = relay_settings(collector, &args.relay, database_url_fallback);
+    Some((maintenance?, relay?))
+}
+
+/// `DATABASE_LISTEN_URL` (`DATABASE_URL` when it is not set) and `KAFKA_TRANSACTION_TIMEOUT`.
+fn relay_settings(
+    collector: &mut Collector,
+    args: &RelayArgs,
+    database_url_fallback: Option<&str>,
+) -> Option<RelaySettings> {
+    let listen_url = args.listen_url.as_deref().map_or_else(
+        || database_url_fallback.map(str::to_owned),
+        |raw| collector.collect("DATABASE_LISTEN_URL", database_url(Some(raw))),
+    );
+    let transaction_timeout = collector.collect(
+        "KAFKA_TRANSACTION_TIMEOUT",
+        transaction_timeout(args.transaction_timeout.as_deref()),
+    );
+    Some(RelaySettings {
+        listen_url: listen_url?,
+        transaction_timeout: transaction_timeout?,
+    })
+}
+
+/// The shortest accepted `KAFKA_TRANSACTION_TIMEOUT`.
+const MIN_TRANSACTION_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// The longest accepted `KAFKA_TRANSACTION_TIMEOUT`.
+const MAX_TRANSACTION_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// `KAFKA_TRANSACTION_TIMEOUT`: from 1 to 10 seconds, 10 by default.
+fn transaction_timeout(raw: Option<&str>) -> Parsed<Duration> {
+    let value = duration(raw, MAX_TRANSACTION_TIMEOUT)?;
+    if (MIN_TRANSACTION_TIMEOUT..=MAX_TRANSACTION_TIMEOUT).contains(&value) {
+        Ok(value)
+    } else {
+        Err("must be a duration from 1s to 10s".to_owned())
+    }
 }
 
 /// `POLICY_TOPIC` and `EVENTS_TOPIC`, which must name two different topics.

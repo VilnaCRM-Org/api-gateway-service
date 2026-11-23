@@ -1074,6 +1074,7 @@ fn defines_exactly_the_documented_schemas() {
             "AccessScopes",
             "AccessSubject",
             "AccessValidation",
+            "AccessValidationGraphQlTarget",
             "AccessValidationRestTarget",
             "AllProjects",
             "AssignUserRoleRequest",

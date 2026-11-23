@@ -1,7 +1,7 @@
 Feature: IAM access validation
   In order to enforce access centrally where the route check of the gateway is not enough
   As a microservice
-  I want to ask IAM whether a subject may perform a REST operation or hold permission keys
+  I want to ask IAM whether a subject may perform a REST operation, run a GraphQL document or hold permission keys
 
   Scenario Outline: A check is decided the same way over REST and GraphQL
     Given a caller authenticated with a valid service token
@@ -298,6 +298,147 @@ Feature: IAM access validation
       """
     Then the GraphQL error code should be "UNAUTHENTICATED"
     And no response should contain the subject token
+
+  Scenario: A document is denied as a whole when one coordinate is missing, listing every denied coordinate, over REST and GraphQL
+    Given a caller authenticated with a valid service token
+    And an assignable role "Invoice reader" that grants "gql:billing:Query.invoice"
+    And a subject token of a user in session "e2e-validate-12"
+    When POST request is sent to "/api/graphql-specs" with body:
+      """
+      {"service": "billing", "sdl": "type Query {\n  invoice: Invoice\n}\n\ntype Invoice {\n  id: ID!\n  total: Int!\n}\n"}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/graphql-specs/{id}/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/access-validations" with body:
+      """
+      {"credential": "{token}", "service": "billing", "graphql": {"document": "{ invoice { id total } }"}, "requestId": "req-partial"}
+      """
+    And the GraphQL operation is sent:
+      """
+      { validateAccess(input: {credential: "{token}", service: "billing", graphql: {document: "{ invoice { id total } }"}, requestId: "req-partial"}) { decision reason denied scopes { all projects } subject { id kind } decisionId policyVersion requestId } }
+      """
+    Then the response status code should be 200
+    And the GraphQL response should have no errors
+    And the REST and GraphQL access validations should be the same
+    And both access validations should be a deny with reason "permission_missing"
+    And both access validations should deny the keys "gql:billing:Invoice.id, gql:billing:Invoice.total"
+    And no response should contain the subject token
+
+  Scenario: A document is allowed when the subject holds every coordinate it selects over REST and GraphQL
+    Given a caller authenticated with a valid service token
+    And an assignable role "Invoice reader" that grants "gql:billing:Query.invoice, gql:billing:Invoice.id, gql:billing:Invoice.total"
+    And a subject token of a user in session "e2e-validate-13"
+    When POST request is sent to "/api/graphql-specs" with body:
+      """
+      {"service": "billing", "sdl": "type Query {\n  invoice: Invoice\n}\n\ntype Invoice {\n  id: ID!\n  total: Int!\n}\n"}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/graphql-specs/{id}/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/access-validations" with body:
+      """
+      {"credential": "{token}", "service": "billing", "graphql": {"document": "{ invoice { id total } }"}, "requestId": "req-whole"}
+      """
+    And the GraphQL operation is sent:
+      """
+      { validateAccess(input: {credential: "{token}", service: "billing", graphql: {document: "{ invoice { id total } }"}, requestId: "req-whole"}) { decision reason denied scopes { all projects } subject { id kind } decisionId policyVersion requestId } }
+      """
+    Then the response status code should be 200
+    And the GraphQL response should have no errors
+    And the REST and GraphQL access validations should be the same
+    And both access validations should be an allow for every project
+    And no response should contain the subject token
+
+  Scenario: A document over a limit is a deny with limits_exceeded over REST and GraphQL
+    Given a caller authenticated with a valid service token
+    And a subject token of a user in session "e2e-validate-14"
+    When POST request is sent to "/api/graphql-specs" with body:
+      """
+      {"service": "billing", "sdl": "type Query {\n  invoice: Invoice\n}\n\ntype Invoice {\n  id: ID!\n  total: Int!\n}\n"}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/graphql-specs/{id}/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 201
+    When a check of a GraphQL document of 51 aliases is sent over REST and GraphQL
+    Then the response status code should be 200
+    And the GraphQL response should have no errors
+    And the REST and GraphQL access validations should be the same
+    And both access validations should be a deny with reason "limits_exceeded"
+    When a check of a GraphQL document of 50 aliases is sent over REST and GraphQL
+    Then the REST and GraphQL access validations should be the same
+    And both access validations should be a deny with reason "permission_missing"
+
+  Scenario: A newly activated GraphQL version is evaluated at once over REST and GraphQL
+    Given a caller authenticated with a valid service token
+    And a subject token of a user in session "e2e-validate-15"
+    When POST request is sent to "/api/graphql-specs" with body:
+      """
+      {"service": "billing", "sdl": "type Query {\n  invoice: Invoice\n}\n\ntype Invoice {\n  id: ID!\n  total: Int!\n}\n"}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/graphql-specs/{id}/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 201
+    # The role is seeded once the first version is active: activating a version that lacks a key
+    # a role already grants would orphan that grant.
+    Given an assignable role "Invoice reader" that grants "gql:billing:Query.invoice, gql:billing:Invoice.id, gql:billing:Invoice.refunded"
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/access-validations" with body:
+      """
+      {"credential": "{token}", "service": "billing", "graphql": {"document": "{ invoice { id refunded } }"}, "requestId": "req-before-version"}
+      """
+    And the GraphQL operation is sent:
+      """
+      { validateAccess(input: {credential: "{token}", service: "billing", graphql: {document: "{ invoice { id refunded } }"}, requestId: "req-before-version"}) { decision reason denied scopes { all projects } subject { id kind } decisionId policyVersion requestId } }
+      """
+    Then the REST and GraphQL access validations should be the same
+    And both access validations should be a deny with reason "unknown_operation"
+    When POST request is sent to "/api/graphql-specs" with body:
+      """
+      {"service": "billing", "sdl": "type Query {\n  invoice: Invoice\n}\n\ntype Invoice {\n  id: ID!\n  total: Int!\n  refunded: Boolean!\n}\n"}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/graphql-specs/{id}/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/access-validations" with body:
+      """
+      {"credential": "{token}", "service": "billing", "graphql": {"document": "{ invoice { id refunded } }"}, "requestId": "req-after-version"}
+      """
+    And the GraphQL operation is sent:
+      """
+      { validateAccess(input: {credential: "{token}", service: "billing", graphql: {document: "{ invoice { id refunded } }"}, requestId: "req-after-version"}) { decision reason denied scopes { all projects } subject { id kind } decisionId policyVersion requestId } }
+      """
+    Then the REST and GraphQL access validations should be the same
+    And both access validations should be an allow for every project
 
   Scenario: The access-validation operation is documented with its security requirement
     When GET request is sent to "/api/docs/openapi.json"
