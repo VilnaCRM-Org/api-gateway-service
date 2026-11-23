@@ -32,6 +32,9 @@ pub enum Command {
     GraphqlExport(ExportArgs),
     /// Ask a running service whether it is alive (on the loopback interface or the `APP_HOST` address).
     Healthcheck(HealthcheckArgs),
+    /// Create the first IAM administrator: the system role `iam-platform-admin` and its global
+    /// assignment to a user or a service principal.
+    IamBootstrap(IamBootstrapArgs),
 }
 
 /// What `service migrate` does besides applying the pending migrations.
@@ -161,6 +164,95 @@ pub struct ServeArgs {
     /// Settings of the offline validation of User service access tokens.
     #[command(flatten)]
     pub tokens: TokenArgs,
+    /// Settings of the control-plane Kafka connection.
+    #[command(flatten)]
+    pub kafka: KafkaArgs,
+}
+
+/// Settings of the control-plane Kafka connection and of the topics it works on.
+#[derive(Debug, Clone, Default, Args)]
+pub struct KafkaArgs {
+    /// Comma-separated `host:port` pairs of the Kafka bootstrap servers (required).
+    #[arg(
+        long = "kafka-bootstrap-servers",
+        env = "KAFKA_BOOTSTRAP_SERVERS",
+        hide_env_values = true
+    )]
+    pub bootstrap_servers: Option<String>,
+    /// `SASL_SSL` or `PLAINTEXT`; `PLAINTEXT` only when `APP_ENV` is `dev` or `test` (default
+    /// `SASL_SSL`).
+    #[arg(
+        long = "kafka-security-protocol",
+        env = "KAFKA_SECURITY_PROTOCOL",
+        hide_env_values = true
+    )]
+    pub security_protocol: Option<String>,
+    /// `SCRAM-SHA-512` or `SCRAM-SHA-256` (default `SCRAM-SHA-512`).
+    #[arg(
+        long = "kafka-sasl-mechanism",
+        env = "KAFKA_SASL_MECHANISM",
+        hide_env_values = true
+    )]
+    pub sasl_mechanism: Option<String>,
+    /// SASL user name (required with `SASL_SSL`).
+    #[arg(
+        long = "kafka-sasl-username",
+        env = "KAFKA_SASL_USERNAME",
+        hide_env_values = true
+    )]
+    pub sasl_username: Option<String>,
+    /// SASL password (required with `SASL_SSL`).
+    #[arg(
+        long = "kafka-sasl-password",
+        env = "KAFKA_SASL_PASSWORD",
+        hide_env_values = true
+    )]
+    pub sasl_password: Option<String>,
+    /// PEM file of the certificate authority to trust instead of the system roots.
+    #[arg(long = "kafka-ca-file", env = "KAFKA_CA_FILE", hide_env_values = true)]
+    pub ca_file: Option<String>,
+    /// Client id of the connection (default `iam-control`).
+    #[arg(
+        long = "kafka-client-id",
+        env = "KAFKA_CLIENT_ID",
+        hide_env_values = true
+    )]
+    pub client_id: Option<String>,
+    /// Timeout of opening a Kafka connection (default 1s).
+    #[arg(
+        long = "kafka-connect-timeout",
+        env = "KAFKA_CONNECT_TIMEOUT",
+        hide_env_values = true
+    )]
+    pub connect_timeout: Option<String>,
+    /// Timeout of one Kafka request, at least `KAFKA_CONNECT_TIMEOUT` (default 2s).
+    #[arg(
+        long = "kafka-request-timeout",
+        env = "KAFKA_REQUEST_TIMEOUT",
+        hide_env_values = true
+    )]
+    pub request_timeout: Option<String>,
+    /// Pause between two attempts of a retried Kafka request (default 100ms).
+    #[arg(
+        long = "kafka-retry-delay",
+        env = "KAFKA_RETRY_DELAY",
+        hide_env_values = true
+    )]
+    pub retry_delay: Option<String>,
+    /// `enforce` or `relaxed`; `relaxed` only when `APP_ENV` is `dev` or `test` (default
+    /// `enforce`).
+    #[arg(
+        long = "kafka-config-gates",
+        env = "KAFKA_CONFIG_GATES",
+        hide_env_values = true
+    )]
+    pub config_gates: Option<String>,
+    /// The state topic of the IAM policy log (default `iam.policy.state.v1`).
+    #[arg(long = "policy-topic", env = "POLICY_TOPIC", hide_env_values = true)]
+    pub policy_topic: Option<String>,
+    /// The topic of the IAM events (default `iam.events.v1`).
+    #[arg(long = "events-topic", env = "EVENTS_TOPIC", hide_env_values = true)]
+    pub events_topic: Option<String>,
 }
 
 /// Settings of the offline validation of User service access tokens.
@@ -240,6 +332,22 @@ pub struct MigrateArgs {
     /// Revert instead of apply.
     #[command(subcommand)]
     pub action: Option<MigrateAction>,
+}
+
+/// Settings of `iam-bootstrap`: the settings of `serve` and the subject of the first administrator.
+#[derive(Debug, Clone, Default, Args)]
+pub struct IamBootstrapArgs {
+    /// Settings of the service: the bootstrap connects as `serve` does.
+    #[command(flatten)]
+    pub service: ServeArgs,
+    /// UUID of the user who becomes the first administrator; exactly one of `--admin-user` and
+    /// `--admin-service` is required.
+    #[arg(long = "admin-user")]
+    pub admin_user: Option<String>,
+    /// Service name of the service principal that becomes the first administrator; exactly one of
+    /// `--admin-user` and `--admin-service` is required.
+    #[arg(long = "admin-service")]
+    pub admin_service: Option<String>,
 }
 
 /// Arguments of `openapi-export` and `graphql-export`.

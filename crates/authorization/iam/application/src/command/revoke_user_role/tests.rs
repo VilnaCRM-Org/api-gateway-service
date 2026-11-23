@@ -11,10 +11,13 @@ use shared_domain::{Command as _, CommandHandler as _, Uuid};
 use test_support::clock::FixedClock;
 use test_support::id::SequenceUuidGenerator;
 use test_support::role::FakeRoleRepository;
+use test_support::security_audit::FakeSecurityAuditLog;
+use test_support::startup_lock::FakeStartupLock;
 use test_support::unit_of_work::FakeIamUnitOfWork;
 use test_support::user_role::FakeUserRoleRepository;
 
-use super::{RevokeUserRoleCommand, RevokeUserRoleCommandHandler};
+use super::{RevokeUserRoleCommand, RevokeUserRoleCommandHandler, RevokeUserRoleReads};
+use crate::administrator_safeguard::{AdministratorSafeguard, SafeguardPorts};
 use crate::error::IamError;
 
 const USER: &str = "0190f2a8-7b3c-7d4e-8f10-1234567890ab";
@@ -84,16 +87,48 @@ fn handler(
     roles: FakeRoleRepository,
     unit_of_work: &Arc<FakeIamUnitOfWork>,
 ) -> RevokeUserRoleCommandHandler {
-    let user_roles: Arc<dyn UserRoleRepository> = Arc::new(user_roles);
-    let roles: Arc<dyn RoleRepository> = Arc::new(roles);
+    guarded(user_roles, roles, unit_of_work).0
+}
+
+/// The handler with the audit log that its safeguard writes refusals to; the safeguard reads the
+/// same assignments and roles as the handler.
+fn guarded(
+    user_roles: FakeUserRoleRepository,
+    roles: FakeRoleRepository,
+    unit_of_work: &Arc<FakeIamUnitOfWork>,
+) -> (RevokeUserRoleCommandHandler, Arc<FakeSecurityAuditLog>) {
+    let user_roles = Arc::new(user_roles);
+    let roles = Arc::new(roles);
+    let audit = Arc::new(FakeSecurityAuditLog::new());
+    let safeguard = AdministratorSafeguard::new(
+        SafeguardPorts {
+            roles: Arc::<FakeRoleRepository>::clone(&roles),
+            user_roles: Arc::<FakeUserRoleRepository>::clone(&user_roles),
+            audit_log: Arc::<FakeSecurityAuditLog>::clone(&audit),
+            startup_lock: Arc::new(FakeStartupLock::new()),
+        },
+        Arc::new(FixedClock::at(at())),
+        Arc::new(SequenceUuidGenerator::starting_at(100)),
+    );
+    let user_roles: Arc<dyn UserRoleRepository> = user_roles;
+    let roles: Arc<dyn RoleRepository> = roles;
     let unit_of_work: Arc<dyn IamUnitOfWork> = Arc::<FakeIamUnitOfWork>::clone(unit_of_work);
-    RevokeUserRoleCommandHandler::new(
-        user_roles,
-        roles,
+    let handler = RevokeUserRoleCommandHandler::new(
+        RevokeUserRoleReads { user_roles, roles },
         unit_of_work,
+        Arc::new(safeguard),
         Arc::new(FixedClock::at(at())),
         Arc::new(SequenceUuidGenerator::starting_at(1)),
-    )
+    );
+    (handler, audit)
+}
+
+fn administrator_role() -> RoleParts {
+    RoleParts {
+        name: RoleName::new("iam-platform-admin".to_owned()).unwrap(),
+        kind: RoleKind::System,
+        ..role()
+    }
 }
 
 fn standard(unit_of_work: &Arc<FakeIamUnitOfWork>) -> RevokeUserRoleCommandHandler {
@@ -290,4 +325,45 @@ async fn a_failing_unit_of_work_is_a_storage_failure() {
     let error = standard(&unit_of_work).handle(command()).await.unwrap_err();
 
     assert!(matches!(error, IamError::Storage(_)), "{error:?}");
+}
+
+#[tokio::test]
+async fn the_last_administrator_is_refused_audited_and_not_committed() {
+    let unit_of_work = Arc::new(FakeIamUnitOfWork::new());
+    let (handler, audit) = guarded(
+        FakeUserRoleRepository::holding(vec![stored()]),
+        FakeRoleRepository::holding(vec![administrator_role()]),
+        &unit_of_work,
+    );
+
+    let error = handler.handle(command()).await.unwrap_err();
+
+    assert!(matches!(error, IamError::LastAdministrator), "{error:?}");
+    assert_eq!(unit_of_work.committed().len(), 0);
+    let recorded = audit.recorded();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].event().parts().outcome, AuditOutcome::Rejected);
+    assert_eq!(
+        recorded[0].event().parts().action.as_str(),
+        "user_role.revoke"
+    );
+}
+
+#[tokio::test]
+async fn an_administrator_is_revoked_while_another_one_is_active() {
+    let unit_of_work = Arc::new(FakeIamUnitOfWork::new());
+    let other = UserRoleParts {
+        id: UserRoleId::parse("0190f2a8-7b3c-7d4e-8f10-1234567890b0").unwrap(),
+        ..stored()
+    };
+    let (handler, audit) = guarded(
+        FakeUserRoleRepository::holding(vec![stored(), other]),
+        FakeRoleRepository::holding(vec![administrator_role()]),
+        &unit_of_work,
+    );
+
+    handler.handle(command()).await.unwrap();
+
+    assert_eq!(unit_of_work.committed().len(), 1);
+    assert_eq!(audit.recorded().len(), 0);
 }

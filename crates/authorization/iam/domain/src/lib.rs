@@ -10,6 +10,7 @@ pub mod entity;
 pub mod error;
 pub mod graphql_permission;
 pub mod graphql_spec;
+pub mod kafka_topic;
 mod micros;
 pub mod openapi_spec;
 pub mod policy;
@@ -43,6 +44,10 @@ pub use graphql_spec::statement::GraphQlSpecStatement;
 pub use graphql_spec::{
     GraphQlSpec, GraphQlSpecContent, GraphQlSpecParts, SpecActivation, SpecStamp,
 };
+pub use kafka_topic::{
+    AllowEveryoneEvidence, CONTROL_PRINCIPAL, CheckSource, ConfigGates, ConfigurationRules,
+    ConfigurationVerdict, TopicObservation, Violation,
+};
 pub use openapi_spec::event::{OpenApiSpecLoaded, OpenApiSpecRetired};
 pub use openapi_spec::statement::OpenApiSpecStatement;
 pub use openapi_spec::{OpenApiSpec, OpenApiSpecContent, OpenApiSpecParts};
@@ -54,9 +59,11 @@ pub use policy::compiled_role_set::{CompiledRoleSet, GrantStatus};
 pub use policy::decision_policy::{
     DecisionPolicy, DecisionRequest, RequiredKey, RoleAssignment, RoleSets,
 };
+pub use policy::last_administrator_guard::{LastAdministratorGuard, LastAdministratorRefused};
 pub use policy::orphan_policy::{OrphanPolicy, RenameMap};
 pub use policy::path_normalizer::{MalformedPath, PathNormalizer};
 pub use policy::permission_catalogue::PermissionCatalogue;
+pub use policy::platform_administrator::PlatformAdministrator;
 pub use policy::rest_operation_matcher::{RestOperationMatcher, UnknownOperation};
 pub use policy::rest_spec_diff::{
     RemovedRestGrant, RestFlagDowngrade, RestSpecDiff, RestWildcardGain,
@@ -76,6 +83,7 @@ pub use port::graphql_schema_parser::GraphQlSchemaParser;
 pub use port::graphql_spec_repository::{GraphQlSpecPageQuery, GraphQlSpecRepository};
 pub use port::iam_unit_of_work::IamUnitOfWork;
 pub use port::idempotency_repository::IdempotencyRepository;
+pub use port::kafka_topic_inspector::{KafkaInspectionError, KafkaTopicInspector};
 pub use port::openapi_document_parser::OpenApiDocumentParser;
 pub use port::openapi_spec_repository::{OpenApiSpecPageQuery, OpenApiSpecRepository};
 pub use port::permission_page_query::PermissionPageQuery;
@@ -88,7 +96,11 @@ pub use port::revocation_view::RevocationView;
 pub use port::rng::Rng;
 pub use port::role_repository::{RoleGrant, RolePageQuery, RoleRepository};
 pub use port::security_audit_log::SecurityAuditLog;
-pub use port::startup_lock::{LockGuard, OWN_SPECIFICATIONS_LOCK, StartupLock};
+pub use port::singleton_leadership::{LeaderBatch, Leadership, SingletonLeadership, SingletonTask};
+pub use port::startup_lock::{
+    ADMINISTRATORS_LOCK, BOOTSTRAP_LOCK, LockGuard, OWN_SPECIFICATIONS_LOCK, StartupLock,
+};
+pub use port::task_state_repository::{TaskState, TaskStateRepository};
 pub use port::token_memo::{TokenMemo, Verification};
 pub use port::token_repository::TokenRepository;
 pub use port::user_role_repository::{UserRolePageQuery, UserRoleRepository};

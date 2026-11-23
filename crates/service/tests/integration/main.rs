@@ -11,6 +11,8 @@ mod export;
 #[cfg(test)]
 mod healthcheck;
 #[cfg(test)]
+mod iam_bootstrap;
+#[cfg(test)]
 mod migrate;
 #[cfg(test)]
 mod panic;
@@ -18,6 +20,8 @@ mod panic;
 mod register_iam_specs;
 #[cfg(test)]
 mod serve;
+#[cfg(test)]
+mod singleton_tasks;
 #[cfg(test)]
 mod support;
 #[cfg(test)]

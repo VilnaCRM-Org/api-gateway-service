@@ -292,6 +292,19 @@ fn serve_declares_exactly_the_variables_of_the_configuration_table() {
         "JWT_ISSUER",
         "JWT_PUBLIC_KEYS_FILE",
         "JWT_SERVICE_TOKEN_MAX_LIFETIME",
+        "EVENTS_TOPIC",
+        "KAFKA_BOOTSTRAP_SERVERS",
+        "KAFKA_CA_FILE",
+        "KAFKA_CLIENT_ID",
+        "KAFKA_CONFIG_GATES",
+        "KAFKA_CONNECT_TIMEOUT",
+        "KAFKA_REQUEST_TIMEOUT",
+        "KAFKA_RETRY_DELAY",
+        "KAFKA_SASL_MECHANISM",
+        "KAFKA_SASL_PASSWORD",
+        "KAFKA_SASL_USERNAME",
+        "KAFKA_SECURITY_PROTOCOL",
+        "POLICY_TOPIC",
         "LOG_LEVEL",
         "MAX_TOKEN_LIFETIME",
         "SHUTDOWN_GRACE_PERIOD",
@@ -356,4 +369,41 @@ fn the_migrate_and_healthcheck_settings_are_bound_to_their_variables() {
     assert!(port.is_hide_env_values_set());
     assert_eq!(host.get_env().unwrap(), "APP_HOST");
     assert!(host.is_hide_env_values_set());
+}
+
+#[test]
+fn iam_bootstrap_takes_the_service_settings_and_one_subject_option() {
+    let user = parse(&[
+        "iam-bootstrap",
+        "--admin-user",
+        "0190f2a8-7b3c-7d4e-8f10-1234567890ab",
+        "--database-url",
+        "postgres://u@h/d",
+    ])
+    .unwrap();
+    let service = parse(&["iam-bootstrap", "--admin-service", "schemathesis"]).unwrap();
+
+    let Command::IamBootstrap(user) = user.command else {
+        panic!("expected iam-bootstrap");
+    };
+    let Command::IamBootstrap(service) = service.command else {
+        panic!("expected iam-bootstrap");
+    };
+    assert_eq!(
+        user.admin_user.as_deref(),
+        Some("0190f2a8-7b3c-7d4e-8f10-1234567890ab")
+    );
+    assert_eq!(user.admin_service, None);
+    assert_eq!(
+        user.service.database.url.as_deref(),
+        Some("postgres://u@h/d")
+    );
+    assert_eq!(service.admin_service.as_deref(), Some("schemathesis"));
+    assert_eq!(service.admin_user, None);
+}
+
+#[test]
+fn iam_bootstrap_accepts_neither_or_both_options_because_the_command_reports_them() {
+    assert!(parse(&["iam-bootstrap"]).is_ok());
+    assert!(parse(&["iam-bootstrap", "--admin-user", "x", "--admin-service", "y"]).is_ok());
 }

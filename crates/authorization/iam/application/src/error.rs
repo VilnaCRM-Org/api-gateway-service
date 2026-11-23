@@ -3,8 +3,8 @@
 use axum::http::StatusCode;
 use iam_domain::{
     InvalidCatalogueEntry, InvalidEventEnvelope, InvalidIamValue, InvalidRole, InvalidSpec,
-    InvalidUserRole, RepositoryError, RoleChangeRefused, TokenRejection, UserRoleChangeRefused,
-    VersionConflict,
+    InvalidUserRole, LastAdministratorRefused, RepositoryError, RoleChangeRefused, TokenRejection,
+    UserRoleChangeRefused, VersionConflict,
 };
 use shared_application::http::{Problem, Violation};
 use shared_domain::BoxError;
@@ -13,6 +13,10 @@ use shared_domain::BoxError;
 pub const TYPE_FLAG_DOWNGRADE_CONFIRMATION: &str = "/problems/flag-downgrade-confirmation-required";
 /// The `type` of the 409 problem of an activation that would orphan grants without confirmation.
 pub const TYPE_ORPHAN_CONFIRMATION: &str = "/problems/orphan-confirmation-required";
+
+/// The `type` of the 409 problem of a change that would leave the platform without an active
+/// global administrator.
+pub const TYPE_LAST_ADMINISTRATOR: &str = "/problems/last-administrator";
 
 /// What an activation needs the caller to confirm before it changes the catalogue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +67,12 @@ pub enum IamError {
     /// The record already exists or was changed concurrently.
     #[error("The IAM record conflicts with its current state.")]
     Conflict,
+    /// The change would revoke the last active global administrator assignment, or give it an
+    /// earlier expiry.
+    #[error(
+        "The last active administrator assignment cannot be revoked or given an earlier expiry."
+    )]
+    LastAdministrator,
     /// The change needs a confirmation the request did not give; the violations list the keys or
     /// the grants it affects.
     #[error("The change needs a confirmation.")]
@@ -206,6 +216,12 @@ impl From<InvalidUserRole> for IamError {
     }
 }
 
+impl From<LastAdministratorRefused> for IamError {
+    fn from(_refusal: LastAdministratorRefused) -> Self {
+        Self::LastAdministrator
+    }
+}
+
 impl From<UserRoleChangeRefused> for IamError {
     /// A revoked assignment is not found, a missing or stale version is a failed precondition, an
     /// expiry that is not in the future is invalid, and a version that cannot grow is a defect.
@@ -229,6 +245,12 @@ impl From<IamError> for Problem {
             IamError::IdempotencyMismatch => StatusCode::UNPROCESSABLE_ENTITY,
             IamError::PreconditionRequired => StatusCode::PRECONDITION_REQUIRED,
             IamError::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
+            IamError::LastAdministrator => {
+                return Self {
+                    r#type: TYPE_LAST_ADMINISTRATOR,
+                    ..Self::new(StatusCode::CONFLICT).with_detail(error.to_string())
+                };
+            }
             IamError::Invalid(violations) => return Self::validation_failed(violations.clone()),
             IamError::ConfirmationRequired(confirmation, items) => {
                 return Self {

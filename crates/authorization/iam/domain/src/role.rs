@@ -159,6 +159,44 @@ impl Role {
         role
     }
 
+    /// Builds a new system role that holds `grants` at version 2 and records [`RoleCreated`] (kind
+    /// `system`, version 1) followed by [`RolePermissionsChanged`] (version 2), as the bootstrap
+    /// seeds `iam-platform-admin`. The API cannot rename, change or delete the role afterwards.
+    ///
+    /// # Errors
+    ///
+    /// [`RoleChangeRefused::Invalid`] when the version cannot be increased; never for a new role.
+    pub fn create_system(
+        id: RoleId,
+        fields: RoleFields,
+        grants: PermissionGrantSet,
+        stamp: RoleStamp,
+        granted: RoleStamp,
+    ) -> Result<Self, RoleChangeRefused> {
+        let mut role = Self::restore(RoleParts {
+            id,
+            name: fields.name,
+            description: fields.description,
+            kind: RoleKind::System,
+            grants: PermissionGrantSet::default(),
+            version: EntityVersion::INITIAL,
+            created_at: stamp.occurred_at,
+            updated_at: stamp.occurred_at,
+            deleted_at: None,
+        });
+        role.events.record(RoleCreated {
+            event_id: stamp.event_id,
+            role_id: id,
+            version: EntityVersion::INITIAL,
+            name: role.parts.name.clone(),
+            kind: RoleKind::System,
+            actor: stamp.actor,
+            occurred_at: stamp.occurred_at,
+        });
+        role.replace_permissions(Some(EntityVersion::INITIAL), grants, granted)?;
+        Ok(role)
+    }
+
     /// Rebuilds a stored role; records nothing.
     #[must_use]
     pub fn restore(parts: RoleParts) -> Self {

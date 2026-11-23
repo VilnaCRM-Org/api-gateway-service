@@ -15,6 +15,7 @@ use crate::openapi;
 pub mod check_config;
 pub mod export;
 pub mod healthcheck;
+pub mod iam_bootstrap;
 pub mod migrate;
 pub mod serve;
 
@@ -35,6 +36,7 @@ pub fn run(command: Command, stdout: &mut dyn Write, stderr: &mut dyn Write) -> 
             export::run(|| Ok::<_, Infallible>(schema::sdl()), &args, stdout, stderr)
         }
         Command::Healthcheck(args) => healthcheck::run(&args),
+        Command::IamBootstrap(args) => iam_bootstrap::run(args, stdout, stderr),
     }
 }
 

@@ -15,11 +15,12 @@ use health_check_domain::Dependency;
 use http_body_util::BodyExt as _;
 use iam_domain::{
     ActorRef, PolicyEpoch, RevocationSource, SessionId, SessionRevocation, SessionRevocationId,
-    SystemComponent,
+    SubjectRef, SystemComponent,
 };
 use serde_json::Value;
 use service::bootstrap::{
-    Adapters, TaskMode, TaskSupervisor, register_iam_specs, router, start_tasks,
+    Adapters, TaskMode, TaskSupervisor, bootstrap_administrator, register_iam_specs, router,
+    start_tasks,
 };
 use service::cli::{Cli, Command};
 use service::config::Config;
@@ -50,6 +51,15 @@ const CURSOR_TOKEN: &str = "{cursor}";
 
 /// The token that stands for the id of the role that a step seeded.
 const ROLE_TOKEN: &str = "{role}";
+
+/// The id of the active global assignment of `iam-platform-admin` that belongs to the user.
+const ADMINISTRATOR_ASSIGNMENT: &str = "SELECT assignments.id::text FROM iam_user_roles assignments \
+     JOIN iam_roles roles ON roles.id = assignments.role_id \
+     WHERE roles.name = 'iam-platform-admin' AND assignments.subject_kind = 'user' \
+     AND assignments.subject_id = $1 AND assignments.revoked_at IS NULL";
+
+/// The id of the role that the bootstrap created.
+const ADMINISTRATOR_ROLE: &str = "SELECT id::text FROM iam_roles WHERE name = $1";
 
 /// How long a session revocation recorded by a step is kept before it may be pruned.
 const REVOCATION_RETENTION: Duration = Duration::from_hours(24);
@@ -391,6 +401,50 @@ impl AppWorld {
         .rows_affected();
         assert_eq!(activated, 1, "the remembered id names a draft version");
         connection.close().await.expect("close");
+    }
+
+    /// Bootstraps the first administrator of the scenario database as `service iam-bootstrap`
+    /// does, for the user `user_id`, and remembers the id of its assignment for `{id}`, the id of
+    /// the system role for `{role}` and the version of the assignment for the `If-Match` header. Scenarios that do not call it start without an
+    /// administrator, so their policy versions and listings stay as they are.
+    ///
+    /// # Panics
+    ///
+    /// When the bootstrap fails or leaves no assignment.
+    pub(crate) async fn bootstrap_administrator(&mut self, user_id: &str) {
+        let config = self.config().await;
+        let adapters = Adapters::connect(&config).await.expect("production wiring");
+        let subject = SubjectRef::user(Uuid::parse(user_id).expect("a valid user id"));
+        bootstrap_administrator(&adapters, subject)
+            .await
+            .expect("bootstrap the first administrator");
+        let id = self
+            .select_text(ADMINISTRATOR_ASSIGNMENT, user_id)
+            .await
+            .expect("the bootstrap left one assignment");
+        self.remembered = Some(id);
+        self.role = self
+            .select_text(ADMINISTRATOR_ROLE, "iam-platform-admin")
+            .await;
+        self.if_match = Some("\"1\"".to_owned());
+    }
+
+    /// The text that the statement selects, with `value` bound to its only parameter, in the
+    /// scenario database; `None` when it selects no row.
+    async fn select_text(&mut self, statement: &'static str, value: &str) -> Option<String> {
+        let url = self.database_url().await;
+        let options = PgConnectOptions::from_str(&url).expect("valid database URL");
+        let mut connection = options
+            .connect()
+            .await
+            .expect("connect to the scenario database");
+        let text = sqlx::query_scalar::<_, String>(statement)
+            .bind(value.to_owned())
+            .fetch_optional(&mut connection)
+            .await
+            .expect("select the text");
+        connection.close().await.expect("close");
+        text
     }
 
     /// The id of the role that a step seeded.

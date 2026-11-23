@@ -7,6 +7,12 @@
 # (JWT_PUBLIC_KEYS_HOST_FILE) and runs `make schemathesis-validate` with the token in SCHEMATHESIS_FLAGS,
 # so Schemathesis reaches the IAM operations past the 401. No key and no token is committed or kept: the
 # directory is removed on every exit path and the token lives for ten minutes.
+# The token's subject is the service principal `schemathesis`, which holds no role until it is
+# bootstrapped: in the isolated load-test environment the script first runs
+# `service iam-bootstrap --admin-service schemathesis` in the production container, so the principal is
+# the first IAM administrator of that environment's empty database. With SCHEMATHESIS_URL set, the script
+# targets that running service and bootstraps nothing: the operator runs the command there (see
+# docs/operations.md).
 # Reads JWT_ISSUER, JWT_AUDIENCE and JWT_CALLER_AUDIENCE (defaults as in docs/environment.md) and
 # SCHEMATHESIS_FLAGS_BASE (default: --checks all --phases=examples,coverage).
 # Exit status: that of `make schemathesis-validate`; 2 when the key or the token cannot be made.
@@ -41,4 +47,14 @@ token="${header}.${payload}.${signature}"
 
 export JWT_PUBLIC_KEYS_HOST_FILE="$workdir/public-keys.pem"
 base_flags="${SCHEMATHESIS_FLAGS_BASE:---checks all --phases=examples,coverage}"
-make schemathesis-validate "SCHEMATHESIS_FLAGS=${base_flags} -H 'Authorization: Bearer ${token}'"
+flags="${base_flags} -H 'Authorization: Bearer ${token}'"
+if [ -n "${SCHEMATHESIS_URL-}" ]; then
+  make schemathesis-validate "SCHEMATHESIS_FLAGS=${flags}"
+else
+  scripts/with-load-test-stack.sh -- bash -c '
+    set -euo pipefail
+    docker compose -p "$LOAD_TEST_PROJECT" -f docker-compose.yml -f docker-compose.load_test.override.yml \
+      exec -T app /app/service iam-bootstrap --admin-service schemathesis
+    make schemathesis-validate "SCHEMATHESIS_URL=http://localhost:${LOAD_TEST_APP_PORT}" "SCHEMATHESIS_FLAGS=$1"
+  ' bash "$flags"
+fi

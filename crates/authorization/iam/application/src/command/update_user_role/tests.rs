@@ -4,16 +4,20 @@ use std::time::{Duration, SystemTime};
 use iam_domain::{
     ActorRef, AssignmentExpiry, AssignmentScope, AuditOutcome, AuditSummary, ChangeId,
     ChangeStatement, DecisionEffect, EntityVersion, IamUnitOfWork, IdempotencyKey,
-    IdempotencyRequest, RequestDigest, RoleId, SubjectRef, UserRoleId, UserRoleParts,
-    UserRoleRepository,
+    IdempotencyRequest, PermissionGrantSet, RequestDigest, RoleId, RoleKind, RoleName, RoleParts,
+    SubjectRef, UserRoleId, UserRoleParts, UserRoleRepository,
 };
 use shared_domain::{Command as _, CommandHandler as _, Uuid};
 use test_support::clock::FixedClock;
 use test_support::id::SequenceUuidGenerator;
+use test_support::role::FakeRoleRepository;
+use test_support::security_audit::FakeSecurityAuditLog;
+use test_support::startup_lock::FakeStartupLock;
 use test_support::unit_of_work::FakeIamUnitOfWork;
 use test_support::user_role::FakeUserRoleRepository;
 
 use super::{UpdateUserRoleCommand, UpdateUserRoleCommandHandler};
+use crate::administrator_safeguard::{AdministratorSafeguard, SafeguardPorts};
 use crate::error::IamError;
 
 const USER: &str = "0190f2a8-7b3c-7d4e-8f10-1234567890ab";
@@ -71,14 +75,52 @@ fn handler(
     user_roles: FakeUserRoleRepository,
     unit_of_work: &Arc<FakeIamUnitOfWork>,
 ) -> UpdateUserRoleCommandHandler {
-    let user_roles: Arc<dyn UserRoleRepository> = Arc::new(user_roles);
+    guarded(user_roles, FakeRoleRepository::new(), unit_of_work).0
+}
+
+/// The handler whose safeguard reads `roles` and the same assignments, with the audit log it
+/// writes refusals to.
+fn guarded(
+    user_roles: FakeUserRoleRepository,
+    roles: FakeRoleRepository,
+    unit_of_work: &Arc<FakeIamUnitOfWork>,
+) -> (UpdateUserRoleCommandHandler, Arc<FakeSecurityAuditLog>) {
+    let user_roles = Arc::new(user_roles);
+    let audit = Arc::new(FakeSecurityAuditLog::new());
+    let safeguard = AdministratorSafeguard::new(
+        SafeguardPorts {
+            roles: Arc::new(roles),
+            user_roles: Arc::<FakeUserRoleRepository>::clone(&user_roles),
+            audit_log: Arc::<FakeSecurityAuditLog>::clone(&audit),
+            startup_lock: Arc::new(FakeStartupLock::new()),
+        },
+        Arc::new(FixedClock::at(at())),
+        Arc::new(SequenceUuidGenerator::starting_at(100)),
+    );
+    let user_roles: Arc<dyn UserRoleRepository> = user_roles;
     let unit_of_work: Arc<dyn IamUnitOfWork> = Arc::<FakeIamUnitOfWork>::clone(unit_of_work);
-    UpdateUserRoleCommandHandler::new(
+    let handler = UpdateUserRoleCommandHandler::new(
         user_roles,
         unit_of_work,
+        Arc::new(safeguard),
         Arc::new(FixedClock::at(at())),
         Arc::new(SequenceUuidGenerator::starting_at(1)),
-    )
+    );
+    (handler, audit)
+}
+
+fn administrator_role() -> RoleParts {
+    RoleParts {
+        id: RoleId::parse(ROLE).unwrap(),
+        name: RoleName::new("iam-platform-admin".to_owned()).unwrap(),
+        description: None,
+        kind: RoleKind::System,
+        grants: PermissionGrantSet::default(),
+        version: EntityVersion::INITIAL,
+        created_at: SystemTime::UNIX_EPOCH,
+        updated_at: SystemTime::UNIX_EPOCH,
+        deleted_at: None,
+    }
 }
 
 fn holding(expires_at: Option<SystemTime>) -> FakeUserRoleRepository {
@@ -293,4 +335,60 @@ async fn a_failing_unit_of_work_is_a_storage_failure() {
         .unwrap_err();
 
     assert!(matches!(error, IamError::Storage(_)), "{error:?}");
+}
+
+#[tokio::test]
+async fn an_expiry_of_the_last_administrator_is_refused_audited_and_not_committed() {
+    let unit_of_work = Arc::new(FakeIamUnitOfWork::new());
+    let (handler, audit) = guarded(
+        holding(None),
+        FakeRoleRepository::holding(vec![administrator_role()]),
+        &unit_of_work,
+    );
+
+    let error = handler.handle(command(Some(later()))).await.unwrap_err();
+
+    assert!(matches!(error, IamError::LastAdministrator), "{error:?}");
+    assert_eq!(unit_of_work.committed().len(), 0);
+    let recorded = audit.recorded();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].event().parts().outcome, AuditOutcome::Rejected);
+    assert_eq!(
+        recorded[0].event().parts().action.as_str(),
+        "user_role.update"
+    );
+}
+
+#[tokio::test]
+async fn clearing_the_expiry_of_the_last_administrator_is_committed() {
+    let unit_of_work = Arc::new(FakeIamUnitOfWork::new());
+    let (handler, audit) = guarded(
+        holding(Some(later())),
+        FakeRoleRepository::holding(vec![administrator_role()]),
+        &unit_of_work,
+    );
+
+    handler.handle(command(None)).await.unwrap();
+
+    assert_eq!(unit_of_work.committed().len(), 1);
+    assert_eq!(audit.recorded().len(), 0);
+}
+
+#[tokio::test]
+async fn a_stale_version_wins_over_the_last_administrator_refusal() {
+    let unit_of_work = Arc::new(FakeIamUnitOfWork::new());
+    let (handler, audit) = guarded(
+        holding(None),
+        FakeRoleRepository::holding(vec![administrator_role()]),
+        &unit_of_work,
+    );
+    let stale = UpdateUserRoleCommand {
+        expected: version(1),
+        ..command(Some(later()))
+    };
+
+    let error = handler.handle(stale).await.unwrap_err();
+
+    assert!(matches!(error, IamError::PreconditionFailed), "{error:?}");
+    assert_eq!(audit.recorded().len(), 0);
 }

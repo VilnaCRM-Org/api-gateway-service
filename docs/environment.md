@@ -14,7 +14,7 @@ A service that adds variables for its own adapters adds their rows here. The syn
 | `APP_HOST` | IP address | `0.0.0.0` | no | `service serve`; `service healthcheck` (probes this address, or the loopback address when this one is `0.0.0.0` or `::`) | none (Caddy) |
 | `APP_PORT` | integer 0 to 65535 (0 = any free port, for tests) | `8081` | no | `service serve`, `service healthcheck`; compose | listener `:8081` in the Caddyfile |
 | `LOG_LEVEL` | `tracing` filter directives | `info` | no | `service serve` (the other commands write plain text) | none |
-| `DATABASE_URL` | `postgres://` or `postgresql://` URL | none | yes for `serve`, `migrate`, `migrate revert`, `check-config` | `service`; `sqlx-cli`; `#[sqlx::test]`; the end-to-end world | `DB_URL` |
+| `DATABASE_URL` | `postgres://` or `postgresql://` URL | none | yes for `serve`, `migrate`, `migrate revert`, `check-config`, `iam-bootstrap` | `service`; `sqlx-cli`; `#[sqlx::test]`; the end-to-end world | `DB_URL` |
 | `DATABASE_MAX_CONNECTIONS` | integer 1 to 100 | `10` | no | `service` | none |
 | `DATABASE_ACQUIRE_TIMEOUT` | duration | `2s` | no | `service` | none |
 | `DATABASE_STATEMENT_TIMEOUT` | duration, `1ms` to `24d` (`0`, a value below `1ms` and a value above `24d` are rejected) | `5s` | no | `service`, including `service migrate` (see [Migrations and rollback](operations.md#migrations-and-rollback)) | none |
@@ -39,8 +39,21 @@ A service that adds variables for its own adapters adds their rows here. The syn
 | `TOKEN_MEMO_MAX_TTL` | duration, at most `MAX_TOKEN_LIFETIME` | `900s` (capped at `MAX_TOKEN_LIFETIME` when unset) | no | `service`: an identity is memoized for `min(exp - now, TOKEN_MEMO_MAX_TTL)` on the `Clock` port; the revocation state is still checked on every request, and both memos are flushed when the key set of `JWT_PUBLIC_KEYS_FILE` changes; `check-config` exits 2 above `MAX_TOKEN_LIFETIME` | none |
 | `JWT_CALLER_AUDIENCE` | non-empty string | `vilnacrm-iam` | no | `service`: the audience a service principal's token must contain in `aud` to call IAM's own API, so that a token issued for calls between other services cannot be replayed to IAM; user tokens are checked against the revocation state instead | none |
 | `JWT_SERVICE_TOKEN_MAX_LIFETIME` | duration, at least `1s`, at most `3600s` and at most `MAX_TOKEN_LIFETIME` | `900s` (capped at `MAX_TOKEN_LIFETIME` when unset) | no | `service`: a service principal's token whose `exp - iat` exceeds it is refused with 401 on IAM's own API, because service tokens cannot be revoked by session; `check-config` exits 2 above `3600s` or above `MAX_TOKEN_LIFETIME` | none |
+| `KAFKA_BOOTSTRAP_SERVERS` | comma-separated `host:port` pairs | none (`.env` and `.env.test`: `${KAFKA_HOST}:${KAFKA_PORT}`, the compose broker) | yes for `serve`, `check-config` | `service`: the control-plane Kafka connection of `KrafkaTopicInspector` (Story 7.3) and of the relay of Story 7.4; the tests of the Kafka adapters read it against the compose broker | none |
+| `KAFKA_SECURITY_PROTOCOL` | `SASL_SSL` or `PLAINTEXT` | `SASL_SSL` (`.env`: `PLAINTEXT`, the compose broker) | no | `service`: `PLAINTEXT` is refused unless `APP_ENV` is `dev` or `test` (`check-config` exits 2 naming the variable) | none |
+| `KAFKA_SASL_MECHANISM` | `SCRAM-SHA-512` or `SCRAM-SHA-256` | `SCRAM-SHA-512` | no | `service`: read with `SASL_SSL` only | none |
+| `KAFKA_SASL_USERNAME` | non-empty string | none | yes with `SASL_SSL` | `service`: the principal of the control plane, `iam-control` in production; ignored with `PLAINTEXT` | none |
+| `KAFKA_SASL_PASSWORD` | non-empty string, secret | none | yes with `SASL_SSL` | `service`: the password of the principal; the help, the configuration problems, the spans and the log lines never print it; ignored with `PLAINTEXT` | none |
+| `KAFKA_CA_FILE` | path of a PEM file | unset (the system roots) | no | `service`: the certificate authority of the Strimzi cluster that the TLS connection trusts; read with `SASL_SSL` only | none |
+| `KAFKA_CLIENT_ID` | non-empty string | `iam-control` | no | `service`: the client id of the connection | none |
+| `KAFKA_CONNECT_TIMEOUT` | duration | `1s` | no | `service`: the timeout of opening a Kafka connection | none |
+| `KAFKA_REQUEST_TIMEOUT` | duration, not shorter than `KAFKA_CONNECT_TIMEOUT` | `2s` | no | `service`: the timeout of one Kafka request, and of an inspection attempt including its retries; `check-config` exits 2 naming the variable when it is shorter than the connect timeout | none |
+| `KAFKA_RETRY_DELAY` | duration | `100ms` | no | `service`: the pause between two attempts of a retried Kafka request | none |
+| `KAFKA_CONFIG_GATES` | `enforce` or `relaxed` | `enforce` (`.env` and `.env.test`: `relaxed`, the single-node compose broker) | no | `service`: `relaxed` accepts any replication factor and any `min.insync.replicas` of at least 1 and skips the ACL checks, with a warning on every check; it is refused unless `APP_ENV` is `dev` or `test` | none |
+| `POLICY_TOPIC` | Kafka topic name | `iam.policy.state.v1` | no | `service`: the state topic whose configuration `KrafkaTopicInspector` checks and the relay publishes to; compose (the topic that `kafka-topics` creates) | none |
+| `EVENTS_TOPIC` | Kafka topic name, different from `POLICY_TOPIC` | `iam.events.v1` | no | `service`: the topic of the IAM events; compose (the topic that `kafka-topics` creates) | none |
 
-Cross-field rules checked at start-up: `HEALTH_PROBE_TIMEOUT >= DATABASE_ACQUIRE_TIMEOUT`; `HEALTH_PROBE_TIMEOUT >= SQS_OPERATION_TIMEOUT`; `HTTP_REQUEST_TIMEOUT > HEALTH_PROBE_TIMEOUT`; the two AWS key variables are both set or both unset (the error names the missing one). `TOKEN_MEMO_MAX_TTL <= MAX_TOKEN_LIFETIME` (the error names `TOKEN_MEMO_MAX_TTL`). A configuration problem never prints the value of a variable.
+Cross-field rules checked at start-up: `HEALTH_PROBE_TIMEOUT >= DATABASE_ACQUIRE_TIMEOUT`; `HEALTH_PROBE_TIMEOUT >= SQS_OPERATION_TIMEOUT`; `HTTP_REQUEST_TIMEOUT > HEALTH_PROBE_TIMEOUT`; the two AWS key variables are both set or both unset (the error names the missing one). `TOKEN_MEMO_MAX_TTL <= MAX_TOKEN_LIFETIME` (the error names `TOKEN_MEMO_MAX_TTL`). A configuration problem never prints the value of a variable. The Kafka rules: `KAFKA_REQUEST_TIMEOUT >= KAFKA_CONNECT_TIMEOUT`; `KAFKA_SECURITY_PROTOCOL=PLAINTEXT` and `KAFKA_CONFIG_GATES=relaxed` only when `APP_ENV` is `dev` or `test` (the error names the variable); `KAFKA_SASL_USERNAME` and `KAFKA_SASL_PASSWORD` with `SASL_SSL`; `POLICY_TOPIC` and `EVENTS_TOPIC` name two different topics.
 
 ## Compose and local stack
 
@@ -63,13 +76,12 @@ Cross-field rules checked at start-up: `HEALTH_PROBE_TIMEOUT >= DATABASE_ACQUIRE
 
 ## Test seeds
 
-The two seeds are test settings, not service settings. Cargo passes them to every test process from `[env]` of `.cargo/config.toml`, and a value set by the caller wins. `make` forwards both into the development container. The other two rows are build settings from the same `[env]` table. `KAFKA_BOOTSTRAP_SERVERS`, `KAFKA_SASL_SSL_BOOTSTRAP_SERVERS` and `KAFKA_TLS_DIR` are test settings of `.env.test`, which the test targets export; since Story 1.7 removed the krafka spike tests no test reads them until Epic 7.
+The two seeds are test settings, not service settings. Cargo passes them to every test process from `[env]` of `.cargo/config.toml`, and a value set by the caller wins. `make` forwards both into the development container. The other two rows are build settings from the same `[env]` table. `KAFKA_SASL_SSL_BOOTSTRAP_SERVERS` and `KAFKA_TLS_DIR` are test settings of `.env.test`, which the test targets export; since Story 1.7 removed the krafka spike tests no test reads them until the SCRAM tests of Epic 7.
 
 | Name | Type | Default | Required | Consumer | PHP name |
 | --- | --- | --- | --- | --- | --- |
 | `TEST_SEED` | unsigned 64-bit integer | `20261110`, the seed recorded in `.cargo/config.toml` | no | `test_support::seed::TestRng` | none (the PHP data was unseeded) |
 | `PROPTEST_RNG_SEED` | unsigned 64-bit integer | `20261110`, recorded in `.cargo/config.toml` | no | property tests (`proptest` reads it) | none |
-| `KAFKA_BOOTSTRAP_SERVERS` | `host:port` | `${KAFKA_HOST}:${KAFKA_PORT}` from `.env.test` | no | no test reads it since Story 1.7 removed the krafka spike tests (Stories 1.2 to 1.6, ADR 0026); kept for the Kafka adapter tests of Epic 7 against the compose broker `kafka` | none |
 | `KAFKA_SASL_SSL_BOOTSTRAP_SERVERS` | `host:port` | `${KAFKA_HOST}:${KAFKA_SASL_SSL_PORT}` from `.env.test` | no | no test reads it since Story 1.7 removed the SCRAM spike test (Story 1.5); kept for the Kafka adapter tests of Epic 7 against the SASL_SSL listener of the compose broker | none |
 | `KAFKA_TLS_DIR` | absolute path | `${PWD}/target/kafka-tls` from `.env.test` | no | the directory where the compose service `kafka-tls` writes the TLS material of the broker with `scripts/kafka-tls-fixture.sh` before the broker starts (Story 1.5); no test reads it since Story 1.7 removed the SCRAM spike test, and it is kept for the Kafka adapter tests of Epic 7 | none |
 | `SQLX_OFFLINE` | `true` | `true` from `.cargo/config.toml` | no | sqlx macros at build time | none |

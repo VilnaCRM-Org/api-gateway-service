@@ -6,6 +6,7 @@ Runbooks for operating the service and for maintaining the repository that hosts
 
 - [Migrations and rollback](#migrations-and-rollback)
 - [Health-probe runbook](#health-probe-runbook)
+- [The first IAM administrator](#the-first-iam-administrator)
 - [Logs and request ids](#logs-and-request-ids)
 - [Shutdown sequence](#shutdown-sequence)
 - [Toolchain update procedure](#toolchain-update-procedure)
@@ -48,6 +49,38 @@ Rollback of a deployment:
 4. Check the readiness endpoint `GET /api/health` (see the next section).
 
 A `.down.sql` file that drops a column or table destroys data. Take a backup before a rollback in production and decide whether to restore it.
+
+## The first IAM administrator
+
+IAM has no API operation that creates its first administrator, so a new environment is bootstrapped with a command of the `service` binary, run in production as the `iam-bootstrap` Job (the same image and environment as `serve`; the command needs `DATABASE_URL` and the other variables of `docs/environment.md`, and a database pool of at least two connections, because the command holds one connection for its lock while it works on another):
+
+```bash
+service iam-bootstrap --admin-user <uuid>
+service iam-bootstrap --admin-service <service-name>
+```
+
+Exactly one of the two options is required. The tables must exist, so run `service migrate` first. Under a PostgreSQL transaction-level advisory lock it registers IAM's own specifications (as `serve` does), creates the system role `iam-platform-admin` with `rest:iam:*`, `gql:iam:*` and every reserved key (`iam:validate:*`, `iam:grant:*`, `iam:grant:sensitive`, `iam:grant:wildcard`, `iam:spec:*`, `iam:audit:read`, `iam:revoke:sessions`, `iam:revoke:global`, `iam:policy:resync`, `iam:route:anonymous` and `iam:route:*`), assigns it at global scope to the user or the service principal and commits one audit record with the actor `system:bootstrap`. A system role cannot be renamed, changed or deleted through the API.
+
+| Exit status | Meaning |
+| --- | --- |
+| 0 | The administrator was created; the command prints `bootstrapped user:<uuid>` or `bootstrapped service:<name>`. |
+| 1 | An active global assignment of `iam-platform-admin` exists already (nothing changed), or the database is not reachable or not migrated (`error: <message>` on standard error). |
+| 2 | Both or neither of the options, a value that is no UUID (`--admin-user`) or no service name (`--admin-service`), or an invalid configuration (one line `<VARIABLE>: <reason>` per problem). |
+
+Of two runs that start together on an empty database exactly one exits 0 and the other exits 1.
+
+The platform refuses every change that would leave it without an active global administrator: revoking the last active global assignment of `iam-platform-admin`, or giving it an earlier expiry than it has, answers `409` with the problem type `/problems/last-administrator` over REST and the code `LAST_ADMINISTRATOR` over GraphQL, changes nothing and appends an audit record with the outcome `rejected` and the reason `last_administrator`. An expired assignment counts as no administrator.
+
+### Break-glass procedure
+
+When every administrator has lost access (all of them expired, or the identities are gone from the User service), the operator creates a new first administrator without any API call:
+
+1. Check that no active global assignment of `iam-platform-admin` exists, for example in the access log or with `SELECT * FROM iam_user_roles WHERE revoked_at IS NULL` joined to `iam_roles` on `name = 'iam-platform-admin'`; the command exits 1 while one is active.
+2. Run the `iam-bootstrap` Job with `--admin-user <uuid>` of a person who is entitled to administer the platform, in the production environment, with the ticket that authorizes it. The command reuses the existing role and restores any key it lacks.
+3. Read the audit log: the record with the actor `system:bootstrap` and the action `iam.bootstrap` is the evidence of the procedure; attach it to the ticket.
+4. The new administrator assigns the roles of the other administrators through the API. Do not edit the tables by hand.
+
+The Schemathesis credential target `make schemathesis-iam` bootstraps the service principal `schemathesis` with `--admin-service schemathesis` in the isolated load-test environment before it runs; against a service you started yourself (`SCHEMATHESIS_URL` set) run the command there first.
 
 ## Health-probe runbook
 
@@ -117,15 +150,33 @@ Checks:
 3. From the service's network run the AWS CLI against the same endpoint, for example `aws sqs list-queues --max-items 1 --endpoint-url "$AWS_ENDPOINT_URL_SQS"`.
 4. In AWS check the role policy for `sqs:ListQueues`.
 
+### `Kafka is not available`
+
+Wire identifier: `dependency` is `kafka`. The probe asks the cluster once: it reads the settings of the state topic `POLICY_TOPIC` (`DescribeConfigs`), its partitions and replicas (`DescribeTopics`) and, under `KAFKA_CONFIG_GATES=enforce`, the ACLs of the topic (`DescribeAcls`) and `allow.everyone.if.no.acl.found`. It is healthy when the cluster answers and the verdict passes: `cleanup.policy` is `compact`, `unclean.leader.election.enable` is `false`, `min.insync.replicas` is 2, the replication factor is 3, the topic has exactly one partition, `message.timestamp.type` is `LogAppendTime`, only `User:iam-control` may write the topic and the cluster does not allow everyone when no ACL is found. When the broker does not return `allow.everyone.if.no.acl.found` (the usual case, see ADR 0026), a principal without an ACL on the topic must be refused with `TOPIC_AUTHORIZATION_FAILED`; the verdict then names the fallback as the source of the check. `KAFKA_CONFIG_GATES=relaxed` (`dev` and `test` only) accepts any replication factor and any `min.insync.replicas` of at least 1, skips the ACL checks and logs a warning that names the relaxed gate on every check.
+
+Likely causes:
+
+- the broker is down, `KAFKA_BOOTSTRAP_SERVERS` is wrong or the call exceeds `KAFKA_CONNECT_TIMEOUT` or `KAFKA_REQUEST_TIMEOUT`;
+- the credentials or the CA file are wrong (`KAFKA_SASL_USERNAME`, `KAFKA_SASL_PASSWORD`, `KAFKA_CA_FILE`);
+- the topic breaks a rule: the `cause` of the `health probe failed` line and the `the Kafka topic configuration breaks a rule` line name each offending setting.
+
+Checks:
+
+1. Read the `cause` of the `health probe failed` line with `dependency` equal to `kafka`, and the `violations` of the preceding warning.
+2. In development run `docker compose ps` and check that `kafka` is healthy and that `kafka-topics` completed.
+3. Describe the topic with the Kafka tools of the broker image and compare each setting with the list above.
+
 ### Several failures at once
 
-When more than one probe fails, `detail` lists all messages in registration order (database, cache, message broker) and `failures` holds one entry for each. Work through each section above independently. A body that contains the message of a healthy dependency is a defect; report it.
+When more than one probe fails, `detail` lists all messages in registration order (database, cache, message broker, Kafka) and `failures` holds one entry for each. Work through each section above independently. A body that contains the message of a healthy dependency is a defect; report it.
 
 ### Starting without dependencies
 
 `serve` does not wait for the SQS endpoint. With it down, `/ping` answers at once and `/api/health` answers with the problem document within about 2 seconds, naming the message broker. This is the intended behaviour, not a failure of the service.
 
 The database is different: before it listens, `serve` registers IAM's own specifications in the catalogue (the operations of its OpenAPI document tagged `iam` and its own GraphQL operations, as actor `system:startup`) under a PostgreSQL advisory lock, so of several instances that start together one registers and the others find the active version. A second start of the same build changes nothing; a new IAM contract is activated beside the older active versions, so no grant is orphaned. With the database unreachable or not migrated, `serve` writes one `serve failed` entry and exits with status 1 without listening: restart it after `make migrate` or when the database is back. After the start the pool is lazy again, and a later database outage is reported by `/api/health` as before.
+
+Singleton tasks (a task that exactly one replica may run at a time, such as the outbox relay of a later story) run inside `service serve`; there is no `service worker` mode, and `service worker` is rejected as an unknown subcommand with exit status 2. Every replica runs the loop of each singleton task. A batch opens a transaction with `pg_try_advisory_xact_lock(<task constant>)`: the replica that gets the lock leads the batch, records the run in `iam_task_state` and commits, and the others skip the batch and retry at the task's next interval, which is at most 10 seconds. The lock ends with the transaction, so a leader that dies or whose connection is terminated rolls its batch back, and another replica leads the next batch within one interval. On SIGTERM a batch in flight commits or rolls back within `SHUTDOWN_GRACE_PERIOD`; a batch that outlives it is aborted and rolled back.
 
 ## Logs and request ids
 

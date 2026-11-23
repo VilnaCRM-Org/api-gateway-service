@@ -535,3 +535,34 @@ fn an_event_that_a_role_does_not_record_is_refused() {
 
     assert_eq!(refused, Err(InvalidEventEnvelope::EventType));
 }
+
+#[test]
+fn a_system_role_is_created_with_its_grants_at_version_two_and_records_two_events() {
+    let fields = RoleFields::new("iam-platform-admin".to_owned(), None).unwrap();
+    let granted = RoleStamp {
+        event_id: Uuid::parse("01890a5d-ac96-774b-bcce-b302099a8058").unwrap(),
+        ..stamp(10)
+    };
+    let mut role = Role::create_system(
+        role_id(),
+        fields,
+        grants(&["rest:iam:*", "iam:audit:read"]),
+        stamp(10),
+        granted,
+    )
+    .unwrap();
+
+    assert_eq!(role.parts().kind, RoleKind::System);
+    assert_eq!(role.parts().version, version(2));
+    assert_eq!(role.parts().grants.len(), 2);
+    assert_eq!(role.parts().deleted_at, None);
+    let types: Vec<String> = role
+        .pull_envelopes()
+        .unwrap()
+        .iter()
+        .map(|envelope| envelope.parts().event_type.as_str().to_owned())
+        .collect();
+    assert_eq!(types, ["iam.role.created", "iam.role_permissions.changed"]);
+    let refused = role.update(Some(version(2)), RolePatch::default(), stamp(11));
+    assert_eq!(refused, Err(RoleChangeRefused::SystemRole));
+}

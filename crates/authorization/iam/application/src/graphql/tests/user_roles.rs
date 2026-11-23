@@ -752,6 +752,7 @@ async fn a_missing_expiry_is_a_violation_of_expires_at() {
 #[case::stale(Answers { update: Err(|| IamError::PreconditionFailed), ..updated(2) }, "PRECONDITION_FAILED")]
 #[case::unknown(Answers { update: Err(|| IamError::NotFound), ..updated(2) }, "NOT_FOUND")]
 #[case::conflict(Answers { update: Err(|| IamError::Conflict), ..updated(2) }, "CONFLICT")]
+#[case::last_administrator(Answers { update: Err(|| IamError::LastAdministrator), ..updated(2) }, "LAST_ADMINISTRATOR")]
 #[case::past_expiry(
     Answers {
         update: Err(|| IamError::invalid_property("expiresAt", "in the past", "future")),
@@ -850,6 +851,7 @@ async fn an_invalid_revocation_input_is_refused_before_any_command(
 #[rstest]
 #[case::stale(Answers { revoke: Err(|| IamError::PreconditionFailed), ..updated(2) }, "PRECONDITION_FAILED")]
 #[case::unknown(Answers { revoke: Err(|| IamError::NotFound), ..updated(2) }, "NOT_FOUND")]
+#[case::last_administrator(Answers { revoke: Err(|| IamError::LastAdministrator), ..updated(2) }, "LAST_ADMINISTRATOR")]
 #[case::storage(
     Answers { revoke: Err(|| IamError::Storage("disk on fire".into())), ..updated(2) },
     "INTERNAL_SERVER_ERROR"

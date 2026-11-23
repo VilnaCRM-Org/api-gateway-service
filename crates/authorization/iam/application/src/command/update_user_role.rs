@@ -11,6 +11,7 @@ use iam_domain::{
 };
 use shared_domain::{Clock, Command, CommandHandler, UuidGenerator};
 
+use crate::administrator_safeguard::AdministratorSafeguard;
 use crate::error::IamError;
 
 /// The audit action of an updated assignment.
@@ -47,28 +48,32 @@ impl Command for UpdateUserRoleCommand {
 /// It reads the assignment, lets the aggregate check the version and the expiry, and commits the
 /// update, its `iam.user_role.updated` event and its audit record through the unit of work in one
 /// transaction. An expiry changes what the assignment grants, so the change takes the next policy
-/// version.
+/// version. An earlier expiry of the last active global administrator assignment is refused as
+/// [`IamError::LastAdministrator`] and audited, before anything is committed.
 #[derive(Debug)]
 pub struct UpdateUserRoleCommandHandler {
     user_roles: Arc<dyn UserRoleRepository>,
     unit_of_work: Arc<dyn IamUnitOfWork>,
+    safeguard: Arc<AdministratorSafeguard>,
     clock: Arc<dyn Clock>,
     uuid_generator: Arc<dyn UuidGenerator>,
 }
 
 impl UpdateUserRoleCommandHandler {
-    /// A handler over the assignment repository, the unit of work, the clock and the identifier
-    /// source.
+    /// A handler over the assignment repository, the unit of work, the safeguard of the last
+    /// administrator, the clock and the identifier source.
     #[must_use]
     pub const fn new(
         user_roles: Arc<dyn UserRoleRepository>,
         unit_of_work: Arc<dyn IamUnitOfWork>,
+        safeguard: Arc<AdministratorSafeguard>,
         clock: Arc<dyn Clock>,
         uuid_generator: Arc<dyn UuidGenerator>,
     ) -> Self {
         Self {
             user_roles,
             unit_of_work,
+            safeguard,
             clock,
             uuid_generator,
         }
@@ -80,7 +85,13 @@ impl UpdateUserRoleCommandHandler {
             .find_by_id(command.user_role_id)
             .await?
             .ok_or(IamError::NotFound)?;
+        let before = user_role.parts().clone();
+        let (expires_at, actor) = (command.expires_at, command.actor.clone());
         let change = self.change_of(user_role, command)?;
+        let _admission = self
+            .safeguard
+            .admit_expiry(&before, expires_at, &actor)
+            .await?;
         self.unit_of_work.commit(change).await?;
         Ok(())
     }

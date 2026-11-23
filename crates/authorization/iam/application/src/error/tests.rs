@@ -2,14 +2,17 @@ use std::error::Error as _;
 
 use iam_domain::{
     EntityVersion, InvalidCatalogueEntry, InvalidEventEnvelope, InvalidIamValue, InvalidRole,
-    InvalidUserRole, RepositoryError, RoleChangeRefused, TokenRejection, UserRoleChangeRefused,
-    VersionConflict,
+    InvalidUserRole, LastAdministratorRefused, RepositoryError, RoleChangeRefused, TokenRejection,
+    UserRoleChangeRefused, VersionConflict,
 };
 use rstest::rstest;
 use shared_application::http::{Problem, TYPE_BLANK, Violation};
 use test_support::log::LogRecorder;
 
-use super::{Confirmation, IamError, TYPE_FLAG_DOWNGRADE_CONFIRMATION, TYPE_ORPHAN_CONFIRMATION};
+use super::{
+    Confirmation, IamError, TYPE_FLAG_DOWNGRADE_CONFIRMATION, TYPE_LAST_ADMINISTRATOR,
+    TYPE_ORPHAN_CONFIRMATION,
+};
 
 #[test]
 fn not_found_is_the_404_problem_with_its_message_and_is_not_logged() {
@@ -422,4 +425,23 @@ fn an_invalid_catalogue_statement_is_an_internal_failure_that_names_its_cause() 
 
     assert!(matches!(error, IamError::Internal(_)));
     assert_eq!(error.source().map(ToString::to_string), Some(cause));
+}
+
+#[test]
+fn the_last_administrator_is_the_409_problem_of_its_own_type() {
+    let (recorder, _guard) = LogRecorder::install();
+
+    let error = IamError::from(LastAdministratorRefused);
+    let problem = Problem::from(error);
+
+    assert_eq!(problem.status, 409);
+    assert_eq!(problem.title, "Conflict");
+    assert_eq!(problem.r#type, TYPE_LAST_ADMINISTRATOR);
+    assert_eq!(
+        problem.detail.as_deref(),
+        Some(
+            "The last active administrator assignment cannot be revoked or given an earlier expiry."
+        )
+    );
+    assert_eq!(recorder.lines().len(), 0);
 }

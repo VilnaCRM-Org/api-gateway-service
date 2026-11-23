@@ -14,6 +14,7 @@ crates/company-subdomain/
 features/api_docs.feature
 features/example_api_resource.feature
 features/graphql.feature
+features/health_check.feature
 features/http_errors.feature
 tests/Load/config.json.dist
 docs/requests.http
@@ -37,6 +38,7 @@ crates/service/Cargo.toml
 crates/service/src/bootstrap.rs
 crates/service/src/bootstrap/
 crates/service/src/cli.rs
+crates/service/src/command.rs
 crates/service/src/command/serve.rs
 crates/service/src/cli/
 crates/service/src/config.rs
@@ -49,6 +51,9 @@ crates/service/src/graphql/handler/
 crates/service/tests/integration/bootstrap.rs
 crates/service/tests/integration/migrate.rs
 crates/service/tests/integration/serve.rs
+crates/service/tests/integration/check_config.rs
+crates/service/tests/integration/support.rs
+crates/shared/application/src/http/problem.rs
 crates/service/tests/integration/register_iam_specs.rs
 crates/service/tests/integration/panic.rs
 crates/service/tests/integration/main.rs
@@ -63,6 +68,8 @@ tests/e2e/
 .github/workflows/scheduled.yml
 docker-compose.yml
 docker-compose.override.yml
+docker-compose.load_test.override.yml
+docker-compose.prod.yml
 .github/TEMPLATE_SYNC_PAT.md
 docs/extension-seams.md
 docs/operations.md

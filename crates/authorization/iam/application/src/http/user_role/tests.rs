@@ -725,6 +725,7 @@ async fn an_if_match_that_is_no_etag_is_the_412_problem_and_dispatches_nothing(
 #[case::stale(|| IamError::PreconditionFailed, StatusCode::PRECONDITION_FAILED)]
 #[case::unknown(|| IamError::NotFound, StatusCode::NOT_FOUND)]
 #[case::concurrent(|| IamError::Conflict, StatusCode::CONFLICT)]
+#[case::last_administrator(|| IamError::LastAdministrator, StatusCode::CONFLICT)]
 #[case::past_expiry(
     || IamError::invalid_property("expiresAt", "This value must be in the future.", "future"),
     StatusCode::UNPROCESSABLE_ENTITY
@@ -928,6 +929,7 @@ async fn a_revocation_with_an_if_match_that_is_no_etag_is_the_412_problem() {
 #[case::stale(|| IamError::PreconditionFailed, StatusCode::PRECONDITION_FAILED)]
 #[case::unknown(|| IamError::NotFound, StatusCode::NOT_FOUND)]
 #[case::concurrent(|| IamError::Conflict, StatusCode::CONFLICT)]
+#[case::last_administrator(|| IamError::LastAdministrator, StatusCode::CONFLICT)]
 #[case::storage(|| IamError::Storage("disk on fire".into()), StatusCode::INTERNAL_SERVER_ERROR)]
 #[tokio::test]
 async fn a_refused_revocation_is_its_problem_and_reads_nothing_back(

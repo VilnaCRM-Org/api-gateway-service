@@ -11,6 +11,7 @@ use iam_domain::{
 };
 use shared_domain::{Clock, Command, CommandHandler, UuidGenerator};
 
+use crate::administrator_safeguard::AdministratorSafeguard;
 use crate::error::IamError;
 
 /// The audit action of a revoked assignment.
@@ -40,37 +41,49 @@ impl Command for RevokeUserRoleCommand {
     const NAME: &'static str = "RevokeUserRoleCommand";
 }
 
+/// The repositories that a revocation reads before it decides.
+#[derive(Debug, Clone)]
+pub struct RevokeUserRoleReads {
+    /// The assignments.
+    pub user_roles: Arc<dyn UserRoleRepository>,
+    /// The roles.
+    pub roles: Arc<dyn RoleRepository>,
+}
+
 /// Handles [`RevokeUserRoleCommand`].
 ///
 /// It reads the assignment and its role, lets the aggregate check the version and record the
 /// revocation, and commits the update, its `iam.user_role.revoked` event and its audit record
 /// through the unit of work in one transaction. A revocation affects decisions, so the change takes
 /// the next policy version. An assignment that is unknown or already revoked is not found, and so
-/// is one whose role no longer exists.
+/// is one whose role no longer exists. The last active global administrator assignment is refused
+/// as [`IamError::LastAdministrator`] and the refusal is audited, before anything is committed.
 #[derive(Debug)]
 pub struct RevokeUserRoleCommandHandler {
     user_roles: Arc<dyn UserRoleRepository>,
     roles: Arc<dyn RoleRepository>,
     unit_of_work: Arc<dyn IamUnitOfWork>,
+    safeguard: Arc<AdministratorSafeguard>,
     clock: Arc<dyn Clock>,
     uuid_generator: Arc<dyn UuidGenerator>,
 }
 
 impl RevokeUserRoleCommandHandler {
-    /// A handler over the assignment and role repositories, the unit of work, the clock and the
-    /// identifier source.
+    /// A handler over the repositories it reads, the unit of work, the safeguard of the last
+    /// administrator, the clock and the identifier source.
     #[must_use]
-    pub const fn new(
-        user_roles: Arc<dyn UserRoleRepository>,
-        roles: Arc<dyn RoleRepository>,
+    pub fn new(
+        reads: RevokeUserRoleReads,
         unit_of_work: Arc<dyn IamUnitOfWork>,
+        safeguard: Arc<AdministratorSafeguard>,
         clock: Arc<dyn Clock>,
         uuid_generator: Arc<dyn UuidGenerator>,
     ) -> Self {
         Self {
-            user_roles,
-            roles,
+            user_roles: reads.user_roles,
+            roles: reads.roles,
             unit_of_work,
+            safeguard,
             clock,
             uuid_generator,
         }
@@ -87,7 +100,10 @@ impl RevokeUserRoleCommandHandler {
             .find_by_id(user_role.parts().role_id)
             .await?
             .ok_or(IamError::NotFound)?;
+        let before = user_role.parts().clone();
+        let actor = command.actor.clone();
         let change = self.change_of(user_role, role.parts().name.clone(), command)?;
+        let _admission = self.safeguard.admit_revocation(&before, &actor).await?;
         self.unit_of_work.commit(change).await?;
         Ok(())
     }
