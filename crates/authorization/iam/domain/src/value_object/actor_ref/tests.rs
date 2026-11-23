@@ -27,6 +27,7 @@ fn a_service_actor_renders_as_service_and_its_name() {
 #[case(SystemComponent::Bootstrap, "system:bootstrap")]
 #[case(SystemComponent::UserService, "system:user-service")]
 #[case(SystemComponent::Startup, "system:startup")]
+#[case(SystemComponent::Maintenance, "system:maintenance")]
 fn a_system_actor_renders_as_system_and_its_component(
     #[case] component: SystemComponent,
     #[case] text: &str,
@@ -41,6 +42,7 @@ fn a_system_actor_renders_as_system_and_its_component(
 #[case("bootstrap", SystemComponent::Bootstrap)]
 #[case("user-service", SystemComponent::UserService)]
 #[case("startup", SystemComponent::Startup)]
+#[case("maintenance", SystemComponent::Maintenance)]
 fn a_component_round_trips_through_its_name(
     #[case] name: &str,
     #[case] component: SystemComponent,

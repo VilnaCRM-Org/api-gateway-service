@@ -180,6 +180,29 @@ pub struct ServeArgs {
     /// Settings of the control-plane Kafka connection.
     #[command(flatten)]
     pub kafka: KafkaArgs,
+    /// Settings of the maintenance task.
+    #[command(flatten)]
+    pub maintenance: MaintenanceArgs,
+}
+
+/// Settings of the maintenance task of `serve`.
+#[derive(Debug, Clone, Default, Args)]
+pub struct MaintenanceArgs {
+    /// How often the maintenance task runs, a positive duration (default 10m).
+    #[arg(
+        long = "maintenance-interval",
+        env = "MAINTENANCE_INTERVAL",
+        hide_env_values = true
+    )]
+    pub interval: Option<String>,
+    /// How long an orphaned grant is kept before the maintenance task purges it, a positive
+    /// duration (default 90d).
+    #[arg(
+        long = "orphaned-grant-retention",
+        env = "ORPHANED_GRANT_RETENTION",
+        hide_env_values = true
+    )]
+    pub orphaned_grant_retention: Option<String>,
 }
 
 /// Settings of `gateway`: the variables it shares with `serve` and its own.
@@ -233,6 +256,31 @@ pub struct GatewayArgs {
     /// Namespace of the pod, from the Kubernetes downward API.
     #[arg(long = "pod-namespace", env = "POD_NAMESPACE", hide_env_values = true)]
     pub pod_namespace: Option<String>,
+    /// How the gateway discovers upstream endpoints: `kubernetes` (default) or `static`.
+    #[arg(
+        long = "upstream-discovery",
+        env = "UPSTREAM_DISCOVERY",
+        hide_env_values = true
+    )]
+    pub upstream_discovery: Option<String>,
+    /// JSON file of the upstream endpoints; required with `UPSTREAM_DISCOVERY=static`.
+    #[arg(
+        long = "upstream-static-endpoints-file",
+        env = "UPSTREAM_STATIC_ENDPOINTS_FILE",
+        hide_env_values = true
+    )]
+    pub upstream_static_endpoints_file: Option<String>,
+    /// Whether requests prefer the endpoints of the gateway's own zone (default `true`).
+    #[arg(
+        long = "upstream-zone-aware",
+        env = "UPSTREAM_ZONE_AWARE",
+        hide_env_values = true
+    )]
+    pub upstream_zone_aware: Option<String>,
+    /// The zone of this gateway pod; unset, it is taken from the pod's entry in the
+    /// `iam-gateway-peers` `EndpointSlices`.
+    #[arg(long = "gateway-zone", env = "GATEWAY_ZONE", hide_env_values = true)]
+    pub gateway_zone: Option<String>,
 }
 
 /// Arguments of `check-config`: the run mode and the settings of both modes.

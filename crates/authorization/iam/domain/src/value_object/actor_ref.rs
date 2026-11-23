@@ -14,6 +14,8 @@ pub enum SystemComponent {
     UserService,
     /// The startup registration of IAM's own specifications.
     Startup,
+    /// The periodic maintenance task that purges expired records and anchors the audit chain.
+    Maintenance,
 }
 
 impl SystemComponent {
@@ -24,6 +26,7 @@ impl SystemComponent {
             "bootstrap" => Some(Self::Bootstrap),
             "user-service" => Some(Self::UserService),
             "startup" => Some(Self::Startup),
+            "maintenance" => Some(Self::Maintenance),
             _ => None,
         }
     }
@@ -35,6 +38,7 @@ impl SystemComponent {
             Self::Bootstrap => "bootstrap",
             Self::UserService => "user-service",
             Self::Startup => "startup",
+            Self::Maintenance => "maintenance",
         }
     }
 }

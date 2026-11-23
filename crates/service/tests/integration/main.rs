@@ -15,6 +15,8 @@ mod healthcheck;
 #[cfg(test)]
 mod iam_bootstrap;
 #[cfg(test)]
+mod maintenance;
+#[cfg(test)]
 mod migrate;
 #[cfg(test)]
 mod panic;

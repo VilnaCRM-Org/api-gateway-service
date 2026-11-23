@@ -8,9 +8,12 @@
 //! flag of the service and ends when it is set; [`TaskSupervisor::stop`] waits for every task for
 //! the grace period and aborts what is left.
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use iam_application::SingletonLoop;
+use iam_application::{
+    InvalidSingletonInterval, PolicyMaintenance, RunMaintenanceCommandHandler, SingletonLoop,
+};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
@@ -125,15 +128,48 @@ fn log_failed(error: &tokio::task::JoinError) {
     tracing::error!(error = %error, "task failed");
 }
 
-/// The singleton tasks that `service serve` runs. No story has registered one yet; there is no
-/// `service worker` mode, so the set runs inside `serve`.
+/// The singleton tasks that `service serve` runs: the policy maintenance. There is no
+/// `service worker` mode, so the set runs inside `serve`; the stories that add a task extend it
+/// here.
 #[must_use]
-pub const fn singleton_set(_adapters: &Adapters) -> Vec<SingletonLoop> {
-    Vec::new()
+pub fn singleton_set(adapters: &Adapters) -> Vec<SingletonLoop> {
+    let mut set = Vec::new();
+    set.extend(maintenance_loop(adapters));
+    set
 }
 
-/// Starts the tasks of the service: the singleton set under `service serve`. No other story has
-/// registered a task yet.
+/// The loop of the maintenance task over the adapters of the application; none when the interval
+/// of the task is zero, which the configuration refuses.
+fn maintenance_loop(adapters: &Adapters) -> Option<SingletonLoop> {
+    let handler = RunMaintenanceCommandHandler::new(
+        Arc::clone(&adapters.maintenance_store),
+        Arc::clone(&adapters.roles),
+        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    let task = PolicyMaintenance::new(
+        handler,
+        Arc::clone(&adapters.task_states),
+        adapters.maintenance,
+    );
+    match task.into_loop(
+        Arc::clone(&adapters.singleton_leadership),
+        Arc::clone(&adapters.clock),
+    ) {
+        Ok(singleton) => Some(singleton),
+        Err(error) => {
+            log_not_started(&error);
+            None
+        }
+    }
+}
+
+fn log_not_started(error: &InvalidSingletonInterval) {
+    tracing::error!(error = %error, "the maintenance task is not started");
+}
+
+/// Starts the tasks of the service: the singleton set under `service serve`.
 ///
 /// `shutdown` is the stop flag of the service: tasks end when it is set.
 #[must_use]

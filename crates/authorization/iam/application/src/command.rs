@@ -15,6 +15,7 @@ pub mod register_own_specs;
 pub mod retire_graphql_spec;
 pub mod retire_openapi_spec;
 pub mod revoke_user_role;
+pub mod run_maintenance;
 pub mod set_role_permissions;
 pub(crate) mod spec_retirement;
 pub mod update_role;

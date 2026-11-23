@@ -13,10 +13,11 @@ use std::time::Duration;
 
 use axum::http::Uri;
 use axum::http::uri::Authority;
-use iam_domain::{CallerTokenRule, ConfigGates, TokenLifetimeRule};
+use iam_application::MaintenanceSettings;
+use iam_domain::{CallerTokenRule, ConfigGates, TokenLifetimeRule, Zone};
 use iam_infrastructure::{
     JwtKeySet, JwtSettings, KafkaSecret, KafkaSecurity, KafkaSettings, SaslMechanism,
-    TokenMemoSettings,
+    StaticEndpointWatch, TokenMemoSettings,
 };
 use shared_infrastructure::messaging::SqsSettings;
 use shared_infrastructure::persistence::{
@@ -26,7 +27,9 @@ use sqlx::postgres::PgConnectOptions;
 use tracing_subscriber::EnvFilter;
 
 use crate::bootstrap::gateway::listener;
-use crate::cli::{DatabaseArgs, GatewayArgs, KafkaArgs, MigrateArgs, ServeArgs, TokenArgs};
+use crate::cli::{
+    DatabaseArgs, GatewayArgs, KafkaArgs, MaintenanceArgs, MigrateArgs, ServeArgs, TokenArgs,
+};
 
 /// The largest accepted `JWT_CLOCK_SKEW`.
 const MAX_CLOCK_SKEW: Duration = Duration::from_mins(1);
@@ -105,6 +108,8 @@ pub struct Config {
     pub tokens: TokenSettings,
     /// The control-plane Kafka connection and the topics it works on.
     pub kafka: KafkaSettings,
+    /// How often the maintenance task runs and how long orphaned grants are kept.
+    pub maintenance: MaintenanceSettings,
 }
 
 /// The settings of the offline validation of User service access tokens.
@@ -149,25 +154,31 @@ impl Config {
             limits.as_ref().map(|limits| limits.health_probe_timeout),
             limits.as_ref().map(|limits| limits.request_timeout),
         );
-        match (server, database, sqs, limits, tokens, kafka) {
-            (Some(server), Some(database), Some(sqs), Some(limits), Some(tokens), Some(kafka))
-                if collector.problems.is_empty() =>
-            {
-                Ok(Self {
-                    app_env: server.app_env,
-                    host: server.host,
-                    port: server.port,
-                    log_level: server.log_level,
-                    database,
-                    sqs,
-                    health_probe_timeout: limits.health_probe_timeout,
-                    request_timeout: limits.request_timeout,
-                    max_body_bytes: limits.max_body_bytes,
-                    shutdown_grace_period: limits.shutdown_grace_period,
-                    tokens,
-                    kafka,
-                })
-            }
+        let maintenance = maintenance_settings(&mut collector, &args.maintenance);
+        match (server, database, sqs, limits, tokens, kafka, maintenance) {
+            (
+                Some(server),
+                Some(database),
+                Some(sqs),
+                Some(limits),
+                Some(tokens),
+                Some(kafka),
+                Some(maintenance),
+            ) if collector.problems.is_empty() => Ok(Self {
+                app_env: server.app_env,
+                host: server.host,
+                port: server.port,
+                log_level: server.log_level,
+                database,
+                sqs,
+                health_probe_timeout: limits.health_probe_timeout,
+                request_timeout: limits.request_timeout,
+                max_body_bytes: limits.max_body_bytes,
+                shutdown_grace_period: limits.shutdown_grace_period,
+                tokens,
+                kafka,
+                maintenance,
+            }),
             _ => Err(ConfigErrors(collector.problems)),
         }
     }
@@ -239,6 +250,28 @@ pub struct GatewayConfig {
     pub pod_name: Option<String>,
     /// `POD_NAMESPACE`: the namespace of the pod, when the downward API provides it.
     pub pod_namespace: Option<String>,
+    /// How the endpoints of the upstreams are discovered and preferred by zone.
+    pub endpoints: EndpointSettings,
+}
+
+/// How the gateway discovers the endpoints of its upstreams (`UPSTREAM_DISCOVERY`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpstreamDiscovery {
+    /// Watch the `EndpointSlices` of the Services through the Kubernetes API (the default).
+    Kubernetes,
+    /// Read the endpoints from this file (`UPSTREAM_STATIC_ENDPOINTS_FILE`), for compose and e2e.
+    Static(PathBuf),
+}
+
+/// The endpoint discovery settings of the gateway.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndpointSettings {
+    /// `UPSTREAM_DISCOVERY` with its file.
+    pub discovery: UpstreamDiscovery,
+    /// `UPSTREAM_ZONE_AWARE`: whether requests prefer the endpoints of the gateway's own zone.
+    pub zone_aware: bool,
+    /// `GATEWAY_ZONE`: the zone of the pod, which wins over the pod's entry in the peers slices.
+    pub zone: Option<Zone>,
 }
 
 impl GatewayConfig {
@@ -265,7 +298,8 @@ impl GatewayConfig {
         let pod_name = collector.collect("POD_NAME", optional(args.pod_name.as_deref()));
         let pod_namespace =
             collector.collect("POD_NAMESPACE", optional(args.pod_namespace.as_deref()));
-        match (app_env, log_level, grace, tokens, listeners, tls) {
+        let endpoints = endpoint_settings(&mut collector, args);
+        match (app_env, log_level, grace, tokens, listeners, tls, endpoints) {
             (
                 Some(app_env),
                 Some(log_level),
@@ -273,6 +307,7 @@ impl GatewayConfig {
                 Some(tokens),
                 Some(listeners),
                 Some(tls),
+                Some(endpoints),
             ) if collector.problems.is_empty() => Ok(Self {
                 app_env,
                 log_level,
@@ -284,9 +319,81 @@ impl GatewayConfig {
                 tls: tls.into_files(),
                 pod_name: pod_name.flatten(),
                 pod_namespace: pod_namespace.flatten(),
+                endpoints,
             }),
             _ => Err(ConfigErrors(collector.problems)),
         }
+    }
+}
+
+/// `UPSTREAM_DISCOVERY`, `UPSTREAM_STATIC_ENDPOINTS_FILE`, `UPSTREAM_ZONE_AWARE` and
+/// `GATEWAY_ZONE`. The file is read and parsed now, so that `check-config` refuses a gateway that
+/// would start without endpoints.
+///
+/// `None` when a problem was reported.
+fn endpoint_settings(collector: &mut Collector, args: &GatewayArgs) -> Option<EndpointSettings> {
+    let mode = collector.collect(
+        "UPSTREAM_DISCOVERY",
+        discovery_is_static(args.upstream_discovery.as_deref()),
+    );
+    let file = collector.collect(
+        "UPSTREAM_STATIC_ENDPOINTS_FILE",
+        optional(args.upstream_static_endpoints_file.as_deref()),
+    );
+    let zone_aware = collector.collect(
+        "UPSTREAM_ZONE_AWARE",
+        parsed(
+            args.upstream_zone_aware.as_deref(),
+            true,
+            "must be true or false",
+        ),
+    );
+    let zone = collector.collect("GATEWAY_ZONE", gateway_zone(args.gateway_zone.as_deref()));
+    let discovery = if mode? {
+        static_discovery(collector, file?)
+    } else {
+        Some(UpstreamDiscovery::Kubernetes)
+    };
+    Some(EndpointSettings {
+        discovery: discovery?,
+        zone_aware: zone_aware?,
+        zone: zone?,
+    })
+}
+
+/// Whether `UPSTREAM_DISCOVERY` selects the static file: `static` does, `kubernetes` (the default)
+/// does not.
+fn discovery_is_static(raw: Option<&str>) -> Parsed<bool> {
+    match raw {
+        None | Some("kubernetes") => Ok(false),
+        Some("static") => Ok(true),
+        Some(_) => Err("must be one of kubernetes, static".to_owned()),
+    }
+}
+
+fn gateway_zone(raw: Option<&str>) -> Parsed<Option<Zone>> {
+    optional(raw)?
+        .map(|zone| {
+            Zone::new(&zone)
+                .map_err(|_invalid| "must be 1 to 63 letters, digits, '-', '_' or '.'".to_owned())
+        })
+        .transpose()
+}
+
+/// The static discovery: the file must be named and must hold valid endpoints.
+fn static_discovery(collector: &mut Collector, file: Option<String>) -> Option<UpstreamDiscovery> {
+    let Some(path) = file else {
+        return collector.reject(
+            "UPSTREAM_STATIC_ENDPOINTS_FILE",
+            "is required when UPSTREAM_DISCOVERY is static",
+        );
+    };
+    match StaticEndpointWatch::new(std::path::Path::new(&path)) {
+        Ok(_watch) => Some(UpstreamDiscovery::Static(PathBuf::from(path))),
+        Err(error) => collector.reject(
+            "UPSTREAM_STATIC_ENDPOINTS_FILE",
+            &format!("must name a readable JSON file of upstream endpoints: {error}"),
+        ),
     }
 }
 
@@ -920,6 +1027,29 @@ fn kafka_timeouts(
     Some((connect?, request?, retry?))
 }
 
+/// `MAINTENANCE_INTERVAL` and `ORPHANED_GRANT_RETENTION`: two positive durations.
+fn maintenance_settings(
+    collector: &mut Collector,
+    args: &MaintenanceArgs,
+) -> Option<MaintenanceSettings> {
+    let defaults = MaintenanceSettings::default();
+    let interval = collector.collect(
+        "MAINTENANCE_INTERVAL",
+        positive_duration(args.interval.as_deref(), defaults.interval),
+    );
+    let retention = collector.collect(
+        "ORPHANED_GRANT_RETENTION",
+        positive_duration(
+            args.orphaned_grant_retention.as_deref(),
+            defaults.orphaned_grant_retention,
+        ),
+    );
+    Some(MaintenanceSettings {
+        interval: interval?,
+        orphaned_grant_retention: retention?,
+    })
+}
+
 /// `POLICY_TOPIC` and `EVENTS_TOPIC`, which must name two different topics.
 fn kafka_topics(collector: &mut Collector, args: &KafkaArgs) -> Option<(String, String)> {
     let policy = collector.collect(
@@ -1094,6 +1224,16 @@ fn duration(raw: Option<&str>, default: Duration) -> Parsed<Duration> {
         humantime::parse_duration(value)
             .map_err(|_error| "must be a duration such as 500ms, 2s or 1m".to_owned())
     })
+}
+
+/// A duration that is longer than zero.
+fn positive_duration(raw: Option<&str>, default: Duration) -> Parsed<Duration> {
+    let value = duration(raw, default)?;
+    if value.is_zero() {
+        Err("must be a positive duration such as 10m or 90d".to_owned())
+    } else {
+        Ok(value)
+    }
 }
 
 /// `DATABASE_STATEMENT_TIMEOUT`: PostgreSQL reads 0 as "no timeout" and refuses more than about

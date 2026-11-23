@@ -6,6 +6,7 @@ use axum::body::Body;
 use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use health_check_domain::{Dependency, HealthProbe};
 use http_body_util::BodyExt as _;
+use iam_application::MaintenanceSettings;
 use serde_json::Value;
 use test_support::access_token::{DEVELOPMENT_PUBLIC_KEYS_FILE, FakeAccessTokenVerifier};
 use test_support::change_receipt::FakeChangeReceiptRepository;
@@ -14,6 +15,7 @@ use test_support::graphql_permission::FakeGraphQlPermissionRepository;
 use test_support::graphql_spec::FakeGraphQlSpecRepository;
 use test_support::id::SequenceUuidGenerator;
 use test_support::idempotency::FakeIdempotencyRepository;
+use test_support::maintenance_store::FakeMaintenanceStore;
 use test_support::openapi_spec::FakeOpenApiSpecRepository;
 use test_support::policy_epoch::FakePolicyEpochRepository;
 use test_support::policy_read::FakePolicyReadRepository;
@@ -26,6 +28,7 @@ use test_support::role::FakeRoleRepository;
 use test_support::security_audit::FakeSecurityAuditLog;
 use test_support::singleton_leadership::FakeSingletonLeadership;
 use test_support::startup_lock::FakeStartupLock;
+use test_support::task_state::FakeTaskStateRepository;
 use test_support::token::FakeTokenRepository;
 use test_support::unit_of_work::FakeIamUnitOfWork;
 use test_support::user_role::FakeUserRoleRepository;
@@ -79,6 +82,9 @@ fn adapters() -> Adapters {
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
         startup_lock: Arc::new(FakeStartupLock::new()),
         singleton_leadership: Arc::new(FakeSingletonLeadership::leading()),
+        maintenance_store: Arc::new(FakeMaintenanceStore::new()),
+        task_states: Arc::new(FakeTaskStateRepository::new()),
+        maintenance: MaintenanceSettings::default(),
         change_receipts: Arc::new(FakeChangeReceiptRepository::new()),
         idempotency_records: Arc::new(FakeIdempotencyRepository::new()),
         roles: Arc::new(FakeRoleRepository::new()),

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use iam_domain::{LeaderBatch, SingletonLeadership, SingletonTask};
 use shared_domain::BoxError;
@@ -32,6 +32,100 @@ impl SingletonWork for CountingWork {
         }
         Ok(())
     }
+}
+
+/// What the due check of [`ScheduledWork`] answers.
+#[derive(Debug, Clone, Copy)]
+enum Due {
+    Yes,
+    No,
+    Fails,
+}
+
+/// Work that counts its batches and answers the due check as told.
+#[derive(Debug)]
+struct ScheduledWork {
+    due: Due,
+    runs: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl SingletonWork for ScheduledWork {
+    async fn run(&self, _batch: &mut dyn LeaderBatch) -> Result<(), BoxError> {
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn is_due(&self, _now: SystemTime) -> Result<bool, BoxError> {
+        match self.due {
+            Due::Yes => Ok(true),
+            Due::No => Ok(false),
+            Due::Fails => Err("the due check failed".into()),
+        }
+    }
+}
+
+async fn scheduled(due: Due) -> (BatchOutcome, usize, Vec<Event>) {
+    let leadership = Arc::new(FakeSingletonLeadership::leading());
+    let work = Arc::new(ScheduledWork {
+        due,
+        runs: AtomicUsize::new(0),
+    });
+    let singleton = SingletonLoop::new(
+        TASK,
+        interval(),
+        Arc::<FakeSingletonLeadership>::clone(&leadership),
+        Arc::new(FixedClock::at(UNIX_EPOCH)),
+        Arc::<ScheduledWork>::clone(&work),
+    );
+
+    let outcome = singleton.run_batch().await;
+
+    (
+        outcome,
+        work.runs.load(Ordering::SeqCst),
+        leadership.events(),
+    )
+}
+
+#[tokio::test]
+async fn work_that_is_due_runs_and_records_its_run() {
+    let (outcome, runs, events) = scheduled(Due::Yes).await;
+
+    assert_eq!(outcome, BatchOutcome::Committed);
+    assert_eq!(runs, 1);
+    assert_eq!(
+        events,
+        [
+            Event::Begun("test-task".to_owned()),
+            Event::Recorded(UNIX_EPOCH),
+            Event::Committed,
+        ]
+    );
+}
+
+#[tokio::test]
+async fn work_that_is_not_due_is_skipped_without_a_record_of_a_run() {
+    let (outcome, runs, events) = scheduled(Due::No).await;
+
+    assert_eq!(outcome, BatchOutcome::Skipped);
+    assert_eq!(runs, 0);
+    assert_eq!(
+        events,
+        [Event::Begun("test-task".to_owned()), Event::RolledBack]
+    );
+}
+
+#[tokio::test]
+async fn a_failing_due_check_rolls_the_batch_back_without_running_the_work() {
+    let (outcome, runs, events) = scheduled(Due::Fails).await;
+
+    assert_eq!(outcome, BatchOutcome::RolledBack);
+    assert_eq!(runs, 0);
+    assert_eq!(
+        events,
+        [Event::Begun("test-task".to_owned()), Event::RolledBack]
+    );
 }
 
 fn interval() -> SingletonInterval {
