@@ -20,17 +20,20 @@ use test_support::openapi_spec::FakeOpenApiSpecRepository;
 use test_support::policy_epoch::FakePolicyEpochRepository;
 use test_support::policy_read::FakePolicyReadRepository;
 use test_support::probe::StubProbe;
+use test_support::rate_policy::FakeRatePolicyRepository;
 use test_support::repository::InMemoryExampleApiResourceRepository;
 use test_support::request_digester::FakeRequestDigester;
 use test_support::rest_permission::FakeRestPermissionRepository;
 use test_support::revocation::FakeRevocationRepository;
 use test_support::role::FakeRoleRepository;
+use test_support::route::FakeRouteRepository;
 use test_support::security_audit::FakeSecurityAuditLog;
 use test_support::singleton_leadership::FakeSingletonLeadership;
 use test_support::startup_lock::FakeStartupLock;
 use test_support::task_state::FakeTaskStateRepository;
 use test_support::token::FakeTokenRepository;
 use test_support::unit_of_work::FakeIamUnitOfWork;
+use test_support::upstream::FakeUpstreamRepository;
 use test_support::user_role::FakeUserRoleRepository;
 
 use crate::bootstrap::{Adapters, event_bus, router};
@@ -85,9 +88,13 @@ fn adapters() -> Adapters {
         maintenance_store: Arc::new(FakeMaintenanceStore::new()),
         task_states: Arc::new(FakeTaskStateRepository::new()),
         maintenance: MaintenanceSettings::default(),
+        outbox_relay: None,
         change_receipts: Arc::new(FakeChangeReceiptRepository::new()),
         idempotency_records: Arc::new(FakeIdempotencyRepository::new()),
         roles: Arc::new(FakeRoleRepository::new()),
+        upstreams: Arc::new(FakeUpstreamRepository::new()),
+        routes: Arc::new(FakeRouteRepository::new()),
+        rate_policies: Arc::new(FakeRatePolicyRepository::new()),
         unit_of_work: Arc::new(FakeIamUnitOfWork::new()),
         request_digester: Arc::new(FakeRequestDigester),
         user_roles: Arc::new(FakeUserRoleRepository::new()),

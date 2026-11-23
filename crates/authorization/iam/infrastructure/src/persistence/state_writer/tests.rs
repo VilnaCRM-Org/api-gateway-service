@@ -67,7 +67,7 @@ fn the_policy_state_topic_is_iam_policy_state_v1() {
 }
 
 #[test]
-fn only_roles_and_subjects_are_read_from_the_tables_of_the_change() {
+fn only_the_entities_of_the_tables_of_the_change_are_read() {
     let role = RoleId::from_uuid(Uuid::parse("0192f6a0-0000-7000-8000-000000000001").unwrap());
     let subject = SubjectRef::user(Uuid::parse("0192f6a0-0000-7000-8000-000000000002").unwrap());
 
@@ -78,4 +78,22 @@ fn only_roles_and_subjects_are_read_from_the_tables_of_the_change() {
     );
     assert_eq!(entity(&StateKey::Head), None);
     assert_eq!(entity(&StateKey::GlobalRevocation), None);
+}
+
+#[test]
+fn an_upstream_a_route_and_a_rate_policy_are_read_from_their_tables() {
+    let name = UpstreamName::new("core").unwrap();
+    let route = RouteId::from_uuid(Uuid::parse("0192f6a0-0000-7000-8000-0000000000a1").unwrap());
+    let policy =
+        RatePolicyId::from_uuid(Uuid::parse("0192f6a0-0000-7000-8000-0000000000a2").unwrap());
+
+    assert_eq!(
+        entity(&StateKey::Upstream(name.clone())),
+        Some(Entity::Upstream(&name))
+    );
+    assert_eq!(entity(&StateKey::Route(route)), Some(Entity::Route(route)));
+    assert_eq!(
+        entity(&StateKey::RatePolicy(policy)),
+        Some(Entity::RatePolicy(policy))
+    );
 }

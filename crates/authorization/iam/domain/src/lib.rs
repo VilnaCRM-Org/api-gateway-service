@@ -10,6 +10,7 @@ pub mod catalogue_statement;
 pub mod endpoint;
 pub mod entity;
 pub mod error;
+pub mod gateway_statement;
 pub mod graphql_permission;
 pub mod graphql_spec;
 pub mod kafka_topic;
@@ -18,6 +19,7 @@ mod micros;
 pub mod openapi_spec;
 pub mod policy;
 pub mod port;
+pub mod rate_limit;
 pub mod rate_policy;
 pub mod rest_permission;
 pub mod revocation;
@@ -53,6 +55,7 @@ pub use error::{
 };
 pub use error::{InvalidCatalogueEntry, InvalidStateRecord, RenameRefused};
 pub use error::{InvalidSpec, SpecPosition, SpecTransitionRefused};
+pub use gateway_statement::GatewayStatement;
 pub use graphql_permission::{GraphQlPermission, GraphQlPermissionParts};
 pub use graphql_spec::event::{GraphQlSpecLoaded, GraphQlSpecRetired};
 pub use graphql_spec::statement::GraphQlSpecStatement;
@@ -111,13 +114,19 @@ pub use port::graphql_spec_repository::{GraphQlSpecPageQuery, GraphQlSpecReposit
 pub use port::iam_unit_of_work::IamUnitOfWork;
 pub use port::idempotency_repository::IdempotencyRepository;
 pub use port::kafka_topic_inspector::{KafkaInspectionError, KafkaTopicInspector};
+pub use port::local_rate_limiter::LocalRateLimiter;
 pub use port::maintenance_store::MaintenanceStore;
 pub use port::openapi_document_parser::OpenApiDocumentParser;
 pub use port::openapi_spec_repository::{OpenApiSpecPageQuery, OpenApiSpecRepository};
+pub use port::outbox_store::{OutboxKind, OutboxRow, OutboxStore, PublishedRow, RelayTakeover};
 pub use port::permission_page_query::PermissionPageQuery;
 pub use port::policy_digest::PolicyDigest;
 pub use port::policy_epoch_repository::PolicyEpochRepository;
+pub use port::policy_log_producer::{
+    LOG_SCHEMA, PolicyLogError, PolicyLogProducer, PolicyLogRecord, STATE_PARTITION,
+};
 pub use port::policy_read_repository::PolicyReadRepository;
+pub use port::rate_limit_store::{RateLimitStore, RateLimitStoreError};
 pub use port::rate_policy_repository::{RatePolicyPageQuery, RatePolicyRepository};
 pub use port::request_digester::RequestDigester;
 pub use port::rest_permission_repository::RestPermissionRepository;
@@ -138,8 +147,12 @@ pub use port::token_memo::{TokenMemo, Verification};
 pub use port::token_repository::TokenRepository;
 pub use port::upstream_repository::{UpstreamPageQuery, UpstreamRepository};
 pub use port::user_role_repository::{UserRolePageQuery, UserRoleRepository};
+pub use rate_limit::decision::RateDecision;
+pub use rate_limit::key::{InvalidRateKey, RateKey, RateKeyParts};
+pub use rate_limit::rule::{RateDecisionRule, RateOutcome};
 pub use rate_policy::event::{RatePolicyCreated, RatePolicyDeleted, RatePolicyUpdated};
 pub use rate_policy::fields::{RateFallback, RateKeyKind, RatePolicyDraft, RatePolicyFields};
+pub use rate_policy::statement::RatePolicyStatement;
 pub use rate_policy::{RatePolicy, RatePolicyParts, RatePolicyStamp};
 pub use rest_permission::{RestPermission, RestPermissionParts};
 pub use revocation::global_token_cutoff::GlobalTokenCutoff;
@@ -157,18 +170,21 @@ pub use route::fields::{RouteDraft, RouteFields};
 pub use route::settings::{
     BodyLimit, EnforcementMode, RetryPolicy, RouteFlag, RouteFlags, RouteTimeouts,
 };
+pub use route::statement::RouteStatement;
 pub use route::{Route, RouteParts, RouteStamp};
 pub use state::batch::{StateBatch, StateChange, StateRow};
 pub use state::key::{CATALOGUE_CHUNK_VERSION, ChunkId, StateKey};
 pub use state::layout::{CatalogueLayout, MAX_CHUNK_BYTES};
 pub use state::model::{
     AssignmentState, CatalogueChunk, CatalogueEntryState, CatalogueManifest, GrantState,
-    PolicyHead, PolicyState, RoleState, StateRecord, SubjectState,
+    PolicyHead, PolicyState, RatePolicyState, RoleState, RouteState, StateRecord, SubjectState,
+    UpstreamState,
 };
 pub use upstream::event::{UpstreamCreated, UpstreamDeleted, UpstreamUpdated};
 pub use upstream::settings::{
     UpstreamFields, UpstreamProtocol, UpstreamSettings, UpstreamSettingsDraft,
 };
+pub use upstream::statement::UpstreamStatement;
 pub use upstream::{Upstream, UpstreamParts, UpstreamStamp};
 pub use user_role::event::{
     AssignedRole, PrivilegedRoleAssigned, UserRoleAssigned, UserRoleRevoked, UserRoleUpdated,

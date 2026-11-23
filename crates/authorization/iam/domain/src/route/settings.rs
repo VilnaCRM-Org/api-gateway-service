@@ -84,6 +84,16 @@ pub enum EnforcementMode {
 }
 
 impl EnforcementMode {
+    /// The mode that [`Self::as_str`] prints; `None` for any other text.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "enforce" => Some(Self::Enforce),
+            "audit" => Some(Self::Audit),
+            _ => None,
+        }
+    }
+
     /// The name of the mode.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -104,6 +114,16 @@ pub enum RetryPolicy {
 }
 
 impl RetryPolicy {
+    /// The policy that [`Self::as_str`] prints; `None` for any other text.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            "idempotent" => Some(Self::Idempotent),
+            _ => None,
+        }
+    }
+
     /// The name of the policy.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

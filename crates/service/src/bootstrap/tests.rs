@@ -7,11 +7,11 @@ use axum::http::{HeaderMap, Request, StatusCode, header};
 use health_check_domain::{Dependency, HealthProbe};
 use health_check_infrastructure::CacheProbe;
 use http_body_util::BodyExt as _;
-use iam_application::MaintenanceSettings;
 use iam_application::{
     GetChangeReceiptQuery, GetIdempotentReplayQuery, GetPolicyEpochQuery,
     GetPolicyEpochQueryHandler,
 };
+use iam_application::{MaintenanceSettings, OutboxRelayPorts, OutboxRelaySettings, SingletonLoop};
 use iam_domain::{Credential, PolicyEpochRepository, TokenRejection};
 use serde_json::Value;
 use shared_domain::{EventBus, QueryBus};
@@ -30,28 +30,35 @@ use test_support::idempotency::{FakeIdempotencyRepository, idempotency_request};
 use test_support::log::LogRecorder;
 use test_support::maintenance_store::FakeMaintenanceStore;
 use test_support::openapi_spec::FakeOpenApiSpecRepository;
+use test_support::outbox_store::FakeOutboxStore;
 use test_support::policy_epoch::{FakePolicyEpochRepository, seeded_policy_epoch};
+use test_support::policy_log_producer::FakePolicyLogProducer;
 use test_support::policy_read::FakePolicyReadRepository;
 use test_support::probe::StubProbe;
+use test_support::rate_policy::FakeRatePolicyRepository;
 use test_support::repository::InMemoryExampleApiResourceRepository;
 use test_support::request_digester::FakeRequestDigester;
 use test_support::rest_permission::FakeRestPermissionRepository;
 use test_support::revocation::FakeRevocationRepository;
 use test_support::role::FakeRoleRepository;
+use test_support::route::FakeRouteRepository;
 use test_support::security_audit::FakeSecurityAuditLog;
 use test_support::seed::TestRng;
 use test_support::singleton_leadership::FakeSingletonLeadership;
 use test_support::startup_lock::FakeStartupLock;
 use test_support::task_state::FakeTaskStateRepository;
 use test_support::token::FakeTokenRepository;
+use test_support::topic_inspector::FakeTopicInspector;
 use test_support::unit_of_work::FakeIamUnitOfWork;
+use test_support::upstream::FakeUpstreamRepository;
 use test_support::user_role::FakeUserRoleRepository;
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 use tower::ServiceExt as _;
 
 use super::{
-    Adapters, BootstrapError, TaskMode, access_token_verifier, event_bus, register_change_queries,
-    register_commands, register_iam_specs, register_queries, router, singleton_set, start_tasks,
+    Adapters, BootstrapError, OutboxRelayAdapters, TaskMode, access_token_verifier, event_bus,
+    register_change_queries, register_commands, register_iam_specs, register_queries, router,
+    singleton_set, start_tasks,
 };
 use crate::cli::{KafkaArgs, ServeArgs};
 use crate::config::Config;
@@ -106,9 +113,13 @@ fn adapters() -> Adapters {
         maintenance_store: Arc::new(FakeMaintenanceStore::new()),
         task_states: Arc::new(FakeTaskStateRepository::new()),
         maintenance: MaintenanceSettings::default(),
+        outbox_relay: None,
         change_receipts: Arc::new(FakeChangeReceiptRepository::new()),
         idempotency_records: Arc::new(FakeIdempotencyRepository::new()),
         roles: Arc::new(FakeRoleRepository::new()),
+        upstreams: Arc::new(FakeUpstreamRepository::new()),
+        routes: Arc::new(FakeRouteRepository::new()),
+        rate_policies: Arc::new(FakeRatePolicyRepository::new()),
         unit_of_work: Arc::new(FakeIamUnitOfWork::new()),
         request_digester: Arc::new(FakeRequestDigester),
         user_roles: Arc::new(FakeUserRoleRepository::new()),
@@ -526,6 +537,16 @@ async fn connect_wires_the_jwt_verifier_of_the_configured_key_file() {
     assert_eq!(verify(&adapters, "a.b.c"), Err(TokenRejection::Invalid));
 }
 
+#[tokio::test]
+async fn connect_wires_the_outbox_relay_and_its_listener_without_opening_a_connection() {
+    let adapters = Adapters::connect(&config("test")).await.unwrap();
+
+    let relay = adapters.outbox_relay.unwrap();
+
+    assert_eq!(relay.settings, OutboxRelaySettings::default());
+    assert!(!*relay.leading.borrow());
+}
+
 #[test]
 fn the_jwt_verifier_checks_tokens_against_the_injected_clock_and_settings() {
     let clock = Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH));
@@ -718,6 +739,44 @@ async fn the_serve_mode_registers_the_singleton_set_with_the_maintenance_task() 
     let set = singleton_set(&adapters());
     assert_eq!(set.len(), 1);
     assert_eq!(set[0].name(), "policy-maintenance");
+    stop.send_replace(true);
+    assert_eq!(
+        supervisor.stop(Duration::from_secs(1)).await,
+        super::TaskStop::Drained
+    );
+}
+
+/// Relay adapters over doubles and a pool that reaches no database.
+fn relay_adapters() -> OutboxRelayAdapters {
+    OutboxRelayAdapters {
+        ports: OutboxRelayPorts {
+            store: Arc::new(FakeOutboxStore::new()),
+            producer: Arc::new(FakePolicyLogProducer::acknowledging()),
+            inspector: Arc::new(FakeTopicInspector::passing()),
+        },
+        settings: OutboxRelaySettings::default(),
+        listen_pool: sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://nobody:none@127.0.0.1:1/none")
+            .unwrap(),
+        wake: Arc::new(Notify::new()),
+        leading: Arc::new(watch::channel(false).0),
+    }
+}
+
+#[tokio::test]
+async fn the_serve_mode_adds_the_outbox_relay_and_its_listener() {
+    let mut adapters = adapters();
+    adapters.outbox_relay = Some(relay_adapters());
+    let (stop, stopping) = watch::channel(false);
+
+    let supervisor = start_tasks(&adapters, TaskMode::Serve, stopping);
+
+    assert_eq!(supervisor.len(), 3);
+    let names: Vec<_> = singleton_set(&adapters)
+        .iter()
+        .map(SingletonLoop::name)
+        .collect();
+    assert_eq!(names, ["policy-maintenance", "outbox-relay"]);
     stop.send_replace(true);
     assert_eq!(
         supervisor.stop(Duration::from_secs(1)).await,

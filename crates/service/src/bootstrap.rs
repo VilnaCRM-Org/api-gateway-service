@@ -59,10 +59,13 @@ use iam_application::{RetireGraphQlSpecCommandHandler, RetireOpenApiSpecCommandH
 use iam_domain::GraphQlPermissionRepository;
 use iam_domain::GraphQlSpecRepository;
 use iam_domain::OpenApiSpecRepository;
+use iam_domain::RatePolicyRepository;
 use iam_domain::RestPermissionRepository;
 use iam_domain::RoleRepository;
+use iam_domain::RouteRepository;
 use iam_domain::SingletonLeadership;
 use iam_domain::StartupLock;
+use iam_domain::UpstreamRepository;
 use iam_domain::UserRoleRepository;
 use iam_domain::{
     AccessTokenVerifier, ChangeReceiptRepository, IdempotencyRepository, PolicyEpochRepository,
@@ -75,8 +78,11 @@ use iam_infrastructure::KrafkaTopicInspector;
 use iam_infrastructure::PgGraphQlPermissionRepository;
 use iam_infrastructure::PgGraphQlSpecRepository;
 use iam_infrastructure::PgOpenApiSpecRepository;
+use iam_infrastructure::PgRatePolicyRepository;
 use iam_infrastructure::PgRestPermissionRepository;
 use iam_infrastructure::PgRoleRepository;
+use iam_infrastructure::PgRouteRepository;
+use iam_infrastructure::PgUpstreamRepository;
 use iam_infrastructure::PgUserRoleRepository;
 use iam_infrastructure::Sha256RequestDigester;
 use iam_infrastructure::{AdvisoryLockLeadership, PgIamUnitOfWork, PgStartupLock};
@@ -113,6 +119,7 @@ use crate::openapi::{self, ExportError};
 
 pub use administrator::{AdministratorError, bootstrap_administrator};
 pub use kafka_probe::KafkaProbe;
+pub use outbox_relay::{OutboxRelayAdapters, forward_notifications};
 pub use tasks::{TaskMode, TaskStop, TaskSupervisor, singleton_set, start_tasks};
 
 /// Every driven port of the application.
@@ -136,12 +143,21 @@ pub struct Adapters {
     pub task_states: Arc<dyn TaskStateRepository>,
     /// How often the maintenance task runs and how long orphaned grants are kept.
     pub maintenance: MaintenanceSettings,
+    /// The outbox relay and its wake-up; `None` runs no relay, as in a test that builds the
+    /// application without Kafka.
+    pub outbox_relay: Option<OutboxRelayAdapters>,
     /// Reader of the receipts of committed IAM changes.
     pub change_receipts: Arc<dyn ChangeReceiptRepository>,
     /// Reader of the idempotency records of IAM writes.
     pub idempotency_records: Arc<dyn IdempotencyRepository>,
     /// Reader of the IAM roles.
     pub roles: Arc<dyn RoleRepository>,
+    /// Reader of the upstreams of the gateway configuration.
+    pub upstreams: Arc<dyn UpstreamRepository>,
+    /// Reader of the routes of the gateway configuration.
+    pub routes: Arc<dyn RouteRepository>,
+    /// Reader of the rate policies of the gateway configuration.
+    pub rate_policies: Arc<dyn RatePolicyRepository>,
     /// Commits an administrative IAM change atomically.
     pub unit_of_work: Arc<dyn IamUnitOfWork>,
     /// Digests the request of an idempotent IAM write.
@@ -225,9 +241,13 @@ impl Adapters {
             maintenance_store: Arc::new(PgMaintenanceStore::new(pool.clone())),
             task_states: Arc::new(PgTaskStateRepository::new(pool.clone())),
             maintenance: config.maintenance,
+            outbox_relay: Some(OutboxRelayAdapters::connect(config, &pool)?),
             change_receipts: Arc::new(PgChangeReceiptRepository::new(pool.clone())),
             idempotency_records: Arc::new(PgIdempotencyRepository::new(pool.clone())),
             roles: Arc::new(PgRoleRepository::new(pool.clone())),
+            upstreams: Arc::new(PgUpstreamRepository::new(pool.clone())),
+            routes: Arc::new(PgRouteRepository::new(pool.clone())),
+            rate_policies: Arc::new(PgRatePolicyRepository::new(pool.clone())),
             unit_of_work: Arc::new(PgIamUnitOfWork::new(pool.clone())),
             request_digester: Arc::new(Sha256RequestDigester),
             user_roles: Arc::new(PgUserRoleRepository::new(pool.clone())),
@@ -825,6 +845,7 @@ pub mod gateway;
 
 mod administrator;
 mod kafka_probe;
+mod outbox_relay;
 mod tasks;
 
 #[cfg(test)]

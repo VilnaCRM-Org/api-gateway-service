@@ -5,9 +5,13 @@
 
 use iam_domain::{
     AssignmentScope, AssignmentState, CatalogueChunk, CatalogueEntryState, CatalogueManifest,
-    ChunkId, EntityVersion, GrantState, InvalidStateRecord, PolicyDigestValue, PolicyHead,
-    PolicyState, PolicyVersion, ProjectId, RoleId, RoleKind, RoleState, ServiceName, StateKey,
-    StateRecordCodec, SubjectKind, SubjectRef, SubjectState,
+    ChunkId, CorsDraft, CorsPolicy, EnforcementMode, EntityVersion, GrantState, HttpMethod,
+    InvalidStateRecord, PolicyDigestValue, PolicyHead, PolicyState, PolicyVersion, ProjectId,
+    RateFallback, RateKeyKind, RatePolicyDraft, RatePolicyFields, RatePolicyId, RatePolicyState,
+    RetryPolicy, RoleId, RoleKind, RoleState, RouteDraft, RouteFields, RouteFlag, RouteFlags,
+    RouteId, RouteState, ServiceName, StateKey, StateRecordCodec, SubjectKind, SubjectRef,
+    SubjectState, UpstreamFields, UpstreamId, UpstreamProtocol, UpstreamSettingsDraft,
+    UpstreamState,
 };
 use serde_json::{Map, Value};
 
@@ -135,6 +139,151 @@ fn encode_manifest(manifest: &CatalogueManifest) -> Value {
         ),
         ("schemaVersion", Value::from(SCHEMA_VERSION)),
         ("service", Value::String(manifest.service.to_string())),
+    ])
+}
+
+fn encode_upstream(upstream: &UpstreamState) -> Value {
+    let settings = &upstream.settings;
+    object([
+        (
+            "catalogService",
+            Value::String(settings.catalog_service().to_string()),
+        ),
+        (
+            "concurrencyLimit",
+            Value::from(settings.concurrency_limit()),
+        ),
+        (
+            "connectTimeoutMs",
+            Value::from(settings.connect_timeout_ms()),
+        ),
+        (
+            "forwardCredentials",
+            Value::Bool(settings.forward_credentials()),
+        ),
+        ("id", Value::String(upstream.id.to_string())),
+        ("name", Value::String(upstream.name.to_string())),
+        ("namespace", Value::String(settings.namespace().to_owned())),
+        (
+            "outlierThreshold",
+            Value::from(settings.outlier_threshold()),
+        ),
+        ("port", Value::from(settings.port())),
+        (
+            "protocol",
+            Value::String(settings.protocol().as_str().to_owned()),
+        ),
+        (
+            "responseTimeoutMs",
+            Value::from(settings.response_timeout_ms()),
+        ),
+        (
+            "retryBudgetPercent",
+            Value::from(settings.retry_budget_percent()),
+        ),
+        ("schemaVersion", Value::from(SCHEMA_VERSION)),
+        (
+            "serviceName",
+            Value::String(settings.service_name().to_owned()),
+        ),
+        ("system", Value::Bool(upstream.system)),
+        ("version", Value::from(upstream.version.value())),
+    ])
+}
+
+fn method_texts(methods: &[HttpMethod]) -> Value {
+    Value::Array(
+        methods
+            .iter()
+            .map(|method| Value::String(method.as_str().to_owned()))
+            .collect(),
+    )
+}
+
+fn text_list(values: &[String]) -> Value {
+    Value::Array(values.iter().cloned().map(Value::String).collect())
+}
+
+fn encode_cors(cors: &CorsPolicy) -> Value {
+    object([
+        ("allowCredentials", Value::Bool(cors.allow_credentials())),
+        ("headers", text_list(cors.headers())),
+        ("maxAgeSeconds", Value::from(cors.max_age_seconds())),
+        ("methods", method_texts(cors.methods())),
+        ("origins", text_list(cors.origins())),
+    ])
+}
+
+fn encode_route(route: &RouteState) -> Value {
+    let fields = &route.fields;
+    let flags = fields.flags();
+    object([
+        ("bodyLimit", Value::from(fields.body_limit().bytes())),
+        ("cors", fields.cors().map_or(Value::Null, encode_cors)),
+        (
+            "enforcement",
+            Value::String(fields.enforcement().as_str().to_owned()),
+        ),
+        (
+            "flags",
+            object([
+                ("anonymous", Value::Bool(flags.anonymous())),
+                ("graphql", Value::Bool(flags.graphql())),
+                ("streaming", Value::Bool(flags.streaming())),
+            ]),
+        ),
+        ("host", Value::String(fields.host().as_str().to_owned())),
+        ("id", Value::String(route.id.to_string())),
+        ("idleTimeoutMs", Value::from(fields.timeouts().idle_ms())),
+        ("methods", method_texts(fields.methods())),
+        (
+            "pathPattern",
+            Value::String(fields.path_pattern().as_str().to_owned()),
+        ),
+        (
+            "ratePolicies",
+            Value::Array(
+                fields
+                    .rate_policies()
+                    .iter()
+                    .map(|policy| Value::String(policy.to_string()))
+                    .collect(),
+            ),
+        ),
+        (
+            "requestTimeoutMs",
+            Value::from(fields.timeouts().request_ms()),
+        ),
+        ("retry", Value::String(fields.retry().as_str().to_owned())),
+        ("schemaVersion", Value::from(SCHEMA_VERSION)),
+        ("service", Value::String(fields.service().to_string())),
+        ("system", Value::Bool(route.system)),
+        (
+            "upstreamId",
+            Value::String(fields.upstream_id().to_string()),
+        ),
+        ("version", Value::from(route.version.value())),
+    ])
+}
+
+fn encode_rate_policy(policy: &RatePolicyState) -> Value {
+    let fields = &policy.fields;
+    object([
+        ("burst", Value::from(fields.burst())),
+        (
+            "fallback",
+            Value::String(fields.fallback().as_str().to_owned()),
+        ),
+        ("id", Value::String(policy.id.to_string())),
+        (
+            "keyKind",
+            Value::String(fields.key_kind().as_str().to_owned()),
+        ),
+        ("limit", Value::from(fields.limit())),
+        ("name", Value::String(fields.name().to_owned())),
+        ("periodSeconds", Value::from(fields.period_seconds())),
+        ("schemaVersion", Value::from(SCHEMA_VERSION)),
+        ("version", Value::from(policy.version.value())),
     ])
 }
 
@@ -295,6 +444,155 @@ fn decode_chunk(fields: &Fields) -> Result<PolicyState, InvalidStateRecord> {
     }))
 }
 
+fn version(fields: &Fields) -> Result<EntityVersion, InvalidStateRecord> {
+    EntityVersion::new(number(fields, "version")?).map_err(|_error| field_error("version"))
+}
+
+fn identifier<T>(
+    fields: &Fields,
+    name: &'static str,
+    parse: impl FnOnce(&str) -> Result<T, iam_domain::InvalidIamValue>,
+) -> Result<T, InvalidStateRecord> {
+    parse(&text(fields, name)?).map_err(|_error| field_error(name))
+}
+
+/// The value of a closed set that the text of the field names.
+fn variant<T>(
+    fields: &Fields,
+    name: &'static str,
+    parse: impl FnOnce(&str) -> Option<T>,
+) -> Result<T, InvalidStateRecord> {
+    parse(&text(fields, name)?).ok_or_else(|| field_error(name))
+}
+
+fn decode_upstream(fields: &Fields) -> Result<PolicyState, InvalidStateRecord> {
+    let draft = UpstreamSettingsDraft {
+        namespace: text(fields, "namespace")?,
+        service_name: text(fields, "serviceName")?,
+        catalog_service: text(fields, "catalogService")?,
+        port: number(fields, "port")?,
+        protocol: variant(fields, "protocol", UpstreamProtocol::parse)?,
+        forward_credentials: flag(fields, "forwardCredentials")?,
+        connect_timeout_ms: number(fields, "connectTimeoutMs")?,
+        response_timeout_ms: number(fields, "responseTimeoutMs")?,
+        concurrency_limit: number(fields, "concurrencyLimit")?,
+        retry_budget_percent: number(fields, "retryBudgetPercent")?,
+        outlier_threshold: number(fields, "outlierThreshold")?,
+    };
+    let (name, settings) = UpstreamFields::new(&text(fields, "name")?, &draft)
+        .map_err(|_violations| field_error("settings"))?
+        .into_parts();
+    Ok(PolicyState::Upstream(UpstreamState {
+        id: identifier(fields, "id", UpstreamId::parse)?,
+        name,
+        settings,
+        system: flag(fields, "system")?,
+        version: version(fields)?,
+    }))
+}
+
+fn texts(fields: &Fields, name: &'static str) -> Result<Vec<String>, InvalidStateRecord> {
+    get(fields, name)?
+        .as_array()
+        .ok_or_else(|| field_error(name))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| field_error(name))
+        })
+        .collect()
+}
+
+fn methods(fields: &Fields) -> Result<Vec<HttpMethod>, InvalidStateRecord> {
+    texts(fields, "methods")?
+        .iter()
+        .map(|method| HttpMethod::parse(method).ok_or_else(|| field_error("methods")))
+        .collect()
+}
+
+fn decode_cors(value: &Value) -> Result<CorsDraft, InvalidStateRecord> {
+    let fields = member(value, "cors")?;
+    Ok(CorsDraft {
+        origins: texts(fields, "origins")?,
+        methods: methods(fields)?,
+        headers: texts(fields, "headers")?,
+        allow_credentials: flag(fields, "allowCredentials")?,
+        max_age_seconds: number(fields, "maxAgeSeconds")?,
+    })
+}
+
+/// The canonical JSON text of a CORS policy, as the state record and the `cors` column hold it.
+pub(crate) fn cors_to_json(cors: &CorsPolicy) -> String {
+    encode_cors(cors).to_string()
+}
+
+/// The unvalidated CORS policy that the canonical JSON text holds.
+///
+/// # Errors
+///
+/// [`InvalidStateRecord::Field`] when the text is not the JSON of a CORS policy.
+pub(crate) fn cors_from_json(text: &str) -> Result<CorsDraft, InvalidStateRecord> {
+    let value: Value = serde_json::from_str(text).map_err(|_error| field_error("cors"))?;
+    decode_cors(&value)
+}
+
+fn decode_flags(fields: &Fields) -> Result<RouteFlags, InvalidStateRecord> {
+    let flags = member(get(fields, "flags")?, "flags")?;
+    Ok(RouteFlags::default()
+        .with(RouteFlag::Graphql, flag(flags, "graphql")?)
+        .with(RouteFlag::Streaming, flag(flags, "streaming")?)
+        .with(RouteFlag::Anonymous, flag(flags, "anonymous")?))
+}
+
+fn decode_route(fields: &Fields) -> Result<PolicyState, InvalidStateRecord> {
+    let rate_policies = texts(fields, "ratePolicies")?
+        .iter()
+        .map(|id| RatePolicyId::parse(id).map_err(|_error| field_error("ratePolicies")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let cors = nullable(fields, "cors", Some)?
+        .map(decode_cors)
+        .transpose()?;
+    let draft = RouteDraft {
+        host: text(fields, "host")?,
+        methods: methods(fields)?,
+        path_pattern: text(fields, "pathPattern")?,
+        service: text(fields, "service")?,
+        upstream_id: identifier(fields, "upstreamId", UpstreamId::parse)?,
+        flags: decode_flags(fields)?,
+        enforcement: variant(fields, "enforcement", EnforcementMode::parse)?,
+        body_limit: number(fields, "bodyLimit")?,
+        request_timeout_ms: number(fields, "requestTimeoutMs")?,
+        idle_timeout_ms: number(fields, "idleTimeoutMs")?,
+        retry: variant(fields, "retry", RetryPolicy::parse)?,
+        rate_policies,
+        cors,
+    };
+    Ok(PolicyState::Route(RouteState {
+        id: identifier(fields, "id", RouteId::parse)?,
+        fields: RouteFields::new(&draft).map_err(|_violations| field_error("route"))?,
+        system: flag(fields, "system")?,
+        version: version(fields)?,
+    }))
+}
+
+fn decode_rate_policy(fields: &Fields) -> Result<PolicyState, InvalidStateRecord> {
+    let draft = RatePolicyDraft {
+        name: text(fields, "name")?,
+        key_kind: variant(fields, "keyKind", RateKeyKind::parse)?,
+        limit: number(fields, "limit")?,
+        period_seconds: number(fields, "periodSeconds")?,
+        burst: number(fields, "burst")?,
+        fallback: variant(fields, "fallback", RateFallback::parse)?,
+    };
+    Ok(PolicyState::RatePolicy(RatePolicyState {
+        id: identifier(fields, "id", RatePolicyId::parse)?,
+        fields: RatePolicyFields::new(draft).map_err(|_violations| field_error("fields"))?,
+        version: version(fields)?,
+    }))
+}
+
 fn decode_head(fields: &Fields) -> Result<PolicyState, InvalidStateRecord> {
     Ok(PolicyState::Head(PolicyHead {
         version: PolicyVersion::new(number(fields, "version")?)
@@ -311,6 +609,9 @@ impl StateRecordCodec for JsonStateRecordCodec {
             PolicyState::Subject(subject) => encode_subject(subject.clone()),
             PolicyState::Manifest(manifest) => encode_manifest(manifest),
             PolicyState::Chunk(chunk) => encode_chunk(chunk),
+            PolicyState::Upstream(upstream) => encode_upstream(upstream),
+            PolicyState::Route(route) => encode_route(route),
+            PolicyState::RatePolicy(policy) => encode_rate_policy(policy),
             PolicyState::Head(head) => encode_head(head),
         };
         Ok(value.to_string())
@@ -330,10 +631,10 @@ impl StateRecordCodec for JsonStateRecordCodec {
             StateKey::CatalogueManifest(_) => decode_manifest(fields),
             StateKey::CatalogueChunk { .. } => decode_chunk(fields),
             StateKey::Head => decode_head(fields),
-            StateKey::Route(_)
-            | StateKey::Upstream(_)
-            | StateKey::RatePolicy(_)
-            | StateKey::SessionRevocation(_)
+            StateKey::Upstream(_) => decode_upstream(fields),
+            StateKey::Route(_) => decode_route(fields),
+            StateKey::RatePolicy(_) => decode_rate_policy(fields),
+            StateKey::SessionRevocation(_)
             | StateKey::UserRevocation(_)
             | StateKey::GlobalRevocation => Err(field_error("key")),
         }?;

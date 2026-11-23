@@ -5,21 +5,28 @@ pub mod advisory_lock_leadership;
 pub mod catalogue;
 pub mod change_receipt;
 pub mod event_encoding;
+pub mod gateway_configuration;
 pub mod graphql_permission;
 pub mod graphql_spec;
 pub mod idempotency;
 pub mod maintenance_store;
 pub mod openapi_spec;
+pub mod outbox_listener;
+pub mod outbox_store;
 pub mod policy_read;
+pub mod rate_policy;
 pub mod rest_permission;
 pub mod revocation;
 pub mod revocation_view;
 pub mod role;
+pub mod route;
 pub mod security_audit_log;
 pub mod startup_lock;
 pub mod state_writer;
+pub(crate) mod stored;
 pub mod task_state;
 pub mod unit_of_work;
+pub mod upstream;
 pub mod user_role;
 
 use iam_domain::{

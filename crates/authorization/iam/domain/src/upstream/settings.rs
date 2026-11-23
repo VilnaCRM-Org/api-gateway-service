@@ -15,6 +15,16 @@ pub enum UpstreamProtocol {
 }
 
 impl UpstreamProtocol {
+    /// The protocol that [`Self::as_str`] prints; `None` for any other text.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "http1" => Some(Self::Http1),
+            "h2c" => Some(Self::H2c),
+            _ => None,
+        }
+    }
+
     /// The name of the protocol.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

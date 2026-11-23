@@ -4,15 +4,22 @@
 //! has the same state, and so the same encoded bytes and the same entity hash.
 
 use crate::error::InvalidStateRecord;
+use crate::rate_policy::RatePolicyParts;
+use crate::rate_policy::fields::RatePolicyFields;
+use crate::route::RouteParts;
+use crate::route::fields::RouteFields;
 use crate::state::key::{ChunkId, StateKey};
+use crate::upstream::UpstreamParts;
+use crate::upstream::settings::UpstreamSettings;
 use crate::value_object::assignment_scope::AssignmentScope;
 use crate::value_object::entity_version::EntityVersion;
-use crate::value_object::identifier::RoleId;
+use crate::value_object::identifier::{RatePolicyId, RoleId, RouteId, UpstreamId};
 use crate::value_object::policy_digest_value::PolicyDigestValue;
 use crate::value_object::policy_version::PolicyVersion;
 use crate::value_object::role_kind::RoleKind;
 use crate::value_object::service_name::ServiceName;
 use crate::value_object::subject::SubjectRef;
+use crate::value_object::upstream_name::UpstreamName;
 
 /// One grant of a role: the text of its key or pattern, and whether it still takes part in
 /// decisions (an orphaned grant does not).
@@ -111,6 +118,85 @@ pub struct CatalogueManifest {
     pub chunks: Vec<ChunkId>,
 }
 
+/// The state of an upstream that is not deleted: a deleted upstream is a tombstone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamState {
+    /// The identifier.
+    pub id: UpstreamId,
+    /// The name, which the key of the record carries as well.
+    pub name: UpstreamName,
+    /// The settings.
+    pub settings: UpstreamSettings,
+    /// Whether IAM manages the upstream.
+    pub system: bool,
+    /// The optimistic-concurrency version of the upstream.
+    pub version: EntityVersion,
+}
+
+impl UpstreamState {
+    /// The state of a stored upstream.
+    #[must_use]
+    pub fn of(parts: &UpstreamParts) -> Self {
+        Self {
+            id: parts.id,
+            name: parts.name.clone(),
+            settings: parts.settings.clone(),
+            system: parts.system,
+            version: parts.version,
+        }
+    }
+}
+
+/// The state of a route that is not deleted: a deleted route is a tombstone. The rate policies
+/// stay in the order they apply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteState {
+    /// The identifier.
+    pub id: RouteId,
+    /// The configuration.
+    pub fields: RouteFields,
+    /// Whether IAM manages the route.
+    pub system: bool,
+    /// The optimistic-concurrency version of the route.
+    pub version: EntityVersion,
+}
+
+impl RouteState {
+    /// The state of a stored route.
+    #[must_use]
+    pub fn of(parts: &RouteParts) -> Self {
+        Self {
+            id: parts.id,
+            fields: parts.fields.clone(),
+            system: parts.system,
+            version: parts.version,
+        }
+    }
+}
+
+/// The state of a rate policy that is not deleted: a deleted rate policy is a tombstone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RatePolicyState {
+    /// The identifier.
+    pub id: RatePolicyId,
+    /// The configuration.
+    pub fields: RatePolicyFields,
+    /// The optimistic-concurrency version of the rate policy.
+    pub version: EntityVersion,
+}
+
+impl RatePolicyState {
+    /// The state of a stored rate policy.
+    #[must_use]
+    pub fn of(parts: &RatePolicyParts) -> Self {
+        Self {
+            id: parts.id,
+            fields: parts.fields.clone(),
+            version: parts.version,
+        }
+    }
+}
+
 /// The version and the digest that a versioned transaction ended with: the last record of the
 /// version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +218,12 @@ pub enum PolicyState {
     Manifest(CatalogueManifest),
     /// A chunk of a service catalogue.
     Chunk(CatalogueChunk),
+    /// An upstream.
+    Upstream(UpstreamState),
+    /// A route.
+    Route(RouteState),
+    /// A rate policy.
+    RatePolicy(RatePolicyState),
     /// The head of a version.
     Head(PolicyHead),
 }
@@ -149,6 +241,9 @@ impl PolicyState {
             (Self::Chunk(chunk), StateKey::CatalogueChunk { service, .. }) => {
                 chunk.service == *service
             }
+            (Self::Upstream(upstream), StateKey::Upstream(name)) => upstream.name == *name,
+            (Self::Route(route), StateKey::Route(id)) => route.id == *id,
+            (Self::RatePolicy(policy), StateKey::RatePolicy(id)) => policy.id == *id,
             (Self::Head(_), StateKey::Head) => true,
             _ => false,
         }

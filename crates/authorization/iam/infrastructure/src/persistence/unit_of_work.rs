@@ -1,8 +1,8 @@
 //! PostgreSQL implementation of the unit of work: one transaction per administrative change.
 //!
 //! A versioned transaction writes one outbox state row for every entity it changed, the policy
-//! digest and the `__head` row of its version, next to the outbox event rows; Story 7.4 adds the
-//! relay wake-up.
+//! digest and the `__head` row of its version, next to the outbox event rows, and notifies the
+//! relay's `LISTEN iam_outbox` connection when it commits.
 
 use std::time::SystemTime;
 
@@ -17,8 +17,10 @@ use sqlx::types::time::OffsetDateTime;
 
 use crate::persistence::catalogue;
 use crate::persistence::event_encoding::encode;
+use crate::persistence::gateway_configuration;
 use crate::persistence::graphql_spec;
 use crate::persistence::openapi_spec;
+use crate::persistence::outbox_listener::OUTBOX_CHANNEL;
 use crate::persistence::role::save_within;
 use crate::persistence::security_audit_log::{PgSecurityAuditLog, emit};
 use crate::persistence::state_writer::{StateCapture, Versioned};
@@ -40,7 +42,9 @@ const NANOS_PER_MICRO: i128 = 1_000;
 /// `iam_graphql_spec_possible_types`, and the `OpenAPI` specification statements against
 /// `iam_openapi_specs` and `iam_openapi_spec_operations`, and the catalogue statements against
 /// `iam_graphql_permissions`, `iam_rest_permissions`, `iam_role_permissions` and the catalogue epoch
-/// of `iam_policy_epoch`, together with the status of the activated version.
+/// of `iam_policy_epoch`, together with the status of the activated version, and the upstream,
+/// route and rate policy statements against `iam_upstreams`, `iam_routes`,
+/// `iam_route_rate_policies` and `iam_rate_policies`.
 #[derive(Debug)]
 pub struct PgIamUnitOfWork {
     pool: sqlx::PgPool,
@@ -68,10 +72,22 @@ impl PgIamUnitOfWork {
     async fn commit_change(&self, change: &IamChange) -> Result<ChangeReceipt, RepositoryError> {
         let mut transaction = self.pool.begin().await.map_err(translate)?;
         let (version, stored) = write(&mut transaction, change).await?;
+        wake_relay(&mut transaction).await?;
         transaction.commit().await.map_err(translate)?;
         stored.iter().for_each(emit);
         Ok(change.receipt(version))
     }
+}
+
+/// Notifies the listeners of the outbox when the transaction commits. The notification carries no
+/// keys: it only tells the relay to look at the outbox now instead of at its next poll.
+async fn wake_relay(connection: &mut PgConnection) -> Result<(), RepositoryError> {
+    sqlx::query("SELECT pg_notify($1, '')")
+        .bind(OUTBOX_CHANNEL)
+        .execute(&mut *connection)
+        .await
+        .map(|_done| ())
+        .map_err(translate)
 }
 
 /// Writes the whole change inside the caller's transaction and returns the policy version of the
@@ -194,24 +210,35 @@ async fn run(
     statements: &[ChangeStatement],
 ) -> Result<(), RepositoryError> {
     for statement in statements {
-        match statement {
-            ChangeStatement::ExpectPolicyVersion(_) => {}
-            ChangeStatement::SaveRole(role) => save_within(connection, role).await?,
-            ChangeStatement::SaveUserRole(assignment) => {
-                user_role::save_within(connection, assignment).await?;
-            }
-            ChangeStatement::SaveGraphQlSpec(version) => {
-                graphql_spec::save_within(connection, version).await?;
-            }
-            ChangeStatement::SaveOpenApiSpec(version) => {
-                openapi_spec::save_within(connection, version).await?;
-            }
-            ChangeStatement::ApplyCatalogue(activation) => {
-                catalogue::apply_within(connection, activation).await?;
-            }
-        }
+        run_statement(connection, statement).await?;
     }
     Ok(())
+}
+
+/// Runs the aggregate write of one statement; a guard writes nothing.
+async fn run_statement(
+    connection: &mut PgConnection,
+    statement: &ChangeStatement,
+) -> Result<(), RepositoryError> {
+    match statement {
+        ChangeStatement::ExpectPolicyVersion(_) => Ok(()),
+        ChangeStatement::SaveRole(role) => save_within(connection, role).await,
+        ChangeStatement::SaveUserRole(assignment) => {
+            user_role::save_within(connection, assignment).await
+        }
+        ChangeStatement::SaveGraphQlSpec(version) => {
+            graphql_spec::save_within(connection, version).await
+        }
+        ChangeStatement::SaveOpenApiSpec(version) => {
+            openapi_spec::save_within(connection, version).await
+        }
+        ChangeStatement::ApplyCatalogue(activation) => {
+            catalogue::apply_within(connection, activation).await
+        }
+        ChangeStatement::SaveGateway(statement) => {
+            gateway_configuration::save_within(connection, statement).await
+        }
+    }
 }
 
 /// The column values of one outbox event row; they never leave this module.

@@ -2,6 +2,7 @@
 
 pub mod event;
 pub mod fields;
+pub mod statement;
 
 use std::time::SystemTime;
 

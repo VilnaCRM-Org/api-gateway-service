@@ -29,6 +29,21 @@ impl StateRecordCodec for TextCodec {
                 format!("manifest {} {:?}", manifest.catalog_epoch, manifest.chunks)
             }
             PolicyState::Chunk(chunk) => format!("chunk {:?}", chunk.entries),
+            PolicyState::Upstream(upstream) => format!(
+                "upstream {} v{}",
+                upstream.settings.catalog_service(),
+                upstream.version.value()
+            ),
+            PolicyState::Route(route) => format!(
+                "route {} v{}",
+                route.fields.path_pattern().as_str(),
+                route.version.value()
+            ),
+            PolicyState::RatePolicy(policy) => format!(
+                "ratepolicy {} v{}",
+                policy.fields.name(),
+                policy.version.value()
+            ),
             PolicyState::Head(head) => {
                 format!("head {} {:?}", head.version.value(), head.digest.as_bytes())
             }

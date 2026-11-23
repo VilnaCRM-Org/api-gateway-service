@@ -12,8 +12,9 @@ use std::error::Error;
 use iam_domain::{
     AssignmentScope, AssignmentState, CatalogueEntryState, CatalogueLayout, ChangeStatement,
     EntityVersion, GrantState, InvalidIamValue, LogEpoch, PolicyDigestValue, PolicyState,
-    PolicyVersion, ProjectId, RepositoryError, RoleId, RoleKind, RoleState, ServiceName,
-    StateBatch, StateChange, StateKey, StateRow, SubjectRef, SubjectState,
+    PolicyVersion, ProjectId, RatePolicyId, RatePolicyState, RepositoryError, RoleId, RoleKind,
+    RoleState, RouteId, RouteState, ServiceName, StateBatch, StateChange, StateKey, StateRow,
+    SubjectRef, SubjectState, UpstreamName, UpstreamState,
 };
 use sha2::{Digest as _, Sha256};
 use shared_domain::Uuid;
@@ -22,7 +23,10 @@ use sqlx::types::Uuid as SqlUuid;
 use sqlx::types::time::OffsetDateTime;
 use sqlx::{PgConnection, Row as _};
 
+use crate::persistence::rate_policy;
 use crate::persistence::role::translate;
+use crate::persistence::route;
+use crate::persistence::upstream;
 use crate::policy_state::json_state_record_codec::JsonStateRecordCodec;
 use crate::policy_state::sha256_policy_digest::Sha256PolicyDigest;
 
@@ -137,14 +141,20 @@ async fn read_all(
     Ok(states)
 }
 
-/// An entity whose state a versioned transaction writes: a role or a subject; no other kind of
-/// entity is written yet.
+/// An entity whose state a versioned transaction writes: a role, a subject, an upstream, a route or
+/// a rate policy; no other kind of entity is written from these tables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Entity<'key> {
     /// A role with its grants.
     Role(RoleId),
     /// The assignments of a subject.
     Subject(&'key SubjectRef),
+    /// An upstream, named by its record key.
+    Upstream(&'key UpstreamName),
+    /// A route with its rate policies.
+    Route(RouteId),
+    /// A rate policy.
+    RatePolicy(RatePolicyId),
 }
 
 /// The entity of `key`, or `None` for a key whose state is not written from these tables.
@@ -152,11 +162,11 @@ const fn entity(key: &StateKey) -> Option<Entity<'_>> {
     match key {
         StateKey::Role(id) => Some(Entity::Role(*id)),
         StateKey::Subject(subject) => Some(Entity::Subject(subject)),
+        StateKey::Upstream(name) => Some(Entity::Upstream(name)),
+        StateKey::Route(id) => Some(Entity::Route(*id)),
+        StateKey::RatePolicy(id) => Some(Entity::RatePolicy(*id)),
         StateKey::CatalogueManifest(_)
         | StateKey::CatalogueChunk { .. }
-        | StateKey::Route(_)
-        | StateKey::Upstream(_)
-        | StateKey::RatePolicy(_)
         | StateKey::SessionRevocation(_)
         | StateKey::UserRevocation(_)
         | StateKey::GlobalRevocation
@@ -164,7 +174,7 @@ const fn entity(key: &StateKey) -> Option<Entity<'_>> {
     }
 }
 
-/// The state of one role or one subject.
+/// The state of one entity.
 async fn read_entity(
     connection: &mut PgConnection,
     entity: Entity<'_>,
@@ -172,6 +182,15 @@ async fn read_entity(
     match entity {
         Entity::Role(id) => read_role(connection, id).await,
         Entity::Subject(subject) => read_subject(connection, subject).await,
+        Entity::Upstream(name) => Ok(upstream::select_by_name(connection, name)
+            .await?
+            .map(|parts| PolicyState::Upstream(UpstreamState::of(&parts)))),
+        Entity::Route(id) => Ok(route::select_by_id(connection, id)
+            .await?
+            .map(|parts| PolicyState::Route(RouteState::of(&parts)))),
+        Entity::RatePolicy(id) => Ok(rate_policy::select_by_id(connection, id)
+            .await?
+            .map(|parts| PolicyState::RatePolicy(RatePolicyState::of(&parts)))),
     }
 }
 

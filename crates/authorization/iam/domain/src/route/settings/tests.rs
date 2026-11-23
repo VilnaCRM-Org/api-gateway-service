@@ -63,3 +63,15 @@ fn invalid_timeouts_report_each_violation(
 ) {
     assert_eq!(RouteTimeouts::new(request, idle), Err(expected));
 }
+
+#[test]
+fn the_printed_enforcement_mode_and_retry_policy_parse_back() {
+    for mode in [EnforcementMode::Enforce, EnforcementMode::Audit] {
+        assert_eq!(EnforcementMode::parse(mode.as_str()), Some(mode));
+    }
+    for retry in [RetryPolicy::None, RetryPolicy::Idempotent] {
+        assert_eq!(RetryPolicy::parse(retry.as_str()), Some(retry));
+    }
+    assert_eq!(EnforcementMode::parse("Enforce"), None);
+    assert_eq!(RetryPolicy::parse("always"), None);
+}

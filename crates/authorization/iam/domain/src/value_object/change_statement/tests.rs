@@ -275,3 +275,139 @@ fn an_activation_changes_the_roles_it_orphans_or_moves_and_names_its_service() {
         Some(&ServiceName::new("billing").unwrap())
     );
 }
+
+fn upstream_statement() -> ChangeStatement {
+    use crate::upstream::settings::{UpstreamFields, UpstreamProtocol, UpstreamSettingsDraft};
+    use crate::upstream::statement::UpstreamStatement;
+    use crate::upstream::{Upstream, UpstreamStamp};
+    use crate::value_object::identifier::UpstreamId;
+
+    let fields = UpstreamFields::new(
+        "core",
+        &UpstreamSettingsDraft {
+            namespace: "platform".to_owned(),
+            service_name: "core-service".to_owned(),
+            catalog_service: "core".to_owned(),
+            port: 8080,
+            protocol: UpstreamProtocol::Http1,
+            forward_credentials: false,
+            connect_timeout_ms: 1_000,
+            response_timeout_ms: 30_000,
+            concurrency_limit: 256,
+            retry_budget_percent: 20,
+            outlier_threshold: 5,
+        },
+    )
+    .unwrap();
+    let upstream = Upstream::create(
+        UpstreamId::parse("5b2e9c1a-7d3f-4a6b-8c0d-1e2f3a4b5c6d").unwrap(),
+        fields,
+        false,
+        UpstreamStamp {
+            event_id: Uuid::parse("01890a5d-ac96-774b-bcce-b302099a8057").unwrap(),
+            actor: actor(),
+            occurred_at: SystemTime::UNIX_EPOCH,
+        },
+    );
+    ChangeStatement::from(UpstreamStatement::insert(&upstream))
+}
+
+fn route_statement() -> ChangeStatement {
+    use crate::route::Route;
+    use crate::route::fixtures::{fields, stamp};
+    use crate::route::statement::RouteStatement;
+    use crate::value_object::http_method::HttpMethod;
+    use crate::value_object::identifier::RouteId;
+
+    let route = Route::create(
+        RouteId::parse("00000000-0000-7000-8000-000000000001").unwrap(),
+        fields("api.example.com", "/users", &[HttpMethod::Get]),
+        false,
+        stamp(10),
+    );
+    ChangeStatement::from(RouteStatement::insert(&route))
+}
+
+fn rate_policy_statement() -> ChangeStatement {
+    use crate::rate_policy::fields::{
+        RateFallback, RateKeyKind, RatePolicyDraft, RatePolicyFields,
+    };
+    use crate::rate_policy::statement::RatePolicyStatement;
+    use crate::rate_policy::{RatePolicy, RatePolicyStamp};
+    use crate::value_object::identifier::RatePolicyId;
+
+    let fields = RatePolicyFields::new(RatePolicyDraft {
+        name: "per-ip".to_owned(),
+        key_kind: RateKeyKind::Ip,
+        limit: 100,
+        period_seconds: 60,
+        burst: 10,
+        fallback: RateFallback::Divided,
+    })
+    .unwrap();
+    let policy = RatePolicy::create(
+        RatePolicyId::parse("6c3f0d2b-8e4a-4b7c-9d1e-2f3a4b5c6d7e").unwrap(),
+        fields,
+        RatePolicyStamp {
+            event_id: Uuid::parse("01890a5d-ac96-774b-bcce-b302099a8057").unwrap(),
+            actor: actor(),
+            occurred_at: SystemTime::UNIX_EPOCH,
+        },
+    );
+    ChangeStatement::from(RatePolicyStatement::insert(&policy))
+}
+
+#[test]
+fn a_gateway_configuration_write_holds_under_every_locked_version() {
+    for statement in [
+        upstream_statement(),
+        route_statement(),
+        rate_policy_statement(),
+    ] {
+        assert!(statement.holds(PolicyVersion::new(1).unwrap()));
+        assert!(statement.holds(PolicyVersion::new(9).unwrap()));
+    }
+}
+
+#[test]
+fn an_upstream_write_changes_the_state_of_the_upstream_named_by_it() {
+    use crate::value_object::upstream_name::UpstreamName;
+
+    let statement = upstream_statement();
+
+    assert_eq!(
+        statement.state_keys(),
+        [StateKey::Upstream(UpstreamName::new("core").unwrap())]
+    );
+    assert_eq!(statement.catalogue_service(), None);
+}
+
+#[test]
+fn a_route_write_changes_the_state_of_its_route() {
+    use crate::value_object::identifier::RouteId;
+
+    let statement = route_statement();
+
+    assert_eq!(
+        statement.state_keys(),
+        [StateKey::Route(
+            RouteId::parse("00000000-0000-7000-8000-000000000001").unwrap()
+        )]
+    );
+    assert_eq!(statement.catalogue_service(), None);
+}
+
+#[test]
+fn a_rate_policy_write_changes_the_state_of_its_rate_policy() {
+    use crate::value_object::identifier::RatePolicyId;
+
+    let statement = rate_policy_statement();
+
+    assert_eq!(
+        statement.state_keys(),
+        [StateKey::RatePolicy(
+            RatePolicyId::parse("6c3f0d2b-8e4a-4b7c-9d1e-2f3a4b5c6d7e").unwrap()
+        )]
+    );
+    assert_eq!(statement.catalogue_service(), None);
+}

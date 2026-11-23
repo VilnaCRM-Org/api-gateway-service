@@ -351,3 +351,11 @@ fn recorded_events_become_envelopes_with_their_data() {
         EventValue::List(vec![EventValue::Text("port".to_owned())])
     )));
 }
+
+#[test]
+fn the_printed_protocol_parses_back() {
+    for protocol in [UpstreamProtocol::Http1, UpstreamProtocol::H2c] {
+        assert_eq!(UpstreamProtocol::parse(protocol.as_str()), Some(protocol));
+    }
+    assert_eq!(UpstreamProtocol::parse("h2"), None);
+}

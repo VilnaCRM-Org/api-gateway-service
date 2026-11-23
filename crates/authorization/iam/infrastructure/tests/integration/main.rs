@@ -4,6 +4,8 @@
 #[cfg(test)]
 mod catalogue_activation;
 #[cfg(test)]
+mod gateway_configuration;
+#[cfg(test)]
 mod graphql_spec_repository;
 #[cfg(test)]
 mod jwt_access_token_verifier;
@@ -17,6 +19,12 @@ mod maintenance_store;
 mod migration;
 #[cfg(test)]
 mod openapi_spec_repository;
+#[cfg(test)]
+mod outbox_listener;
+#[cfg(test)]
+mod outbox_store;
+#[cfg(test)]
+mod policy_log_producer;
 #[cfg(test)]
 mod policy_read_repository;
 #[cfg(test)]

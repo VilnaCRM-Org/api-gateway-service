@@ -1,6 +1,7 @@
 //! The statements and guards that a change runs inside its transaction.
 
 use crate::catalogue_statement::CatalogueStatement;
+use crate::gateway_statement::GatewayStatement;
 use crate::graphql_spec::statement::GraphQlSpecStatement;
 use crate::openapi_spec::statement::OpenApiSpecStatement;
 use crate::role::statement::RoleStatement;
@@ -41,6 +42,10 @@ pub enum ChangeStatement {
     /// and take the next catalogue epoch; a version that is no longer in the expected status
     /// refuses the change as a conflict.
     ApplyCatalogue(Box<CatalogueStatement>),
+    /// Insert a new upstream, route or rate policy, or update a stored one at the expected version;
+    /// a duplicate id or name refuses the change as a duplicate, and a stale or deleted stored
+    /// record or a missing upstream or rate policy of a route as a conflict.
+    SaveGateway(Box<GatewayStatement>),
 }
 
 impl ChangeStatement {
@@ -54,13 +59,14 @@ impl ChangeStatement {
             | Self::SaveUserRole(_)
             | Self::SaveGraphQlSpec(_)
             | Self::SaveOpenApiSpec(_)
-            | Self::ApplyCatalogue(_) => true,
+            | Self::ApplyCatalogue(_)
+            | Self::SaveGateway(_) => true,
         }
     }
 
     /// The keys of the state records that the statement changes directly: the role of a role write,
-    /// the subject of an assignment write, and the roles whose grants an activation orphans or
-    /// moves. The catalogue records of an activation are named by [`Self::catalogue_service`].
+    /// the subject of an assignment write, the record of a gateway configuration write, and the
+    /// roles whose grants an activation orphans or moves. The catalogue records of an activation are named by [`Self::catalogue_service`].
     #[must_use]
     pub fn state_keys(&self) -> Vec<StateKey> {
         match self {
@@ -71,6 +77,7 @@ impl ChangeStatement {
             Self::SaveUserRole(statement) => {
                 vec![StateKey::Subject(statement.user_role().subject.clone())]
             }
+            Self::SaveGateway(statement) => vec![statement.state_key()],
             Self::ApplyCatalogue(statement) => {
                 let parts = statement.parts();
                 parts
@@ -99,7 +106,8 @@ impl ChangeStatement {
             | Self::SaveRole(_)
             | Self::SaveUserRole(_)
             | Self::SaveGraphQlSpec(_)
-            | Self::SaveOpenApiSpec(_) => None,
+            | Self::SaveOpenApiSpec(_)
+            | Self::SaveGateway(_) => None,
         }
     }
 }

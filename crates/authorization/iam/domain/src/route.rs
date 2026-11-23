@@ -5,6 +5,7 @@ pub mod cors;
 pub mod event;
 pub mod fields;
 pub mod settings;
+pub mod statement;
 
 #[cfg(test)]
 pub(crate) mod fixtures;

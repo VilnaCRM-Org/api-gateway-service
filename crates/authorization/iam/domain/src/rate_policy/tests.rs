@@ -238,3 +238,20 @@ fn recorded_events_become_envelopes_with_their_data() {
         EventValue::List(vec![EventValue::Text("limit".to_owned())])
     )));
 }
+
+#[test]
+fn the_printed_key_kind_and_fallback_parse_back() {
+    for kind in [
+        RateKeyKind::Ip,
+        RateKeyKind::Subject,
+        RateKeyKind::SubjectRoute,
+        RateKeyKind::Route,
+    ] {
+        assert_eq!(RateKeyKind::parse(kind.as_str()), Some(kind));
+    }
+    for fallback in [RateFallback::Divided, RateFallback::Full] {
+        assert_eq!(RateFallback::parse(fallback.as_str()), Some(fallback));
+    }
+    assert_eq!(RateKeyKind::parse("user"), None);
+    assert_eq!(RateFallback::parse("half"), None);
+}

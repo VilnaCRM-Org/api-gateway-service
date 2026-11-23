@@ -16,6 +16,18 @@ pub enum RateKeyKind {
 }
 
 impl RateKeyKind {
+    /// The kind that [`Self::as_str`] prints; `None` for any other text.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "ip" => Some(Self::Ip),
+            "subject" => Some(Self::Subject),
+            "subject_route" => Some(Self::SubjectRoute),
+            "route" => Some(Self::Route),
+            _ => None,
+        }
+    }
+
     /// The name of the kind.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -38,6 +50,16 @@ pub enum RateFallback {
 }
 
 impl RateFallback {
+    /// The fallback that [`Self::as_str`] prints; `None` for any other text.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "divided" => Some(Self::Divided),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+
     /// The name of the fallback.
     #[must_use]
     pub const fn as_str(self) -> &'static str {

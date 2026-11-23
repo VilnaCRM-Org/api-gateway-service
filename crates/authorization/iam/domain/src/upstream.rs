@@ -3,6 +3,7 @@
 
 pub mod event;
 pub mod settings;
+pub mod statement;
 
 use std::time::SystemTime;
 
