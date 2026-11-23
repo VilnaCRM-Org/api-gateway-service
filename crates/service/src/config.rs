@@ -13,8 +13,11 @@ use std::time::Duration;
 
 use axum::http::Uri;
 use axum::http::uri::Authority;
-use iam_domain::{CallerTokenRule, TokenLifetimeRule};
-use iam_infrastructure::{JwtKeySet, JwtSettings, TokenMemoSettings};
+use iam_domain::{CallerTokenRule, ConfigGates, TokenLifetimeRule};
+use iam_infrastructure::{
+    JwtKeySet, JwtSettings, KafkaSecret, KafkaSecurity, KafkaSettings, SaslMechanism,
+    TokenMemoSettings,
+};
 use shared_infrastructure::messaging::SqsSettings;
 use shared_infrastructure::persistence::{
     MAX_STATEMENT_TIMEOUT, MIN_STATEMENT_TIMEOUT, PostgresSettings,
@@ -22,7 +25,7 @@ use shared_infrastructure::persistence::{
 use sqlx::postgres::PgConnectOptions;
 use tracing_subscriber::EnvFilter;
 
-use crate::cli::{DatabaseArgs, MigrateArgs, ServeArgs, TokenArgs};
+use crate::cli::{DatabaseArgs, KafkaArgs, MigrateArgs, ServeArgs, TokenArgs};
 
 /// The largest accepted `JWT_CLOCK_SKEW`.
 const MAX_CLOCK_SKEW: Duration = Duration::from_mins(1);
@@ -99,6 +102,8 @@ pub struct Config {
     pub shutdown_grace_period: Duration,
     /// Offline validation of User service access tokens.
     pub tokens: TokenSettings,
+    /// The control-plane Kafka connection and the topics it works on.
+    pub kafka: KafkaSettings,
 }
 
 /// The settings of the offline validation of User service access tokens.
@@ -132,14 +137,19 @@ impl Config {
         let sqs = sqs(&mut collector, &args);
         let limits = limits(&mut collector, &args);
         let tokens = tokens(&mut collector, &args.tokens);
+        let kafka = kafka(
+            &mut collector,
+            &args.kafka,
+            server.as_ref().map(|server| server.app_env),
+        );
         collector.cross_field_rules(
             database.as_ref().map(|settings| settings.acquire_timeout),
             sqs.as_ref().map(|settings| settings.operation_timeout),
             limits.as_ref().map(|limits| limits.health_probe_timeout),
             limits.as_ref().map(|limits| limits.request_timeout),
         );
-        match (server, database, sqs, limits, tokens) {
-            (Some(server), Some(database), Some(sqs), Some(limits), Some(tokens))
+        match (server, database, sqs, limits, tokens, kafka) {
+            (Some(server), Some(database), Some(sqs), Some(limits), Some(tokens), Some(kafka))
                 if collector.problems.is_empty() =>
             {
                 Ok(Self {
@@ -154,6 +164,7 @@ impl Config {
                     max_body_bytes: limits.max_body_bytes,
                     shutdown_grace_period: limits.shutdown_grace_period,
                     tokens,
+                    kafka,
                 })
             }
             _ => Err(ConfigErrors(collector.problems)),
@@ -232,6 +243,31 @@ impl Collector {
             self.problems.push(ConfigProblem {
                 variable: missing,
                 reason: format!("is required when {present} is set"),
+            });
+        }
+    }
+
+    /// `KAFKA_SECURITY_PROTOCOL=PLAINTEXT` and `KAFKA_CONFIG_GATES=relaxed` exist for the compose
+    /// broker, so only `dev` and `test` may use them.
+    fn kafka_environment_rules(
+        &mut self,
+        app_env: Option<AppEnv>,
+        protocol: Option<Protocol>,
+        gates: Option<ConfigGates>,
+    ) {
+        if app_env != Some(AppEnv::Prod) {
+            return;
+        }
+        if protocol == Some(Protocol::Plaintext) {
+            self.problems.push(ConfigProblem {
+                variable: "KAFKA_SECURITY_PROTOCOL",
+                reason: "must be SASL_SSL unless APP_ENV is dev or test".to_owned(),
+            });
+        }
+        if gates == Some(ConfigGates::Relaxed) {
+            self.problems.push(ConfigProblem {
+                variable: "KAFKA_CONFIG_GATES",
+                reason: "must be enforce unless APP_ENV is dev or test".to_owned(),
             });
         }
     }
@@ -552,6 +588,201 @@ fn max_token_lifetime(raw: Option<&str>) -> Parsed<Duration> {
     } else {
         Err("must be a duration of at least 1s".to_owned())
     }
+}
+
+/// How the Kafka connection is secured, before the credentials are attached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Protocol {
+    Plaintext,
+    SaslSsl,
+}
+
+/// The control-plane Kafka variables: the connection, the topics and the rules that relate them to
+/// `APP_ENV`.
+fn kafka(
+    collector: &mut Collector,
+    args: &KafkaArgs,
+    app_env: Option<AppEnv>,
+) -> Option<KafkaSettings> {
+    let servers = collector.collect(
+        "KAFKA_BOOTSTRAP_SERVERS",
+        bootstrap_servers(args.bootstrap_servers.as_deref()),
+    );
+    let protocol = collector.collect(
+        "KAFKA_SECURITY_PROTOCOL",
+        security_protocol(args.security_protocol.as_deref()),
+    );
+    let security = kafka_security(collector, args, protocol);
+    let client_id = collector.collect(
+        "KAFKA_CLIENT_ID",
+        non_empty(args.client_id.as_deref(), "iam-control"),
+    );
+    let timeouts = kafka_timeouts(collector, args);
+    let gates = collector.collect(
+        "KAFKA_CONFIG_GATES",
+        config_gates(args.config_gates.as_deref()),
+    );
+    let topics = kafka_topics(collector, args);
+    collector.kafka_environment_rules(app_env, protocol, gates);
+    let (policy_topic, events_topic) = topics?;
+    let (connect_timeout, request_timeout, retry_delay) = timeouts?;
+    Some(KafkaSettings {
+        bootstrap_servers: servers?,
+        security: security?,
+        client_id: client_id?,
+        connect_timeout,
+        request_timeout,
+        retry_delay,
+        gates: gates?,
+        policy_topic,
+        events_topic,
+    })
+}
+
+/// `KAFKA_SASL_MECHANISM`, `KAFKA_SASL_USERNAME`, `KAFKA_SASL_PASSWORD` and `KAFKA_CA_FILE`, which
+/// only `SASL_SSL` reads: a `PLAINTEXT` connection ignores them.
+fn kafka_security(
+    collector: &mut Collector,
+    args: &KafkaArgs,
+    protocol: Option<Protocol>,
+) -> Option<KafkaSecurity> {
+    match protocol? {
+        Protocol::Plaintext => Some(KafkaSecurity::Plaintext),
+        Protocol::SaslSsl => {
+            let mechanism = collector.collect(
+                "KAFKA_SASL_MECHANISM",
+                sasl_mechanism(args.sasl_mechanism.as_deref()),
+            );
+            let username = collector.collect(
+                "KAFKA_SASL_USERNAME",
+                required(args.sasl_username.as_deref()),
+            );
+            let password = collector.collect(
+                "KAFKA_SASL_PASSWORD",
+                required(args.sasl_password.as_deref()),
+            );
+            let ca_file = collector.collect("KAFKA_CA_FILE", optional(args.ca_file.as_deref()));
+            Some(KafkaSecurity::SaslSsl {
+                mechanism: mechanism?,
+                username: username?,
+                password: KafkaSecret::new(password?),
+                ca_file: ca_file?,
+            })
+        }
+    }
+}
+
+/// `KAFKA_CONNECT_TIMEOUT`, `KAFKA_REQUEST_TIMEOUT` (not shorter than the first) and
+/// `KAFKA_RETRY_DELAY`.
+fn kafka_timeouts(
+    collector: &mut Collector,
+    args: &KafkaArgs,
+) -> Option<(Duration, Duration, Duration)> {
+    let connect = collector.collect(
+        "KAFKA_CONNECT_TIMEOUT",
+        duration(args.connect_timeout.as_deref(), Duration::from_secs(1)),
+    );
+    let request = collector.collect(
+        "KAFKA_REQUEST_TIMEOUT",
+        duration(args.request_timeout.as_deref(), Duration::from_secs(2)),
+    );
+    let retry = collector.collect(
+        "KAFKA_RETRY_DELAY",
+        duration(args.retry_delay.as_deref(), Duration::from_millis(100)),
+    );
+    collector.at_least(
+        "KAFKA_REQUEST_TIMEOUT",
+        request,
+        "KAFKA_CONNECT_TIMEOUT",
+        connect,
+    );
+    Some((connect?, request?, retry?))
+}
+
+/// `POLICY_TOPIC` and `EVENTS_TOPIC`, which must name two different topics.
+fn kafka_topics(collector: &mut Collector, args: &KafkaArgs) -> Option<(String, String)> {
+    let policy = collector.collect(
+        "POLICY_TOPIC",
+        topic_name(args.policy_topic.as_deref(), "iam.policy.state.v1"),
+    );
+    let events = collector.collect(
+        "EVENTS_TOPIC",
+        topic_name(args.events_topic.as_deref(), "iam.events.v1"),
+    );
+    if policy.is_some() && policy == events {
+        collector.problems.push(ConfigProblem {
+            variable: "EVENTS_TOPIC",
+            reason: "must differ from POLICY_TOPIC".to_owned(),
+        });
+    }
+    Some((policy?, events?))
+}
+
+/// `KAFKA_SECURITY_PROTOCOL`: `SASL_SSL` or `PLAINTEXT`; `SASL_SSL` when it is not set.
+fn security_protocol(raw: Option<&str>) -> Parsed<Protocol> {
+    match raw {
+        None | Some("SASL_SSL") => Ok(Protocol::SaslSsl),
+        Some("PLAINTEXT") => Ok(Protocol::Plaintext),
+        Some(_) => Err("must be one of SASL_SSL, PLAINTEXT".to_owned()),
+    }
+}
+
+/// `KAFKA_SASL_MECHANISM`: `SCRAM-SHA-512` or `SCRAM-SHA-256`; `SCRAM-SHA-512` when it is not set.
+fn sasl_mechanism(raw: Option<&str>) -> Parsed<SaslMechanism> {
+    match raw {
+        None | Some("SCRAM-SHA-512") => Ok(SaslMechanism::ScramSha512),
+        Some("SCRAM-SHA-256") => Ok(SaslMechanism::ScramSha256),
+        Some(_) => Err("must be one of SCRAM-SHA-512, SCRAM-SHA-256".to_owned()),
+    }
+}
+
+/// `KAFKA_CONFIG_GATES`: `enforce` or `relaxed`; `enforce` when it is not set.
+fn config_gates(raw: Option<&str>) -> Parsed<ConfigGates> {
+    match raw {
+        None | Some("enforce") => Ok(ConfigGates::Enforce),
+        Some("relaxed") => Ok(ConfigGates::Relaxed),
+        Some(_) => Err("must be one of enforce, relaxed".to_owned()),
+    }
+}
+
+/// `KAFKA_BOOTSTRAP_SERVERS`: one or more comma-separated `host:port` pairs.
+fn bootstrap_servers(raw: Option<&str>) -> Parsed<String> {
+    let value = required(raw)?;
+    if value.split(',').all(|pair| is_host_and_port(pair.trim())) {
+        Ok(value)
+    } else {
+        Err("must be comma-separated host:port pairs".to_owned())
+    }
+}
+
+/// Whether `pair` is a host without whitespace or slash, a colon and a port from 1 to 65535.
+fn is_host_and_port(pair: &str) -> bool {
+    pair.rsplit_once(':').is_some_and(|(host, port)| {
+        !host.is_empty()
+            && !host.contains(|character: char| character.is_whitespace() || character == '/')
+            && port.parse::<u16>().is_ok_and(|port| port > 0)
+    })
+}
+
+/// A Kafka topic name: 1 to 249 letters, digits, `.`, `_` and `-`, and not `.` or `..`.
+fn topic_name(raw: Option<&str>, default: &str) -> Parsed<String> {
+    let name = non_empty(raw, default)?;
+    let valid_characters = name
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-'));
+    if valid_characters && name.len() <= 249 && name != "." && name != ".." {
+        Ok(name)
+    } else {
+        Err(
+            "must be a Kafka topic name of at most 249 letters, digits, '.', '_' and '-'"
+                .to_owned(),
+        )
+    }
+}
+
+/// An optional text setting that must not be empty when it is set.
+fn optional(raw: Option<&str>) -> Parsed<Option<String>> {
+    raw.map(|value| required(Some(value))).transpose()
 }
 
 fn non_empty(raw: Option<&str>, default: &str) -> Parsed<String> {

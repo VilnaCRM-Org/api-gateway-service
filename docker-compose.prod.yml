@@ -12,6 +12,13 @@ services:
       AWS_ENDPOINT_URL_SQS: !reset null # real SQS through the default credential chain
       AWS_ACCESS_KEY_ID: !reset null
       AWS_SECRET_ACCESS_KEY: !reset null
+      # The production cluster: SASL SCRAM over TLS and the enforced gates. KAFKA_CA_FILE needs a file mounted
+      # into the container, which a deployment adds.
+      KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:?KAFKA_BOOTSTRAP_SERVERS is required}
+      KAFKA_SECURITY_PROTOCOL: SASL_SSL
+      KAFKA_CONFIG_GATES: enforce
+      KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME:?KAFKA_SASL_USERNAME is required}
+      KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD:?KAFKA_SASL_PASSWORD is required}
     volumes: !override
       - ${JWT_PUBLIC_KEYS_HOST_FILE:?JWT_PUBLIC_KEYS_HOST_FILE is required}:/etc/service/jwt-public-keys.pem:ro
     deploy:
@@ -42,4 +49,13 @@ services:
     profiles: [local]
 
   localstack:
+    profiles: [local]
+
+  kafka:
+    profiles: [local]
+
+  kafka-tls:
+    profiles: [local]
+
+  kafka-topics:
     profiles: [local]

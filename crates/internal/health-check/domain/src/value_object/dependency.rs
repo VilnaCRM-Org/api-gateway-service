@@ -9,6 +9,9 @@ pub enum Dependency {
     Cache,
     /// The message broker.
     MessageBroker,
+    /// The Kafka cluster that carries the IAM policy log: reachable, and its state topic is
+    /// configured as the freshness guarantees require.
+    Kafka,
 }
 
 impl Dependency {
@@ -19,6 +22,7 @@ impl Dependency {
             Self::Database => "database",
             Self::Cache => "cache",
             Self::MessageBroker => "message_broker",
+            Self::Kafka => "kafka",
         }
     }
 
@@ -29,6 +33,7 @@ impl Dependency {
             Self::Database => "Database is not available",
             Self::Cache => "Cache is not working",
             Self::MessageBroker => "Message broker is not available",
+            Self::Kafka => "Kafka is not available",
         }
     }
 }

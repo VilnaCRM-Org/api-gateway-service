@@ -34,6 +34,7 @@ use test_support::rest_permission::FakeRestPermissionRepository;
 use test_support::revocation::FakeRevocationRepository;
 use test_support::role::FakeRoleRepository;
 use test_support::security_audit::FakeSecurityAuditLog;
+use test_support::singleton_leadership::FakeSingletonLeadership;
 use test_support::startup_lock::FakeStartupLock;
 use test_support::token::FakeTokenRepository;
 use test_support::unit_of_work::FakeIamUnitOfWork;
@@ -81,6 +82,7 @@ async fn a_panic_is_one_json_line_with_the_request_id_and_a_500_problem() {
         policy_reads: Arc::new(FakePolicyReadRepository::new()),
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
         startup_lock: Arc::new(FakeStartupLock::new()),
+        singleton_leadership: Arc::new(FakeSingletonLeadership::leading()),
         change_receipts: Arc::new(FakeChangeReceiptRepository::new()),
         idempotency_records: Arc::new(FakeIdempotencyRepository::new()),
         roles: Arc::new(FakeRoleRepository::new()),

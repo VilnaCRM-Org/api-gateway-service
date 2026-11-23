@@ -19,3 +19,8 @@ fn database_is_not_available(world: &mut AppWorld) {
 fn message_broker_is_not_available(world: &mut AppWorld) {
     world.fail(Dependency::MessageBroker);
 }
+
+#[given("Kafka is not available")]
+fn kafka_is_not_available(world: &mut AppWorld) {
+    world.fail(Dependency::Kafka);
+}

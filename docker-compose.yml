@@ -16,6 +16,8 @@ services:
         condition: service_completed_successfully
       localstack:
         condition: service_healthy
+      kafka-topics:
+        condition: service_completed_successfully
     environment:
       APP_ENV: ${APP_ENV:-prod}
       APP_PORT: '8081'
@@ -27,6 +29,11 @@ services:
       AWS_SECRET_ACCESS_KEY: test
       AWS_ENDPOINT_URL_SQS: http://localstack:4566
       JWT_PUBLIC_KEYS_FILE: /etc/service/jwt-public-keys.pem
+      # The compose broker at its in-network PLAINTEXT listener with the relaxed gates of a single node: both are
+      # refused outside APP_ENV dev and test, and docker-compose.prod.yml replaces them.
+      KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      KAFKA_CONFIG_GATES: relaxed
     volumes:
       # The development public key unless the caller names its own key file; the private half is never committed.
       - ${JWT_PUBLIC_KEYS_HOST_FILE:-./config/jwt/dev-public-keys.pem}:/etc/service/jwt-public-keys.pem:ro
@@ -147,6 +154,24 @@ services:
       start_period: 20s
       start_interval: 2s
     restart: unless-stopped
+
+  kafka-topics:
+    # Development and test only (Story 7.3): creates the state topic and the events topic with the settings the
+    # Kafka configuration gates require, replication factor 1 because the broker is a single node
+    # (scripts/kafka-topics-fixture.sh). The service waits for it, so `/api/health` finds the topics.
+    image: apache/kafka:4.3.2@sha256:852a0d49fc4e656b022e7f23785411802c9a088c78a7c5e39f33969de9c227a7
+    entrypoint:
+      - /bin/sh
+      - /repo/scripts/kafka-topics-fixture.sh
+      - kafka:19092
+      - ${POLICY_TOPIC:-iam.policy.state.v1}
+      - ${EVENTS_TOPIC:-iam.events.v1}
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./:/repo:ro
+    restart: 'no'
 
   kafka-tls:
     # Development and test only (Story 1.5): generates the CA, the broker certificate and the untrusted CA of

@@ -1,6 +1,7 @@
 //! PostgreSQL implementation of the policy epoch repository port: the SQL, the row mapping and the
 //! translation of database errors.
 
+pub mod advisory_lock_leadership;
 pub mod catalogue;
 pub mod change_receipt;
 pub mod event_encoding;
@@ -15,6 +16,7 @@ pub mod revocation_view;
 pub mod role;
 pub mod security_audit_log;
 pub mod startup_lock;
+pub mod task_state;
 pub mod unit_of_work;
 pub mod user_role;
 

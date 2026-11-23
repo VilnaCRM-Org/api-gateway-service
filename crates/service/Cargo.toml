@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 async-graphql.workspace = true
+async-trait.workspace = true
 axum.workspace = true
 clap.workspace = true
 dotenvy.workspace = true

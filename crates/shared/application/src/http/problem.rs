@@ -38,7 +38,7 @@ pub struct Violation {
 /// One dependency that did not answer its probe.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct DependencyFailure {
-    /// `database`, `cache` or `message_broker`.
+    /// `database`, `cache`, `message_broker` or `kafka`.
     pub dependency: String,
     /// Failure message of the probe.
     pub message: String,

@@ -7,7 +7,7 @@ use test_support::access_token::DEVELOPMENT_PUBLIC_KEYS_FILE;
 
 use crate::support::{Scratch, VALID_ENVIRONMENT, stderr, stdout};
 
-const FULL_ENVIRONMENT: [(&str, &str); 28] = [
+const FULL_ENVIRONMENT: [(&str, &str); 41] = [
     ("APP_ENV", "dev"),
     ("APP_HOST", "127.0.0.1"),
     ("APP_PORT", "0"),
@@ -39,6 +39,19 @@ const FULL_ENVIRONMENT: [(&str, &str); 28] = [
     ("TOKEN_MEMO_MAX_TTL", "900s"),
     ("JWT_CALLER_AUDIENCE", "vilnacrm-iam"),
     ("JWT_SERVICE_TOKEN_MAX_LIFETIME", "600s"),
+    ("KAFKA_BOOTSTRAP_SERVERS", "kafka-1:9094,kafka-2:9094"),
+    ("KAFKA_SECURITY_PROTOCOL", "SASL_SSL"),
+    ("KAFKA_SASL_MECHANISM", "SCRAM-SHA-256"),
+    ("KAFKA_SASL_USERNAME", "iam-control"),
+    ("KAFKA_SASL_PASSWORD", "not-a-real-password"),
+    ("KAFKA_CA_FILE", "/etc/kafka/ca.pem"),
+    ("KAFKA_CLIENT_ID", "iam-control-1"),
+    ("KAFKA_CONNECT_TIMEOUT", "500ms"),
+    ("KAFKA_REQUEST_TIMEOUT", "1s"),
+    ("KAFKA_RETRY_DELAY", "50ms"),
+    ("KAFKA_CONFIG_GATES", "enforce"),
+    ("POLICY_TOPIC", "iam.policy.state.v1"),
+    ("EVENTS_TOPIC", "iam.events.v1"),
 ];
 
 #[test]
@@ -273,6 +286,7 @@ fn the_version_is_the_package_version() {
 
 #[rstest]
 #[case(&["frobnicate"])]
+#[case(&["worker"])]
 #[case(&["check-config", "--frobnicate"])]
 #[case(&[])]
 fn a_usage_error_exits_2_with_the_text_on_stderr(#[case] arguments: &[&str]) {
@@ -555,4 +569,164 @@ fn a_key_file_of_three_keys_is_accepted() {
 
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(stdout(&output), "configuration OK\n");
+}
+
+#[rstest]
+#[case::relaxed_gates_in_prod(
+    &[("APP_ENV", "prod"), ("KAFKA_CONFIG_GATES", "relaxed")],
+    "KAFKA_CONFIG_GATES: must be enforce unless APP_ENV is dev or test\n"
+)]
+#[case::relaxed_gates_without_an_environment(
+    &[("KAFKA_CONFIG_GATES", "relaxed")],
+    "KAFKA_CONFIG_GATES: must be enforce unless APP_ENV is dev or test\n"
+)]
+#[case::plaintext_in_prod(
+    &[("APP_ENV", "prod"), ("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT")],
+    "KAFKA_SECURITY_PROTOCOL: must be SASL_SSL unless APP_ENV is dev or test\n"
+)]
+#[case::plaintext_without_an_environment(
+    &[("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT")],
+    "KAFKA_SECURITY_PROTOCOL: must be SASL_SSL unless APP_ENV is dev or test\n"
+)]
+#[case::both_in_prod(
+    &[
+        ("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT"),
+        ("KAFKA_CONFIG_GATES", "relaxed"),
+    ],
+    "KAFKA_SECURITY_PROTOCOL: must be SASL_SSL unless APP_ENV is dev or test\n\
+     KAFKA_CONFIG_GATES: must be enforce unless APP_ENV is dev or test\n"
+)]
+#[case::an_unknown_protocol(
+    &[("KAFKA_SECURITY_PROTOCOL", "SSL")],
+    "KAFKA_SECURITY_PROTOCOL: must be one of SASL_SSL, PLAINTEXT\n"
+)]
+#[case::an_unknown_gate(
+    &[("KAFKA_CONFIG_GATES", "lenient")],
+    "KAFKA_CONFIG_GATES: must be one of enforce, relaxed\n"
+)]
+#[case::an_unknown_mechanism(
+    &[("KAFKA_SASL_MECHANISM", "PLAIN")],
+    "KAFKA_SASL_MECHANISM: must be one of SCRAM-SHA-512, SCRAM-SHA-256\n"
+)]
+#[case::a_bootstrap_address_without_a_port(
+    &[("KAFKA_BOOTSTRAP_SERVERS", "kafka-1")],
+    "KAFKA_BOOTSTRAP_SERVERS: must be comma-separated host:port pairs\n"
+)]
+#[case::a_bootstrap_list_with_an_empty_entry(
+    &[("KAFKA_BOOTSTRAP_SERVERS", "kafka-1:9094,")],
+    "KAFKA_BOOTSTRAP_SERVERS: must be comma-separated host:port pairs\n"
+)]
+#[case::an_empty_ca_file(
+    &[("KAFKA_CA_FILE", " ")],
+    "KAFKA_CA_FILE: must not be empty\n"
+)]
+#[case::a_request_timeout_below_the_connect_timeout(
+    &[("KAFKA_CONNECT_TIMEOUT", "3s"), ("KAFKA_REQUEST_TIMEOUT", "2s")],
+    "KAFKA_REQUEST_TIMEOUT: must not be shorter than KAFKA_CONNECT_TIMEOUT\n"
+)]
+#[case::a_malformed_retry_delay(
+    &[("KAFKA_RETRY_DELAY", "soon")],
+    "KAFKA_RETRY_DELAY: must be a duration such as 500ms, 2s or 1m\n"
+)]
+#[case::the_same_topic_twice(
+    &[("POLICY_TOPIC", "iam.shared"), ("EVENTS_TOPIC", "iam.shared")],
+    "EVENTS_TOPIC: must differ from POLICY_TOPIC\n"
+)]
+#[case::a_topic_name_with_a_space(
+    &[("POLICY_TOPIC", "iam policy")],
+    "POLICY_TOPIC: must be a Kafka topic name of at most 249 letters, digits, '.', '_' and '-'\n"
+)]
+fn an_invalid_kafka_setting_exits_2_naming_the_variable(
+    #[case] extra: &[(&str, &str)],
+    #[case] problems: &str,
+) {
+    let scratch = Scratch::new();
+
+    let output = check_config_with(&scratch, extra);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), problems);
+}
+
+#[rstest]
+#[case::dev("dev")]
+#[case::test("test")]
+fn plaintext_and_relaxed_gates_are_accepted_in_dev_and_test(#[case] environment: &str) {
+    let scratch = Scratch::new();
+
+    let output = check_config_with(
+        &scratch,
+        &[
+            ("APP_ENV", environment),
+            ("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT"),
+            ("KAFKA_CONFIG_GATES", "relaxed"),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout(&output), "configuration OK\n");
+}
+
+#[test]
+fn a_missing_bootstrap_server_exits_2_naming_the_variable() {
+    let scratch = Scratch::new();
+    let mut command = scratch.service(&["check-config"], &VALID_ENVIRONMENT);
+    command.env_remove("KAFKA_BOOTSTRAP_SERVERS");
+
+    let output = command.output().unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stderr(&output), "KAFKA_BOOTSTRAP_SERVERS: is required\n");
+}
+
+#[test]
+fn sasl_credentials_are_required_with_sasl_ssl_and_ignored_with_plaintext() {
+    let scratch = Scratch::new();
+    let mut secured = scratch.service(&["check-config"], &VALID_ENVIRONMENT);
+    secured.env_remove("KAFKA_SASL_USERNAME");
+    secured.env_remove("KAFKA_SASL_PASSWORD");
+    let mut plaintext = scratch.service(
+        &["check-config"],
+        &[
+            VALID_ENVIRONMENT[0],
+            VALID_ENVIRONMENT[1],
+            ("APP_ENV", "dev"),
+            ("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT"),
+        ],
+    );
+    plaintext.env_remove("KAFKA_SASL_USERNAME");
+    plaintext.env_remove("KAFKA_SASL_PASSWORD");
+
+    let refused = secured.output().unwrap();
+    let accepted = plaintext.output().unwrap();
+
+    assert_eq!(refused.status.code(), Some(2));
+    assert_eq!(
+        stderr(&refused),
+        "KAFKA_SASL_USERNAME: is required\nKAFKA_SASL_PASSWORD: is required\n"
+    );
+    assert_eq!(accepted.status.code(), Some(0));
+}
+
+#[test]
+fn the_sasl_password_is_never_printed() {
+    let scratch = Scratch::new();
+
+    let invalid = check_config_with(
+        &scratch,
+        &[
+            ("KAFKA_SASL_PASSWORD", "hunter2-kafka"),
+            ("KAFKA_SASL_MECHANISM", "PLAIN"),
+        ],
+    );
+    let help = scratch.run(
+        &["serve", "--help"],
+        &[("KAFKA_SASL_PASSWORD", "hunter2-kafka")],
+    );
+
+    assert_eq!(invalid.status.code(), Some(2));
+    assert!(!stderr(&invalid).contains("hunter2-kafka"));
+    assert!(stdout(&help).contains("[env: KAFKA_SASL_PASSWORD]"));
+    assert!(!stdout(&help).contains("hunter2-kafka"));
 }

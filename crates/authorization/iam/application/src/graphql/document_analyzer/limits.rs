@@ -9,6 +9,15 @@ use async_graphql::parser::types::{
 };
 use iam_domain::{DocumentLimits, DocumentRefusal, LimitKind};
 
+/// The deepest structural nesting the recursive walks accept: selection sets, inline fragments
+/// and fragment spreads together, fragments expanded.
+///
+/// Inline fragments and spreads add no field depth, so the field depth limit alone does not bound
+/// the stack: a hundred fragments that each nest inline fragments to the text limit would recurse
+/// thousands of levels deep. This cap is checked before resolution, so the resolver's recursion is
+/// bounded by it too.
+const MAX_STRUCTURE: usize = 128;
+
 /// Refuses a document with too many fragments, aliases or field selections.
 ///
 /// The counts cover every operation and fragment of the text, each fragment once however often it
@@ -50,8 +59,8 @@ pub(super) fn check_depth(
         memo: HashMap::new(),
         active: HashSet::new(),
     };
-    let depth = walker.set_depth(&operation.selection_set.node)?;
-    if depth > limits.depth {
+    let depth = walker.set_depth(&operation.selection_set.node, 0)?;
+    if depth.fields > limits.depth {
         return Err(DocumentRefusal::LimitsExceeded(LimitKind::Depth));
     }
     Ok(())
@@ -86,37 +95,75 @@ fn count(mut counts: Counts, set: &SelectionSet) -> Counts {
     counts
 }
 
+/// The nesting below a selection set: the field levels, which the depth limit counts, and the
+/// structural levels, which bound the recursion.
+#[derive(Debug, Clone, Copy, Default)]
+struct Depth {
+    fields: usize,
+    structure: usize,
+}
+
+impl Depth {
+    /// This depth one structural level further down, `fields` field levels deeper.
+    const fn nested(self, fields: usize) -> Self {
+        Self {
+            fields: self.fields.saturating_add(fields),
+            structure: self.structure.saturating_add(1),
+        }
+    }
+
+    fn max(self, other: Self) -> Self {
+        Self {
+            fields: self.fields.max(other.fields),
+            structure: self.structure.max(other.structure),
+        }
+    }
+}
+
+/// Refuses a structural level past [`MAX_STRUCTURE`].
+const fn within_structure(level: usize) -> Result<(), DocumentRefusal> {
+    if level > MAX_STRUCTURE {
+        Err(DocumentRefusal::LimitsExceeded(LimitKind::Depth))
+    } else {
+        Ok(())
+    }
+}
+
 struct DepthWalker<'a> {
     fragments: &'a HashMap<Name, Positioned<FragmentDefinition>>,
-    memo: HashMap<&'a str, usize>,
+    memo: HashMap<&'a str, Depth>,
     active: HashSet<&'a str>,
 }
 
 impl<'a> DepthWalker<'a> {
-    /// The deepest nesting below a selection set: a field adds one level, inline fragments and
-    /// fragment spreads add none.
-    fn set_depth(&mut self, set: &'a SelectionSet) -> Result<usize, DocumentRefusal> {
-        let mut deepest = 0_usize;
+    /// The deepest nesting below a selection set at structural `level`: a field adds one field
+    /// level, and every selection adds one structural level.
+    fn set_depth(&mut self, set: &'a SelectionSet, level: usize) -> Result<Depth, DocumentRefusal> {
+        within_structure(level)?;
+        let below = level.saturating_add(1);
+        let mut deepest = Depth::default();
         for item in &set.items {
             let depth = match &item.node {
                 Selection::Field(field) => self
-                    .set_depth(&field.node.selection_set.node)?
-                    .saturating_add(1),
-                Selection::InlineFragment(fragment) => {
-                    self.set_depth(&fragment.node.selection_set.node)?
-                }
-                Selection::FragmentSpread(spread) => {
-                    self.fragment_depth(spread.node.fragment_name.node.as_str())?
-                }
+                    .set_depth(&field.node.selection_set.node, below)?
+                    .nested(1),
+                Selection::InlineFragment(fragment) => self
+                    .set_depth(&fragment.node.selection_set.node, below)?
+                    .nested(0),
+                Selection::FragmentSpread(spread) => self
+                    .fragment_depth(spread.node.fragment_name.node.as_str(), below)?
+                    .nested(0),
             };
             deepest = deepest.max(depth);
         }
         Ok(deepest)
     }
 
-    /// The depth of a fragment, computed once.
-    fn fragment_depth(&mut self, name: &'a str) -> Result<usize, DocumentRefusal> {
+    /// The depth of a fragment, computed once; every use still checks that its structure fits
+    /// below `level`.
+    fn fragment_depth(&mut self, name: &'a str, level: usize) -> Result<Depth, DocumentRefusal> {
         if let Some(depth) = self.memo.get(name) {
+            within_structure(level.saturating_add(depth.structure))?;
             return Ok(*depth);
         }
         let fragment = self
@@ -126,7 +173,7 @@ impl<'a> DepthWalker<'a> {
         if !self.active.insert(name) {
             return Err(DocumentRefusal::MalformedOperation);
         }
-        let depth = self.set_depth(&fragment.node.selection_set.node)?;
+        let depth = self.set_depth(&fragment.node.selection_set.node, level)?;
         self.active.remove(name);
         self.memo.insert(name, depth);
         Ok(depth)

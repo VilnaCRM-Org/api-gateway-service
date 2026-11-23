@@ -67,6 +67,8 @@ jsonwebtoken = { version = "10.4.0", default-features = false, features = [
     "aws_lc_rs",
     "use_pem",
 ] }
+# Pinned exactly: a krafka upgrade re-runs the phase-0 capabilities (ADR 0026).
+krafka = { version = "=0.32.0", default-features = false, features = ["rustls-aws-lc-rs"] }
 moka = { version = "0.12.16", features = ["future"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

@@ -26,6 +26,7 @@ pub mod rng;
 pub mod role;
 pub mod security_audit;
 pub mod seed;
+pub mod singleton_leadership;
 pub mod startup_lock;
 pub mod token;
 pub mod unit_of_work;

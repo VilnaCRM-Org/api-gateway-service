@@ -14,6 +14,9 @@ x-dev: &dev
 services:
   app: # no command: the dev image's CMD (watchexec) applies
     <<: *dev
+    depends_on:
+      kafka-topics:
+        condition: service_completed_successfully
     environment:
       IN_DEV_CONTAINER: '1'
       # The services inside the compose network, at their in-network ports: DB_PORT and LOCALSTACK_PORT of .env

@@ -8,6 +8,8 @@ mod graphql_spec_repository;
 #[cfg(test)]
 mod jwt_access_token_verifier;
 #[cfg(test)]
+mod kafka_topic_inspector;
+#[cfg(test)]
 mod migration;
 #[cfg(test)]
 mod openapi_spec_repository;
@@ -25,6 +27,8 @@ mod role_repository;
 mod security_audit_log;
 #[cfg(test)]
 mod security_audit_migration;
+#[cfg(test)]
+mod singleton_leadership;
 #[cfg(test)]
 mod startup_lock;
 #[cfg(test)]

@@ -4,11 +4,14 @@
 //! This crate depends on the domain layer of its own context and of the shared kernel, never on the
 //! application layer. SQL lives here and nowhere else.
 
+pub mod kafka;
 pub mod persistence;
 pub mod request_digest;
 pub mod token;
 
+pub use kafka::{KafkaSecret, KafkaSecurity, KafkaSettings, KrafkaTopicInspector, SaslMechanism};
 pub use persistence::PgPolicyEpochRepository;
+pub use persistence::advisory_lock_leadership::AdvisoryLockLeadership;
 pub use persistence::change_receipt::PgChangeReceiptRepository;
 pub use persistence::graphql_permission::PgGraphQlPermissionRepository;
 pub use persistence::graphql_spec::PgGraphQlSpecRepository;
@@ -21,6 +24,7 @@ pub use persistence::revocation_view::PgRevocationView;
 pub use persistence::role::PgRoleRepository;
 pub use persistence::security_audit_log::PgSecurityAuditLog;
 pub use persistence::startup_lock::PgStartupLock;
+pub use persistence::task_state::PgTaskStateRepository;
 pub use persistence::unit_of_work::PgIamUnitOfWork;
 pub use persistence::user_role::PgUserRoleRepository;
 pub use request_digest::Sha256RequestDigester;

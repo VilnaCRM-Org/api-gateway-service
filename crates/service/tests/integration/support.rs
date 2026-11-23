@@ -23,6 +23,15 @@ pub(crate) const VALID_ENVIRONMENT: [(&str, &str); 2] = [
     ("AWS_REGION", "us-east-1"),
 ];
 
+/// The Kafka variables that [`Scratch::service`] sets so that a configuration is valid in every
+/// `APP_ENV`: a bootstrap address that nothing listens on and SASL credentials. The connection is
+/// opened lazily, so a test that never inspects the cluster never touches it.
+pub(crate) const KAFKA_ENVIRONMENT: [(&str, &str); 3] = [
+    ("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:1"),
+    ("KAFKA_SASL_USERNAME", "iam-control"),
+    ("KAFKA_SASL_PASSWORD", "unused-password"),
+];
+
 /// URL that nothing listens on: the "unreachable database" case. No container is stopped.
 pub(crate) const DEAD_DATABASE_URL: &str = "postgres://app:unused@127.0.0.1:1/app";
 
@@ -58,7 +67,8 @@ impl Scratch {
     /// test process has it, so that coverage of the child is recorded.
     ///
     /// `JWT_PUBLIC_KEYS_FILE` names the committed development key file unless `variables` set it,
-    /// because a configuration without a key file is never valid.
+    /// because a configuration without a key file is never valid; the Kafka variables of
+    /// [`KAFKA_ENVIRONMENT`] are set the same way.
     pub(crate) fn service(&self, arguments: &[&str], variables: &[(&str, &str)]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_service"));
         command.args(arguments).env_clear().current_dir(&self.path);
@@ -66,6 +76,7 @@ impl Scratch {
             command.env("LLVM_PROFILE_FILE", profile);
         }
         command.env("JWT_PUBLIC_KEYS_FILE", DEVELOPMENT_PUBLIC_KEYS_FILE);
+        command.envs(KAFKA_ENVIRONMENT);
         command.envs(variables.iter().copied());
         command
     }
@@ -136,12 +147,20 @@ pub(crate) fn stack_variable(name: &str) -> String {
 }
 
 /// The variables that let `serve` start against the compose services: the AWS ones of the test
-/// stack and the given database URL, with long budgets so that a request that must succeed does
+/// stack, the compose broker with the relaxed gates that only `APP_ENV=test` allows, and the given
+/// database URL, with long budgets so that a request that must succeed does
 /// not depend on how fast a loaded machine opens its first connection (request > probe >=
 /// acquire and operation, as the configuration requires).
 pub(crate) fn stack_with(database_url: &str) -> Vec<(&'static str, String)> {
     vec![
         ("DATABASE_URL", database_url.to_owned()),
+        ("APP_ENV", "test".to_owned()),
+        (
+            "KAFKA_BOOTSTRAP_SERVERS",
+            stack_variable("KAFKA_BOOTSTRAP_SERVERS"),
+        ),
+        ("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT".to_owned()),
+        ("KAFKA_CONFIG_GATES", "relaxed".to_owned()),
         ("AWS_REGION", stack_variable("AWS_REGION")),
         (
             "AWS_ENDPOINT_URL_SQS",

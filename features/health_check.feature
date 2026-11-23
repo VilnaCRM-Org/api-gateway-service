@@ -24,3 +24,9 @@ Feature: Health Check Operations
     When GET request is sent to "/api/health"
     Then the response status code should be 500
     And the response body should contain "Message broker is not available"
+
+  Scenario: Checking the health when Kafka is unavailable
+    Given Kafka is not available
+    When GET request is sent to "/api/health"
+    Then the response status code should be 500
+    And the response body should contain "Kafka is not available"
