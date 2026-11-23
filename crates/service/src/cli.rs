@@ -183,6 +183,9 @@ pub struct ServeArgs {
     /// Settings of the maintenance task.
     #[command(flatten)]
     pub maintenance: MaintenanceArgs,
+    /// Settings of the outbox relay.
+    #[command(flatten)]
+    pub relay: RelayArgs,
 }
 
 /// Settings of the maintenance task of `serve`.
@@ -203,6 +206,27 @@ pub struct MaintenanceArgs {
         hide_env_values = true
     )]
     pub orphaned_grant_retention: Option<String>,
+}
+
+/// Settings of the outbox relay of `serve`.
+#[derive(Debug, Clone, Default, Args)]
+pub struct RelayArgs {
+    /// `postgres://` or `postgresql://` URL of a direct (not pooled) connection that holds the
+    /// `LISTEN iam_outbox` of the relay (default `DATABASE_URL`).
+    #[arg(
+        long = "database-listen-url",
+        env = "DATABASE_LISTEN_URL",
+        hide_env_values = true
+    )]
+    pub listen_url: Option<String>,
+    /// `transaction.timeout.ms` of the transactional relay producer, from 1s to 10s (default
+    /// 10s).
+    #[arg(
+        long = "kafka-transaction-timeout",
+        env = "KAFKA_TRANSACTION_TIMEOUT",
+        hide_env_values = true
+    )]
+    pub transaction_timeout: Option<String>,
 }
 
 /// Settings of `gateway`: the variables it shares with `serve` and its own.

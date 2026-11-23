@@ -12,12 +12,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iam_application::{
-    InvalidSingletonInterval, PolicyMaintenance, RunMaintenanceCommandHandler, SingletonLoop,
+    InvalidSingletonInterval, OutboxRelay, PolicyMaintenance, RunMaintenanceCommandHandler,
+    SingletonLoop,
 };
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 
-use super::Adapters;
+use super::{Adapters, OutboxRelayAdapters, forward_notifications};
 
 /// Where the supervisor runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,14 +129,36 @@ fn log_failed(error: &tokio::task::JoinError) {
     tracing::error!(error = %error, "task failed");
 }
 
-/// The singleton tasks that `service serve` runs: the policy maintenance. There is no
-/// `service worker` mode, so the set runs inside `serve`; the stories that add a task extend it
-/// here.
+/// The singleton tasks that `service serve` runs: the policy maintenance and the outbox relay.
+/// There is no `service worker` mode, so the set runs inside `serve`; the stories that add a task
+/// extend it here.
 #[must_use]
 pub fn singleton_set(adapters: &Adapters) -> Vec<SingletonLoop> {
     let mut set = Vec::new();
     set.extend(maintenance_loop(adapters));
+    set.extend(
+        adapters
+            .outbox_relay
+            .as_ref()
+            .map(|relay| relay_loop(adapters, relay)),
+    );
     set
+}
+
+/// The loop of the outbox relay: a fenced batch every 100 ms, or as soon as the listener of
+/// `iam_outbox` reports a committed change.
+fn relay_loop(adapters: &Adapters, relay: &OutboxRelayAdapters) -> SingletonLoop {
+    OutboxRelay::new(
+        relay.ports.clone(),
+        Arc::clone(&adapters.clock),
+        relay.settings,
+        Arc::clone(&relay.leading),
+    )
+    .into_loop(
+        Arc::clone(&adapters.singleton_leadership),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&relay.wake),
+    )
 }
 
 /// The loop of the maintenance task over the adapters of the application; none when the interval
@@ -169,7 +192,8 @@ fn log_not_started(error: &InvalidSingletonInterval) {
     tracing::error!(error = %error, "the maintenance task is not started");
 }
 
-/// Starts the tasks of the service: the singleton set under `service serve`.
+/// Starts the tasks of the service: the singleton set and the listener of the outbox wake-up under
+/// `service serve`.
 ///
 /// `shutdown` is the stop flag of the service: tasks end when it is set.
 #[must_use]
@@ -181,6 +205,11 @@ pub fn start_tasks(
     let mut supervisor = TaskSupervisor::new(mode, shutdown);
     if mode == TaskMode::Serve {
         supervisor.spawn_singletons(singleton_set(adapters));
+        if let Some(relay) = adapters.outbox_relay.clone() {
+            supervisor.spawn("outbox-listener", |shutdown| {
+                forward_notifications(relay, shutdown)
+            });
+        }
     }
     log_started(mode, supervisor.len());
     supervisor

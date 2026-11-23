@@ -6,7 +6,7 @@ use iam_domain::{LeaderBatch, SingletonLeadership, SingletonTask};
 use shared_domain::BoxError;
 use test_support::clock::FixedClock;
 use test_support::singleton_leadership::{Event, FakeSingletonLeadership, Step};
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 
 use super::{
     BatchOutcome, InvalidSingletonInterval, MAX_SINGLETON_INTERVAL, SingletonInterval,
@@ -318,4 +318,89 @@ async fn the_loop_ends_when_the_stop_flag_has_no_sender_left() {
     singleton(&leadership, &work).run(stopping).await;
 
     assert_eq!(work.runs.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_wake_up_starts_the_next_batch_before_the_interval_ends() {
+    let leadership = Arc::new(FakeSingletonLeadership::leading());
+    let work = Arc::new(CountingWork::default());
+    let wake = Arc::new(Notify::new());
+    let (stop, stopping) = watch::channel(false);
+    let handle = tokio::spawn(
+        singleton(&leadership, &work)
+            .with_wake(Arc::clone(&wake))
+            .run(stopping),
+    );
+    tokio::task::yield_now().await;
+    assert_eq!(work.runs.load(Ordering::SeqCst), 1);
+
+    wake.notify_one();
+    tokio::task::yield_now().await;
+    tokio::task::yield_now().await;
+    stop.send_replace(true);
+    handle.await.unwrap();
+
+    assert_eq!(work.runs.load(Ordering::SeqCst), 2);
+}
+
+/// Work that counts the batches that another replica led.
+#[derive(Debug, Default)]
+struct FollowerWork {
+    followed: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl SingletonWork for FollowerWork {
+    async fn run(&self, _batch: &mut dyn LeaderBatch) -> Result<(), BoxError> {
+        Ok(())
+    }
+
+    async fn on_follower(&self) {
+        self.followed.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn work_hears_of_a_batch_that_another_replica_leads() {
+    let work = Arc::new(FollowerWork::default());
+    let singleton = SingletonLoop::new(
+        TASK,
+        interval(),
+        Arc::new(FakeSingletonLeadership::new(&[], Step::Follow)),
+        Arc::new(FixedClock::at(UNIX_EPOCH)),
+        Arc::<FollowerWork>::clone(&work),
+    );
+
+    let outcome = singleton.run_batch().await;
+
+    assert_eq!(outcome, BatchOutcome::Skipped);
+    assert_eq!(work.followed.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn work_that_ignores_followers_runs_unchanged_on_a_skipped_batch() {
+    let leadership = Arc::new(FakeSingletonLeadership::new(&[], Step::Follow));
+    let work = Arc::new(CountingWork::default());
+
+    let outcome = singleton(&leadership, &work).run_batch().await;
+    CountingWork::default().on_follower().await;
+
+    assert_eq!(outcome, BatchOutcome::Skipped);
+    assert_eq!(work.runs.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_clamped_interval_stays_between_one_millisecond_and_ten_seconds() {
+    assert_eq!(
+        SingletonInterval::clamped(Duration::from_millis(100)).get(),
+        Duration::from_millis(100)
+    );
+    assert_eq!(
+        SingletonInterval::clamped(Duration::ZERO).get(),
+        Duration::from_millis(1)
+    );
+    assert_eq!(
+        SingletonInterval::clamped(Duration::from_secs(60)).get(),
+        MAX_SINGLETON_INTERVAL
+    );
 }

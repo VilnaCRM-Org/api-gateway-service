@@ -282,7 +282,7 @@ fn admin_of(kafka: &Kafka, settings: &KafkaSettings) -> AdminClient {
         .default_api_timeout(settings.request_timeout)
 }
 
-fn builder(settings: &KafkaSettings, security: Option<AuthConfig>) -> KafkaBuilder {
+pub(super) fn builder(settings: &KafkaSettings, security: Option<AuthConfig>) -> KafkaBuilder {
     let builder = Kafka::builder(settings.bootstrap_servers.clone())
         .client_id(settings.client_id.clone())
         .connect_timeout(settings.connect_timeout)
@@ -294,7 +294,7 @@ fn builder(settings: &KafkaSettings, security: Option<AuthConfig>) -> KafkaBuild
 }
 
 /// The security of the connection of `iam-control`; `None` for a plaintext listener.
-fn authenticated(settings: &KafkaSettings) -> Option<AuthConfig> {
+pub(super) fn authenticated(settings: &KafkaSettings) -> Option<AuthConfig> {
     match &settings.security {
         KafkaSecurity::Plaintext => None,
         KafkaSecurity::SaslSsl {

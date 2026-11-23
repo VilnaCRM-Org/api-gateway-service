@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 
 use iam_domain::{LeaderBatch, Leadership, SingletonLeadership, SingletonTask};
 use shared_domain::{BoxError, Clock};
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 use tracing::Instrument as _;
 
 /// The longest interval at which a replica without the lock retries.
@@ -43,6 +43,13 @@ impl SingletonInterval {
         Ok(Self(interval))
     }
 
+    /// An interval of `interval` held between 1 millisecond and [`MAX_SINGLETON_INTERVAL`]; for
+    /// constants that are valid by construction.
+    #[must_use]
+    pub fn clamped(interval: Duration) -> Self {
+        Self(interval.clamp(Duration::from_millis(1), MAX_SINGLETON_INTERVAL))
+    }
+
     /// The interval as a duration.
     #[must_use]
     pub const fn get(self) -> Duration {
@@ -72,6 +79,11 @@ pub trait SingletonWork: std::fmt::Debug + Send + Sync {
     async fn is_due(&self, _now: SystemTime) -> Result<bool, BoxError> {
         Ok(true)
     }
+
+    /// Called when another replica leads the batch that this replica skips, so that work that
+    /// holds a resource only while it leads can let it go. Does nothing unless the work says
+    /// otherwise.
+    async fn on_follower(&self) {}
 }
 
 /// How one attempt at a batch ended.
@@ -96,6 +108,7 @@ pub struct SingletonLoop {
     leadership: Arc<dyn SingletonLeadership>,
     clock: Arc<dyn Clock>,
     work: Arc<dyn SingletonWork>,
+    wake: Option<Arc<Notify>>,
 }
 
 impl SingletonLoop {
@@ -114,7 +127,17 @@ impl SingletonLoop {
             leadership,
             clock,
             work,
+            wake: None,
         }
+    }
+
+    /// The same loop, which also starts its next batch as soon as `wake` is notified instead of
+    /// waiting for the rest of the interval. A notification that arrives while a batch runs is
+    /// kept for the next pause.
+    #[must_use]
+    pub fn with_wake(mut self, wake: Arc<Notify>) -> Self {
+        self.wake = Some(wake);
+        self
     }
 
     /// The name of the task, for the log entries of the supervisor.
@@ -134,7 +157,10 @@ impl SingletonLoop {
     pub async fn run_batch(&self) -> BatchOutcome {
         match self.leadership.begin(&self.task).await {
             Ok(Leadership::Leader(batch)) => self.lead(batch).await,
-            Ok(Leadership::Follower) => BatchOutcome::Skipped,
+            Ok(Leadership::Follower) => {
+                self.work.on_follower().await;
+                BatchOutcome::Skipped
+            }
             Err(error) => {
                 log_unavailable(self.task.name(), &error);
                 BatchOutcome::Failed
@@ -161,14 +187,23 @@ impl SingletonLoop {
         self.run_batch().instrument(span).await
     }
 
-    /// Waits for the interval; `false` when the service is stopping instead.
+    /// Waits for the interval or the wake-up; `false` when the service is stopping instead.
     async fn pause(&self, shutdown: &mut watch::Receiver<bool>) -> bool {
         tokio::select! {
             () = tokio::time::sleep(self.interval.get()) => true,
+            () = self.woken() => true,
             stopping = shutdown.wait_for(|stopping| *stopping) => {
                 drop(stopping);
                 false
             }
+        }
+    }
+
+    /// Completes when the wake-up is notified; never when the loop has none.
+    async fn woken(&self) {
+        match &self.wake {
+            Some(wake) => wake.notified().await,
+            None => std::future::pending().await,
         }
     }
 

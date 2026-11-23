@@ -26,6 +26,7 @@ mod graphql_spec_fixtures;
 pub mod http;
 #[cfg(test)]
 mod openapi_spec_fixtures;
+pub mod outbox_relay;
 pub mod policy_maintenance;
 pub mod principal;
 pub mod query;
@@ -73,6 +74,7 @@ pub use command::update_user_role::{UpdateUserRoleCommand, UpdateUserRoleCommand
 pub use endpoint_directory::{EndpointDirectory, EndpointView, ZoneSource};
 pub use endpoint_watcher::{EndpointWatcher, WatcherSettings};
 pub use error::IamError;
+pub use outbox_relay::{OutboxRelay, OutboxRelayPorts, OutboxRelaySettings};
 pub use policy_maintenance::{MaintenanceSettings, PolicyMaintenance};
 pub use principal::Principal;
 pub use query::find_graphql_spec::{FindGraphQlSpecQuery, FindGraphQlSpecQueryHandler};
