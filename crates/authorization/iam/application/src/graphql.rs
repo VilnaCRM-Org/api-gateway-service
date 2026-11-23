@@ -441,6 +441,7 @@ impl IamQuery {
     }
 
     /// Retrieves one page of GraphQL specification versions in a stable order, filtered by service and status.
+    #[graphql(complexity = "page_complexity(first, child_complexity)")]
     async fn graphql_specs(
         &self,
         ctx: &Context<'_>,
@@ -465,6 +466,15 @@ impl IamQuery {
             .await
             .map_err(iam_problem_to_graphql_error)
     }
+}
+
+/// The static complexity of a page: its size, clamped to 1 to 100 as the query clamps it, times
+/// the complexity of one item.
+fn page_complexity(first: Option<i32>, child_complexity: usize) -> usize {
+    let size = first.unwrap_or(30).clamp(1, 100);
+    usize::try_from(size)
+        .unwrap_or(100)
+        .saturating_mul(child_complexity)
 }
 
 /// Converts a problem of the IAM context into a GraphQL error.

@@ -187,6 +187,7 @@ pub struct GraphQlSpecObject {
 #[ComplexObject]
 impl GraphQlSpecObject {
     /// What the version changes against the union of the active versions of its service.
+    #[graphql(complexity = 100)]
     async fn diff(&self, ctx: &Context<'_>) -> async_graphql::Result<SpecDiffObject> {
         diff_field(ctx, &self.id, self.loaded_diff.as_ref())
             .await
@@ -194,6 +195,7 @@ impl GraphQlSpecObject {
     }
 
     /// The SDL document, read only when the query selects it.
+    #[graphql(complexity = 500)]
     async fn sdl(&self, ctx: &Context<'_>) -> async_graphql::Result<Option<String>> {
         sdl_field(ctx, &self.id)
             .await

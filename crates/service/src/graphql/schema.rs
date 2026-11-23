@@ -19,11 +19,23 @@ pub struct Mutation(ExampleApiResourceMutation, IamMutation);
 /// The schema type of the service: no subscription.
 pub type ApiSchema = Schema<Query, Mutation, EmptySubscription>;
 
-/// A builder for the schema; the caller adds the state of every context with `.data(..)`: the
-/// `SomeModuleState` and the `IamState`.
+/// The deepest query the schema runs; the standard introspection query stays well below it.
+pub const MAX_QUERY_DEPTH: usize = 20;
+
+/// The largest static complexity of a query.
+///
+/// Every field costs 1, a page costs its page size times its item, and the large `sdl` and `diff`
+/// fields cost more, so one request cannot read many multi-megabyte documents through a page or
+/// through aliases.
+pub const MAX_QUERY_COMPLEXITY: usize = 2_000;
+
+/// A builder for the schema with the depth and complexity limits; the caller adds the state of
+/// every context with `.data(..)`: the `SomeModuleState` and the `IamState`.
 #[must_use]
 pub fn builder() -> SchemaBuilder<Query, Mutation, EmptySubscription> {
     Schema::build(Query::default(), Mutation::default(), EmptySubscription)
+        .limit_depth(MAX_QUERY_DEPTH)
+        .limit_complexity(MAX_QUERY_COMPLEXITY)
 }
 
 /// The schema definition language of the schema, sorted so that it is byte-stable (AD-17).

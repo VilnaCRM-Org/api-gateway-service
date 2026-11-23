@@ -129,6 +129,10 @@ fn a_service_without_templates_knows_no_operation() {
 #[case("/files/v1-2-3", "/files/v{major}-{minor}", true)]
 #[case("/files/ab", "/files/{a}{b}", true)]
 #[case("/files/a", "/files/{a}{b}", false)]
+#[case("/files/a.json.json", "/files/{name}.json", true)]
+#[case("/files/x..json", "/files/{a}.{b}.json", false)]
+#[case("/files/x.y.z.json", "/files/{a}.{b}.json", true)]
+#[case("/files/%C3%A9-x", "/files/{a}-{b}", true)]
 fn a_parameter_inside_a_segment_stands_for_at_least_one_character(
     #[case] target: &str,
     #[case] template: &str,
@@ -155,5 +159,18 @@ fn a_literal_segment_beats_an_embedded_parameter_which_beats_a_bare_one() {
     assert_eq!(
         key("iam", HttpMethod::Get, "/files/data.xml", &paths).as_deref(),
         Some("rest:iam:GET /files/{}")
+    );
+}
+
+/// A backtracking matcher would take exponential time on this case and hit the test timeout.
+#[test]
+fn many_embedded_parameters_are_matched_in_linear_time() {
+    let names: Vec<String> = (0..20).map(|index| format!("{{p{index}}}")).collect();
+    let template = format!("/files/v{}.json", names.join("-"));
+    let target = format!("/files/v{}.xml", "-".repeat(60));
+
+    assert_eq!(
+        key("iam", HttpMethod::Get, &target, &[template.as_str()]),
+        None
     );
 }

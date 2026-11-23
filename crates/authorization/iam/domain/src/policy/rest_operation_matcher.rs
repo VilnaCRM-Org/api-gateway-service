@@ -100,16 +100,37 @@ fn matches_embedded(pattern: &str, text: &str) -> bool {
 }
 
 /// `text` starts with a parameter that is followed by `literal` and then by the parts of `tail`.
+///
+/// The match is greedy and linear: taking each middle literal at its leftmost place after a
+/// non-empty parameter leaves the most text for the parts after it, so no other placement can
+/// succeed where this one fails. A backtracking search would take exponential time on a request
+/// path such as `v------` against `v{}-{}-{}-{}.json`, and request paths come from callers.
 fn consume(text: &str, literal: &str, tail: &[&str]) -> bool {
-    let Some((next, after)) = tail.split_first() else {
-        return text.len() > literal.len() && text.ends_with(literal);
-    };
-    text.match_indices(literal).any(|(at, _)| {
-        at > 0
-            && text
-                .get(at.saturating_add(literal.len())..)
-                .is_some_and(|rest| consume(rest, next, after))
-    })
+    let mut parts = std::iter::once(literal)
+        .chain(tail.iter().copied())
+        .peekable();
+    let mut cursor = 0_usize;
+    while let Some(part) = parts.next() {
+        let Some(start) = after_one_char(text, cursor) else {
+            return false;
+        };
+        if parts.peek().is_none() {
+            return text.len() >= start.saturating_add(part.len()) && text.ends_with(part);
+        }
+        let Some(offset) = text.get(start..).and_then(|rest| rest.find(part)) else {
+            return false;
+        };
+        cursor = start.saturating_add(offset).saturating_add(part.len());
+    }
+    false
+}
+
+/// The index after the one character at `cursor`; `None` at the end of `text`.
+fn after_one_char(text: &str, cursor: usize) -> Option<usize> {
+    text.get(cursor..)?
+        .chars()
+        .next()
+        .map(|character| cursor.saturating_add(character.len_utf8()))
 }
 
 #[cfg(test)]

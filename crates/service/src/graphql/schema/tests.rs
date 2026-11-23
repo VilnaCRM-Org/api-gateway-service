@@ -745,3 +745,51 @@ async fn the_assignment_queries_are_merged_into_the_query_root_and_need_an_authe
         );
     }
 }
+
+async fn errors_of(query: &str) -> Vec<String> {
+    let schema: ApiSchema = builder().finish();
+    schema
+        .execute(Request::new(query))
+        .await
+        .errors
+        .into_iter()
+        .map(|error| error.message)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_page_of_sdl_documents_is_too_complex_to_run() {
+    let errors = errors_of("{ graphqlSpecs(first: 100) { items { id sdl } } }").await;
+
+    assert_eq!(errors, ["Query is too complex."]);
+}
+
+#[tokio::test]
+async fn aliases_cannot_multiply_sdl_reads_past_the_complexity_limit() {
+    let aliases = ["s0", "s1", "s2", "s3", "s4"]
+        .map(|alias| format!("{alias}: graphqlSpec(id: \"x\") {{ sdl }}"))
+        .join(" ");
+
+    let errors = errors_of(&format!("{{ {aliases} }}")).await;
+
+    assert_eq!(errors, ["Query is too complex."]);
+}
+
+#[tokio::test]
+async fn one_sdl_document_and_a_full_page_without_sdl_stay_within_the_limits() {
+    let single = errors_of("{ graphqlSpec(id: \"x\") { sdl diff { __typename } } }").await;
+    let page = errors_of("{ graphqlSpecs(first: 100) { items { id } nextCursor } }").await;
+
+    assert!(!single.iter().any(|message| message.contains("too complex")));
+    assert!(!page.iter().any(|message| message.contains("too complex")));
+}
+
+#[tokio::test]
+async fn a_query_deeper_than_the_limit_is_refused() {
+    let nested = (0..=MAX_QUERY_DEPTH).fold(String::from("name"), |inner, _| {
+        format!("ofType {{ {inner} }}")
+    });
+    let deep = format!("{{ __type(name: \"Query\") {{ {nested} }} }}");
+
+    assert_eq!(errors_of(&deep).await, ["Query is nested too deep."]);
+}
