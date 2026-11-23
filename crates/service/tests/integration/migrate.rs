@@ -10,8 +10,9 @@ use tokio::time::Instant;
 use crate::support::{DEAD_DATABASE_URL, Scratch, database_url, silent_listener, stderr, stdout};
 
 const TABLE_EXISTS: &str = "SELECT to_regclass('example_api_resources') IS NOT NULL";
-/// The embedded migrations, oldest first: the version and a table that the migration creates.
-const MIGRATIONS: [(&str, &str); 11] = [
+/// The embedded migrations, oldest first: the version and what the migration creates, a table
+/// (`table`) or a column of an existing table (`table.column`).
+const MIGRATIONS: [(&str, &str); 12] = [
     ("20261110000000", "example_api_resources"),
     ("20261122000224", "iam_policy_epoch"),
     ("20261122125604", "iam_security_audit_events"),
@@ -23,6 +24,7 @@ const MIGRATIONS: [(&str, &str); 11] = [
     ("20261122205127", "iam_user_roles"),
     ("20261122213957", "iam_graphql_specs"),
     ("20261122222859", "iam_openapi_specs"),
+    ("20261123022344", "iam_change_receipts.revoked_assignments"),
 ];
 /// What a process start and the output handling may add to a wait that is bounded by its timeout.
 const MARGIN: Duration = Duration::from_millis(700);
@@ -35,15 +37,26 @@ async fn table_exists(pool: &PgPool) -> bool {
     exists(pool, TABLE_EXISTS).await
 }
 
-/// Whether the table of each migration exists, oldest migration first.
+/// Whether the table or column of each migration exists, oldest migration first.
 async fn tables(pool: &PgPool) -> Vec<bool> {
     let mut present = Vec::new();
-    for (_version, table) in MIGRATIONS {
-        let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+    for (_version, object) in MIGRATIONS {
+        let exists: bool = match object.split_once('.') {
+            Some((table, column)) => sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.columns \
+                 WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2)",
+            )
             .bind(table)
+            .bind(column)
             .fetch_one(pool)
             .await
-            .unwrap();
+            .unwrap(),
+            None => sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+                .bind(object)
+                .fetch_one(pool)
+                .await
+                .unwrap(),
+        };
         present.push(exists);
     }
     present
@@ -64,13 +77,13 @@ async fn migrate_applies_once_and_changes_nothing_the_second_time(pool: PgPool) 
     let second = scratch.run(&["migrate"], &[("DATABASE_URL", &url)]);
 
     assert!(first.status.success());
-    assert_eq!(stdout(&first), "applied 11 migration(s)\n");
+    assert_eq!(stdout(&first), "applied 12 migration(s)\n");
     assert_eq!(stderr(&first), "");
-    assert_eq!(tables_after_first, applied(11));
+    assert_eq!(tables_after_first, applied(12));
     assert!(second.status.success());
     assert_eq!(stdout(&second), "applied 0 migration(s)\n");
     assert_eq!(stderr(&second), "");
-    assert_eq!(tables(&pool).await, applied(11));
+    assert_eq!(tables(&pool).await, applied(12));
 }
 
 #[sqlx::test(migrations = false)]
@@ -80,7 +93,7 @@ async fn revert_removes_the_newest_table_first_and_migrate_creates_all_again(poo
     let variables = [("DATABASE_URL", url.as_str())];
     assert!(scratch.run(&["migrate"], &variables).status.success());
 
-    for (remaining, (version, _table)) in MIGRATIONS.iter().enumerate().rev() {
+    for (remaining, (version, _object)) in MIGRATIONS.iter().enumerate().rev() {
         let reverted = scratch.run(&["migrate", "revert"], &variables);
 
         assert!(reverted.status.success(), "{version}");
@@ -94,8 +107,8 @@ async fn revert_removes_the_newest_table_first_and_migrate_creates_all_again(poo
     assert!(nothing.status.success());
     assert_eq!(stdout(&nothing), "nothing to revert\n");
     assert!(again.status.success());
-    assert_eq!(stdout(&again), "applied 11 migration(s)\n");
-    assert_eq!(tables(&pool).await, applied(11));
+    assert_eq!(stdout(&again), "applied 12 migration(s)\n");
+    assert_eq!(tables(&pool).await, applied(12));
 }
 
 #[sqlx::test(migrations = false)]

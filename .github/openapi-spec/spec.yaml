@@ -460,6 +460,113 @@ paths:
                 $ref: '#/components/schemas/Problem'
       security:
       - bearerAuth: []
+  /api/graphql-specs/{id}/permissions:
+    post:
+      tags:
+      - iam
+      summary: Activates a GraphQL specification.
+      description: 'Makes the draft version active and its fields grantable permissions: the catalogue of the service becomes the union of its active versions, the next policy version is taken and `iam.graphql_permissions.created` is recorded with `createdKeys`, `renamed` and `flagChanges`. An activation that would remove the sensitive or always-audit flag from a key is refused with 409 unless `confirmFlagDowngrade` is `true`, and one that would orphan grants is refused with 409 unless `confirmOrphans` is `true`; the problem lists the keys or the grants. `renames` moves the grants of old keys to new keys before anything is orphaned. A version that is active already returns 200 and changes nothing. A repeated `Idempotency-Key` with the same body within 24 hours returns the original result.'
+      operationId: api_graphql_specs_id_permissions_post
+      parameters:
+      - name: id
+        in: path
+        description: Version identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: Idempotency-Key
+        in: header
+        description: Makes the activation safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateGraphQlPermissionsRequest'
+        required: true
+      responses:
+        '200':
+          description: The version was active already; nothing changed.
+          headers:
+            iam-policy-version:
+              schema:
+                type: string
+              description: The current policy version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphQlPermissionsActivation'
+        '201':
+          description: The version was activated.
+          headers:
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphQlPermissionsActivation'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Version not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: The version is retired, another change got there first, the activation would remove a flag (`/problems/flag-downgrade-confirmation-required`) or orphan grants (`/problems/orphan-confirmation-required`) without confirmation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: 'Validation failed: an invalid identifier, rename or idempotency key, or the idempotency key was used for another request.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
   /api/health:
     get:
       tags:
@@ -483,6 +590,89 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
   /api/openapi-specs:
+    get:
+      tags:
+      - iam
+      summary: Retrieves the collection of OpenAPI specifications.
+      description: 'Returns one page of versions in a stable order, with the `nextCursor` of the next page. Filters: `service` and `status`. Each version carries its service, hash, status, uploader, timestamps and operation count; the document only when `includeDocument` is `true`.'
+      operationId: api_openapi_specs_get
+      parameters:
+      - name: limit
+        in: query
+        description: The largest number of versions of the page.
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 30
+          maximum: 100
+          minimum: 1
+      - name: after
+        in: query
+        description: The `nextCursor` of the previous page; absent for the first page.
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: service
+        in: query
+        description: Only versions of this service.
+        required: false
+        schema:
+          type: string
+          maxLength: 63
+        example: billing
+      - name: status
+        in: query
+        description: 'Only versions in this status: `draft`, `active` or `retired`.'
+        required: false
+        schema:
+          type: string
+        example: active
+      - name: includeDocument
+        in: query
+        description: Whether each version carries its document; default `false`.
+        required: false
+        schema:
+          type: boolean
+      responses:
+        '200':
+          description: One page of versions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenApiSpecPage'
+        '400':
+          description: Invalid query parameter.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
     post:
       tags:
       - iam
@@ -561,6 +751,130 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '422':
           description: 'Validation failed: an invalid service name or a document that does not parse, with the JSON pointer of the fault.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+  /api/openapi-specs/{id}:
+    get:
+      tags:
+      - iam
+      summary: Retrieves an OpenAPI specification.
+      description: 'Returns the version with the identifier: its service, hash, status, uploader, timestamps and operation count, and its document only when `includeDocument` is `true`.'
+      operationId: api_openapi_specs_id_get
+      parameters:
+      - name: id
+        in: path
+        description: Version identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: includeDocument
+        in: query
+        description: Whether the version carries its document; default `false`.
+        required: false
+        schema:
+          type: boolean
+      responses:
+        '200':
+          description: The version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenApiSpecSummary'
+        '400':
+          description: Invalid identifier or query parameter.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Version not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+  /api/openapi-specs/{id}/diff:
+    get:
+      tags:
+      - iam
+      summary: Retrieves the diff of an OpenAPI specification.
+      description: Returns the operations the version adds and removes against the union of the active versions of its service, the removed operations that roles grant, the wildcard grants that would cover added operations and the operations that would lose a flag such as `x-iam-sensitive`.
+      operationId: api_openapi_specs_id_diff_get
+      parameters:
+      - name: id
+        in: path
+        description: Version identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The diff of the version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenApiSpecDiff'
+        '400':
+          description: Invalid identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Version not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
           content:
             application/problem+json:
               schema:
@@ -788,6 +1102,111 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '422':
           description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+    delete:
+      tags:
+      - iam
+      summary: Deletes a role.
+      description: 'Deletes a custom role when `If-Match` holds the current `ETag` and revokes every assignment of it in the same transaction: the role and its assignments leave the active listings at once, the next policy version is committed, and `iam.role.deleted`, one `iam.user_role.revoked` per revoked assignment and the audit records are written. The response reports the number of revoked assignments. A system role cannot be deleted. A repeated `Idempotency-Key` with the same request within 24 hours returns the original result, including the number of revoked assignments.'
+      operationId: api_roles_id_delete
+      parameters:
+      - name: id
+        in: path
+        description: Role identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: If-Match
+        in: header
+        description: The `ETag` of the version the deletion ends, such as `"3"`.
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        description: Makes the deletion safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '200':
+          description: The role was deleted and its assignments were revoked.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The final version of the role in double quotes.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeletedRole'
+        '400':
+          description: Invalid identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: A system role cannot be deleted.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Role not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: The role or one of its assignments changed concurrently, or the role has more assignments than one transaction revokes.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '412':
+          description: '`If-Match` is not the current version.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed, or the idempotency key was used for another request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '428':
+          description: '`If-Match` is missing.'
           content:
             application/problem+json:
               schema:
@@ -1539,6 +1958,29 @@ components:
           minLength: 1
           pattern: ^[^\u0000]*$
       additionalProperties: false
+    CreateGraphQlPermissionsRequest:
+      type: object
+      description: Body of the operation that activates a GraphQL specification version.
+      properties:
+        confirmFlagDowngrade:
+          type: boolean
+          description: |-
+            Accepts that keys lose the sensitive or the always-audit flag. Without it, an activation
+            that would remove a flag is refused with 409 and lists the keys.
+        confirmOrphans:
+          type: boolean
+          description: |-
+            Accepts that grants of keys that leave the catalogue become inactive. Without it, an
+            activation that would orphan grants is refused with 409 and lists them.
+        renames:
+          type: array
+          items:
+            $ref: '#/components/schemas/KeyRename'
+          description: |-
+            The coordinates that the version renames; the grants of each old key move to its new key
+            before anything is orphaned.
+          maxItems: 1000
+      additionalProperties: false
     CreateRoleRequest:
       type: object
       description: Body of the role-creation operation.
@@ -1561,6 +2003,22 @@ components:
           maxLength: 100
           minLength: 1
       additionalProperties: false
+    DeletedRole:
+      type: object
+      description: The result of a role deletion.
+      required:
+      - id
+      - revokedAssignments
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The identifier of the deleted role.
+        revokedAssignments:
+          type: integer
+          format: int32
+          description: The number of assignments that the deletion revoked.
+          minimum: 0
     DependencyFailure:
       type: object
       description: One dependency that did not answer its probe.
@@ -1616,6 +2074,44 @@ components:
           type: string
           description: The coordinate, `Type.field`.
           example: Mutation.pay
+    GraphQlPermissionsActivation:
+      type: object
+      description: The result of an activation.
+      required:
+      - id
+      - service
+      - status
+      - createdKeys
+      - policyVersion
+      properties:
+        createdKeys:
+          type: array
+          items:
+            type: string
+          description: |-
+            The keys that the activation added to the catalogue, in key order; empty for a version
+            that was active already.
+          example:
+          - gql:billing:Query.invoices
+        id:
+          type: string
+          format: uuid
+          description: The identifier of the activated version.
+        policyVersion:
+          type: integer
+          format: int64
+          description: |-
+            The policy version that the activation produced; for a version that was active already,
+            the current policy version.
+          minimum: 0
+        service:
+          type: string
+          description: The service the schema belongs to.
+          example: billing
+        status:
+          type: string
+          description: '`active`.'
+          example: active
     GraphQlSpec:
       type: object
       description: A GraphQL specification version with its diff.
@@ -1785,6 +2281,26 @@ components:
         uploadedBy:
           type: string
           description: Who loaded the version, as `user:<id>`, `service:<name>` or `system:<component>`.
+    KeyRename:
+      type: object
+      description: 'A coordinate that a version renames: the grants of the old key move to the new key.'
+      required:
+      - from
+      - to
+      properties:
+        from:
+          type: string
+          description: The old key, which the version no longer holds.
+          example: gql:billing:Query.bills
+          maxLength: 255
+          minLength: 1
+        to:
+          type: string
+          description: The new key, which the version holds.
+          example: gql:billing:Query.invoices
+          maxLength: 255
+          minLength: 1
+      additionalProperties: false
     LoadGraphQlSpecRequest:
       type: object
       description: Body of the operation that loads a GraphQL specification.
@@ -1926,6 +2442,84 @@ components:
           items:
             $ref: '#/components/schemas/OperationWildcardGain'
           description: The wildcard grants that would cover added operations.
+    OpenApiSpecPage:
+      type: object
+      description: One page of `OpenAPI` specification versions.
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenApiSpecSummary'
+          description: The versions of the page.
+        nextCursor:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The `after` value of the next page; absent on the last page.
+    OpenApiSpecSummary:
+      type: object
+      description: An `OpenAPI` specification version without its diff.
+      required:
+      - id
+      - service
+      - contentHash
+      - status
+      - uploadedBy
+      - createdAt
+      - operationCount
+      properties:
+        activatedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the version became active.
+        contentHash:
+          type: string
+          description: The SHA-256 hash of the document, in lower-case hexadecimal.
+          maxLength: 64
+          minLength: 64
+        createdAt:
+          type: string
+          format: date-time
+          description: When the version was loaded, as an RFC 3339 UTC time.
+          example: 2026-11-23T10:15:30.123456Z
+        document:
+          type:
+          - string
+          - 'null'
+          description: |-
+            The `OpenAPI` document as JSON text; present only when the request asks for it with
+            `includeDocument`.
+        id:
+          type: string
+          format: uuid
+          description: The identifier of the version.
+        operationCount:
+          type: integer
+          format: int64
+          description: The number of operations of the document.
+          minimum: 0
+        retiredAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the version was retired.
+        service:
+          type: string
+          description: The service the document belongs to.
+          example: billing
+        status:
+          type: string
+          description: '`draft`, `active` or `retired`.'
+          example: draft
+        uploadedBy:
+          type: string
+          description: Who loaded the version, as `user:<id>`, `service:<name>` or `system:<component>`.
     OperationFlagDowngrade:
       type: object
       description: An operation that would lose a flag.

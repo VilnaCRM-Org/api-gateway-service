@@ -155,6 +155,7 @@ async fn the_idempotency_and_receipt_tables_have_their_columns(pool: PgPool) {
         ["entity_version", "bigint", "NO", ""],
         ["policy_version", "bigint", "YES", ""],
         ["created_at", "timestamp with time zone", "NO", ""],
+        ["revoked_assignments", "integer", "YES", ""],
     ];
     assert_eq!(
         keys,
@@ -230,6 +231,10 @@ async fn the_migrations_name_every_constraint_and_index(pool: PgPool) {
             strings(&[
                 "iam_change_receipts_policy_version_check",
                 "CHECK ((policy_version >= 0))"
+            ]),
+            strings(&[
+                "iam_change_receipts_revoked_assignments_check",
+                "CHECK ((revoked_assignments >= 0))"
             ]),
         ]
     );

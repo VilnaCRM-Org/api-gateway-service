@@ -4,14 +4,14 @@
 
 use iam_domain::{
     CatalogueStatementParts, EntryFlags, EntryInsert, GqlCoordinate, GqlName, GraphQlPermission,
-    GraphQlPermissionParts, GraphQlPermissionRepository, InvalidCatalogueEntry,
-    InvalidPermissionKey, PermissionFlags, PermissionId, PermissionKey, PermissionPageQuery,
-    RepositoryError, ServiceName,
+    GraphQlPermissionParts, GraphQlPermissionRepository, GraphQlPermissionsCreated,
+    InvalidCatalogueEntry, InvalidPermissionKey, PermissionFlags, PermissionId, PermissionKey,
+    PermissionPageQuery, RepositoryError, ServiceName, SpecId,
 };
 use shared_domain::Uuid;
-use sqlx::PgConnection;
 use sqlx::types::Uuid as SqlUuid;
 use sqlx::types::time::OffsetDateTime;
+use sqlx::{PgConnection, Row as _};
 
 use crate::persistence::catalogue::{expect_rows, state_filter, translate_entry};
 use crate::persistence::graphql_spec::transition_within;
@@ -138,6 +138,29 @@ impl PgGraphQlPermissionRepository {
         .await
         .map_err(translate)?;
         restore_all(&rows)
+    }
+
+    /// The `createdKeys` of the `iam.graphql_permissions.created` event of the version. The
+    /// statement is checked at run time, so the offline metadata does not hold it.
+    async fn select_created_keys(
+        &self,
+        spec_id: SpecId,
+    ) -> Result<Option<Vec<PermissionKey>>, RepositoryError> {
+        let row = sqlx::query(
+            "SELECT payload FROM iam_outbox
+            WHERE kind = 'event' AND event_type = $1 AND aggregate_id = $2
+            ORDER BY position LIMIT 1",
+        )
+        .bind(GraphQlPermissionsCreated::NAME)
+        .bind(spec_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(translate)?;
+        row.as_ref()
+            .map(|row| row.try_get::<String, _>("payload").map_err(translate))
+            .transpose()?
+            .map(|payload| created_keys(&payload))
+            .transpose()
     }
 }
 
@@ -326,6 +349,42 @@ fn restore_all(rows: &[PermissionRow]) -> Result<Vec<GraphQlPermission>, Reposit
     rows.iter().map(restore).collect()
 }
 
+/// A stored event payload that does not hold `data.createdKeys` as a list of permission keys is
+/// unusable data.
+#[derive(Debug, thiserror::Error)]
+enum UnusablePayload {
+    /// The payload is not JSON.
+    #[error("a stored event payload is not JSON")]
+    Json(#[source] serde_json::Error),
+    /// The payload has no list of created keys.
+    #[error("a stored event payload has no list of created keys")]
+    Shape,
+    /// A created key is not a permission key.
+    #[error("a stored created key is invalid")]
+    Key(#[source] InvalidPermissionKey),
+}
+
+/// The keys that `payload`, the envelope of `iam.graphql_permissions.created`, lists.
+fn created_keys(payload: &str) -> Result<Vec<PermissionKey>, RepositoryError> {
+    let unusable = |error: UnusablePayload| RepositoryError::Unavailable(Box::new(error));
+    let envelope: serde_json::Value =
+        serde_json::from_str(payload).map_err(|error| unusable(UnusablePayload::Json(error)))?;
+    envelope
+        .get("data")
+        .and_then(|data| data.get("createdKeys"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| unusable(UnusablePayload::Shape))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or(UnusablePayload::Shape)
+                .and_then(|text| PermissionKey::parse(text).map_err(UnusablePayload::Key))
+                .map_err(unusable)
+        })
+        .collect()
+}
+
 #[async_trait::async_trait]
 impl GraphQlPermissionRepository for PgGraphQlPermissionRepository {
     async fn find_by_id(
@@ -355,6 +414,13 @@ impl GraphQlPermissionRepository for PgGraphQlPermissionRepository {
         query: &PermissionPageQuery,
     ) -> Result<Vec<GraphQlPermission>, RepositoryError> {
         self.select_page(query).await
+    }
+
+    async fn find_created_keys(
+        &self,
+        spec_id: SpecId,
+    ) -> Result<Option<Vec<PermissionKey>>, RepositoryError> {
+        self.select_created_keys(spec_id).await
     }
 }
 

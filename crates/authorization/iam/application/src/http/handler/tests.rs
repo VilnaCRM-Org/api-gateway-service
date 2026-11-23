@@ -123,10 +123,14 @@ fn handlers_use_only_the_problem_aware_extractors() {
             include_str!("../graphql_spec.rs"),
             vec!["load", "list", "get_one", "get_diff"],
         ),
-        (include_str!("../openapi_spec.rs"), vec!["load"]),
+        (include_str!("../graphql_activation.rs"), vec!["create"]),
+        (
+            include_str!("../openapi_spec.rs"),
+            vec!["load", "list", "get_one", "get_diff"],
+        ),
         (
             include_str!("../role.rs"),
-            vec!["create", "get_one", "update", "list"],
+            vec!["create", "get_one", "update", "delete", "list"],
         ),
         (
             include_str!("../user_role.rs"),

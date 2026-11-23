@@ -6,14 +6,15 @@ use std::collections::BTreeMap;
 use std::time::SystemTime;
 
 use iam_domain::{
-    EntityVersion, InvalidIamValue, InvalidPermissionKey, InvalidRole, PermissionGrant,
-    PermissionGrantSet, PermissionKeyKind, RepositoryError, Role, RoleDescription, RoleId,
-    RoleKind, RoleName, RolePageQuery, RoleParts, RoleRepository, RoleStatement, WildcardPattern,
+    EntityVersion, GrantRecord, GrantStatus, InvalidIamValue, InvalidPermissionKey, InvalidRole,
+    PermissionGrant, PermissionGrantSet, PermissionKey, PermissionKeyKind, RepositoryError, Role,
+    RoleDescription, RoleId, RoleKind, RoleName, RolePageQuery, RoleParts, RoleRepository,
+    RoleStatement, ServiceName, WildcardPattern,
 };
 use shared_domain::Uuid;
-use sqlx::PgConnection;
 use sqlx::types::Uuid as SqlUuid;
 use sqlx::types::time::OffsetDateTime;
+use sqlx::{PgConnection, Row as _};
 
 /// Reads the roles that are not deleted, with their grants.
 #[derive(Debug)]
@@ -96,6 +97,29 @@ impl PgRoleRepository {
         .fetch_all(&self.pool)
         .await
         .map_err(translate)
+    }
+
+    /// The grants of roles that are not deleted to exact keys of the service and the form. The
+    /// statement is checked at run time, so the offline metadata does not hold it.
+    async fn select_catalogue_grants(
+        &self,
+        service: &ServiceName,
+        kind: PermissionKeyKind,
+    ) -> Result<Vec<GrantRecord>, RepositoryError> {
+        let rows = sqlx::query(
+            "SELECT grants.role_id, grants.permission_key, grants.active
+            FROM iam_role_permissions AS grants
+            JOIN iam_roles AS roles ON roles.id = grants.role_id
+            WHERE roles.deleted_at IS NULL AND grants.service = $1 AND grants.key_kind = $2
+                AND NOT grants.is_wildcard
+            ORDER BY grants.role_id, grants.permission_key",
+        )
+        .bind(service.as_str())
+        .bind(kind.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(translate)?;
+        rows.iter().map(grant_record).collect()
     }
 }
 
@@ -395,6 +419,22 @@ fn invalid_key(error: InvalidPermissionKey) -> RepositoryError {
     RepositoryError::Unavailable(Box::new(error))
 }
 
+/// The catalogue grant that a stored row holds.
+fn grant_record(row: &sqlx::postgres::PgRow) -> Result<GrantRecord, RepositoryError> {
+    let role_id: SqlUuid = row.try_get("role_id").map_err(translate)?;
+    let permission_key: String = row.try_get("permission_key").map_err(translate)?;
+    let active: bool = row.try_get("active").map_err(translate)?;
+    Ok(GrantRecord {
+        role: RoleId::from_uuid(Uuid::from_uuid(role_id)),
+        key: PermissionKey::parse(&permission_key).map_err(invalid_key)?,
+        status: if active {
+            GrantStatus::Active
+        } else {
+            GrantStatus::Orphaned
+        },
+    })
+}
+
 #[async_trait::async_trait]
 impl RoleRepository for PgRoleRepository {
     async fn find_by_id(&self, id: RoleId) -> Result<Option<Role>, RepositoryError> {
@@ -403,6 +443,14 @@ impl RoleRepository for PgRoleRepository {
 
     async fn find_page(&self, query: &RolePageQuery) -> Result<Vec<Role>, RepositoryError> {
         self.select_page(query).await
+    }
+
+    async fn find_catalogue_grants(
+        &self,
+        service: &ServiceName,
+        kind: PermissionKeyKind,
+    ) -> Result<Vec<GrantRecord>, RepositoryError> {
+        self.select_catalogue_grants(service, kind).await
     }
 }
 

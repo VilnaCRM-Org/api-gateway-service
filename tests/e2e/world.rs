@@ -256,6 +256,57 @@ impl AppWorld {
         self.role = Some(id);
     }
 
+    /// Stores the inactive GraphQL catalogue entry `key` in the scenario database, as a fixture: the
+    /// state that an earlier, retired version leaves behind.
+    pub(crate) async fn seed_inactive_catalogue_entry(&mut self, key: &str, sensitive: bool) {
+        let url = self.database_url().await;
+        let options = PgConnectOptions::from_str(&url).expect("valid database URL");
+        let mut connection = options
+            .connect()
+            .await
+            .expect("connect to the scenario database");
+        sqlx::query(
+            "INSERT INTO iam_graphql_permissions (id, permission_key, service, type_name, \
+             field_name, sensitive, audit_always, active, orphaned_at, created_at) \
+             VALUES (gen_random_uuid(), $1, split_part($1, ':', 2), \
+             split_part(split_part($1, ':', 3), '.', 1), \
+             split_part(split_part($1, ':', 3), '.', 2), $2, FALSE, FALSE, NULL, now())",
+        )
+        .bind(key.to_owned())
+        .bind(sensitive)
+        .execute(&mut connection)
+        .await
+        .expect("seed the catalogue entry");
+        connection.close().await.expect("close");
+    }
+
+    /// Makes every update of an assignment row of the scenario database fail, as a fixture: the
+    /// statement that a role deletion runs after it has updated the role row, so that the whole
+    /// change must roll back.
+    pub(crate) async fn force_assignment_updates_to_fail(&mut self) {
+        let url = self.database_url().await;
+        let options = PgConnectOptions::from_str(&url).expect("valid database URL");
+        let mut connection = options
+            .connect()
+            .await
+            .expect("connect to the scenario database");
+        sqlx::query(
+            "CREATE FUNCTION iam_forced_failure() RETURNS trigger LANGUAGE plpgsql AS \
+             $$ BEGIN RAISE EXCEPTION 'forced failure of the statement'; END $$",
+        )
+        .execute(&mut connection)
+        .await
+        .expect("create the failing function");
+        sqlx::query(
+            "CREATE TRIGGER iam_forced_failure BEFORE UPDATE ON iam_user_roles \
+             FOR EACH ROW EXECUTE FUNCTION iam_forced_failure()",
+        )
+        .execute(&mut connection)
+        .await
+        .expect("create the failing trigger");
+        connection.close().await.expect("close");
+    }
+
     /// Marks the GraphQL specification version that `{id}` stands for as active in the scenario
     /// database, as a fixture: the only way to have an active version before the activation
     /// operation exists.
@@ -272,6 +323,33 @@ impl AppWorld {
             .expect("connect to the scenario database");
         let activated = sqlx::query(
             "UPDATE iam_graphql_specs SET status = 'active', activated_at = now() \
+             WHERE id = $1::text::uuid AND status = 'draft'",
+        )
+        .bind(id)
+        .execute(&mut connection)
+        .await
+        .expect("activate the version")
+        .rows_affected();
+        assert_eq!(activated, 1, "the remembered id names a draft version");
+        connection.close().await.expect("close");
+    }
+
+    /// Marks the `OpenAPI` specification version that `{id}` stands for as active in the scenario
+    /// database, as a fixture: the only way to have an active version before the activation
+    /// operation exists.
+    pub(crate) async fn activate_remembered_openapi_spec(&mut self) {
+        let id = self
+            .remembered
+            .clone()
+            .expect("a step remembered an OpenAPI specification");
+        let url = self.database_url().await;
+        let options = PgConnectOptions::from_str(&url).expect("valid database URL");
+        let mut connection = options
+            .connect()
+            .await
+            .expect("connect to the scenario database");
+        let activated = sqlx::query(
+            "UPDATE iam_openapi_specs SET status = 'active', activated_at = now() \
              WHERE id = $1::text::uuid AND status = 'draft'",
         )
         .bind(id)

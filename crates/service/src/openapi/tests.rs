@@ -70,7 +70,7 @@ fn documents_every_operation(
 }
 
 #[test]
-fn documents_exactly_the_nineteen_operations() {
+fn documents_exactly_the_twenty_four_operations() {
     let json = json_document();
     let mut operations = Vec::new();
     for (path, item) in json["paths"].as_object().unwrap() {
@@ -89,11 +89,16 @@ fn documents_exactly_the_nineteen_operations() {
             "post /api/graphql-specs",
             "get /api/graphql-specs/{id}",
             "get /api/graphql-specs/{id}/diff",
+            "post /api/graphql-specs/{id}/permissions",
             "get /api/health",
+            "get /api/openapi-specs",
             "post /api/openapi-specs",
+            "get /api/openapi-specs/{id}",
+            "get /api/openapi-specs/{id}/diff",
             "get /api/roles",
             "post /api/roles",
             "get /api/roles/{id}",
+            "delete /api/roles/{id}",
             "patch /api/roles/{id}",
             "post /api/token-resolutions",
             "get /api/user-roles",
@@ -224,6 +229,15 @@ fn documents_the_role_operations_with_the_bearer_requirement_and_the_iam_tag() {
             ]
             .as_slice(),
         ),
+        (
+            "/api/roles/{id}",
+            "delete",
+            "api_roles_id_delete",
+            [
+                "200", "400", "401", "403", "404", "409", "412", "422", "428", "default",
+            ]
+            .as_slice(),
+        ),
     ];
 
     for (path, method, operation_id, statuses) in cases {
@@ -254,6 +268,29 @@ fn documents_the_role_operations_with_the_bearer_requirement_and_the_iam_tag() {
             );
         }
     }
+}
+
+#[test]
+fn the_role_deletion_documents_its_headers_and_the_revoked_assignments() {
+    let json = json_document();
+    let operation = &json["paths"]["/api/roles/{id}"]["delete"];
+
+    assert_eq!(
+        operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/DeletedRole"
+    );
+    assert!(operation["responses"]["200"]["headers"]["etag"].is_object());
+    assert!(operation["responses"]["200"]["headers"]["iam-policy-version"].is_object());
+    let names: Vec<&str> = operation["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|parameter| parameter["name"].as_str())
+        .collect();
+    assert_eq!(names, ["id", "If-Match", "Idempotency-Key"]);
+    let schema = &json["components"]["schemas"]["DeletedRole"];
+    assert_eq!(schema["required"], json!(["id", "revokedAssignments"]));
+    assert_eq!(schema["properties"]["revokedAssignments"]["minimum"], 0);
 }
 
 #[test]
@@ -375,6 +412,54 @@ fn documents_the_graphql_specification_reads_with_the_bearer_requirement_and_the
             "{operation_id}"
         );
     }
+}
+
+#[test]
+fn the_graphql_activation_documents_its_responses_headers_and_schemas() {
+    let json = json_document();
+    let operation = &json["paths"]["/api/graphql-specs/{id}/permissions"]["post"];
+
+    assert_eq!(
+        operation["operationId"],
+        "api_graphql_specs_id_permissions_post"
+    );
+    assert_eq!(operation["tags"], json!(["iam"]));
+    assert_eq!(operation["security"], json!([{ "bearerAuth": [] }]));
+    let mut documented: Vec<&str> = operation["responses"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    documented.sort_unstable();
+    assert_eq!(
+        documented,
+        [
+            "200", "201", "400", "401", "404", "409", "413", "415", "422", "default"
+        ]
+    );
+    assert_eq!(
+        operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/CreateGraphQlPermissionsRequest"
+    );
+    for status in ["200", "201"] {
+        assert_eq!(
+            operation["responses"][status]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/GraphQlPermissionsActivation",
+            "{status}"
+        );
+        assert!(operation["responses"][status]["headers"]["iam-policy-version"].is_object());
+    }
+    let names: Vec<&str> = operation["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|parameter| parameter["name"].as_str())
+        .collect();
+    assert_eq!(names, ["id", "Idempotency-Key"]);
+    let request = &json["components"]["schemas"]["CreateGraphQlPermissionsRequest"];
+    assert_eq!(request["additionalProperties"], false);
+    assert!(request["properties"]["renames"].is_object());
 }
 
 #[test]
@@ -755,18 +840,24 @@ fn defines_exactly_the_documented_schemas() {
             "AssignmentSubject",
             "CoordinateFlags",
             "CreateExampleApiResourceRequest",
+            "CreateGraphQlPermissionsRequest",
             "CreateRoleRequest",
+            "DeletedRole",
             "DependencyFailure",
             "ExampleApiResource",
             "FlagDowngrade",
+            "GraphQlPermissionsActivation",
             "GraphQlSpec",
             "GraphQlSpecDiff",
             "GraphQlSpecPage",
             "GraphQlSpecSummary",
+            "KeyRename",
             "LoadGraphQlSpecRequest",
             "LoadOpenApiSpecRequest",
             "OpenApiSpec",
             "OpenApiSpecDiff",
+            "OpenApiSpecPage",
+            "OpenApiSpecSummary",
             "OperationFlagDowngrade",
             "OperationFlags",
             "OperationWildcardGain",
@@ -782,7 +873,7 @@ fn defines_exactly_the_documented_schemas() {
             "UserRole",
             "UserRolePage",
             "Violation",
-            "WildcardGain"
+            "WildcardGain",
         ]
     );
     assert_eq!(

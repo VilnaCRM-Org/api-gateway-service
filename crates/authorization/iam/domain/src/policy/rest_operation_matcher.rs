@@ -106,23 +106,24 @@ fn matches_embedded(pattern: &str, text: &str) -> bool {
 /// succeed where this one fails. A backtracking search would take exponential time on a request
 /// path such as `v------` against `v{}-{}-{}-{}.json`, and request paths come from callers.
 fn consume(text: &str, literal: &str, tail: &[&str]) -> bool {
-    let mut parts = std::iter::once(literal)
-        .chain(tail.iter().copied())
-        .peekable();
-    let mut cursor = 0_usize;
-    while let Some(part) = parts.next() {
-        let Some(start) = after_one_char(text, cursor) else {
-            return false;
-        };
-        if parts.peek().is_none() {
-            return text.len() >= start.saturating_add(part.len()) && text.ends_with(part);
-        }
-        let Some(offset) = text.get(start..).and_then(|rest| rest.find(part)) else {
-            return false;
-        };
-        cursor = start.saturating_add(offset).saturating_add(part.len());
-    }
-    false
+    let (middle, last): (Vec<&str>, &str) = match tail.split_last() {
+        Some((last, rest)) => (
+            std::iter::once(literal)
+                .chain(rest.iter().copied())
+                .collect(),
+            last,
+        ),
+        None => (Vec::new(), literal),
+    };
+    middle
+        .iter()
+        .try_fold(0_usize, |cursor, part| {
+            let start = after_one_char(text, cursor)?;
+            let offset = text.get(start..).and_then(|rest| rest.find(part))?;
+            Some(start.saturating_add(offset).saturating_add(part.len()))
+        })
+        .and_then(|cursor| after_one_char(text, cursor))
+        .is_some_and(|start| text.len() >= start.saturating_add(last.len()) && text.ends_with(last))
 }
 
 /// The index after the one character at `cursor`; `None` at the end of `text`.

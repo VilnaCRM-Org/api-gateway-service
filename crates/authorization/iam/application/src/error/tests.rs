@@ -1,14 +1,15 @@
 use std::error::Error as _;
 
 use iam_domain::{
-    EntityVersion, InvalidEventEnvelope, InvalidIamValue, InvalidRole, InvalidUserRole,
-    RepositoryError, RoleChangeRefused, TokenRejection, UserRoleChangeRefused, VersionConflict,
+    EntityVersion, InvalidCatalogueEntry, InvalidEventEnvelope, InvalidIamValue, InvalidRole,
+    InvalidUserRole, RepositoryError, RoleChangeRefused, TokenRejection, UserRoleChangeRefused,
+    VersionConflict,
 };
 use rstest::rstest;
 use shared_application::http::{Problem, TYPE_BLANK, Violation};
 use test_support::log::LogRecorder;
 
-use super::IamError;
+use super::{Confirmation, IamError, TYPE_FLAG_DOWNGRADE_CONFIRMATION, TYPE_ORPHAN_CONFIRMATION};
 
 #[test]
 fn not_found_is_the_404_problem_with_its_message_and_is_not_logged() {
@@ -367,4 +368,58 @@ fn an_invalid_specification_is_one_violation_of_its_property_with_its_position()
             code: "syntax".to_owned(),
         }]
     );
+}
+
+#[rstest]
+#[case(
+    Confirmation::FlagDowngrade,
+    TYPE_FLAG_DOWNGRADE_CONFIRMATION,
+    "confirmFlagDowngrade"
+)]
+#[case(Confirmation::Orphans, TYPE_ORPHAN_CONFIRMATION, "confirmOrphans")]
+fn a_missing_confirmation_is_the_409_problem_that_lists_what_it_affects(
+    #[case] confirmation: Confirmation,
+    #[case] problem_type: &str,
+    #[case] flag: &str,
+) {
+    let (recorder, _guard) = LogRecorder::install();
+    let item = Violation {
+        property_path: "gql:billing:Mutation.pay".to_owned(),
+        message: "This key is affected.".to_owned(),
+        code: "affected".to_owned(),
+    };
+
+    let problem = Problem::from(IamError::ConfirmationRequired(
+        confirmation,
+        vec![item.clone()],
+    ));
+
+    assert_eq!(problem.status, 409);
+    assert_eq!(problem.title, "Conflict");
+    assert_eq!(problem.r#type, problem_type);
+    assert_eq!(confirmation.problem_type(), problem_type);
+    assert!(problem.detail.as_deref().unwrap().contains(flag));
+    assert_eq!(problem.violations, vec![item]);
+    assert_eq!(recorder.lines().len(), 0);
+}
+
+#[test]
+fn the_message_of_a_missing_confirmation_is_fixed() {
+    assert_eq!(
+        IamError::ConfirmationRequired(Confirmation::Orphans, Vec::new()).to_string(),
+        "The change needs a confirmation."
+    );
+}
+
+#[test]
+fn an_invalid_catalogue_statement_is_an_internal_failure_that_names_its_cause() {
+    let invalid = InvalidCatalogueEntry::OutsideService {
+        key: "gql:other:Query.bills".to_owned(),
+    };
+    let cause = invalid.to_string();
+
+    let error = IamError::from(invalid);
+
+    assert!(matches!(error, IamError::Internal(_)));
+    assert_eq!(error.source().map(ToString::to_string), Some(cause));
 }

@@ -75,6 +75,20 @@ input CreateExampleApiResourceInput {
   name: String!
 }
 
+"Input of the mutation that activates a GraphQL specification version."
+input CreateGraphqlPermissionsInput {
+  "Accepts that keys lose the sensitive or the always-audit flag; without it, an activation that would remove a flag fails with `FLAG_DOWNGRADE_CONFIRMATION_REQUIRED`."
+  confirmFlagDowngrade: Boolean! = false
+  "Accepts that grants of keys that leave the catalogue become inactive; without it, an activation that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED`."
+  confirmOrphans: Boolean! = false
+  "The version to activate."
+  id: ID!
+  "Makes the activation safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+  "The coordinates that the version renames; the grants of each old key move to its new key before anything is orphaned."
+  renames: [KeyRenameInput!]! = []
+}
+
 "Input of the role-creation mutation."
 input CreateRoleInput {
   "What the role is for, at most 1,000 characters."
@@ -83,6 +97,28 @@ input CreateRoleInput {
   idempotencyKey: String
   "The name of the role: 1 to 100 characters, unique without regard to case among the roles that are not deleted."
   name: String!
+}
+
+"Input of the role-deletion mutation."
+input DeleteRoleInput {
+  "The version the caller read; required, and the deletion is refused when it is not the current one."
+  expectedVersion: Int
+  "The role to delete."
+  id: ID!
+  "Makes the deletion safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+}
+
+"The result of a role deletion."
+type DeleteRolePayload {
+  "The identifier of the deleted role."
+  id: ID!
+  "The policy version that the deletion produced."
+  policyVersion: Int
+  "The number of assignments that the deletion revoked."
+  revokedAssignments: Int!
+  "The final version of the role."
+  version: Int!
 }
 
 "Template example resource."
@@ -103,6 +139,20 @@ type FlagDowngrade {
   before: CoordinateFlags!
   "The coordinate, `Type.field`."
   coordinate: String!
+}
+
+"The result of an activation."
+type GraphqlPermissionsActivation {
+  "The keys that the activation added to the catalogue, in key order; empty for a version that was active already."
+  createdKeys: [String!]!
+  "The identifier of the activated version."
+  id: ID!
+  "The policy version that the activation produced; for a version that was active already, the current policy version."
+  policyVersion: Int!
+  "The service the schema belongs to."
+  service: String!
+  "`active`."
+  status: String!
 }
 
 "A GraphQL specification version with its diff."
@@ -161,6 +211,14 @@ type GraphqlSpecPage {
   nextCursor: String
 }
 
+"A coordinate that a version renames: the grants of the old key move to the new key."
+input KeyRenameInput {
+  "The old key, which the version no longer holds, such as `gql:billing:Query.bills`."
+  from: String!
+  "The new key, which the version holds, such as `gql:billing:Query.invoices`."
+  to: String!
+}
+
 "Input of the mutation that loads a GraphQL specification."
 input LoadGraphqlSpecInput {
   "The SDL document, at most 5 MiB."
@@ -183,8 +241,12 @@ type Mutation {
   assignUserRole(input: AssignUserRoleInput!): UserRole!
   "Creates an example API resource."
   createExampleApiResource(input: CreateExampleApiResourceInput!): ExampleApiResource!
+  "Activates a draft GraphQL specification version and makes its fields grantable permissions: the catalogue of the service becomes the union of its active versions, the next policy version is taken and `iam.graphql_permissions.created` is recorded. An activation that would remove the sensitive or always-audit flag from a key fails with `FLAG_DOWNGRADE_CONFIRMATION_REQUIRED` unless `confirmFlagDowngrade` is true, and one that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED` unless `confirmOrphans` is true. A version that is active already is a no-op."
+  createGraphqlPermissions(input: CreateGraphqlPermissionsInput!): GraphqlPermissionsActivation!
   "Creates a custom role without grants at version 1 and records `iam.role.created`."
   createRole(input: CreateRoleInput!): Role!
+  "Deletes a custom role when `expectedVersion` is the current version and revokes every assignment of it in the same transaction: the role and its assignments leave the active listings at once, the next policy version is committed, and `iam.role.deleted`, one `iam.user_role.revoked` per revoked assignment and the audit records are written. The payload reports the number of revoked assignments."
+  deleteRole(input: DeleteRoleInput!): DeleteRolePayload!
   "Loads the SDL of a service as a draft version and returns it with its diff against the active versions; an SDL that the service already holds returns its version and changes nothing. The service `iam` is reserved."
   loadGraphqlSpec(input: LoadGraphqlSpecInput!): GraphqlSpec!
   "Loads the `OpenAPI` document of a service as a draft version and returns it with its diff against the active versions; a document that the service already holds returns its version and changes nothing. The service `iam` is reserved."
@@ -197,7 +259,7 @@ type Mutation {
   updateUserRole(input: UpdateUserRoleInput!): UserRole!
 }
 
-"An `OpenAPI` specification version with its diff."
+"An `OpenAPI` specification version."
 type OpenApiSpec {
   "When the version became active."
   activatedAt: String
@@ -205,8 +267,10 @@ type OpenApiSpec {
   contentHash: String!
   "When the version was loaded, as an RFC 3339 UTC time."
   createdAt: String!
-  "What the version changes against the active versions of its service."
+  "What the version changes against the union of the active versions of its service."
   diff: OpenApiSpecDiff!
+  "The `OpenAPI` document as JSON text, read only when the query selects it."
+  document: String
   "The identifier of the version."
   id: ID!
   "The number of operations of the document."
@@ -233,6 +297,22 @@ type OpenApiSpecDiff {
   removedGrants: [RemovedOperationGrant!]!
   "The wildcard grants that would cover added operations."
   wildcardGains: [OperationWildcardGain!]!
+}
+
+"Filters of the version list."
+input OpenapiSpecFilter {
+  "Only versions of this service."
+  service: String
+  "Only versions in this status: `draft`, `active` or `retired`."
+  status: String
+}
+
+"One page of `OpenAPI` specification versions."
+type OpenapiSpecPage {
+  "The versions of the page."
+  items: [OpenApiSpec!]!
+  "The `after` value of the next page; null on the last page."
+  nextCursor: String
 }
 
 "An operation that would lose a flag."
@@ -285,6 +365,17 @@ type Query {
     "Page size, from 1 to 100."
     first: Int = 30
   ): GraphqlSpecPage!
+  "Retrieves an `OpenAPI` specification version by id; null when it is unknown. The fields `document` and `diff` are read only when the query selects them."
+  openapiSpec(id: ID!): OpenApiSpec
+  "Retrieves one page of `OpenAPI` specification versions in a stable order, filtered by service and status."
+  openapiSpecs(
+    "The nextCursor of the previous page."
+    after: String,
+    "Only versions that match the filter."
+    filter: OpenapiSpecFilter,
+    "Page size, from 1 to 100."
+    first: Int = 30
+  ): OpenapiSpecPage!
   "Resolves a User service token into its subject, or says why it is refused."
   resolveToken(input: ResolveTokenInput!): TokenResolution!
   "Retrieves a role by id; null when it is unknown or deleted."
@@ -511,7 +602,11 @@ fn the_sdl_has_the_template_and_iam_operations_and_nothing_else_to_call() {
     assert!(text.contains("exampleApiResources("));
     assert!(text.contains("createExampleApiResource(input: CreateExampleApiResourceInput!)"));
     assert!(text.contains("createRole(input: CreateRoleInput!): Role!"));
+    assert!(text.contains(
+        "createGraphqlPermissions(input: CreateGraphqlPermissionsInput!): GraphqlPermissionsActivation!"
+    ));
     assert!(text.contains("updateRole(input: UpdateRoleInput!): Role!"));
+    assert!(text.contains("deleteRole(input: DeleteRoleInput!): DeleteRolePayload!"));
     assert!(text.contains("role(id: ID!): Role"));
     assert!(text.contains("roles("));
     assert!(text.contains("assignUserRole(input: AssignUserRoleInput!): UserRole!"));
@@ -525,7 +620,6 @@ fn the_sdl_has_the_template_and_iam_operations_and_nothing_else_to_call() {
     for absent in [
         "node",
         "Connection",
-        "deleteRole",
         "updateExampleApiResource",
         "deleteExampleApiResource",
         "type Subscription",
@@ -727,6 +821,22 @@ async fn the_assignment_changes_are_merged_into_the_mutation_root_and_need_an_au
             Some(async_graphql::Value::String("UNAUTHENTICATED".to_owned()))
         );
     }
+}
+
+#[tokio::test]
+async fn delete_role_is_merged_into_the_mutation_root_and_needs_an_authenticated_caller() {
+    let schema: ApiSchema = builder().data(iam_state()).finish();
+    let request = Request::new(
+        "mutation { deleteRole(input: { id: \"0190f2a8-7b3c-7d4e-8f10-1234567890cd\", \
+         expectedVersion: 1 }) { id revokedAssignments } }",
+    );
+
+    let response = schema.execute(request).await;
+
+    assert_eq!(
+        error_code(&response),
+        Some(async_graphql::Value::String("UNAUTHENTICATED".to_owned()))
+    );
 }
 
 #[tokio::test]

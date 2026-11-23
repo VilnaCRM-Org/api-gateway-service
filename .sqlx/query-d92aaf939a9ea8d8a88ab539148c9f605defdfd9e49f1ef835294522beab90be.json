@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO iam_change_receipts (change_id, actor, target_type, target_id, entity_version,\n            policy_version, revoked_assignments, created_at)\n        VALUES ($1, ($2::text[])[1], ($2::text[])[2], ($2::text[])[3], $3, $4, $5, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "Int8",
+        "Int8",
+        "Int4",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d92aaf939a9ea8d8a88ab539148c9f605defdfd9e49f1ef835294522beab90be"
+}

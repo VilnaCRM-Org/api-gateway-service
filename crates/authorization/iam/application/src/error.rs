@@ -2,11 +2,49 @@
 
 use axum::http::StatusCode;
 use iam_domain::{
-    InvalidEventEnvelope, InvalidIamValue, InvalidRole, InvalidSpec, InvalidUserRole,
-    RepositoryError, RoleChangeRefused, TokenRejection, UserRoleChangeRefused, VersionConflict,
+    InvalidCatalogueEntry, InvalidEventEnvelope, InvalidIamValue, InvalidRole, InvalidSpec,
+    InvalidUserRole, RepositoryError, RoleChangeRefused, TokenRejection, UserRoleChangeRefused,
+    VersionConflict,
 };
 use shared_application::http::{Problem, Violation};
 use shared_domain::BoxError;
+
+/// The `type` of the 409 problem of an activation that would remove a flag without confirmation.
+pub const TYPE_FLAG_DOWNGRADE_CONFIRMATION: &str = "/problems/flag-downgrade-confirmation-required";
+/// The `type` of the 409 problem of an activation that would orphan grants without confirmation.
+pub const TYPE_ORPHAN_CONFIRMATION: &str = "/problems/orphan-confirmation-required";
+
+/// What an activation needs the caller to confirm before it changes the catalogue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Confirmation {
+    /// Keys would lose the sensitive or the always-audit flag (`confirmFlagDowngrade`).
+    FlagDowngrade,
+    /// Grants would become inactive because their key leaves the catalogue (`confirmOrphans`).
+    Orphans,
+}
+
+impl Confirmation {
+    /// The `type` of the problem that asks for the confirmation.
+    #[must_use]
+    pub const fn problem_type(self) -> &'static str {
+        match self {
+            Self::FlagDowngrade => TYPE_FLAG_DOWNGRADE_CONFIRMATION,
+            Self::Orphans => TYPE_ORPHAN_CONFIRMATION,
+        }
+    }
+
+    /// The explanation of the problem.
+    const fn detail(self) -> &'static str {
+        match self {
+            Self::FlagDowngrade => {
+                "The activation would remove a flag from the listed keys; repeat it with confirmFlagDowngrade to proceed."
+            }
+            Self::Orphans => {
+                "The activation would orphan the listed grants; repeat it with confirmOrphans to proceed."
+            }
+        }
+    }
+}
 
 /// What can go wrong in a command or a query of the IAM context; `architecture.md` section 5.5
 /// maps each variant to its HTTP status and GraphQL code.
@@ -25,6 +63,10 @@ pub enum IamError {
     /// The record already exists or was changed concurrently.
     #[error("The IAM record conflicts with its current state.")]
     Conflict,
+    /// The change needs a confirmation the request did not give; the violations list the keys or
+    /// the grants it affects.
+    #[error("The change needs a confirmation.")]
+    ConfirmationRequired(Confirmation, Vec<Violation>),
     /// The idempotency key was already used by the same actor for another request in the last 24
     /// hours.
     #[error("The idempotency key was already used for a different request.")]
@@ -89,6 +131,14 @@ impl From<InvalidSpec> for IamError {
 
 impl From<InvalidIamValue> for IamError {
     fn from(error: InvalidIamValue) -> Self {
+        Self::Internal(Box::new(error))
+    }
+}
+
+impl From<InvalidCatalogueEntry> for IamError {
+    /// A catalogue statement that names a key of another form or service is a defect of the use
+    /// case: the keys come from the version, which belongs to the service of the statement.
+    fn from(error: InvalidCatalogueEntry) -> Self {
         Self::Internal(Box::new(error))
     }
 }
@@ -180,6 +230,13 @@ impl From<IamError> for Problem {
             IamError::PreconditionRequired => StatusCode::PRECONDITION_REQUIRED,
             IamError::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
             IamError::Invalid(violations) => return Self::validation_failed(violations.clone()),
+            IamError::ConfirmationRequired(confirmation, items) => {
+                return Self {
+                    r#type: confirmation.problem_type(),
+                    violations: items.clone(),
+                    ..Self::new(StatusCode::CONFLICT).with_detail(confirmation.detail())
+                };
+            }
             IamError::Storage(_) | IamError::Internal(_) => return Self::internal(&error),
         };
         Self::new(status).with_detail(error.to_string())
