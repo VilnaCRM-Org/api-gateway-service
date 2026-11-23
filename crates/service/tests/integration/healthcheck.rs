@@ -1,21 +1,29 @@
 //! `service healthcheck` against a running service and against a port nothing listens on.
 
-use crate::support::{DEAD_DATABASE_URL, Scratch, serve, silent_listener};
+use sqlx::PgPool;
+
+use crate::support::{Scratch, Server, database_url, serve, silent_listener, stack_with};
+
+/// A running service on the database of `pool`, with `extra` variables after the stack's own.
+async fn serve_on(scratch: &Scratch, pool: &PgPool, extra: &[(&str, &str)]) -> Server {
+    let url = database_url(pool).await;
+    let owned = stack_with(&url);
+    let mut variables: Vec<(&str, &str)> = owned
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
+    variables.extend_from_slice(extra);
+    serve(scratch, &variables)
+}
 
 fn exit_code(scratch: &Scratch, arguments: &[&str], port: &str) -> Option<i32> {
     scratch.run(arguments, &[("APP_PORT", port)]).status.code()
 }
 
-#[test]
-fn succeeds_against_a_running_service_and_fails_with_nothing_listening() {
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn succeeds_against_a_running_service_and_fails_with_nothing_listening(pool: PgPool) {
     let scratch = Scratch::new();
-    let server = serve(
-        &scratch,
-        &[
-            ("DATABASE_URL", DEAD_DATABASE_URL),
-            ("AWS_REGION", "us-east-1"),
-        ],
-    );
+    let server = serve_on(&scratch, &pool, &[]).await;
     let port = server.port.to_string();
     let alive = exit_code(&scratch, &["healthcheck"], &port);
     let flag = scratch
@@ -66,17 +74,10 @@ fn prints_nothing() {
     assert_eq!(output.stderr, Vec::<u8>::new());
 }
 
-#[test]
-fn probes_the_address_the_service_listens_on() {
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn probes_the_address_the_service_listens_on(pool: PgPool) {
     let scratch = Scratch::new();
-    let server = serve(
-        &scratch,
-        &[
-            ("DATABASE_URL", DEAD_DATABASE_URL),
-            ("AWS_REGION", "us-east-1"),
-            ("APP_HOST", "127.0.0.2"),
-        ],
-    );
+    let server = serve_on(&scratch, &pool, &[("APP_HOST", "127.0.0.2")]).await;
     let port = server.port.to_string();
     let with_host = |host: &str| {
         scratch
@@ -109,17 +110,10 @@ fn probes_the_address_the_service_listens_on() {
     assert_eq!(finished.code, Some(0));
 }
 
-#[test]
-fn an_unspecified_listener_is_probed_on_the_loopback_interface() {
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn an_unspecified_listener_is_probed_on_the_loopback_interface(pool: PgPool) {
     let scratch = Scratch::new();
-    let server = serve(
-        &scratch,
-        &[
-            ("DATABASE_URL", DEAD_DATABASE_URL),
-            ("AWS_REGION", "us-east-1"),
-            ("APP_HOST", "0.0.0.0"),
-        ],
-    );
+    let server = serve_on(&scratch, &pool, &[("APP_HOST", "0.0.0.0")]).await;
     let port = server.port.to_string();
 
     let alive = scratch

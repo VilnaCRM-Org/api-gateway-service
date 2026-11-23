@@ -26,6 +26,8 @@ mod security_audit_log;
 #[cfg(test)]
 mod security_audit_migration;
 #[cfg(test)]
+mod startup_lock;
+#[cfg(test)]
 mod token_resolution;
 #[cfg(test)]
 mod unit_of_work;

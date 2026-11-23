@@ -18,7 +18,9 @@ use iam_domain::{
     SystemComponent,
 };
 use serde_json::Value;
-use service::bootstrap::{Adapters, router};
+use service::bootstrap::{
+    Adapters, TaskMode, TaskSupervisor, register_iam_specs, router, start_tasks,
+};
 use service::cli::{Cli, Command};
 use service::config::Config;
 use shared_domain::Uuid;
@@ -26,6 +28,7 @@ use shared_infrastructure::persistence::MIGRATOR;
 use sqlx::postgres::PgConnectOptions;
 use sqlx::{AssertSqlSafe, ConnectOptions as _, Connection as _, PgConnection};
 use test_support::probe::StubProbe;
+use tokio::sync::watch;
 use tower::ServiceExt as _;
 
 use crate::tokens::{SigningKey, USER_ID, instant_after};
@@ -50,6 +53,9 @@ const ROLE_TOKEN: &str = "{role}";
 
 /// How long a session revocation recorded by a step is kept before it may be pruned.
 const REVOCATION_RETENTION: Duration = Duration::from_hours(24);
+
+/// How long the per-replica tasks of a scenario get to stop before the scenario database is dropped.
+const TASK_STOP_GRACE: Duration = Duration::from_secs(5);
 
 /// What the last request answered.
 #[derive(Debug, Clone)]
@@ -83,6 +89,7 @@ pub(crate) struct AppWorld {
     if_match: Option<String>,
     cursor: Option<String>,
     role: Option<String>,
+    tasks: Option<(watch::Sender<bool>, TaskSupervisor)>,
 }
 
 /// The configuration as the binary reads it from the environment.
@@ -501,13 +508,32 @@ impl AppWorld {
             let mut connection = options.clone().database(&name).connect().await.unwrap();
             MIGRATOR.run(&mut connection).await.expect("migrate");
             connection.close().await.expect("close");
+            self.prepare(&name).await;
             self.database = Some(name);
         }
         url_with_database(self.database.as_deref().expect("created above"))
     }
 
+    /// Prepares a new scenario database as `service serve` prepares its own: IAM's own
+    /// specifications are registered and the supervisor of the per-replica tasks runs.
+    async fn prepare(&mut self, database: &str) {
+        let mut config = base_config();
+        config.database.url = url_with_database(database);
+        let adapters = Adapters::connect(&config).await.expect("production wiring");
+        register_iam_specs(&adapters)
+            .await
+            .expect("register IAM's own specifications");
+        let (stop, stopping) = watch::channel(false);
+        let supervisor = start_tasks(&adapters, TaskMode::Test, stopping);
+        self.tasks = Some((stop, supervisor));
+    }
+
     /// Drops the scenario database and the scenario key file, if the scenario made them.
     pub(crate) async fn drop_database(&mut self) {
+        if let Some((stop, supervisor)) = self.tasks.take() {
+            stop.send_replace(true);
+            supervisor.stop(TASK_STOP_GRACE).await;
+        }
         if let Some(name) = self.database.take() {
             drop_named(&mut admin().await, &name).await;
         }

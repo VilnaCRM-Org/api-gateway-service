@@ -37,6 +37,7 @@ crates/service/Cargo.toml
 crates/service/src/bootstrap.rs
 crates/service/src/bootstrap/
 crates/service/src/cli.rs
+crates/service/src/command/serve.rs
 crates/service/src/cli/
 crates/service/src/config.rs
 crates/service/src/config/
@@ -48,6 +49,7 @@ crates/service/src/graphql/handler/
 crates/service/tests/integration/bootstrap.rs
 crates/service/tests/integration/migrate.rs
 crates/service/tests/integration/serve.rs
+crates/service/tests/integration/register_iam_specs.rs
 crates/service/tests/integration/panic.rs
 crates/service/tests/integration/main.rs
 crates/service/src/openapi.rs

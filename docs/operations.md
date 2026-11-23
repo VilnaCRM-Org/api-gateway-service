@@ -123,7 +123,9 @@ When more than one probe fails, `detail` lists all messages in registration orde
 
 ### Starting without dependencies
 
-`serve` does not wait for dependencies. With the database and the SQS endpoint down, `/ping` answers at once and `/api/health` answers with the problem document within about 2 seconds, naming both. This is the intended behaviour, not a failure of the service.
+`serve` does not wait for the SQS endpoint. With it down, `/ping` answers at once and `/api/health` answers with the problem document within about 2 seconds, naming the message broker. This is the intended behaviour, not a failure of the service.
+
+The database is different: before it listens, `serve` registers IAM's own specifications in the catalogue (the operations of its OpenAPI document tagged `iam` and its own GraphQL operations, as actor `system:startup`) under a PostgreSQL advisory lock, so of several instances that start together one registers and the others find the active version. A second start of the same build changes nothing; a new IAM contract is activated beside the older active versions, so no grant is orphaned. With the database unreachable or not migrated, `serve` writes one `serve failed` entry and exits with status 1 without listening: restart it after `make migrate` or when the database is back. After the start the pool is lazy again, and a later database outage is reported by `/api/health` as before.
 
 ## Logs and request ids
 
