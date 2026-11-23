@@ -133,6 +133,41 @@ impl IfMatchHeader {
     }
 }
 
+/// The headers of an update: the `If-Match` version and the optional `Idempotency-Key`.
+///
+/// A missing or unmatched `If-Match` is rejected first, as [`IfMatchHeader`] does; an invalid key
+/// next, as [`IdempotencyKeyHeader`] does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionedWriteHeaders {
+    /// The version the client read.
+    pub expected: EntityVersion,
+    /// The idempotency key, when the request carries one.
+    pub key: Option<IdempotencyKey>,
+}
+
+impl<S> FromRequestParts<S> for VersionedWriteHeaders
+where
+    S: Send + Sync,
+{
+    type Rejection = Problem;
+
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
+        std::future::ready(Self::extract(parts))
+    }
+}
+
+impl VersionedWriteHeaders {
+    /// Reads both headers of the request.
+    fn extract(parts: &Parts) -> Result<Self, Problem> {
+        let IfMatchHeader(expected) = IfMatchHeader::extract(parts)?;
+        let IdempotencyKeyHeader(key) = IdempotencyKeyHeader::extract(parts)?;
+        Ok(Self { expected, key })
+    }
+}
+
 /// The version of a strong `ETag`, none for any other text.
 fn entity_version(value: &HeaderValue) -> Option<EntityVersion> {
     let digits = value.to_str().ok()?.strip_prefix('"')?.strip_suffix('"')?;

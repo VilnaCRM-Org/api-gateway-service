@@ -1,3 +1,57 @@
+"Input of the assignment mutation."
+input AssignUserRoleInput {
+  "When the assignment expires, as an RFC 3339 UTC time in the future; null for an assignment that never expires."
+  expiresAt: String
+  "Makes the assignment safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+  "The role to assign; it must exist."
+  roleId: String!
+  "Where the role applies."
+  scope: AssignmentScopeInput!
+  "Who receives the role."
+  subject: AssignmentSubjectInput!
+}
+
+"Where an assignment applies."
+type AssignmentScope {
+  "`global` or `project`."
+  kind: String!
+  "The project of a project scope; null for a global scope."
+  projectId: String
+}
+
+"Where an assignment applies, as an input."
+input AssignmentScopeInput {
+  "`global` for every project, `project` for the project named by `projectId`."
+  kind: String!
+  "The project of a project scope; null for a global scope."
+  projectId: String
+}
+
+"Who holds an assignment."
+type AssignmentSubject {
+  "The UUID of a user, or the service name of a service principal."
+  id: String!
+  "`user` or `service`."
+  kind: String!
+}
+
+"Who receives a role, as an input."
+input AssignmentSubjectInput {
+  "The UUID of a user, or the service name of a service principal such as `billing-worker`."
+  id: String!
+  "`user` for a user of the User service, `service` for a service principal."
+  kind: String!
+}
+
+"The two flags of a coordinate."
+type CoordinateFlags {
+  "Whether every use of the coordinate is audited (`@iamAuditAlways`)."
+  auditAlways: Boolean!
+  "Whether a wildcard grant never covers the coordinate (`@iamSensitive`)."
+  sensitive: Boolean!
+}
+
 "Input of the create mutation."
 input CreateExampleApiResourceInput {
   "Description."
@@ -26,12 +80,74 @@ type ExampleApiResource {
   name: String!
 }
 
+"A coordinate that would lose a flag."
+type FlagDowngrade {
+  "Its flags in the new version."
+  after: CoordinateFlags!
+  "Its flags in the active versions."
+  before: CoordinateFlags!
+  "The coordinate, `Type.field`."
+  coordinate: String!
+}
+
+"A GraphQL specification version with its diff."
+type GraphqlSpec {
+  "When the version became active."
+  activatedAt: String
+  "The SHA-256 hash of the SDL, in lower-case hexadecimal."
+  contentHash: String!
+  "The number of field coordinates of the schema."
+  coordinateCount: Int!
+  "When the version was loaded, as an RFC 3339 UTC time."
+  createdAt: String!
+  "What the version changes against the active versions of its service."
+  diff: GraphqlSpecDiff!
+  "The identifier of the version."
+  id: ID!
+  "When the version was retired."
+  retiredAt: String
+  "The service the schema belongs to."
+  service: String!
+  "`draft`, `active` or `retired`."
+  status: String!
+  "Who loaded the version, as `user:<id>`, `service:<name>` or `system:<component>`."
+  uploadedBy: String!
+}
+
+"What a version changes against the union of the active versions of its service."
+type GraphqlSpecDiff {
+  "The coordinates the version adds."
+  added: [String!]!
+  "The coordinates that would lose a flag."
+  flagDowngrades: [FlagDowngrade!]!
+  "The coordinates the version removes."
+  removed: [String!]!
+  "The removed coordinates that roles grant by their exact key."
+  removedGrants: [RemovedGrant!]!
+  "The wildcard grants that would cover added coordinates."
+  wildcardGains: [WildcardGain!]!
+}
+
+"Input of the mutation that loads a GraphQL specification."
+input LoadGraphqlSpecInput {
+  "The SDL document, at most 5 MiB."
+  sdl: String!
+  "The name of the service the schema belongs to: lower-case letters, digits and hyphens, at most 63 characters; `iam` is reserved for IAM's own schema."
+  service: String!
+}
+
 "Mutation root."
 type Mutation {
+  "Assigns an existing role to a user or a service principal at global or project scope, takes the next policy version and records `iam.user_role.assigned`, and `iam.privileged_role.assigned` as well when the role grants a wildcard or a reserved key."
+  assignUserRole(input: AssignUserRoleInput!): UserRole!
   "Creates an example API resource."
   createExampleApiResource(input: CreateExampleApiResourceInput!): ExampleApiResource!
   "Creates a custom role without grants at version 1 and records `iam.role.created`."
   createRole(input: CreateRoleInput!): Role!
+  "Loads the SDL of a service as a draft version and returns it with its diff against the active versions; an SDL that the service already holds returns its version and changes nothing. The service `iam` is reserved."
+  loadGraphqlSpec(input: LoadGraphqlSpecInput!): GraphqlSpec!
+  "Renames a custom role or changes its description when `expectedVersion` is the current version, increases the version and records `iam.role.updated`."
+  updateRole(input: UpdateRoleInput!): Role!
 }
 
 "Query root."
@@ -58,6 +174,25 @@ type Query {
     "Page size, from 1 to 100."
     first: Int = 30
   ): RolePage!
+  "Retrieves a role assignment by id; null when it is unknown or revoked."
+  userRole(id: ID!): UserRole
+  "Retrieves one page of role assignments that are not revoked, in a stable order, filtered by subject, role, project and expiry."
+  userRoles(
+    "The nextCursor of the previous page."
+    after: String,
+    "Only assignments that match the filter."
+    filter: UserRoleFilter,
+    "Page size, from 1 to 100."
+    first: Int = 30
+  ): UserRolePage!
+}
+
+"A removed coordinate that roles grant by its exact key."
+type RemovedGrant {
+  "The removed coordinate, `Type.field`."
+  coordinate: String!
+  "The identifiers of the roles that grant it."
+  roles: [String!]!
 }
 
 "Input of the token-resolution query."
@@ -118,6 +253,74 @@ type TokenResolution {
   subjectId: String
   "`user` or `service`."
   subjectKind: String
+}
+
+"Input of the role-update mutation."
+input UpdateRoleInput {
+  "The new description, at most 1,000 characters; null removes it and an absent field keeps it."
+  description: String
+  "The version the caller read; required, and the update is refused when it is not the current one."
+  expectedVersion: Int
+  "The role to change."
+  id: ID!
+  "Makes the update safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+  "The new name of the role: 1 to 100 characters, unique without regard to case among the roles that are not deleted."
+  name: String
+}
+
+"A role assignment."
+type UserRole {
+  "When the assignment was created, as an RFC 3339 UTC time."
+  createdAt: String!
+  "When the assignment expires, as an RFC 3339 UTC time; null when it never expires."
+  expiresAt: String
+  "The identifier of the assignment."
+  id: ID!
+  "The assigned role."
+  roleId: ID!
+  "The name of the assigned role."
+  roleName: String
+  "Where the role applies."
+  scope: AssignmentScope!
+  "Who holds the role."
+  subject: AssignmentSubject!
+  "When the assignment was last changed, as an RFC 3339 UTC time."
+  updatedAt: String!
+  "The version of the assignment."
+  version: Int!
+}
+
+"Filters of the assignment list."
+input UserRoleFilter {
+  "Whether assignments that have expired are listed as well; default `false`."
+  includeExpired: Boolean
+  "Only assignments scoped to this project."
+  projectId: String
+  "Only assignments of this role."
+  roleId: String
+  "Only assignments of the subject with this id: a user UUID or a service name."
+  subjectId: String
+  "Only assignments of subjects of this kind: `user` or `service`."
+  subjectKind: String
+}
+
+"One page of role assignments."
+type UserRolePage {
+  "The assignments of the page."
+  items: [UserRole!]!
+  "The `after` value of the next page; null on the last page."
+  nextCursor: String
+}
+
+"A wildcard grant that would cover added coordinates."
+type WildcardGain {
+  "The added coordinates the pattern would cover."
+  coordinates: [String!]!
+  "The wildcard pattern, such as `gql:billing:Query.*`."
+  pattern: String!
+  "The identifier of the role that holds the grant."
+  role: String!
 }
 
 "Directs the executor to include this field or fragment only when the `if` argument is true."

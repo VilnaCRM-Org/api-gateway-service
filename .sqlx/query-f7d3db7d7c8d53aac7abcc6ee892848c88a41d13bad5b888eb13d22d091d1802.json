@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE iam_policy_epoch SET catalog_epoch = catalog_epoch + 1, updated_at = $1\n        WHERE id = 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f7d3db7d7c8d53aac7abcc6ee892848c88a41d13bad5b888eb13d22d091d1802"
+}

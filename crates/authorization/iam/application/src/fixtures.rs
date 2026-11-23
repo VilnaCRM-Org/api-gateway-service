@@ -15,6 +15,7 @@ use test_support::id::SequenceUuidGenerator;
 use test_support::request_digester::FakeRequestDigester;
 
 use crate::command::create_role::CreateRoleCommand;
+use crate::command::update_role::UpdateRoleCommand;
 use crate::error::IamError;
 use crate::http::IamState;
 use crate::principal::Principal;
@@ -68,11 +69,16 @@ pub(crate) fn role(version: i64) -> RoleParts {
 
 /// The receipt of the creation of the role at version 1.
 pub(crate) fn receipt(policy_version: Option<i64>) -> ChangeReceipt {
+    receipt_at(1, policy_version)
+}
+
+/// The receipt of a change that left the role at `version`.
+pub(crate) fn receipt_at(version: i64, policy_version: Option<i64>) -> ChangeReceipt {
     ChangeReceipt::new(
         ChangeId::parse(CHANGE).unwrap(),
         ActorRef::User(Uuid::parse(USER).unwrap()),
         AuditTarget::new("role", ROLE).unwrap(),
-        EntityVersion::INITIAL,
+        EntityVersion::new(version).unwrap(),
         policy_version.map(|value| PolicyVersion::new(value).unwrap()),
     )
 }
@@ -89,6 +95,8 @@ pub(crate) struct Answers {
     pub page: Result<RolePage, Refusal>,
     /// The answer of the create command.
     pub command: Result<(), Refusal>,
+    /// The answer of the update command.
+    pub update: Result<(), Refusal>,
 }
 
 impl Default for Answers {
@@ -102,6 +110,7 @@ impl Default for Answers {
                 next_after: None,
             }),
             command: Ok(()),
+            update: Ok(()),
         }
     }
 }
@@ -111,6 +120,8 @@ impl Default for Answers {
 pub(crate) struct Asked {
     /// The create commands that were dispatched.
     pub commands: Arc<Mutex<Vec<CreateRoleCommand>>>,
+    /// The update commands that were dispatched.
+    pub updates: Arc<Mutex<Vec<UpdateRoleCommand>>>,
     /// The role queries.
     pub roles: Arc<Mutex<Vec<RoleId>>>,
     /// The role-list queries.
@@ -136,7 +147,7 @@ pub(crate) fn scenario(
     answers: Answers,
 ) -> (IamState, Arc<FakeCommandBus>, Arc<FakeQueryBus>, Asked) {
     let asked = Asked::default();
-    let commands = Arc::new(command_bus(answers.command, &asked));
+    let commands = Arc::new(command_bus(answers.command, answers.update, &asked));
     let queries = Arc::new(query_bus(answers, &asked));
     let command_bus: Arc<dyn CommandBus> = Arc::<FakeCommandBus>::clone(&commands);
     let query_bus: Arc<dyn QueryBus> = Arc::<FakeQueryBus>::clone(&queries);
@@ -150,11 +161,20 @@ pub(crate) fn scenario(
     (state, commands, queries, asked)
 }
 
-fn command_bus(answer: Result<(), Refusal>, asked: &Asked) -> FakeCommandBus {
+fn command_bus(
+    answer: Result<(), Refusal>,
+    update: Result<(), Refusal>,
+    asked: &Asked,
+) -> FakeCommandBus {
     let log = Arc::clone(&asked.commands);
+    let updates = Arc::clone(&asked.updates);
     FakeCommandBus::handling(move |command: CreateRoleCommand| {
         record(&log, command);
         answer.map_err(|refusal| refusal())
+    })
+    .and_handling(move |command: UpdateRoleCommand| {
+        record(&updates, command);
+        update.map_err(|refusal| refusal())
     })
 }
 

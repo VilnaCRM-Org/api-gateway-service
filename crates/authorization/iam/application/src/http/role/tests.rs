@@ -11,8 +11,11 @@ use shared_domain::Uuid;
 use test_support::bus::{FakeCommandBus, FakeQueryBus};
 use tower::ServiceExt as _;
 
+use crate::command::update_role::DescriptionUpdate;
 use crate::error::IamError;
-use crate::fixtures::{Answers, Asked, ROLE, USER, principal, receipt, recorded, role, scenario};
+use crate::fixtures::{
+    Answers, Asked, ROLE, USER, principal, receipt, receipt_at, recorded, role, scenario,
+};
 use crate::http::{IamState, router};
 use crate::query::list_roles::{ListRolesQuery, RolePage};
 
@@ -543,4 +546,308 @@ async fn a_failing_list_is_an_internal_problem() {
     let (status, _headers, _problem) = answer(app, get("/roles")).await;
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+fn patch(headers: &[(&str, &str)], body: &str) -> Request<Body> {
+    request(
+        Method::PATCH,
+        &format!("/roles/{ROLE}"),
+        headers,
+        Some(body),
+    )
+}
+
+fn updated(version: i64) -> Answers {
+    Answers {
+        receipt: receipt_at(version, None),
+        role: Ok(Some(role(version))),
+        ..Answers::default()
+    }
+}
+
+#[tokio::test]
+async fn an_updated_role_is_200_with_its_new_etag_and_data() {
+    let (app, commands, queries, asked) = app(updated(2));
+
+    let (status, headers, body) = answer(
+        app,
+        patch(&[("If-Match", "\"1\"")], r#"{"name":"Accounting"}"#),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(header(&headers, ETAG.as_str()), Some("\"2\"".to_owned()));
+    assert_eq!(header(&headers, LOCATION.as_str()), None);
+    assert_eq!(header(&headers, "iam-policy-version"), None);
+    assert_eq!(body, role_json(2));
+    assert_eq!(commands.dispatched(), ["UpdateRoleCommand"]);
+    assert_eq!(queries.asked(), ["GetChangeReceiptQuery", "GetRoleQuery"]);
+    let sent = recorded(&asked.updates);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].actor, ActorRef::User(Uuid::parse(USER).unwrap()));
+    assert_eq!(sent[0].role_id, RoleId::parse(ROLE).unwrap());
+    assert_eq!(sent[0].expected.value(), 1);
+    assert_eq!(sent[0].name.as_deref(), Some("Accounting"));
+    assert_eq!(sent[0].description, DescriptionUpdate::Keep);
+    assert_eq!(sent[0].idempotency, None);
+}
+
+#[rstest]
+#[case::absent(r#"{"name":"a"}"#, DescriptionUpdate::Keep)]
+#[case::null(r#"{"description":null}"#, DescriptionUpdate::Remove)]
+#[case::text(r#"{"description":"Refunds"}"#, DescriptionUpdate::Set("Refunds".to_owned()))]
+#[tokio::test]
+async fn the_description_member_keeps_removes_or_replaces_the_description(
+    #[case] body: &str,
+    #[case] expected: DescriptionUpdate,
+) {
+    let (app, _commands, _queries, asked) = app(updated(2));
+
+    let (status, _headers, _body) = answer(app, patch(&[("If-Match", "\"1\"")], body)).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(recorded(&asked.updates)[0].description, expected);
+}
+
+#[tokio::test]
+async fn the_policy_version_of_the_receipt_is_a_response_header_of_an_update() {
+    let answers = Answers {
+        receipt: receipt_at(2, Some(9)),
+        ..updated(2)
+    };
+    let (app, _commands, _queries, _asked) = app(answers);
+
+    let (_status, headers, _body) =
+        answer(app, patch(&[("If-Match", "\"1\"")], r#"{"name":"a"}"#)).await;
+
+    assert_eq!(header(&headers, "iam-policy-version"), Some("9".to_owned()));
+}
+
+#[tokio::test]
+async fn an_update_without_if_match_is_the_428_problem_and_dispatches_nothing() {
+    let (app, commands, _queries, _asked) = app(updated(2));
+
+    let (status, _headers, problem) = answer(app, patch(&[], r#"{"name":"a"}"#)).await;
+
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED);
+    assert_eq!(problem["status"], json!(428));
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}
+
+#[rstest]
+#[case::weak("W/\"1\"")]
+#[case::unquoted("1")]
+#[case::zero("\"0\"")]
+#[tokio::test]
+async fn an_if_match_that_is_no_etag_is_the_412_problem_and_dispatches_nothing(
+    #[case] value: &str,
+) {
+    let (app, commands, _queries, _asked) = app(updated(2));
+
+    let (status, _headers, problem) =
+        answer(app, patch(&[("If-Match", value)], r#"{"name":"a"}"#)).await;
+
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+    assert_eq!(problem["status"], json!(412));
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}
+
+#[rstest]
+#[case::stale(|| IamError::PreconditionFailed, StatusCode::PRECONDITION_FAILED)]
+#[case::system_role(|| IamError::Forbidden, StatusCode::FORBIDDEN)]
+#[case::unknown(|| IamError::NotFound, StatusCode::NOT_FOUND)]
+#[case::duplicate_name(|| IamError::Conflict, StatusCode::CONFLICT)]
+#[tokio::test]
+async fn a_refused_update_is_its_problem_and_reads_nothing_back(
+    #[case] refusal: crate::fixtures::Refusal,
+    #[case] expected: StatusCode,
+) {
+    let answers = Answers {
+        update: Err(refusal),
+        ..updated(2)
+    };
+    let (app, _commands, queries, _asked) = app(answers);
+
+    let (status, _headers, problem) =
+        answer(app, patch(&[("If-Match", "\"1\"")], r#"{"name":"a"}"#)).await;
+
+    assert_eq!(status, expected);
+    assert_eq!(problem["status"], json!(expected.as_u16()));
+    assert_eq!(queries.asked(), Vec::<&str>::new());
+}
+
+#[rstest]
+#[case::empty_name(r#"{"name":""}"#, "name")]
+#[case::long_name(&format!(r#"{{"name":"{}"}}"#, "n".repeat(101)), "name")]
+#[case::long_description(&format!(r#"{{"description":"{}"}}"#, "d".repeat(1001)), "description")]
+#[tokio::test]
+async fn an_invalid_field_of_an_update_is_a_422_problem_naming_it(
+    #[case] body: &str,
+    #[case] property: &str,
+) {
+    let (app, commands, _queries, _asked) = app(updated(2));
+
+    let (status, _headers, problem) = answer(app, patch(&[("If-Match", "\"1\"")], body)).await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(problem["violations"][0]["propertyPath"], json!(property));
+    assert_eq!(problem["violations"][0]["code"], json!("length"));
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}
+
+#[rstest]
+#[case::unknown_member(r#"{"kind":"system"}"#)]
+#[case::not_json("name=a")]
+#[tokio::test]
+async fn a_malformed_update_body_is_a_client_error_and_dispatches_nothing(#[case] body: &str) {
+    let (app, commands, _queries, _asked) = app(updated(2));
+
+    let (status, _headers, _problem) = answer(app, patch(&[("If-Match", "\"1\"")], body)).await;
+
+    assert!(status.is_client_error(), "{status}");
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}
+
+#[tokio::test]
+async fn an_update_with_an_id_that_is_no_uuid_is_a_422_problem() {
+    let (app, commands, _queries, _asked) = app(updated(2));
+    let request = request(
+        Method::PATCH,
+        "/roles/nope",
+        &[("If-Match", "\"1\"")],
+        Some(r#"{"name":"a"}"#),
+    );
+
+    let (status, _headers, problem) = answer(app, request).await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(problem["violations"][0]["propertyPath"], json!("id"));
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}
+
+#[tokio::test]
+async fn an_update_without_a_token_is_the_401_problem_and_dispatches_nothing() {
+    let (app, commands, _queries, _asked) = app(updated(2));
+
+    let (status, _headers, _body) = answer(
+        app,
+        anonymous(patch(&[("If-Match", "\"1\"")], r#"{"name":"a"}"#)),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}
+
+#[tokio::test]
+async fn an_updated_role_that_is_gone_when_read_back_is_the_404_problem() {
+    let answers = Answers {
+        role: Ok(None),
+        ..updated(2)
+    };
+    let (app, _commands, _queries, _asked) = app(answers);
+
+    let (status, _headers, _problem) =
+        answer(app, patch(&[("If-Match", "\"1\"")], r#"{"name":"a"}"#)).await;
+
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_new_idempotency_key_updates_the_role_and_travels_with_the_command() {
+    let (app, _commands, queries, asked) = app(updated(2));
+
+    let (status, _headers, _body) = answer(
+        app,
+        patch(
+            &[("If-Match", "\"1\""), ("Idempotency-Key", "rename-billing")],
+            r#"{"name":"Accounting"}"#,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        queries.asked(),
+        [
+            "GetIdempotentReplayQuery",
+            "GetChangeReceiptQuery",
+            "GetRoleQuery"
+        ]
+    );
+    let replays = recorded(&asked.replays);
+    assert_eq!(replays[0].request.key.as_str(), "rename-billing");
+    assert_eq!(
+        recorded(&asked.updates)[0].idempotency,
+        Some(replays[0].request.clone())
+    );
+}
+
+#[tokio::test]
+async fn the_same_key_for_another_version_or_body_has_another_digest() {
+    let key = ("Idempotency-Key", "rename-billing");
+    let requests = [
+        patch(&[("If-Match", "\"1\""), key], r#"{"name":"a"}"#),
+        patch(&[("If-Match", "\"2\""), key], r#"{"name":"a"}"#),
+        patch(&[("If-Match", "\"1\""), key], r#"{"name":"b"}"#),
+    ];
+    let mut digests = Vec::new();
+    for request in requests {
+        let (app, _commands, _queries, asked) = app(updated(2));
+        answer(app, request).await;
+        digests.push(recorded(&asked.replays)[0].request.request_digest);
+    }
+
+    assert_ne!(digests[0], digests[1]);
+    assert_ne!(digests[0], digests[2]);
+    assert_ne!(digests[1], digests[2]);
+}
+
+#[tokio::test]
+async fn a_replayed_update_returns_the_original_receipt_and_dispatches_nothing() {
+    let answers = Answers {
+        replay: Ok(Some(receipt_at(2, Some(7)))),
+        ..updated(2)
+    };
+    let (app, commands, queries, _asked) = app(answers);
+
+    let (status, headers, body) = answer(
+        app,
+        patch(
+            &[("If-Match", "\"1\""), ("Idempotency-Key", "rename-billing")],
+            r#"{"name":"Accounting"}"#,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(header(&headers, ETAG.as_str()), Some("\"2\"".to_owned()));
+    assert_eq!(header(&headers, "iam-policy-version"), Some("7".to_owned()));
+    assert_eq!(body, role_json(2));
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+    assert_eq!(
+        queries.asked(),
+        ["GetIdempotentReplayQuery", "GetRoleQuery"]
+    );
+}
+
+#[tokio::test]
+async fn a_key_reused_for_another_update_is_a_422_problem_and_dispatches_nothing() {
+    let answers = Answers {
+        replay: Err(|| IamError::IdempotencyMismatch),
+        ..updated(2)
+    };
+    let (app, commands, _queries, _asked) = app(answers);
+
+    let (status, _headers, _problem) = answer(
+        app,
+        patch(
+            &[("If-Match", "\"1\""), ("Idempotency-Key", "rename-billing")],
+            r#"{"name":"a"}"#,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
 }

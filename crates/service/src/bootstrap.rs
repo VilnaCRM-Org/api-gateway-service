@@ -12,14 +12,25 @@ use health_check_application::HealthCheckState;
 use health_check_application::HealthService;
 use health_check_domain::HealthProbe;
 use health_check_infrastructure::{CacheProbe, PostgresProbe, SqsProbe};
+use iam_application::graphql::AsyncGraphQlSchemaParser;
 use iam_application::http::IamState;
-use iam_application::{CreateRoleCommandHandler, GetRoleQueryHandler, ListRolesQueryHandler};
+use iam_application::{
+    AssignUserRoleCommandHandler, GetUserRoleQueryHandler, ListUserRolesQueryHandler,
+};
+use iam_application::{
+    CreateRoleCommandHandler, GetRoleQueryHandler, ListRolesQueryHandler, UpdateRoleCommandHandler,
+};
+use iam_application::{
+    FindGraphQlSpecQueryHandler, GetGraphQlSpecDiffQueryHandler, LoadGraphQlSpecCommandHandler,
+};
 use iam_application::{
     GetChangeReceiptQueryHandler, GetIdempotentReplayQueryHandler, GetPolicyEpochQueryHandler,
 };
 use iam_application::{ResolveSubjectTokenQueryHandler, ResolveTokenQueryHandler};
+use iam_domain::GraphQlPermissionRepository;
 use iam_domain::GraphQlSpecRepository;
 use iam_domain::OpenApiSpecRepository;
+use iam_domain::RestPermissionRepository;
 use iam_domain::RoleRepository;
 use iam_domain::UserRoleRepository;
 use iam_domain::{
@@ -28,8 +39,10 @@ use iam_domain::{
 };
 use iam_domain::{IamUnitOfWork, RequestDigester};
 use iam_domain::{RevocationRepository, RevocationView, TokenMemo, TokenRepository};
+use iam_infrastructure::PgGraphQlPermissionRepository;
 use iam_infrastructure::PgGraphQlSpecRepository;
 use iam_infrastructure::PgOpenApiSpecRepository;
+use iam_infrastructure::PgRestPermissionRepository;
 use iam_infrastructure::PgRoleRepository;
 use iam_infrastructure::PgUserRoleRepository;
 use iam_infrastructure::{
@@ -87,6 +100,10 @@ pub struct Adapters {
     pub graphql_specs: Arc<dyn GraphQlSpecRepository>,
     /// Reader of the stored `OpenAPI` specification versions.
     pub openapi_specs: Arc<dyn OpenApiSpecRepository>,
+    /// Reader of the GraphQL permission catalogue.
+    pub graphql_permissions: Arc<dyn GraphQlPermissionRepository>,
+    /// Reader of the REST permission catalogue.
+    pub rest_permissions: Arc<dyn RestPermissionRepository>,
     /// Offline verifier of User service access tokens.
     pub access_tokens: Arc<dyn AccessTokenVerifier>,
     /// Resolver of bearer credentials: memoized verification and the revocation check.
@@ -149,6 +166,8 @@ impl Adapters {
             user_roles: Arc::new(PgUserRoleRepository::new(pool.clone())),
             graphql_specs: Arc::new(PgGraphQlSpecRepository::new(pool.clone())),
             openapi_specs: Arc::new(PgOpenApiSpecRepository::new(pool.clone())),
+            graphql_permissions: Arc::new(PgGraphQlPermissionRepository::new(pool.clone())),
+            rest_permissions: Arc::new(PgRestPermissionRepository::new(pool.clone())),
             tokens: token_repository(config, Arc::clone(&access_tokens), &clock, &pool),
             revocations: Arc::new(PgRevocationRepository::new(pool.clone())),
             access_tokens,
@@ -239,19 +258,23 @@ fn register_queries(
     Ok(bus.register(get)?.register(list)?.register(policy_epoch)?)
 }
 
-/// Registers the command handler of the IAM roles.
+/// Registers the command handlers of the IAM roles.
 fn register_role_commands(
     bus: InMemoryCommandBus,
-    unit_of_work: &Arc<dyn IamUnitOfWork>,
-    clock: &Arc<dyn Clock>,
-    uuid_generator: &Arc<dyn UuidGenerator>,
+    adapters: &Adapters,
 ) -> Result<InMemoryCommandBus, BootstrapError> {
     let create = CreateRoleCommandHandler::new(
-        Arc::clone(unit_of_work),
-        Arc::clone(clock),
-        Arc::clone(uuid_generator),
+        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
     );
-    Ok(bus.register(create)?)
+    let update = UpdateRoleCommandHandler::new(
+        Arc::clone(&adapters.roles),
+        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    Ok(bus.register(create)?.register(update)?)
 }
 
 /// Registers the query handlers of the IAM roles.
@@ -296,6 +319,66 @@ fn register_token_queries(
     Ok(bus.register(resolve)?.register(subject)?)
 }
 
+/// Registers the command handler that loads GraphQL specifications.
+fn register_graphql_spec_commands(
+    bus: InMemoryCommandBus,
+    adapters: &Adapters,
+) -> Result<InMemoryCommandBus, BootstrapError> {
+    let load = LoadGraphQlSpecCommandHandler::new(
+        Arc::clone(&adapters.unit_of_work),
+        Arc::new(AsyncGraphQlSchemaParser),
+        Arc::clone(&adapters.request_digester),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    Ok(bus.register(load)?)
+}
+
+/// Registers the query handlers that read GraphQL specifications: the lookup of an identical upload
+/// and the version with its diff.
+fn register_graphql_spec_queries(
+    bus: InMemoryQueryBus,
+    adapters: &Adapters,
+) -> Result<InMemoryQueryBus, BootstrapError> {
+    let find = FindGraphQlSpecQueryHandler::new(Arc::clone(&adapters.graphql_specs));
+    let diff = GetGraphQlSpecDiffQueryHandler::new(
+        Arc::clone(&adapters.graphql_specs),
+        Arc::clone(&adapters.roles),
+    );
+    Ok(bus.register(find)?.register(diff)?)
+}
+
+/// Registers the command handler of the IAM role assignments.
+fn register_user_role_commands(
+    bus: InMemoryCommandBus,
+    adapters: &Adapters,
+) -> Result<InMemoryCommandBus, BootstrapError> {
+    let assign = AssignUserRoleCommandHandler::new(
+        Arc::clone(&adapters.roles),
+        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    Ok(bus.register(assign)?)
+}
+
+/// Registers the query handlers of the IAM role assignments.
+fn register_user_role_queries(
+    bus: InMemoryQueryBus,
+    adapters: &Adapters,
+) -> Result<InMemoryQueryBus, BootstrapError> {
+    let get = GetUserRoleQueryHandler::new(
+        Arc::clone(&adapters.user_roles),
+        Arc::clone(&adapters.roles),
+    );
+    let list = ListUserRolesQueryHandler::new(
+        Arc::clone(&adapters.user_roles),
+        Arc::clone(&adapters.roles),
+        Arc::clone(&adapters.clock),
+    );
+    Ok(bus.register(get)?.register(list)?)
+}
+
 /// The command bus and the query bus of the service.
 type Buses = (Arc<dyn CommandBus>, Arc<dyn QueryBus>);
 
@@ -308,13 +391,16 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
         Arc::clone(&adapters.uuid_generator),
     );
     let commands = register_commands(InMemoryCommandBus::new(), create)?;
-    let (unit_of_work, ids) = (&adapters.unit_of_work, &adapters.uuid_generator);
-    let commands = register_role_commands(commands, unit_of_work, &adapters.clock, ids)?;
+    let commands = register_role_commands(commands, adapters)?;
+    let commands = register_graphql_spec_commands(commands, adapters)?;
+    let commands = register_user_role_commands(commands, adapters)?;
     let queries = InMemoryQueryBus::new();
     let queries = register_queries(queries, &adapters.repository, &adapters.policy_epochs)?;
     let (receipts, keys) = (&adapters.change_receipts, &adapters.idempotency_records);
     let queries = register_change_queries(queries, receipts, keys, &adapters.clock)?;
     let queries = register_role_queries(queries, &adapters.roles)?;
+    let queries = register_graphql_spec_queries(queries, adapters)?;
+    let queries = register_user_role_queries(queries, adapters)?;
     let queries = register_token_queries(queries, &adapters.tokens, config)?;
     Ok((Arc::new(commands), Arc::new(queries)))
 }

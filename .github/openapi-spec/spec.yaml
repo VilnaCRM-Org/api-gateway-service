@@ -162,6 +162,97 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /api/graphql-specs:
+    post:
+      tags:
+      - iam
+      summary: Loads a GraphQL specification.
+      description: Stores the SDL of a service as a draft version and records `iam.graphql_spec.loaded`. The response lists what the version adds and removes against the active versions of the service. An SDL that an earlier version of the service already holds returns that version with 200 and changes nothing. The service `iam` is reserved for IAM's own schema.
+      operationId: api_graphql_specs_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoadGraphQlSpecRequest'
+        required: true
+      responses:
+        '200':
+          description: The service already holds this SDL; its version is returned.
+          headers:
+            location:
+              schema:
+                type: string
+              description: Path of the version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphQlSpec'
+        '201':
+          description: The draft version was created.
+          headers:
+            location:
+              schema:
+                type: string
+              description: Path of the version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphQlSpec'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The service `iam` is reserved for IAM's own schema.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: The same SDL was uploaded concurrently.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: 'Validation failed: an invalid service name or an SDL that does not parse.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
   /api/health:
     get:
       tags:
@@ -411,6 +502,125 @@ paths:
                 $ref: '#/components/schemas/Problem'
       security:
       - bearerAuth: []
+    patch:
+      tags:
+      - iam
+      summary: Updates a role.
+      description: Renames a custom role or changes its description when `If-Match` holds the current `ETag`, increases the version and records `iam.role.updated`. A system role cannot be changed. A repeated `Idempotency-Key` with the same request within 24 hours returns the original result.
+      operationId: api_roles_id_patch
+      parameters:
+      - name: id
+        in: path
+        description: Role identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: If-Match
+        in: header
+        description: The `ETag` of the version the update changes, such as `"3"`.
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        description: Makes the update safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRoleRequest'
+        required: true
+      responses:
+        '200':
+          description: The role was updated.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The new version of the role in double quotes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Role'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: A system role cannot be changed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Role not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: A role with this name exists.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '412':
+          description: '`If-Match` is not the current version.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed, or the idempotency key was used for another request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '428':
+          description: '`If-Match` is missing.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
   /api/token-resolutions:
     post:
       tags:
@@ -480,8 +690,335 @@ paths:
                 $ref: '#/components/schemas/Problem'
       security:
       - bearerAuth: []
+  /api/user-roles:
+    get:
+      tags:
+      - iam
+      summary: Retrieves the collection of role assignments.
+      description: 'Returns one page of assignments that are not revoked in a stable order, with the `nextCursor` of the next page. Filters: `subjectKind`, `subjectId`, `roleId`, `projectId` and `includeExpired`, which lists assignments that have expired as well.'
+      operationId: api_user_roles_get
+      parameters:
+      - name: limit
+        in: query
+        description: The largest number of assignments of the page.
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 30
+          maximum: 100
+          minimum: 1
+      - name: after
+        in: query
+        description: The `nextCursor` of the previous page; absent for the first page.
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: subjectKind
+        in: query
+        description: 'Only assignments of subjects of this kind: `user` or `service`.'
+        required: false
+        schema:
+          type: string
+        example: service
+      - name: subjectId
+        in: query
+        description: 'Only assignments of the subject with this id: a user UUID or a service name.'
+        required: false
+        schema:
+          type: string
+          maxLength: 255
+      - name: roleId
+        in: query
+        description: Only assignments of this role.
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: projectId
+        in: query
+        description: Only assignments scoped to this project.
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: includeExpired
+        in: query
+        description: Whether assignments that have expired are listed as well; default `false`.
+        required: false
+        schema:
+          type: boolean
+      responses:
+        '200':
+          description: One page of assignments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserRolePage'
+        '400':
+          description: Invalid query parameter.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+    post:
+      tags:
+      - iam
+      summary: Assigns a role to a subject.
+      description: Assigns an existing role to a user or a service principal at global or project scope, takes the next policy version and records `iam.user_role.assigned`, and `iam.privileged_role.assigned` as well when the role grants a wildcard or a reserved `iam:` key. The triple of subject, role and scope is unique among assignments that are not revoked. A repeated `Idempotency-Key` with the same body within 24 hours returns the original result.
+      operationId: api_user_roles_post
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        description: Makes the assignment safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssignUserRoleRequest'
+        required: true
+      responses:
+        '201':
+          description: The role was assigned.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the assignment in double quotes.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+            location:
+              schema:
+                type: string
+              description: Path of the created assignment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserRole'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: The role is already assigned to the subject at this scope.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: 'Validation failed: an invalid value, an unknown role (`roleId`), an expiry in the past (`expiresAt`), or the idempotency key was used for another request.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+  /api/user-roles/{id}:
+    get:
+      tags:
+      - iam
+      summary: Retrieves a role assignment.
+      description: Returns the assignment with the identifier, with the name of its role and its `ETag`. An assignment that has expired is still returned; a revoked one is not.
+      operationId: api_user_roles_id_get
+      parameters:
+      - name: id
+        in: path
+        description: Assignment identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The assignment.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the assignment in double quotes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserRole'
+        '400':
+          description: Invalid identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Assignment not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
 components:
   schemas:
+    AssignUserRoleRequest:
+      type: object
+      description: Body of the assignment operation.
+      required:
+      - subject
+      - roleId
+      - scope
+      properties:
+        expiresAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: |-
+            When the assignment expires, as an RFC 3339 UTC time in the future; absent for an
+            assignment that never expires.
+          example: 2027-01-15T08:00:00Z
+        roleId:
+          type: string
+          format: uuid
+          description: The role to assign; it must exist.
+        scope:
+          $ref: '#/components/schemas/AssignmentScope'
+          description: Where the role applies.
+        subject:
+          $ref: '#/components/schemas/AssignmentSubject'
+          description: Who receives the role.
+      additionalProperties: false
+    AssignmentScope:
+      type: object
+      description: 'Where an assignment applies: every project, or one project.'
+      required:
+      - kind
+      properties:
+        kind:
+          type: string
+          description: '`global` for every project, `project` for the project named by `projectId`.'
+          example: global
+        projectId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The project of a project scope; absent for a global scope.
+      additionalProperties: false
+    AssignmentSubject:
+      type: object
+      description: 'Who holds an assignment: a user or a service principal.'
+      required:
+      - kind
+      - id
+      properties:
+        id:
+          type: string
+          description: The UUID of a user, or the service name of a service principal such as `billing-worker`.
+          example: 0190f2a8-7b3c-7d4e-8f10-1234567890ab
+          maxLength: 255
+          minLength: 1
+        kind:
+          type: string
+          description: '`user` for a user of the User service, `service` for a service principal.'
+          example: user
+      additionalProperties: false
+    CoordinateFlags:
+      type: object
+      description: The two flags of a coordinate.
+      required:
+      - sensitive
+      - auditAlways
+      properties:
+        auditAlways:
+          type: boolean
+          description: Whether every use of the coordinate is audited (`@iamAuditAlways`).
+        sensitive:
+          type: boolean
+          description: Whether a wildcard grant never covers the coordinate (`@iamSensitive`).
     CreateExampleApiResourceRequest:
       type: object
       description: Body of the create operation.
@@ -563,6 +1100,140 @@ components:
           maxLength: 255
           minLength: 1
           pattern: ^[^\u0000]*$
+    FlagDowngrade:
+      type: object
+      description: A coordinate that would lose a flag.
+      required:
+      - coordinate
+      - before
+      - after
+      properties:
+        after:
+          $ref: '#/components/schemas/CoordinateFlags'
+          description: Its flags in the new version.
+        before:
+          $ref: '#/components/schemas/CoordinateFlags'
+          description: Its flags in the active versions.
+        coordinate:
+          type: string
+          description: The coordinate, `Type.field`.
+          example: Mutation.pay
+    GraphQlSpec:
+      type: object
+      description: A GraphQL specification version with its diff.
+      required:
+      - id
+      - service
+      - contentHash
+      - status
+      - uploadedBy
+      - createdAt
+      - coordinateCount
+      - diff
+      properties:
+        activatedAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the version became active.
+        contentHash:
+          type: string
+          description: The SHA-256 hash of the SDL, in lower-case hexadecimal.
+          maxLength: 64
+          minLength: 64
+        coordinateCount:
+          type: integer
+          format: int64
+          description: The number of field coordinates of the schema.
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+          description: When the version was loaded, as an RFC 3339 UTC time.
+          example: 2026-11-23T10:15:30.123456Z
+        diff:
+          $ref: '#/components/schemas/GraphQlSpecDiff'
+          description: What the version changes against the active versions of its service.
+        id:
+          type: string
+          format: uuid
+          description: The identifier of the version.
+        retiredAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the version was retired.
+        service:
+          type: string
+          description: The service the schema belongs to.
+          example: billing
+        status:
+          type: string
+          description: '`draft`, `active` or `retired`.'
+          example: draft
+        uploadedBy:
+          type: string
+          description: Who loaded the version, as `user:<id>`, `service:<name>` or `system:<component>`.
+    GraphQlSpecDiff:
+      type: object
+      description: What a version changes against the union of the active versions of its service.
+      required:
+      - added
+      - removed
+      - removedGrants
+      - wildcardGains
+      - flagDowngrades
+      properties:
+        added:
+          type: array
+          items:
+            type: string
+          description: The coordinates the version adds, in order.
+        flagDowngrades:
+          type: array
+          items:
+            $ref: '#/components/schemas/FlagDowngrade'
+          description: The coordinates that would lose a flag.
+        removed:
+          type: array
+          items:
+            type: string
+          description: The coordinates the version removes, in order.
+        removedGrants:
+          type: array
+          items:
+            $ref: '#/components/schemas/RemovedGrant'
+          description: The removed coordinates that roles grant by their exact key.
+        wildcardGains:
+          type: array
+          items:
+            $ref: '#/components/schemas/WildcardGain'
+          description: The wildcard grants that would cover added coordinates.
+    LoadGraphQlSpecRequest:
+      type: object
+      description: Body of the operation that loads a GraphQL specification.
+      required:
+      - service
+      - sdl
+      properties:
+        sdl:
+          type: string
+          description: |-
+            The SDL document, at most 5 MiB. The directives `@iamSensitive` and `@iamAuditAlways` mark
+            fields that are never covered by a wildcard grant or that are always audited.
+          example: 'type Query { invoices: [String!]! }'
+          minLength: 1
+        service:
+          type: string
+          description: |-
+            The name of the service the schema belongs to: lower-case letters, digits and hyphens, at
+            most 63 characters. The name `iam` is reserved for IAM's own schema.
+          example: billing
+          maxLength: 63
+          minLength: 1
+      additionalProperties: false
     Problem:
       type: object
       description: An RFC 9457 problem document.
@@ -598,6 +1269,22 @@ components:
           items:
             $ref: '#/components/schemas/Violation'
           description: Violated constraints, for `/problems/validation-failed`.
+    RemovedGrant:
+      type: object
+      description: A removed coordinate that roles grant by its exact key.
+      required:
+      - coordinate
+      - roles
+      properties:
+        coordinate:
+          type: string
+          description: The removed coordinate, `Type.field`.
+          example: Mutation.pay
+        roles:
+          type: array
+          items:
+            type: string
+          description: The identifiers of the roles that grant it, in order.
     Role:
       type: object
       description: A role.
@@ -732,6 +1419,99 @@ components:
           example: eyJhbGciOiJSUzI1NiJ9.e30.c2lnbmF0dXJl
           maxLength: 8192
       additionalProperties: false
+    UpdateRoleRequest:
+      type: object
+      description: 'Body of the role-update operation: every member is optional, and an absent one stays as it is.'
+      properties:
+        description:
+          type:
+          - string
+          - 'null'
+          description: The new description; `null` removes it and an absent member keeps it.
+          example: Manages invoices and refunds.
+          maxLength: 1000
+        name:
+          type:
+          - string
+          - 'null'
+          description: |-
+            The new name of the role: unique without regard to case among the roles that are not
+            deleted, without control characters.
+          example: Billing administrator
+          maxLength: 100
+          minLength: 1
+      additionalProperties: false
+    UserRole:
+      type: object
+      description: A role assignment.
+      required:
+      - id
+      - subject
+      - roleId
+      - scope
+      - version
+      - createdAt
+      - updatedAt
+      properties:
+        createdAt:
+          type: string
+          format: date-time
+          description: When the assignment was created, as an RFC 3339 UTC time.
+          example: 2026-11-23T10:15:30.123456Z
+        expiresAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: When the assignment expires, as an RFC 3339 UTC time; absent when it never expires.
+          example: 2027-01-15T08:00:00.000000Z
+        id:
+          type: string
+          format: uuid
+          description: The identifier of the assignment.
+        roleId:
+          type: string
+          format: uuid
+          description: The assigned role.
+        roleName:
+          type:
+          - string
+          - 'null'
+          description: The name of the assigned role.
+          maxLength: 100
+        scope:
+          $ref: '#/components/schemas/AssignmentScope'
+          description: Where the role applies.
+        subject:
+          $ref: '#/components/schemas/AssignmentSubject'
+          description: Who holds the role.
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the assignment was last changed, as an RFC 3339 UTC time.
+          example: 2026-11-23T10:15:30.123456Z
+        version:
+          type: integer
+          format: int64
+          description: The version of the assignment; its `ETag` is this number in double quotes.
+          minimum: 1
+    UserRolePage:
+      type: object
+      description: One page of role assignments.
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserRole'
+          description: The assignments of the page.
+        nextCursor:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The `after` value of the next page; absent on the last page.
     Violation:
       type: object
       description: One violated constraint.
@@ -749,6 +1529,26 @@ components:
         propertyPath:
           type: string
           description: Wire name of the invalid field.
+    WildcardGain:
+      type: object
+      description: A wildcard grant that would cover added coordinates.
+      required:
+      - role
+      - pattern
+      - coordinates
+      properties:
+        coordinates:
+          type: array
+          items:
+            type: string
+          description: The added coordinates the pattern would cover, in order.
+        pattern:
+          type: string
+          description: The wildcard pattern, such as `gql:billing:Query.*`.
+          example: gql:billing:Query.*
+        role:
+          type: string
+          description: The identifier of the role that holds the grant.
   securitySchemes:
     bearerAuth:
       type: http

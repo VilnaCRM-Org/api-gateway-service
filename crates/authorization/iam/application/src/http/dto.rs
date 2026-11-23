@@ -3,12 +3,13 @@
 //! Each one keeps its schema constraints and its validator attributes on the same field so that
 //! both stay equal.
 
-use iam_domain::{RoleId, RoleKind, RoleParts, TokenRejection};
-use serde::{Deserialize, Serialize};
+use iam_domain::{EntityVersion, RoleId, RoleKind, RoleParts, TokenRejection};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use shared_application::http::Violation;
 use utoipa::{IntoParams, ToSchema};
-use validator::Validate;
+use validator::{Validate, ValidationError};
 
+use crate::command::update_role::DescriptionUpdate;
 use crate::error::IamError;
 use crate::principal::Principal;
 use crate::query::list_roles::{ListRolesQuery, RolePage};
@@ -153,6 +154,83 @@ impl CreateRoleRequest {
     #[must_use]
     pub fn canonical_form(&self) -> String {
         format!("role.create:{:?}", (&self.name, &self.description))
+    }
+}
+
+/// What the body of an update says about the description: nothing keeps it, `null` removes it
+/// and a string replaces it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DescriptionPatch(pub DescriptionUpdate);
+
+impl<'de> Deserialize<'de> for DescriptionPatch {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = Option::<String>::deserialize(deserializer)?;
+        Ok(Self(
+            text.map_or(DescriptionUpdate::Remove, DescriptionUpdate::Set),
+        ))
+    }
+}
+
+impl Serialize for DescriptionPatch {
+    /// The text of a replacement and `null` otherwise, which is how the validator reports it.
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match &self.0 {
+            DescriptionUpdate::Set(text) => serializer.serialize_str(text),
+            DescriptionUpdate::Keep | DescriptionUpdate::Remove => serializer.serialize_none(),
+        }
+    }
+}
+
+/// The longest description, in characters.
+const DESCRIPTION_MAX_CHARS: usize = 1000;
+
+/// The description of an update keeps the limit of the creation.
+fn validate_description_patch(patch: &DescriptionPatch) -> Result<(), ValidationError> {
+    match &patch.0 {
+        DescriptionUpdate::Set(text) if text.chars().count() > DESCRIPTION_MAX_CHARS => {
+            Err(ValidationError::new("length")
+                .with_message("This value must contain 1000 characters or fewer.".into()))
+        }
+        DescriptionUpdate::Keep | DescriptionUpdate::Remove | DescriptionUpdate::Set(_) => Ok(()),
+    }
+}
+
+/// Body of the role-update operation: every member is optional, and an absent one stays as it is.
+#[derive(Debug, Clone, Default, Deserialize, ToSchema, Validate)]
+#[serde(deny_unknown_fields)]
+#[schema(as = UpdateRoleRequest)]
+pub struct UpdateRoleRequest {
+    /// The new name of the role: unique without regard to case among the roles that are not
+    /// deleted, without control characters.
+    #[serde(default)]
+    #[schema(min_length = 1, max_length = 100, example = "Billing administrator")]
+    #[validate(length(
+        min = 1,
+        max = 100,
+        message = "This value must contain between 1 and 100 characters."
+    ))]
+    pub name: Option<String>,
+    /// The new description; `null` removes it and an absent member keeps it.
+    #[serde(default)]
+    #[schema(value_type = Option<String>, max_length = 1000, example = "Manages invoices and refunds.")]
+    #[validate(custom(function = validate_description_patch))]
+    pub description: DescriptionPatch,
+}
+
+impl UpdateRoleRequest {
+    /// The text that the idempotency digest covers: the operation, the role, the version and the
+    /// fields.
+    #[must_use]
+    pub fn canonical_form(&self, id: RoleId, expected: EntityVersion) -> String {
+        format!(
+            "role.update:{:?}",
+            (
+                id.to_string(),
+                expected.value(),
+                &self.name,
+                &self.description.0
+            )
+        )
     }
 }
 

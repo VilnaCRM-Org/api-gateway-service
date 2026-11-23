@@ -15,10 +15,13 @@ use iam_domain::{
 use shared_application::http::{ApiPath, Problem, ValidatedJson, ValidatedQuery, Violation};
 
 use super::IamState;
-use super::dto::{CreateRoleRequest, ListRolesParams, RolePageResponse, RoleResponse};
-use super::extract::{CallerPrincipal, IdempotencyKeyHeader};
-use super::response::{WriteHeaders, created_headers, etag};
+use super::dto::{
+    CreateRoleRequest, ListRolesParams, RolePageResponse, RoleResponse, UpdateRoleRequest,
+};
+use super::extract::{CallerPrincipal, IdempotencyKeyHeader, VersionedWriteHeaders};
+use super::response::{WriteHeaders, change_headers, created_headers, etag};
 use crate::command::create_role::CreateRoleCommand;
+use crate::command::update_role::UpdateRoleCommand;
 use crate::error::IamError;
 use crate::principal::Principal;
 use crate::query::get_change_receipt::GetChangeReceiptQuery;
@@ -107,6 +110,54 @@ async fn read_created(
     receipt: ChangeReceipt,
 ) -> Result<(RoleParts, ChangeReceipt), Problem> {
     let id = RoleId::parse(receipt.target().target_id()).map_err(IamError::from)?;
+    let role = find_role(state, id).await?.ok_or(IamError::NotFound)?;
+    Ok((role, receipt))
+}
+
+/// Updates the role `id` as `caller` when it still holds the version `expected`, or replays the
+/// update that `key` already committed; REST and GraphQL share it.
+///
+/// The receipt of the change and the role are read back, because a command returns no data.
+///
+/// # Errors
+///
+/// The problem of a refused request: 403 for a system role, 404 for an unknown role, 409 for a
+/// duplicate name or a concurrent change, 412 for a stale version, 422 for invalid fields or a
+/// key reused for another request, 500 for a storage failure.
+pub(crate) async fn update_role(
+    state: &IamState,
+    caller: &Principal,
+    id: RoleId,
+    headers: VersionedWriteHeaders,
+    request: UpdateRoleRequest,
+) -> Result<(RoleParts, ChangeReceipt), Problem> {
+    let VersionedWriteHeaders { expected, key } = headers;
+    let actor = caller.actor();
+    let idempotency = key.map(|key| IdempotencyRequest {
+        key,
+        request_digest: state
+            .request_digester
+            .digest(&request.canonical_form(id, expected)),
+    });
+    let receipt = if let Some(replayed) = find_replay(state, &actor, idempotency.as_ref()).await? {
+        replayed
+    } else {
+        let change_id = ChangeId::from_uuid(state.uuid_generator.generate());
+        let command = UpdateRoleCommand {
+            change_id,
+            role_id: id,
+            actor,
+            expected,
+            name: request.name,
+            description: request.description.0,
+            idempotency,
+        };
+        state.command_bus.dispatch(command).await?;
+        state
+            .query_bus
+            .ask(GetChangeReceiptQuery { change_id })
+            .await?
+    };
     let role = find_role(state, id).await?.ok_or(IamError::NotFound)?;
     Ok((role, receipt))
 }
@@ -229,6 +280,64 @@ pub async fn get_one(
         .ok_or(IamError::NotFound)?;
     let tag = etag(role.version);
     Ok(([(ETAG, tag)], Json(RoleResponse::from(role))))
+}
+
+/// Updates a role.
+///
+/// # Errors
+///
+/// A problem document: 401 without a valid token, 403 for a system role, 404 for an unknown role,
+/// 409 for a duplicate name, 412 for a stale `If-Match`, 422 for invalid fields or a reused
+/// idempotency key, 428 without `If-Match`, 500 when the storage fails.
+#[utoipa::path(
+    patch,
+    path = "/roles/{id}",
+    operation_id = "api_roles_id_patch",
+    tag = "iam",
+    summary = "Updates a role.",
+    description = "Renames a custom role or changes its description when `If-Match` holds the current `ETag`, increases the version and records `iam.role.updated`. A system role cannot be changed. A repeated `Idempotency-Key` with the same request within 24 hours returns the original result.",
+    security(("bearerAuth" = [])),
+    params(
+        ("id" = String, Path, format = Uuid, description = "Role identifier"),
+        ("If-Match" = String, Header, description = "The `ETag` of the version the update changes, such as `\"3\"`."),
+        ("Idempotency-Key" = Option<String>, Header, description = "Makes the update safe to repeat for 24 hours; 1 to 255 visible ASCII characters.")
+    ),
+    request_body(content = UpdateRoleRequest, content_type = "application/json"),
+    responses(
+        (
+            status = 200,
+            description = "The role was updated.",
+            body = RoleResponse,
+            headers(("etag" = String, description = "The new version of the role in double quotes."))
+        ),
+        (status = 400, description = "Invalid input.", body = Problem, content_type = "application/problem+json"),
+        (
+            status = 401,
+            description = "The caller presented no valid bearer token.",
+            body = Problem,
+            content_type = "application/problem+json",
+            headers(("www-authenticate" = String, description = "The `Bearer` challenge."))
+        ),
+        (status = 403, description = "A system role cannot be changed.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "Role not found.", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "A role with this name exists.", body = Problem, content_type = "application/problem+json"),
+        (status = 412, description = "`If-Match` is not the current version.", body = Problem, content_type = "application/problem+json"),
+        (status = 413, description = "Request body too large.", body = Problem, content_type = "application/problem+json"),
+        (status = 415, description = "Unsupported media type.", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Validation failed, or the idempotency key was used for another request.", body = Problem, content_type = "application/problem+json"),
+        (status = 428, description = "`If-Match` is missing.", body = Problem, content_type = "application/problem+json"),
+        (status = "default", description = "Problem response.", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+pub async fn update(
+    State(state): State<IamState>,
+    CallerPrincipal(caller): CallerPrincipal,
+    ApiPath(id): ApiPath<String>,
+    headers: VersionedWriteHeaders,
+    ValidatedJson(body): ValidatedJson<UpdateRoleRequest>,
+) -> Result<(WriteHeaders, Json<RoleResponse>), Problem> {
+    let (role, receipt) = update_role(&state, &caller, parse_role_id(&id)?, headers, body).await?;
+    Ok((change_headers(&receipt), Json(RoleResponse::from(role))))
 }
 
 /// Lists roles.

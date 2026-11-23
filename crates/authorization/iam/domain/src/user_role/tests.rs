@@ -10,7 +10,9 @@ use super::event::{
 use super::{
     PrivilegedGrants, RevocationCause, UserRole, UserRoleAssignment, UserRoleParts, UserRoleStamp,
 };
-use crate::error::{InvalidIamValue, InvalidUserRole, UserRoleChangeRefused, VersionConflict};
+use crate::error::{
+    InvalidEventEnvelope, InvalidIamValue, InvalidUserRole, UserRoleChangeRefused, VersionConflict,
+};
 use crate::value_object::actor_ref::ActorRef;
 use crate::value_object::assignment_expiry::AssignmentExpiry;
 use crate::value_object::assignment_scope::AssignmentScope;
@@ -210,7 +212,7 @@ fn a_restored_assignment_records_nothing() {
     let mut user_role = UserRole::restore(parts(3));
 
     assert_eq!(user_role.parts(), &parts(3));
-    assert!(user_role.pull_domain_events().is_empty());
+    assert_eq!(user_role.pull_domain_events().len(), 0);
 }
 
 #[rstest]
@@ -263,7 +265,7 @@ fn an_expiry_change_that_is_not_in_the_future_is_refused_at_expires_at(#[case] s
     };
     assert_eq!(invalid.property_path(), "expiresAt");
     assert_eq!(user_role.parts(), &parts(3));
-    assert!(user_role.pull_domain_events().is_empty());
+    assert_eq!(user_role.pull_domain_events().len(), 0);
 }
 
 #[rstest]
@@ -291,7 +293,7 @@ fn a_change_without_the_current_version_is_refused(
         Err(refusal)
     );
     assert_eq!(user_role.parts(), &parts(3));
-    assert!(user_role.pull_domain_events().is_empty());
+    assert_eq!(user_role.pull_domain_events().len(), 0);
 }
 
 #[test]
@@ -312,7 +314,7 @@ fn a_revoked_assignment_refuses_every_change() {
         Err(UserRoleChangeRefused::Revoked)
     );
     assert_eq!(user_role.parts(), &revoked(4));
-    assert!(user_role.pull_domain_events().is_empty());
+    assert_eq!(user_role.pull_domain_events().len(), 0);
 }
 
 #[test]
@@ -431,4 +433,97 @@ fn a_revoked_assignment_frees_its_triple() {
 fn an_assignment_with_another_triple_is_no_duplicate(#[case] other: UserRoleParts) {
     assert!(!other.duplicates(&parts(1)));
     assert!(!parts(1).duplicates(&other));
+}
+
+/// An event that is not one of the four events of an assignment.
+#[derive(Debug)]
+struct Foreign;
+
+impl DomainEvent for Foreign {
+    fn event_id(&self) -> Uuid {
+        Uuid::parse(EVENT).unwrap()
+    }
+
+    fn aggregate_id(&self) -> Uuid {
+        Uuid::parse(USER_ROLE).unwrap()
+    }
+
+    fn occurred_at(&self) -> SystemTime {
+        at(1)
+    }
+
+    fn event_name(&self) -> &'static str {
+        "iam.foreign.happened"
+    }
+}
+
+#[test]
+fn a_privileged_assignment_is_pulled_as_two_envelopes_in_recording_order() {
+    let mut user_role = UserRole::assign(
+        UserRoleAssignment {
+            privileged: Some(PrivilegedGrants {
+                event_id: Uuid::parse(ALERT).unwrap(),
+                keys: vec![PermissionGrant::parse("iam:audit:read").unwrap()],
+            }),
+            ..assignment(None)
+        },
+        stamp(100),
+    )
+    .unwrap();
+
+    let envelopes = user_role.pull_envelopes().unwrap();
+
+    let types: Vec<&str> = envelopes
+        .iter()
+        .map(|envelope| envelope.parts().event_type.as_str())
+        .collect();
+    assert_eq!(
+        types,
+        ["iam.user_role.assigned", "iam.privileged_role.assigned"]
+    );
+    assert_eq!(envelopes[0].parts().id, Uuid::parse(EVENT).unwrap());
+    assert_eq!(envelopes[1].parts().id, Uuid::parse(ALERT).unwrap());
+    assert_eq!(
+        envelopes[0].parts().aggregate_id,
+        UserRoleId::parse(USER_ROLE).unwrap().as_uuid()
+    );
+    assert_eq!(
+        envelopes[0].parts().entity_version,
+        Some(EntityVersion::INITIAL)
+    );
+    assert_eq!(user_role.pull_envelopes().unwrap().len(), 0);
+}
+
+#[test]
+fn the_events_of_a_change_and_a_revocation_are_pulled_as_envelopes() {
+    let mut user_role = UserRole::restore(parts(1));
+    user_role
+        .change_expiry(Some(version(1)), Some(at(900)), stamp(100))
+        .unwrap();
+    user_role
+        .revoke(
+            Some(version(2)),
+            role_name(),
+            RevocationCause::Revoked,
+            stamp(200),
+        )
+        .unwrap();
+
+    let envelopes = user_role.pull_envelopes().unwrap();
+
+    let types: Vec<&str> = envelopes
+        .iter()
+        .map(|envelope| envelope.parts().event_type.as_str())
+        .collect();
+    assert_eq!(types, ["iam.user_role.updated", "iam.user_role.revoked"]);
+}
+
+#[test]
+fn an_event_that_an_assignment_does_not_record_is_refused() {
+    let mut user_role = UserRole::restore(parts(1));
+    user_role.recorded_events().record(Foreign);
+
+    let refused = user_role.pull_envelopes();
+
+    assert_eq!(refused, Err(InvalidEventEnvelope::EventType));
 }

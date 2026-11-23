@@ -12,13 +12,14 @@ use iam_domain::{
     ActorRef, ContentHash, HttpMethod, InvalidIamValue, InvalidSpec, OpenApiSpec,
     OpenApiSpecContent, OpenApiSpecPageQuery, OpenApiSpecParts, OpenApiSpecRepository,
     OpenApiSpecStatement, PathTemplate, PermissionFlags, RepositoryError, RestOperation,
-    RestOperationSet, ServiceName, SpecId, SpecStatus,
+    RestOperationSet, ServiceName, SpecId, SpecStatus, SpecTransition,
 };
 use shared_domain::Uuid;
 use sqlx::PgConnection;
 use sqlx::types::Uuid as SqlUuid;
 use sqlx::types::time::OffsetDateTime;
 
+use crate::persistence::catalogue::expect_rows;
 use crate::persistence::role::translate;
 
 /// Reads the stored `OpenAPI` specification versions.
@@ -212,6 +213,34 @@ pub async fn save_within(
     insert_spec(connection, &row).await?;
     insert_labelled_operations(connection, &row).await?;
     insert_unlabelled_operations(connection, &row).await
+}
+
+/// Moves the version of `transition` to its new status inside the caller's transaction.
+///
+/// The move happens only when the version still holds the status the change was decided against.
+/// Only the status and its times change: the content of a stored version never does.
+///
+/// # Errors
+///
+/// [`RepositoryError::Conflict`] when the version is missing or is no longer in the expected
+/// status, and [`RepositoryError::Unavailable`] when the storage fails.
+pub async fn transition_within(
+    connection: &mut PgConnection,
+    transition: &SpecTransition,
+) -> Result<(), RepositoryError> {
+    let written = sqlx::query!(
+        "UPDATE iam_openapi_specs SET status = $2, activated_at = $3, retired_at = $4
+        WHERE id = $1 AND status = $5",
+        transition.spec_id.as_uuid().as_uuid(),
+        transition.to.as_str(),
+        transition.activated_at.map(OffsetDateTime::from),
+        transition.retired_at.map(OffsetDateTime::from),
+        transition.from.as_str(),
+    )
+    .execute(&mut *connection)
+    .await
+    .map_err(translate)?;
+    expect_rows(written.rows_affected(), 1)
 }
 
 /// The column values of one version write; they never leave this module.

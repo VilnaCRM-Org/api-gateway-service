@@ -19,7 +19,7 @@ fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Command bus that answers with a closure and records the names of the dispatched commands.
 pub struct FakeCommandBus {
-    answer: Option<(TypeId, CommandAnswer)>,
+    answers: Vec<(TypeId, CommandAnswer)>,
     dispatched: Mutex<Vec<&'static str>>,
 }
 
@@ -37,23 +37,31 @@ impl FakeCommandBus {
         C: Command,
         F: Fn(C) -> Result<(), C::Error> + Send + Sync + 'static,
     {
+        Self::unregistered().and_handling(answer)
+    }
+
+    /// Also answers every `C` with the closure's result, besides the commands already handled.
+    #[must_use]
+    pub fn and_handling<C, F>(mut self, answer: F) -> Self
+    where
+        C: Command,
+        F: Fn(C) -> Result<(), C::Error> + Send + Sync + 'static,
+    {
         let erased: CommandAnswer = Box::new(move |message| {
             let command = message
                 .downcast::<C>()
                 .map_err(|_other| ErasedBusError::NotRegistered { message: C::NAME })?;
             answer(*command).map_err(|error| ErasedBusError::Handler(Box::new(error)))
         });
-        Self {
-            answer: Some((TypeId::of::<C>(), erased)),
-            dispatched: Mutex::new(Vec::new()),
-        }
+        self.answers.push((TypeId::of::<C>(), erased));
+        self
     }
 
     /// Has no handler: every dispatch answers `NotRegistered`.
     #[must_use]
     pub const fn unregistered() -> Self {
         Self {
-            answer: None,
+            answers: Vec::new(),
             dispatched: Mutex::new(Vec::new()),
         }
     }
@@ -74,9 +82,13 @@ impl CommandBus for FakeCommandBus {
         command: ErasedMessage,
     ) -> Result<(), ErasedBusError> {
         locked(&self.dispatched).push(name);
-        match &self.answer {
-            Some((handled, answer)) if *handled == command_type => answer(command),
-            _ => Err(ErasedBusError::NotRegistered { message: name }),
+        match self
+            .answers
+            .iter()
+            .find(|(handled, _answer)| *handled == command_type)
+        {
+            Some((_handled, answer)) => answer(command),
+            None => Err(ErasedBusError::NotRegistered { message: name }),
         }
     }
 }

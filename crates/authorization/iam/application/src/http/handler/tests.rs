@@ -23,7 +23,7 @@ use crate::principal::Principal;
 use crate::query::resolve_subject_token::{ResolveSubjectTokenQuery, TokenResolution};
 
 /// The extractor types a handler of this module may take.
-const ALLOWED_EXTRACTORS: [&str; 8] = [
+const ALLOWED_EXTRACTORS: [&str; 9] = [
     "State<IamState>",
     "CallerPrincipal",
     "ApiPath<",
@@ -32,6 +32,7 @@ const ALLOWED_EXTRACTORS: [&str; 8] = [
     "ApiJson<",
     "IdempotencyKeyHeader",
     "IfMatchHeader",
+    "VersionedWriteHeaders",
 ];
 
 /// Splits `text` at every `separator` that is not nested in brackets.
@@ -118,9 +119,14 @@ fn disallowed_parameters(source: &str) -> Vec<String> {
 fn handlers_use_only_the_problem_aware_extractors() {
     let sources = [
         (include_str!("../handler.rs"), vec!["resolve"]),
+        (include_str!("../graphql_spec.rs"), vec!["load"]),
         (
             include_str!("../role.rs"),
-            vec!["create", "get_one", "list"],
+            vec!["create", "get_one", "update", "list"],
+        ),
+        (
+            include_str!("../user_role.rs"),
+            vec!["assign", "get_one", "list"],
         ),
     ];
 
@@ -158,7 +164,8 @@ fn the_extractor_check_accepts_the_allowed_extractors() {
         ApiPath(id): ApiPath<uuid::Uuid>, ValidatedQuery(q): ValidatedQuery<Q>, \
         ValidatedJson(b): ValidatedJson<B>, ApiJson(j): ApiJson<J>, \
         CallerPrincipal(caller): CallerPrincipal, \
-        IdempotencyKeyHeader(key): IdempotencyKeyHeader, IfMatchHeader(version): IfMatchHeader) \
+        IdempotencyKeyHeader(key): IdempotencyKeyHeader, IfMatchHeader(version): IfMatchHeader, \
+        headers: VersionedWriteHeaders) \
         -> Result<(), Problem> {}";
 
     assert_eq!(disallowed_parameters(source), Vec::<String>::new());

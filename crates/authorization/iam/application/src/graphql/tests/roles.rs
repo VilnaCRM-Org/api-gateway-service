@@ -4,8 +4,11 @@ use rstest::rstest;
 use serde_json::json;
 use shared_domain::Uuid;
 
+use crate::command::update_role::DescriptionUpdate;
 use crate::error::IamError;
-use crate::fixtures::{Answers, ROLE, USER, principal, receipt, recorded, role, scenario};
+use crate::fixtures::{
+    Answers, ROLE, USER, principal, receipt, receipt_at, recorded, role, scenario,
+};
 use crate::graphql::{IamMutation, IamQuery, RoleObject, RolePageObject};
 use crate::http::IamState;
 use crate::http::dto::{RolePageResponse, RoleResponse};
@@ -16,6 +19,8 @@ type IamSchema = Schema<IamQuery, IamMutation, EmptySubscription>;
 
 const CREATE: &str = "mutation($input: CreateRoleInput!) { createRole(input: $input) \
     { id name description kind grantCount version createdAt updatedAt } }";
+const UPDATE: &str = "mutation($input: UpdateRoleInput!) { updateRole(input: $input) \
+    { id name description version } }";
 const ROLE_BY_ID: &str = "query($id: ID!) { role(id: $id) { id name version } }";
 const ROLES: &str = "query($first: Int, $after: String, $filter: RoleFilter) \
     { roles(first: $first, after: $after, filter: $filter) \
@@ -525,4 +530,247 @@ fn the_role_inputs_are_read_from_graphql_objects_and_reject_other_values() {
         );
     }
     assert!(crate::graphql::RoleFilterInput::parse(Some(wrong_kind)).is_err());
+}
+
+fn updated(version: i64) -> Answers {
+    Answers {
+        receipt: receipt_at(version, None),
+        role: Ok(Some(role(version))),
+        ..Answers::default()
+    }
+}
+
+fn renamed(expected: Option<i64>) -> serde_json::Value {
+    json!({ "input": { "id": ROLE, "expectedVersion": expected, "name": "Accounting" } })
+}
+
+#[tokio::test]
+async fn an_updated_role_returns_the_data_of_the_role_and_dispatches_the_command() {
+    let (state, commands, queries, asked) = scenario(updated(2));
+
+    let response = run(
+        &schema(Some(state)),
+        Caller::Valid,
+        UPDATE,
+        renamed(Some(1)),
+    )
+    .await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    assert_eq!(
+        response.data.into_json().unwrap(),
+        json!({ "updateRole": {
+            "id": ROLE,
+            "name": "Billing",
+            "description": "Invoices",
+            "version": 2,
+        } })
+    );
+    assert_eq!(commands.dispatched(), ["UpdateRoleCommand"]);
+    assert_eq!(queries.asked(), ["GetChangeReceiptQuery", "GetRoleQuery"]);
+    let sent = recorded(&asked.updates);
+    assert_eq!(sent[0].actor, ActorRef::User(Uuid::parse(USER).unwrap()));
+    assert_eq!(sent[0].role_id, RoleId::parse(ROLE).unwrap());
+    assert_eq!(sent[0].expected.value(), 1);
+    assert_eq!(sent[0].name.as_deref(), Some("Accounting"));
+    assert_eq!(sent[0].description, DescriptionUpdate::Keep);
+    assert_eq!(sent[0].idempotency, None);
+}
+
+#[rstest]
+#[case::absent(json!({}), DescriptionUpdate::Keep)]
+#[case::null(json!({ "description": null }), DescriptionUpdate::Remove)]
+#[case::text(json!({ "description": "Refunds" }), DescriptionUpdate::Set("Refunds".to_owned()))]
+#[tokio::test]
+async fn the_description_field_keeps_removes_or_replaces_the_description(
+    #[case] fields: serde_json::Value,
+    #[case] expected: DescriptionUpdate,
+) {
+    let (state, _commands, _queries, asked) = scenario(updated(2));
+    let mut input = json!({ "id": ROLE, "expectedVersion": 1 });
+    input
+        .as_object_mut()
+        .unwrap()
+        .extend(fields.as_object().unwrap().clone());
+
+    let response = run(
+        &schema(Some(state)),
+        Caller::Valid,
+        UPDATE,
+        json!({ "input": input }),
+    )
+    .await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    assert_eq!(recorded(&asked.updates)[0].description, expected);
+}
+
+#[rstest]
+#[case::absent(json!({ "input": { "id": ROLE, "name": "a" } }))]
+#[case::null(json!({ "input": { "id": ROLE, "expectedVersion": null, "name": "a" } }))]
+#[tokio::test]
+async fn an_update_without_a_version_is_precondition_required(
+    #[case] variables: serde_json::Value,
+) {
+    let (state, commands, _queries, _asked) = scenario(updated(2));
+
+    let response = run(&schema(Some(state)), Caller::Valid, UPDATE, variables).await;
+
+    assert_eq!(
+        error_code(&response),
+        Some(code_of("PRECONDITION_REQUIRED"))
+    );
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}
+
+#[tokio::test]
+async fn a_version_below_one_is_a_failed_precondition() {
+    let (state, commands, _queries, _asked) = scenario(updated(2));
+
+    let response = run(
+        &schema(Some(state)),
+        Caller::Valid,
+        UPDATE,
+        renamed(Some(0)),
+    )
+    .await;
+
+    assert_eq!(error_code(&response), Some(code_of("PRECONDITION_FAILED")));
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}
+
+#[rstest]
+#[case::stale(Answers { update: Err(|| IamError::PreconditionFailed), ..updated(2) }, "PRECONDITION_FAILED")]
+#[case::system_role(Answers { update: Err(|| IamError::Forbidden), ..updated(2) }, "FORBIDDEN")]
+#[case::unknown(Answers { update: Err(|| IamError::NotFound), ..updated(2) }, "NOT_FOUND")]
+#[case::duplicate(Answers { update: Err(|| IamError::Conflict), ..updated(2) }, "CONFLICT")]
+#[case::mismatch(
+    Answers { replay: Err(|| IamError::IdempotencyMismatch), ..updated(2) },
+    "VALIDATION_FAILED"
+)]
+#[case::storage(
+    Answers { update: Err(|| IamError::Storage("disk on fire".into())), ..updated(2) },
+    "INTERNAL_SERVER_ERROR"
+)]
+#[tokio::test]
+async fn a_refused_update_has_the_code_of_its_error(
+    #[case] answers: Answers,
+    #[case] expected: &str,
+) {
+    let (state, _commands, _queries, _asked) = scenario(answers);
+    let variables = json!({ "input": {
+        "id": ROLE, "expectedVersion": 1, "name": "a", "idempotencyKey": "k"
+    } });
+
+    let response = run(&schema(Some(state)), Caller::Valid, UPDATE, variables).await;
+
+    assert_eq!(error_code(&response), Some(code_of(expected)));
+}
+
+#[rstest]
+#[case::empty_name(json!({ "name": "" }), "\"name\"")]
+#[case::long_description(json!({ "description": "d".repeat(1001) }), "\"description\"")]
+#[case::bad_key(json!({ "idempotencyKey": "not valid" }), "\"idempotencyKey\"")]
+#[case::bad_id(json!({ "id": "nope" }), "\"id\"")]
+#[tokio::test]
+async fn an_invalid_update_field_is_a_validation_failure_with_its_violation(
+    #[case] fields: serde_json::Value,
+    #[case] property: &str,
+) {
+    let (state, commands, _queries, _asked) = scenario(updated(2));
+    let mut input = json!({ "id": ROLE, "expectedVersion": 1 });
+    input
+        .as_object_mut()
+        .unwrap()
+        .extend(fields.as_object().unwrap().clone());
+
+    let response = run(
+        &schema(Some(state)),
+        Caller::Valid,
+        UPDATE,
+        json!({ "input": input }),
+    )
+    .await;
+
+    assert_eq!(error_code(&response), Some(code_of("VALIDATION_FAILED")));
+    assert_eq!(violation_paths(&response), [property]);
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}
+
+#[tokio::test]
+async fn a_replayed_update_returns_the_role_without_a_command() {
+    let answers = Answers {
+        replay: Ok(Some(receipt(None))),
+        ..updated(2)
+    };
+    let (state, commands, _queries, _asked) = scenario(answers);
+    let variables = json!({ "input": {
+        "id": ROLE, "expectedVersion": 1, "name": "a", "idempotencyKey": "rename"
+    } });
+
+    let response = run(&schema(Some(state)), Caller::Valid, UPDATE, variables).await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}
+
+#[rstest]
+#[case::refused(Caller::Refused)]
+#[case::absent(Caller::Absent)]
+#[tokio::test]
+async fn an_update_needs_an_authenticated_caller(#[case] caller: Caller) {
+    let (state, commands, _queries, _asked) = scenario(updated(2));
+
+    let response = run(&schema(Some(state)), caller, UPDATE, renamed(Some(1))).await;
+
+    assert_eq!(error_code(&response), Some(code_of("UNAUTHENTICATED")));
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}
+
+#[tokio::test]
+async fn a_schema_without_the_iam_state_is_an_internal_error_for_an_update() {
+    let response = run(&schema(None), Caller::Valid, UPDATE, renamed(Some(1))).await;
+
+    assert_eq!(
+        error_code(&response),
+        Some(code_of("INTERNAL_SERVER_ERROR"))
+    );
+}
+
+#[test]
+fn the_update_input_is_read_from_a_graphql_object_and_rejects_other_values() {
+    use async_graphql::{InputType as _, Name};
+
+    let update = Value::Object(
+        [
+            (Name::new("id"), Value::String(ROLE.to_owned())),
+            (Name::new("expectedVersion"), Value::Number(3.into())),
+            (Name::new("name"), Value::String("Billing".to_owned())),
+        ]
+        .into_iter()
+        .collect(),
+    );
+
+    let parsed = crate::graphql::UpdateRoleInput::parse(Some(update)).unwrap();
+
+    assert_eq!(parsed.id.as_str(), ROLE);
+    assert_eq!(parsed.expected_version, Some(3));
+    assert_eq!(parsed.name.as_deref(), Some("Billing"));
+    assert!(parsed.description.is_undefined());
+    assert!(crate::graphql::UpdateRoleInput::parse(Some(Value::Boolean(true))).is_err());
+    for field in [
+        "id",
+        "expectedVersion",
+        "name",
+        "description",
+        "idempotencyKey",
+    ] {
+        let mut fields = vec![(Name::new("id"), Value::String(ROLE.to_owned()))];
+        fields.push((Name::new(field), Value::List(Vec::new())));
+        let wrong = Value::Object(fields.into_iter().collect());
+        assert!(
+            crate::graphql::UpdateRoleInput::parse(Some(wrong)).is_err(),
+            "{field}"
+        );
+    }
 }

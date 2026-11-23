@@ -11,9 +11,10 @@ use shared_domain::Uuid;
 use validator::Validate as _;
 
 use super::{
-    CreateRoleRequest, ListRolesParams, RolePageResponse, RoleResponse, TokenResolutionRequest,
-    TokenResolutionResponse,
+    CreateRoleRequest, DescriptionPatch, ListRolesParams, RolePageResponse, RoleResponse,
+    TokenResolutionRequest, TokenResolutionResponse, UpdateRoleRequest,
 };
+use crate::command::update_role::DescriptionUpdate;
 use crate::error::IamError;
 use crate::principal::Principal;
 use crate::query::list_roles::{ListRolesQuery, RolePage};
@@ -394,4 +395,119 @@ fn an_invalid_cursor_or_kind_is_a_violation_each(
         .map(|violation| (violation.property_path.as_str(), violation.code.as_str()))
         .collect();
     assert_eq!(found, expected);
+}
+
+fn update(name: Option<&str>, description: DescriptionUpdate) -> UpdateRoleRequest {
+    UpdateRoleRequest {
+        name: name.map(ToOwned::to_owned),
+        description: DescriptionPatch(description),
+    }
+}
+
+#[test]
+fn the_update_request_tells_an_absent_description_from_a_null_and_a_text() {
+    let absent: UpdateRoleRequest = serde_json::from_value(json!({ "name": "a" })).unwrap();
+    let null: UpdateRoleRequest = serde_json::from_value(json!({ "description": null })).unwrap();
+    let text: UpdateRoleRequest =
+        serde_json::from_value(json!({ "description": "Invoices" })).unwrap();
+
+    assert_eq!(absent.name.as_deref(), Some("a"));
+    assert_eq!(
+        absent.description,
+        DescriptionPatch(DescriptionUpdate::Keep)
+    );
+    assert_eq!(null.name, None);
+    assert_eq!(
+        null.description,
+        DescriptionPatch(DescriptionUpdate::Remove)
+    );
+    assert_eq!(
+        text.description,
+        DescriptionPatch(DescriptionUpdate::Set("Invoices".to_owned()))
+    );
+}
+
+#[test]
+fn the_update_request_accepts_an_empty_body_and_refuses_unknown_or_mistyped_members() {
+    let empty: UpdateRoleRequest = serde_json::from_value(json!({})).unwrap();
+
+    assert_eq!(empty.name, None);
+    assert_eq!(empty.description, DescriptionPatch::default());
+    assert!(serde_json::from_value::<UpdateRoleRequest>(json!({ "kind": "system" })).is_err());
+    assert!(serde_json::from_value::<UpdateRoleRequest>(json!({ "description": 3 })).is_err());
+}
+
+#[rstest]
+#[case::nothing(None, DescriptionUpdate::Keep, true)]
+#[case::one_character(Some("a".to_owned()), DescriptionUpdate::Keep, true)]
+#[case::longest_name(Some("a".repeat(100)), DescriptionUpdate::Keep, true)]
+#[case::empty_name(Some(String::new()), DescriptionUpdate::Keep, false)]
+#[case::name_above_the_limit(Some("a".repeat(101)), DescriptionUpdate::Keep, false)]
+#[case::removal(None, DescriptionUpdate::Remove, true)]
+#[case::longest_description(None, DescriptionUpdate::Set("d".repeat(1000)), true)]
+#[case::description_above_the_limit(None, DescriptionUpdate::Set("d".repeat(1001)), false)]
+#[case::empty_description(None, DescriptionUpdate::Set(String::new()), true)]
+fn the_update_keeps_the_lengths_of_the_creation(
+    #[case] name: Option<String>,
+    #[case] description: DescriptionUpdate,
+    #[case] valid: bool,
+) {
+    let request = update(name.as_deref(), description);
+
+    assert_eq!(request.validate().is_ok(), valid);
+}
+
+#[test]
+fn the_description_violation_names_its_property_and_keeps_its_message() {
+    let errors = update(None, DescriptionUpdate::Set("d".repeat(1001)))
+        .validate()
+        .unwrap_err();
+
+    let field = &errors.field_errors()["description"][0];
+    assert_eq!(field.code, "length");
+    assert_eq!(
+        field.message.as_deref(),
+        Some("This value must contain 1000 characters or fewer.")
+    );
+}
+
+#[test]
+fn the_update_canonical_form_tells_one_request_from_another() {
+    let id = RoleId::parse(ROLE).unwrap();
+    let other = RoleId::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ce").unwrap();
+    let one = EntityVersion::INITIAL;
+    let two = EntityVersion::new(2).unwrap();
+    let forms = [
+        update(Some("a"), DescriptionUpdate::Keep).canonical_form(id, one),
+        update(Some("a"), DescriptionUpdate::Keep).canonical_form(id, two),
+        update(Some("a"), DescriptionUpdate::Keep).canonical_form(other, one),
+        update(Some("b"), DescriptionUpdate::Keep).canonical_form(id, one),
+        update(Some("a"), DescriptionUpdate::Remove).canonical_form(id, one),
+        update(Some("a"), DescriptionUpdate::Set(String::new())).canonical_form(id, one),
+        update(None, DescriptionUpdate::Keep).canonical_form(id, one),
+    ];
+
+    for form in &forms {
+        assert!(form.starts_with("role.update:"), "{form}");
+        assert_eq!(forms.iter().filter(|other| *other == form).count(), 1);
+    }
+    assert_eq!(
+        update(Some("a"), DescriptionUpdate::Keep).canonical_form(id, one),
+        update(Some("a"), DescriptionUpdate::Keep).canonical_form(id, one)
+    );
+}
+
+#[test]
+fn the_description_patch_serializes_as_its_text_or_null() {
+    let set = DescriptionPatch(DescriptionUpdate::Set("Invoices".to_owned()));
+
+    assert_eq!(serde_json::to_value(&set).unwrap(), json!("Invoices"));
+    assert_eq!(
+        serde_json::to_value(DescriptionPatch(DescriptionUpdate::Keep)).unwrap(),
+        json!(null)
+    );
+    assert_eq!(
+        serde_json::to_value(DescriptionPatch(DescriptionUpdate::Remove)).unwrap(),
+        json!(null)
+    );
 }

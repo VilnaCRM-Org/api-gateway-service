@@ -25,6 +25,28 @@ fn idempotency_key(world: &mut AppWorld, key: String) {
     world.set_idempotency_key(key);
 }
 
+#[given(expr = "the If-Match header {string}")]
+fn if_match_header(world: &mut AppWorld, value: String) {
+    world.set_if_match(value);
+}
+
+#[given("the If-Match header is the ETag of the last response")]
+fn if_match_is_the_last_etag(world: &mut AppWorld) {
+    let etag = world
+        .reply()
+        .headers
+        .get("etag")
+        .and_then(|value| value.to_str().ok())
+        .expect("the last response has an ETag")
+        .to_owned();
+    world.set_if_match(etag);
+}
+
+#[given(expr = "a system role exists with name {string}")]
+async fn system_role_exists(world: &mut AppWorld, name: String) {
+    world.seed_system_role(&name).await;
+}
+
 #[given(expr = "a role exists with name {string}")]
 async fn role_exists(world: &mut AppWorld, name: String) {
     let body = json!({ "name": name }).to_string();

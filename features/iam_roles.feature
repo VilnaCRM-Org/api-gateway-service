@@ -1,7 +1,7 @@
 Feature: IAM roles
   In order to build my organisation's role model
   As an administrator
-  I want to create and read roles over REST or GraphQL
+  I want to create, read and update roles over REST or GraphQL
 
   Scenario: Creating a role over REST commits the role, its event and its audit record
     Given a caller authenticated with a valid service token
@@ -227,3 +227,86 @@ Feature: IAM roles
       { roles { items { id } } }
       """
     Then the GraphQL error code should be "UNAUTHENTICATED"
+
+  Scenario: Renaming a role over REST with its current ETag commits the update, its event and its audit record
+    Given a caller authenticated with a valid service token
+    And a role exists with name "Billing administrator"
+    And the If-Match header is the ETag of the last response
+    When PATCH request is sent to "/api/roles/{id}" with body:
+      """
+      {"name": "Accounting administrator", "description": null}
+      """
+    Then the response status code should be 200
+    And the response header "etag" should contain '"2"'
+    And the JSON pointer "/name" should equal "Accounting administrator"
+    And the JSON pointer "/description" should be null
+    And the JSON pointer "/version" should equal the number 2
+    And the role "Billing administrator" should be stored 0 times
+    And the outbox should hold 1 "iam.role.updated" event
+    And the audit log should hold 1 committed "role.update" record
+
+  Scenario: Renaming a role over GraphQL with its current version commits the update, its event and its audit record
+    Given a caller authenticated with a valid service token
+    And a role exists with name "Billing administrator"
+    When the GraphQL operation is sent:
+      """
+      mutation { updateRole(input: {id: "{id}", expectedVersion: 1, name: "Accounting administrator"}) { id name description version } }
+      """
+    Then the GraphQL response should have no errors
+    And the JSON pointer "/data/updateRole/name" should equal "Accounting administrator"
+    And the JSON pointer "/data/updateRole/version" should equal the number 2
+    And the role "Billing administrator" should be stored 0 times
+    And the outbox should hold 1 "iam.role.updated" event
+    And the audit log should hold 1 committed "role.update" record
+
+  Scenario: An update without a version is refused over REST and GraphQL
+    Given a caller authenticated with a valid service token
+    And a role exists with name "Billing administrator"
+    When PATCH request is sent to "/api/roles/{id}" with body:
+      """
+      {"name": "Accounting administrator"}
+      """
+    Then the response status code should be 428
+    When the GraphQL operation is sent:
+      """
+      mutation { updateRole(input: {id: "{id}", name: "Accounting administrator"}) { id } }
+      """
+    Then the GraphQL error code should be "PRECONDITION_REQUIRED"
+    And the role "Billing administrator" should be stored once
+    And the outbox should hold 0 "iam.role.updated" events
+
+  Scenario: An update with a stale version is refused over REST and GraphQL
+    Given a caller authenticated with a valid service token
+    And a role exists with name "Billing administrator"
+    And the If-Match header '"7"'
+    When PATCH request is sent to "/api/roles/{id}" with body:
+      """
+      {"name": "Accounting administrator"}
+      """
+    Then the response status code should be 412
+    When the GraphQL operation is sent:
+      """
+      mutation { updateRole(input: {id: "{id}", expectedVersion: 7, name: "Accounting administrator"}) { id } }
+      """
+    Then the GraphQL error code should be "PRECONDITION_FAILED"
+    And the role "Billing administrator" should be stored once
+    And the outbox should hold 0 "iam.role.updated" events
+
+  Scenario: A system role cannot be updated over REST or GraphQL
+    Given a caller authenticated with a valid service token
+    And a system role exists with name "Platform administrator"
+    And the If-Match header '"1"'
+    When PATCH request is sent to "/api/roles/{id}" with body:
+      """
+      {"name": "Renamed administrator"}
+      """
+    Then the response status code should be 403
+    When the GraphQL operation is sent:
+      """
+      mutation { updateRole(input: {id: "{id}", expectedVersion: 1, name: "Renamed administrator"}) { id } }
+      """
+    Then the GraphQL error code should be "FORBIDDEN"
+    When GET request is sent to "/api/roles/{id}"
+    Then the JSON pointer "/name" should equal "Platform administrator"
+    And the JSON pointer "/version" should equal the number 1
+    And the outbox should hold 0 "iam.role.updated" events

@@ -2,8 +2,8 @@
 
 use axum::http::StatusCode;
 use iam_domain::{
-    InvalidEventEnvelope, InvalidIamValue, InvalidRole, RepositoryError, TokenRejection,
-    VersionConflict,
+    InvalidEventEnvelope, InvalidIamValue, InvalidRole, InvalidSpec, RepositoryError,
+    RoleChangeRefused, TokenRejection, VersionConflict,
 };
 use shared_application::http::{Problem, Violation};
 use shared_domain::BoxError;
@@ -16,6 +16,9 @@ pub enum IamError {
     /// meant for IAM; the message never says which check failed.
     #[error("A valid bearer token is required.")]
     Unauthenticated,
+    /// The caller may not change the record, such as a system role.
+    #[error("The IAM record cannot be changed through the API.")]
+    Forbidden,
     /// The requested record does not exist.
     #[error("The requested IAM record was not found.")]
     NotFound,
@@ -58,6 +61,29 @@ impl From<Vec<InvalidRole>> for IamError {
                 })
                 .collect(),
         )
+    }
+}
+
+impl IamError {
+    /// A violation of one property of the request.
+    pub(crate) fn invalid_property(property_path: &str, message: &str, code: &str) -> Self {
+        Self::Invalid(vec![Violation {
+            property_path: property_path.to_owned(),
+            message: message.to_owned(),
+            code: code.to_owned(),
+        }])
+    }
+}
+
+impl From<InvalidSpec> for IamError {
+    /// The violation of a specification document that cannot become a version, with the position
+    /// of the fault in its message.
+    fn from(error: InvalidSpec) -> Self {
+        Self::Invalid(vec![Violation {
+            property_path: error.property_path().to_owned(),
+            message: error.to_string(),
+            code: error.code().to_owned(),
+        }])
     }
 }
 
@@ -106,10 +132,24 @@ impl From<VersionConflict> for IamError {
     }
 }
 
+impl From<RoleChangeRefused> for IamError {
+    /// A system role is forbidden, a deleted role is not found, a missing or stale version is a
+    /// failed precondition, and a version that cannot grow is a defect.
+    fn from(refusal: RoleChangeRefused) -> Self {
+        match refusal {
+            RoleChangeRefused::SystemRole => Self::Forbidden,
+            RoleChangeRefused::Deleted => Self::NotFound,
+            RoleChangeRefused::Version(conflict) => Self::from(conflict),
+            RoleChangeRefused::Invalid(invalid) => Self::from(invalid),
+        }
+    }
+}
+
 impl From<IamError> for Problem {
     fn from(error: IamError) -> Self {
         let status = match &error {
             IamError::Unauthenticated => StatusCode::UNAUTHORIZED,
+            IamError::Forbidden => StatusCode::FORBIDDEN,
             IamError::NotFound => StatusCode::NOT_FOUND,
             IamError::Conflict => StatusCode::CONFLICT,
             IamError::IdempotencyMismatch => StatusCode::UNPROCESSABLE_ENTITY,

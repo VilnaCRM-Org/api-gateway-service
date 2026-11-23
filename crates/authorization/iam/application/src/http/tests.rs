@@ -98,6 +98,7 @@ fn the_router_documents_the_role_operations_under_the_iam_tag_behind_the_bearer_
         (collection.post.as_ref().unwrap(), "api_roles_post"),
         (collection.get.as_ref().unwrap(), "api_roles_get"),
         (item.get.as_ref().unwrap(), "api_roles_id_get"),
+        (item.patch.as_ref().unwrap(), "api_roles_id_patch"),
     ];
     for (operation, operation_id) in operations {
         assert_eq!(operation.operation_id.as_deref(), Some(operation_id));
@@ -108,10 +109,31 @@ fn the_router_documents_the_role_operations_under_the_iam_tag_behind_the_bearer_
         assert!(operation.security.is_some(), "{operation_id}");
     }
     assert!(collection.put.is_none() && collection.delete.is_none() && collection.patch.is_none());
-    assert!(
-        item.post.is_none() && item.put.is_none() && item.delete.is_none() && item.patch.is_none()
-    );
-    assert_eq!(document.paths.paths.len(), 3);
+    assert!(item.post.is_none() && item.put.is_none() && item.delete.is_none());
+    assert_eq!(document.paths.paths.len(), 5);
+}
+
+#[test]
+fn the_router_documents_the_assignment_operations_under_the_iam_tag_behind_the_bearer_scheme() {
+    let (_routes, document) = router::<ApplicationState>().split_for_parts();
+
+    let collection = &document.paths.paths["/user-roles"];
+    let item = &document.paths.paths["/user-roles/{id}"];
+    let operations = [
+        (collection.post.as_ref().unwrap(), "api_user_roles_post"),
+        (collection.get.as_ref().unwrap(), "api_user_roles_get"),
+        (item.get.as_ref().unwrap(), "api_user_roles_id_get"),
+    ];
+    for (operation, operation_id) in operations {
+        assert_eq!(operation.operation_id.as_deref(), Some(operation_id));
+        assert_eq!(
+            operation.tags.as_deref(),
+            Some(["iam".to_owned()].as_slice())
+        );
+        assert!(operation.security.is_some(), "{operation_id}");
+    }
+    assert!(collection.put.is_none() && collection.delete.is_none() && collection.patch.is_none());
+    assert!(item.post.is_none() && item.put.is_none());
 }
 
 #[tokio::test]

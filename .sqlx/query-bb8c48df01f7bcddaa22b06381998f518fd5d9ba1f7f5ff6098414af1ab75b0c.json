@@ -1,0 +1,81 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, permission_key, sensitive, audit_always, active AS \"active: Activity\"\n            FROM iam_rest_permissions\n            WHERE ($1::uuid IS NULL OR id > $1)\n                AND ($2::text IS NULL OR service = $2)\n                AND (active::text || ':' || sensitive::text) = ANY($3::text[])\n                AND ($4::text IS NULL OR starts_with(permission_key, $4))\n                AND ($5::text IS NULL OR method = $5)\n            ORDER BY id\n            LIMIT $6",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "iam_rest_permissions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "permission_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "iam_rest_permissions",
+            "name": "permission_key"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "sensitive",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "iam_rest_permissions",
+            "name": "sensitive"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "audit_always",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "iam_rest_permissions",
+            "name": "audit_always"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "active: Activity",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "iam_rest_permissions",
+            "name": "active"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "TextArray",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "bb8c48df01f7bcddaa22b06381998f518fd5d9ba1f7f5ff6098414af1ab75b0c"
+}

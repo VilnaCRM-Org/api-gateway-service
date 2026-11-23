@@ -2,7 +2,7 @@ use std::error::Error as _;
 
 use iam_domain::{
     EntityVersion, InvalidEventEnvelope, InvalidIamValue, InvalidRole, RepositoryError,
-    TokenRejection, VersionConflict,
+    RoleChangeRefused, TokenRejection, VersionConflict,
 };
 use rstest::rstest;
 use shared_application::http::{Problem, TYPE_BLANK, Violation};
@@ -92,6 +92,12 @@ fn an_unavailable_repository_is_a_storage_failure_that_keeps_the_chain() {
 }
 
 #[rstest]
+#[case::forbidden(
+    IamError::Forbidden,
+    403,
+    "Forbidden",
+    "The IAM record cannot be changed through the API."
+)]
 #[case::idempotency_mismatch(
     IamError::IdempotencyMismatch,
     422,
@@ -250,5 +256,68 @@ fn an_invalid_envelope_is_an_internal_failure_that_names_its_cause() {
     assert_eq!(
         error.source().map(ToString::to_string),
         Some(InvalidEventEnvelope::EventType.to_string())
+    );
+}
+
+#[test]
+fn a_system_role_refusal_is_forbidden() {
+    let error = IamError::from(RoleChangeRefused::SystemRole);
+
+    assert!(matches!(error, IamError::Forbidden));
+}
+
+#[test]
+fn a_deleted_role_refusal_is_not_found() {
+    let error = IamError::from(RoleChangeRefused::Deleted);
+
+    assert!(matches!(error, IamError::NotFound));
+}
+
+#[test]
+fn a_missing_version_refusal_is_a_required_precondition() {
+    let error = IamError::from(RoleChangeRefused::Version(VersionConflict::Missing));
+
+    assert!(matches!(error, IamError::PreconditionRequired));
+}
+
+#[test]
+fn a_stale_version_refusal_is_a_failed_precondition() {
+    let conflict = VersionConflict::Stale {
+        expected: EntityVersion::new(1).unwrap(),
+        current: EntityVersion::new(2).unwrap(),
+    };
+
+    let error = IamError::from(RoleChangeRefused::Version(conflict));
+
+    assert!(matches!(error, IamError::PreconditionFailed));
+}
+
+#[test]
+fn a_version_that_cannot_grow_is_an_internal_defect() {
+    let invalid = EntityVersion::new(i64::MAX).unwrap().next().unwrap_err();
+
+    let error = IamError::from(RoleChangeRefused::Invalid(invalid));
+
+    assert!(matches!(error, IamError::Internal(_)));
+}
+
+#[test]
+fn an_invalid_specification_is_one_violation_of_its_property_with_its_position() {
+    use iam_domain::{InvalidSpec, SpecPosition};
+
+    let error = IamError::from(InvalidSpec::Malformed {
+        message: "unexpected token".to_owned(),
+        position: SpecPosition::LineColumn { line: 3, column: 7 },
+    });
+    let problem = Problem::from(error);
+
+    assert_eq!(problem.status, 422);
+    assert_eq!(
+        problem.violations,
+        vec![Violation {
+            property_path: "sdl".to_owned(),
+            message: "unexpected token (line 3, column 7)".to_owned(),
+            code: "syntax".to_owned(),
+        }]
     );
 }

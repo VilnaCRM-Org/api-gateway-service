@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE iam_rest_permissions SET active = $1\n        WHERE service = $2 AND permission_key = ANY($3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bool",
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "efaa5d9f80ab0960e8fbdbac2f12e9f6b9b7b155ccc407a8f813283c6924d4fe"
+}

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE iam_graphql_permissions SET active = $1\n        WHERE service = $2 AND permission_key = ANY($3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bool",
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "599cd985b213f28ad13442459b9b064d0cf2aceb16a3e5b6cddf23193f64c282"
+}

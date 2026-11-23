@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE iam_role_permissions AS grants SET permission_key = renamed.new_key\n        FROM UNNEST($1::uuid[], $2::text[], $3::text[]) AS renamed (role_id, old_key, new_key)\n        WHERE grants.role_id = renamed.role_id AND grants.permission_key = renamed.old_key",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e3ad26a2b68133043d69725af5a460cb3a7019801cd7108cf6fc5d335e8f0a90"
+}

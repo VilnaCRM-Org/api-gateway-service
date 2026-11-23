@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE iam_rest_permissions AS entries\n        SET sensitive = changed.sensitive, audit_always = changed.audit_always\n        FROM UNNEST($1::text[], $2::bool[], $3::bool[])\n            AS changed (permission_key, sensitive, audit_always)\n        WHERE entries.permission_key = changed.permission_key",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "BoolArray",
+        "BoolArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "36d9c47560680506874d7e6733f7ca41c2984dbea49bfedc33c48cc192384754"
+}

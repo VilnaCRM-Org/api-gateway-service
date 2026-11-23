@@ -1,6 +1,7 @@
 use rstest::rstest;
 
 use super::ContentHash;
+use crate::value_object::request_digest::RequestDigest;
 
 #[test]
 fn a_hash_keeps_its_32_bytes_and_renders_as_lower_case_hex() {
@@ -27,4 +28,11 @@ fn rejects_any_other_length(#[case] length: usize) {
 fn hashes_compare_by_their_bytes() {
     assert_eq!(ContentHash::new(&[7; 32]), ContentHash::new(&[7; 32]));
     assert_ne!(ContentHash::new(&[7; 32]), ContentHash::new(&[8; 32]));
+}
+
+#[test]
+fn a_request_digest_becomes_the_hash_with_the_same_bytes() {
+    let hash = ContentHash::from(RequestDigest::from_bytes([9; 32]));
+
+    assert_eq!(hash, ContentHash::new(&[9; 32]).unwrap());
 }

@@ -1,5 +1,7 @@
 //! The content hash of a specification version.
 
+use crate::value_object::request_digest::RequestDigest;
+
 /// The SHA-256 digest of a specification document: exactly 32 bytes.
 ///
 /// The digest is computed outside the domain (the domain has no crypto); two uploads of one
@@ -21,6 +23,13 @@ impl ContentHash {
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; Self::LENGTH] {
         &self.0
+    }
+}
+
+impl From<RequestDigest> for ContentHash {
+    /// The SHA-256 digest that the digester port computed over a document is its content hash.
+    fn from(digest: RequestDigest) -> Self {
+        Self(*digest.as_bytes())
     }
 }
 

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE iam_graphql_specs SET status = $2, activated_at = $3, retired_at = $4\n        WHERE id = $1 AND status = $5",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Timestamptz",
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fe5498c39d76fc31610f03dbaa7f33125d3272a43cfe1fe77fb6b1d8323c2001"
+}

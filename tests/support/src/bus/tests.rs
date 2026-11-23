@@ -118,6 +118,21 @@ fn the_command_bus_does_not_know_a_command_of_another_type() {
 }
 
 #[test]
+fn the_command_bus_answers_every_command_type_that_it_handles() {
+    let fake = FakeCommandBus::handling(|_command: Rename| Ok(()))
+        .and_handling(|_command: Other| Err(Rejected));
+
+    let bus: &dyn CommandBus = &fake;
+
+    assert!(block_on(bus.dispatch(Rename("a".into()))).is_ok());
+    assert!(matches!(
+        block_on(bus.dispatch(Other)),
+        Err(BusError::Handler(Rejected))
+    ));
+    assert_eq!(fake.dispatched(), ["Rename", "Other"]);
+}
+
+#[test]
 fn the_unregistered_command_bus_answers_not_registered_and_records() {
     let fake = FakeCommandBus::unregistered();
 

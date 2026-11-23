@@ -10,7 +10,9 @@ use rstest::rstest;
 use shared_application::http::{TYPE_BLANK, TYPE_VALIDATION_FAILED, Violation};
 use shared_domain::Uuid;
 
-use super::{CallerPrincipal, IDEMPOTENCY_KEY, IdempotencyKeyHeader, IfMatchHeader};
+use super::{
+    CallerPrincipal, IDEMPOTENCY_KEY, IdempotencyKeyHeader, IfMatchHeader, VersionedWriteHeaders,
+};
 use crate::principal::Principal;
 
 fn parts(headers: &[(&str, HeaderValue)]) -> Parts {
@@ -187,4 +189,49 @@ async fn a_request_without_a_principal_is_the_401_problem() {
         problem.detail.as_deref(),
         Some("A valid bearer token is required.")
     );
+}
+
+#[tokio::test]
+async fn the_update_headers_hold_the_version_and_the_key() {
+    let mut with_key = parts(&[
+        ("If-Match", text("\"3\"")),
+        ("Idempotency-Key", text("rename")),
+    ]);
+    let mut without_key = parts(&[("If-Match", text("\"3\""))]);
+
+    let with_key = VersionedWriteHeaders::from_request_parts(&mut with_key, &())
+        .await
+        .unwrap();
+    let without_key = VersionedWriteHeaders::from_request_parts(&mut without_key, &())
+        .await
+        .unwrap();
+
+    assert_eq!(with_key.expected, EntityVersion::new(3).unwrap());
+    assert_eq!(with_key.key, Some(IdempotencyKey::new("rename").unwrap()));
+    assert_eq!(without_key.key, None);
+}
+
+#[tokio::test]
+async fn the_update_headers_refuse_a_missing_version_before_an_invalid_key() {
+    let mut parts = parts(&[("Idempotency-Key", text("not valid"))]);
+
+    let problem = VersionedWriteHeaders::from_request_parts(&mut parts, &())
+        .await
+        .unwrap_err();
+
+    assert_eq!(problem.status, 428);
+}
+
+#[tokio::test]
+async fn the_update_headers_refuse_an_invalid_key() {
+    let mut parts = parts(&[
+        ("If-Match", text("\"3\"")),
+        ("Idempotency-Key", text("not valid")),
+    ]);
+
+    let problem = VersionedWriteHeaders::from_request_parts(&mut parts, &())
+        .await
+        .unwrap_err();
+
+    assert_eq!(problem.status, 422);
 }

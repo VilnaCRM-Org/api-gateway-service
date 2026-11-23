@@ -8,23 +8,35 @@
 //! transports apply one set of rules; every failure becomes a problem first and a GraphQL error
 //! second.
 
+pub mod graphql_spec;
 pub mod schema_parser;
+pub mod user_role;
 
-use async_graphql::{Context, Error, ErrorExtensions as _, ID, InputObject, Object, SimpleObject};
+use async_graphql::{
+    Context, Error, ErrorExtensions as _, ID, InputObject, MaybeUndefined, Object, SimpleObject,
+};
 use iam_domain::{EntityVersion, IdempotencyKey};
 use shared_application::graphql::problem_to_error;
 use shared_application::http::{Problem, Violation};
 use validator::Validate as _;
 
+use crate::command::update_role::DescriptionUpdate;
 use crate::error::IamError;
 use crate::http::IamState;
 use crate::http::dto::{
-    CreateRoleRequest, DEFAULT_PAGE_SIZE, ListRolesParams, RolePageResponse, RoleResponse,
-    TokenResolutionRequest, TokenResolutionResponse,
+    CreateRoleRequest, DEFAULT_PAGE_SIZE, DescriptionPatch, ListRolesParams, RolePageResponse,
+    RoleResponse, TokenResolutionRequest, TokenResolutionResponse, UpdateRoleRequest,
 };
+use crate::http::extract::VersionedWriteHeaders;
 use crate::http::handler::resolve_credential;
-use crate::http::role::{create_role, find_role, list_roles, parse_role_id};
+use crate::http::role::{create_role, find_role, list_roles, parse_role_id, update_role};
 use crate::principal::Principal;
+
+use graphql_spec::{GraphQlSpecObject, LoadGraphQlSpecInput, load_graphql_spec_field};
+use user_role::{
+    AssignUserRoleInput, UserRoleFilterInput, UserRoleObject, UserRolePageObject,
+    assign_user_role_field, user_role_field, user_roles_field,
+};
 
 pub use schema_parser::AsyncGraphQlSchemaParser;
 
@@ -94,6 +106,22 @@ pub struct CreateRoleInput {
     /// What the role is for, at most 1,000 characters.
     pub description: Option<String>,
     /// Makes the creation safe to repeat for 24 hours: 1 to 255 visible ASCII characters.
+    pub idempotency_key: Option<String>,
+}
+
+/// Input of the role-update mutation.
+#[derive(Debug, InputObject)]
+#[graphql(name = "UpdateRoleInput")]
+pub struct UpdateRoleInput {
+    /// The role to change.
+    pub id: ID,
+    /// The version the caller read; required, and the update is refused when it is not the current one.
+    pub expected_version: Option<i64>,
+    /// The new name of the role: 1 to 100 characters, unique without regard to case among the roles that are not deleted.
+    pub name: Option<String>,
+    /// The new description, at most 1,000 characters; null removes it and an absent field keeps it.
+    pub description: MaybeUndefined<String>,
+    /// Makes the update safe to repeat for 24 hours: 1 to 255 visible ASCII characters.
     pub idempotency_key: Option<String>,
 }
 
@@ -221,6 +249,29 @@ async fn create_role_field(
     Ok(RoleObject::from(RoleResponse::from(role)))
 }
 
+async fn update_role_field(
+    ctx: &Context<'_>,
+    input: UpdateRoleInput,
+) -> Result<RoleObject, Problem> {
+    let caller = require_caller(ctx)?;
+    let expected = expected_version(input.expected_version)?;
+    let id = parse_role_id(input.id.as_str())?;
+    let key = idempotency_key(input.idempotency_key.as_deref())?;
+    let description = match input.description {
+        MaybeUndefined::Undefined => DescriptionUpdate::Keep,
+        MaybeUndefined::Null => DescriptionUpdate::Remove,
+        MaybeUndefined::Value(text) => DescriptionUpdate::Set(text),
+    };
+    let request = UpdateRoleRequest {
+        name: input.name,
+        description: DescriptionPatch(description),
+    };
+    request.validate()?;
+    let headers = VersionedWriteHeaders { expected, key };
+    let (role, _receipt) = update_role(state(ctx)?, caller, id, headers, request).await?;
+    Ok(RoleObject::from(RoleResponse::from(role)))
+}
+
 async fn role_field(ctx: &Context<'_>, id: &ID) -> Result<Option<RoleObject>, Problem> {
     require_caller(ctx)?;
     let role = find_role(state(ctx)?, parse_role_id(id.as_str())?).await?;
@@ -249,6 +300,39 @@ impl IamMutation {
             .await
             .map_err(iam_problem_to_graphql_error)
     }
+
+    /// Assigns an existing role to a user or a service principal at global or project scope, takes the next policy version and records `iam.user_role.assigned`, and `iam.privileged_role.assigned` as well when the role grants a wildcard or a reserved key.
+    async fn assign_user_role(
+        &self,
+        ctx: &Context<'_>,
+        input: AssignUserRoleInput,
+    ) -> async_graphql::Result<UserRoleObject> {
+        assign_user_role_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Renames a custom role or changes its description when `expectedVersion` is the current version, increases the version and records `iam.role.updated`.
+    async fn update_role(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateRoleInput,
+    ) -> async_graphql::Result<RoleObject> {
+        update_role_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Loads the SDL of a service as a draft version and returns it with its diff against the active versions; an SDL that the service already holds returns its version and changes nothing. The service `iam` is reserved.
+    async fn load_graphql_spec(
+        &self,
+        ctx: &Context<'_>,
+        input: LoadGraphQlSpecInput,
+    ) -> async_graphql::Result<GraphQlSpecObject> {
+        load_graphql_spec_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
 }
 
 #[Object]
@@ -256,6 +340,32 @@ impl IamQuery {
     /// Retrieves a role by id; null when it is unknown or deleted.
     async fn role(&self, ctx: &Context<'_>, id: ID) -> async_graphql::Result<Option<RoleObject>> {
         role_field(ctx, &id)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves a role assignment by id; null when it is unknown or revoked.
+    async fn user_role(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> async_graphql::Result<Option<UserRoleObject>> {
+        user_role_field(ctx, &id)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves one page of role assignments that are not revoked, in a stable order, filtered by subject, role, project and expiry.
+    async fn user_roles(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 30, desc = "Page size, from 1 to 100.")] first: Option<i32>,
+        #[graphql(desc = "The nextCursor of the previous page.")] after: Option<String>,
+        #[graphql(desc = "Only assignments that match the filter.")] filter: Option<
+            UserRoleFilterInput,
+        >,
+    ) -> async_graphql::Result<UserRolePageObject> {
+        user_roles_field(ctx, first, after, filter.unwrap_or_default())
             .await
             .map_err(iam_problem_to_graphql_error)
     }

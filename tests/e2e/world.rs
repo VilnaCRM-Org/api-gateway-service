@@ -45,6 +45,9 @@ const SUBJECT_TOKEN: &str = "{token}";
 /// The token that stands for the remembered page cursor.
 const CURSOR_TOKEN: &str = "{cursor}";
 
+/// The token that stands for the id of the role that a step seeded.
+const ROLE_TOKEN: &str = "{role}";
+
 /// How long a session revocation recorded by a step is kept before it may be pruned.
 const REVOCATION_RETENTION: Duration = Duration::from_hours(24);
 
@@ -77,7 +80,9 @@ pub(crate) struct AppWorld {
     caller_token: Option<String>,
     subject_token: Option<String>,
     idempotency_key: Option<String>,
+    if_match: Option<String>,
     cursor: Option<String>,
+    role: Option<String>,
 }
 
 /// The configuration as the binary reads it from the environment.
@@ -173,6 +178,10 @@ impl AppWorld {
             .cursor
             .as_deref()
             .map_or_else(|| text.clone(), |cursor| text.replace(CURSOR_TOKEN, cursor));
+        let text = self
+            .role
+            .as_deref()
+            .map_or_else(|| text.clone(), |role| text.replace(ROLE_TOKEN, role));
         self.subject_token
             .as_deref()
             .map_or_else(|| text.clone(), |token| text.replace(SUBJECT_TOKEN, token))
@@ -181,6 +190,70 @@ impl AppWorld {
     /// Makes the following requests carry this `Idempotency-Key` header.
     pub(crate) fn set_idempotency_key(&mut self, key: String) {
         self.idempotency_key = Some(key);
+    }
+
+    /// Makes the following requests carry this `If-Match` header.
+    pub(crate) fn set_if_match(&mut self, value: String) {
+        self.if_match = Some(value);
+    }
+
+    /// Stores a system role named `name` at version 1 in the scenario database, as a fixture,
+    /// and remembers its id for `{id}`.
+    pub(crate) async fn seed_system_role(&mut self, name: &str) {
+        let url = self.database_url().await;
+        let options = PgConnectOptions::from_str(&url).expect("valid database URL");
+        let mut connection = options
+            .connect()
+            .await
+            .expect("connect to the scenario database");
+        let id = sqlx::query_scalar::<_, String>(
+            "INSERT INTO iam_roles (id, name, description, kind, grant_count, version, \
+             created_at, updated_at) \
+             VALUES (gen_random_uuid(), $1, NULL, 'system', 0, 1, now(), now()) RETURNING id::text",
+        )
+        .bind(name.to_owned())
+        .fetch_one(&mut connection)
+        .await
+        .expect("seed the system role");
+        connection.close().await.expect("close");
+        self.remembered = Some(id);
+    }
+
+    /// Stores a custom role named `name` at version 1 that grants `keys` in the scenario database,
+    /// as a fixture, and remembers its id for `{role}`.
+    pub(crate) async fn seed_role(&mut self, name: &str, keys: &[String]) {
+        let url = self.database_url().await;
+        let options = PgConnectOptions::from_str(&url).expect("valid database URL");
+        let mut connection = options
+            .connect()
+            .await
+            .expect("connect to the scenario database");
+        let id = sqlx::query_scalar::<_, String>(
+            "INSERT INTO iam_roles (id, name, description, kind, grant_count, version, \
+             created_at, updated_at) \
+             VALUES (gen_random_uuid(), $1, NULL, 'custom', $2, 1, now(), now()) RETURNING id::text",
+        )
+        .bind(name.to_owned())
+        .bind(i32::try_from(keys.len()).expect("a few grants"))
+        .fetch_one(&mut connection)
+        .await
+        .expect("seed the role");
+        for key in keys {
+            sqlx::query(
+                "INSERT INTO iam_role_permissions (role_id, permission_key, key_kind, service, \
+                 is_wildcard, active, granted_by, granted_at) \
+                 VALUES ($1::text::uuid, $2, split_part($2, ':', 1), \
+                 CASE WHEN split_part($2, ':', 1) = 'iam' THEN 'iam' ELSE split_part($2, ':', 2) END, \
+                 ($2 LIKE '%*%' AND $2 NOT LIKE 'iam:%'), TRUE, 'system:bootstrap', now())",
+            )
+            .bind(id.clone())
+            .bind(key.clone())
+            .execute(&mut connection)
+            .await
+            .expect("seed the grant");
+        }
+        connection.close().await.expect("close");
+        self.role = Some(id);
     }
 
     /// Sets the page cursor that `{cursor}` stands for.
@@ -349,6 +422,9 @@ impl AppWorld {
         if let Some(key) = &self.idempotency_key {
             request = request.header("idempotency-key", key);
         }
+        if let Some(value) = &self.if_match {
+            request = request.header(header::IF_MATCH, value);
+        }
         let request = request
             .body(Body::from(self.substitute(body)))
             .expect("valid request");
@@ -383,6 +459,7 @@ impl AppWorld {
         } else {
             json.pointer("/data/createExampleApiResource/id")
                 .or_else(|| json.pointer("/data/createRole/id"))
+                .or_else(|| json.pointer("/data/assignUserRole/id"))
         };
         if let Some(id) = created.and_then(Value::as_str) {
             self.created.push(id.to_owned());
