@@ -15,6 +15,7 @@ pub struct ChangeReceipt {
     target: AuditTarget,
     entity_version: EntityVersion,
     policy_version: Option<PolicyVersion>,
+    revoked_assignments: Option<u32>,
 }
 
 impl ChangeReceipt {
@@ -33,7 +34,15 @@ impl ChangeReceipt {
             target,
             entity_version,
             policy_version,
+            revoked_assignments: None,
         }
+    }
+
+    /// The same receipt, reporting that the change revoked `count` assignments.
+    #[must_use]
+    pub const fn with_revoked_assignments(mut self, count: u32) -> Self {
+        self.revoked_assignments = Some(count);
+        self
     }
 
     /// The change.
@@ -64,6 +73,13 @@ impl ChangeReceipt {
     #[must_use]
     pub const fn policy_version(&self) -> Option<PolicyVersion> {
         self.policy_version
+    }
+
+    /// The number of assignments the change revoked; none when the change is not the deletion of
+    /// a role.
+    #[must_use]
+    pub const fn revoked_assignments(&self) -> Option<u32> {
+        self.revoked_assignments
     }
 }
 

@@ -310,3 +310,226 @@ Feature: IAM roles
     Then the JSON pointer "/name" should equal "Platform administrator"
     And the JSON pointer "/version" should equal the number 1
     And the outbox should hold 0 "iam.role.updated" events
+
+  Scenario: Deleting a role over REST revokes its assignments and commits the events, the audit records and one policy version
+    Given a caller authenticated with a valid service token
+    And an assignable role "Billing administrator"
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ac"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "service", "id": "billing-worker"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    Given the If-Match header '"1"'
+    When DELETE request is sent to "/api/roles/{role}"
+    Then the response status code should be 200
+    And the response header "etag" should contain '"2"'
+    And the response header "iam-policy-version" should contain "4"
+    And the JSON pointer "/id" should equal the seeded role
+    And the JSON pointer "/revokedAssignments" should equal the number 3
+    And the IAM policy version should be 4
+    And the store should hold 0 assignments of subject kind "user"
+    And the store should hold 0 assignments of subject kind "service"
+    And the outbox should hold 1 "iam.role.deleted" event
+    And the outbox should hold 3 "iam.user_role.revoked" events
+    And the "iam.role.deleted" event should carry "Billing administrator" in its payload
+    And the audit log should hold 1 committed "role.delete" record
+    And the audit log should hold 3 committed "user_role.revoke" records
+    When GET request is sent to "/api/roles/{role}"
+    Then the response status code should be 404
+    When GET request is sent to "/api/roles"
+    Then the response status code should be 200
+    And the JSON array at "/items" should have 0 items
+    When GET request is sent to "/api/user-roles?includeExpired=true"
+    Then the response status code should be 200
+    And the JSON array at "/items" should have 0 items
+
+  Scenario: Deleting a role over GraphQL revokes its assignments and reports their number
+    Given a caller authenticated with a valid service token
+    And an assignable role "Billing administrator"
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ac"}, "roleId": "{role}", "scope": {"kind": "project", "projectId": "0190f2a8-7b3c-7d4e-8f10-1234567890cd"}}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "service", "id": "billing-worker"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    When the GraphQL operation is sent:
+      """
+      mutation { deleteRole(input: {id: "{role}", expectedVersion: 1}) { id version policyVersion revokedAssignments } }
+      """
+    Then the GraphQL response should have no errors
+    And the JSON pointer "/data/deleteRole/id" should equal the seeded role
+    And the JSON pointer "/data/deleteRole/version" should equal the number 2
+    And the JSON pointer "/data/deleteRole/policyVersion" should equal the number 4
+    And the JSON pointer "/data/deleteRole/revokedAssignments" should equal the number 3
+    And the IAM policy version should be 4
+    And the store should hold 0 assignments of subject kind "user"
+    And the store should hold 0 assignments of subject kind "service"
+    And the outbox should hold 1 "iam.role.deleted" event
+    And the outbox should hold 3 "iam.user_role.revoked" events
+    And the audit log should hold 1 committed "role.delete" record
+    And the audit log should hold 3 committed "user_role.revoke" records
+    When the GraphQL operation is sent:
+      """
+      query { role(id: "{role}") { id } }
+      """
+    Then the JSON pointer "/data/role" should be null
+    When the GraphQL operation is sent:
+      """
+      { userRoles(filter: {includeExpired: true}) { items { id } } }
+      """
+    Then the JSON array at "/data/userRoles/items" should have 0 items
+
+  Scenario: A deletion whose statement fails changes nothing and leaves no event or audit record
+    Given a caller authenticated with a valid service token
+    And an assignable role "Billing administrator"
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ac"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    Given every update of an assignment fails in the store
+    And the If-Match header '"1"'
+    When DELETE request is sent to "/api/roles/{role}"
+    Then the response status code should be 500
+    When the GraphQL operation is sent:
+      """
+      mutation { deleteRole(input: {id: "{role}", expectedVersion: 1}) { id } }
+      """
+    Then the GraphQL error code should be "INTERNAL_SERVER_ERROR"
+    And the IAM policy version should be 2
+    And the store should hold 2 assignments of subject kind "user"
+    And the outbox should hold 0 "iam.role.deleted" events
+    And the outbox should hold 0 "iam.user_role.revoked" events
+    And the audit log should hold 0 committed "role.delete" records
+    And the audit log should hold 0 committed "user_role.revoke" records
+    When GET request is sent to "/api/roles/{role}"
+    Then the response status code should be 200
+    And the JSON pointer "/version" should equal the number 1
+
+  Scenario: A system role cannot be deleted and a stale or missing version is refused
+    Given a caller authenticated with a valid service token
+    And a system role exists with name "iam-platform-admin"
+    And the If-Match header '"1"'
+    When DELETE request is sent to "/api/roles/{id}"
+    Then the response status code should be 403
+    When the GraphQL operation is sent:
+      """
+      mutation { deleteRole(input: {id: "{id}", expectedVersion: 1}) { id } }
+      """
+    Then the GraphQL error code should be "FORBIDDEN"
+    Given an assignable role "Billing administrator"
+    And the If-Match header '"7"'
+    When DELETE request is sent to "/api/roles/{role}"
+    Then the response status code should be 412
+    When the GraphQL operation is sent:
+      """
+      mutation { deleteRole(input: {id: "{role}", expectedVersion: 7}) { id } }
+      """
+    Then the GraphQL error code should be "PRECONDITION_FAILED"
+    When the GraphQL operation is sent:
+      """
+      mutation { deleteRole(input: {id: "{role}"}) { id } }
+      """
+    Then the GraphQL error code should be "PRECONDITION_REQUIRED"
+    And the outbox should hold 0 "iam.role.deleted" events
+    And the IAM policy version should be 0
+
+  Scenario: A deletion without a version is refused over REST and a deleted role is not found again
+    Given a caller authenticated with a valid service token
+    And an assignable role "Billing administrator"
+    When DELETE request is sent to "/api/roles/{role}"
+    Then the response status code should be 428
+    Given the If-Match header '"1"'
+    When DELETE request is sent to "/api/roles/{role}"
+    Then the response status code should be 200
+    And the JSON pointer "/revokedAssignments" should equal the number 0
+    When DELETE request is sent to "/api/roles/{role}"
+    Then the response status code should be 404
+    And the outbox should hold 1 "iam.role.deleted" event
+    And the IAM policy version should be 1
+
+  Scenario: Repeating a deletion with the same idempotency key returns the original result and changes nothing a second time
+    Given a caller authenticated with a valid service token
+    And an assignable role "Billing administrator"
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ac"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    Given the If-Match header '"1"'
+    And the idempotency key "delete-billing"
+    When DELETE request is sent to "/api/roles/{role}"
+    Then the response status code should be 200
+    And the JSON pointer "/revokedAssignments" should equal the number 2
+    When DELETE request is sent to "/api/roles/{role}"
+    Then the response status code should be 200
+    And the JSON pointer "/revokedAssignments" should equal the number 2
+    And the response header "iam-policy-version" should contain "3"
+    And the last two responses should have the same body
+    And the outbox should hold 1 "iam.role.deleted" event
+    And the outbox should hold 2 "iam.user_role.revoked" events
+    And the audit log should hold 1 committed "role.delete" record
+    And the IAM policy version should be 3
+
+  Scenario: Repeating a GraphQL deletion with the same idempotency key returns the original result
+    Given a caller authenticated with a valid service token
+    And an assignable role "Billing administrator"
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    When the GraphQL operation is sent:
+      """
+      mutation { deleteRole(input: {id: "{role}", expectedVersion: 1, idempotencyKey: "delete-billing-gql"}) { id version policyVersion revokedAssignments } }
+      """
+    Then the GraphQL response should have no errors
+    And the JSON pointer "/data/deleteRole/revokedAssignments" should equal the number 1
+    When the GraphQL operation is sent:
+      """
+      mutation { deleteRole(input: {id: "{role}", expectedVersion: 1, idempotencyKey: "delete-billing-gql"}) { id version policyVersion revokedAssignments } }
+      """
+    Then the GraphQL response should have no errors
+    And the JSON pointer "/data/deleteRole/revokedAssignments" should equal the number 1
+    And the JSON pointer "/data/deleteRole/policyVersion" should equal the number 2
+    And the outbox should hold 1 "iam.role.deleted" event
+    And the outbox should hold 1 "iam.user_role.revoked" event
+    And the IAM policy version should be 2
+
+  Scenario: Deleting a role needs a valid bearer token
+    When DELETE request is sent to "/api/roles/0190f2a8-7b3c-7d4e-8f10-1234567890ab"
+    Then the response status code should be 401
+    When the GraphQL operation is sent:
+      """
+      mutation { deleteRole(input: {id: "0190f2a8-7b3c-7d4e-8f10-1234567890ab", expectedVersion: 1}) { id } }
+      """
+    Then the GraphQL error code should be "UNAUTHENTICATED"

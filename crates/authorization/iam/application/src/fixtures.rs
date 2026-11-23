@@ -15,6 +15,7 @@ use test_support::id::SequenceUuidGenerator;
 use test_support::request_digester::FakeRequestDigester;
 
 use crate::command::create_role::CreateRoleCommand;
+use crate::command::delete_role::DeleteRoleCommand;
 use crate::command::update_role::UpdateRoleCommand;
 use crate::error::IamError;
 use crate::http::IamState;
@@ -97,6 +98,8 @@ pub(crate) struct Answers {
     pub command: Result<(), Refusal>,
     /// The answer of the update command.
     pub update: Result<(), Refusal>,
+    /// The answer of the delete command.
+    pub delete: Result<(), Refusal>,
 }
 
 impl Default for Answers {
@@ -111,6 +114,7 @@ impl Default for Answers {
             }),
             command: Ok(()),
             update: Ok(()),
+            delete: Ok(()),
         }
     }
 }
@@ -122,6 +126,8 @@ pub(crate) struct Asked {
     pub commands: Arc<Mutex<Vec<CreateRoleCommand>>>,
     /// The update commands that were dispatched.
     pub updates: Arc<Mutex<Vec<UpdateRoleCommand>>>,
+    /// The delete commands that were dispatched.
+    pub deletions: Arc<Mutex<Vec<DeleteRoleCommand>>>,
     /// The role queries.
     pub roles: Arc<Mutex<Vec<RoleId>>>,
     /// The role-list queries.
@@ -147,7 +153,12 @@ pub(crate) fn scenario(
     answers: Answers,
 ) -> (IamState, Arc<FakeCommandBus>, Arc<FakeQueryBus>, Asked) {
     let asked = Asked::default();
-    let commands = Arc::new(command_bus(answers.command, answers.update, &asked));
+    let commands = Arc::new(command_bus(
+        answers.command,
+        answers.update,
+        answers.delete,
+        &asked,
+    ));
     let queries = Arc::new(query_bus(answers, &asked));
     let command_bus: Arc<dyn CommandBus> = Arc::<FakeCommandBus>::clone(&commands);
     let query_bus: Arc<dyn QueryBus> = Arc::<FakeQueryBus>::clone(&queries);
@@ -164,10 +175,12 @@ pub(crate) fn scenario(
 fn command_bus(
     answer: Result<(), Refusal>,
     update: Result<(), Refusal>,
+    delete: Result<(), Refusal>,
     asked: &Asked,
 ) -> FakeCommandBus {
     let log = Arc::clone(&asked.commands);
     let updates = Arc::clone(&asked.updates);
+    let deletions = Arc::clone(&asked.deletions);
     FakeCommandBus::handling(move |command: CreateRoleCommand| {
         record(&log, command);
         answer.map_err(|refusal| refusal())
@@ -175,6 +188,10 @@ fn command_bus(
     .and_handling(move |command: UpdateRoleCommand| {
         record(&updates, command);
         update.map_err(|refusal| refusal())
+    })
+    .and_handling(move |command: DeleteRoleCommand| {
+        record(&deletions, command);
+        delete.map_err(|refusal| refusal())
     })
 }
 

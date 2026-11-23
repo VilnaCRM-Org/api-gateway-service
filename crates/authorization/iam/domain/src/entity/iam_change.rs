@@ -38,7 +38,11 @@ pub struct IamChangeParts {
 /// The actor and target of the receipt and of the idempotency record are those of the audit record,
 /// and its time is the time of the change.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IamChange(IamChangeParts);
+pub struct IamChange {
+    parts: IamChangeParts,
+    revoked_assignments: Option<u32>,
+    related_audits: Vec<SecurityAuditEvent>,
+}
 
 impl IamChange {
     /// Validates the change.
@@ -50,31 +54,70 @@ impl IamChange {
         if parts.audit.parts().outcome != AuditOutcome::Committed {
             return Err(InvalidIamValue::ChangeAuditOutcome);
         }
-        Ok(Self(parts))
+        Ok(Self {
+            parts,
+            revoked_assignments: None,
+            related_audits: Vec::new(),
+        })
+    }
+
+    /// The same change, whose receipt reports that it revoked `count` assignments (the deletion
+    /// of a role revokes every assignment of it).
+    #[must_use]
+    pub const fn with_revoked_assignments(mut self, count: u32) -> Self {
+        self.revoked_assignments = Some(count);
+        self
+    }
+
+    /// The same change, which also appends `audits` after its own audit record: one record for
+    /// each other record that the change writes (the assignments a role deletion revokes). Every
+    /// record must be committed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidIamValue::ChangeAuditOutcome`] when one of the records is not committed.
+    pub fn with_related_audits(
+        mut self,
+        audits: Vec<SecurityAuditEvent>,
+    ) -> Result<Self, InvalidIamValue> {
+        if audits
+            .iter()
+            .any(|audit| audit.parts().outcome != AuditOutcome::Committed)
+        {
+            return Err(InvalidIamValue::ChangeAuditOutcome);
+        }
+        self.related_audits = audits;
+        Ok(self)
+    }
+
+    /// The number of assignments the change revokes, when it reports one.
+    #[must_use]
+    pub const fn revoked_assignments(&self) -> Option<u32> {
+        self.revoked_assignments
     }
 
     /// The values of the change.
     #[must_use]
     pub const fn parts(&self) -> &IamChangeParts {
-        &self.0
+        &self.parts
     }
 
     /// Whether the change takes the next policy version.
     #[must_use]
     pub const fn affects_decisions(&self) -> bool {
-        self.0.effect.affects_decisions()
+        self.parts.effect.affects_decisions()
     }
 
     /// Whether the change takes access away.
     #[must_use]
     pub const fn is_revocation_class(&self) -> bool {
-        self.0.effect.is_revocation_class()
+        self.parts.effect.is_revocation_class()
     }
 
     /// When the change happened, in whole microseconds since 1970.
     #[must_use]
     pub const fn occurred_at_micros(&self) -> i64 {
-        self.0.audit.occurred_at_micros()
+        self.parts.audit.occurred_at_micros()
     }
 
     /// The policy version the change produced when the transaction holds `version`: that version
@@ -91,32 +134,50 @@ impl IamChange {
     /// The audit record stamped with the policy version the change produced.
     #[must_use]
     pub fn audit(&self, version: PolicyVersion) -> SecurityAuditEvent {
-        self.0
+        self.parts
             .audit
             .with_policy_version(self.resulting_policy_version(version))
+    }
+
+    /// Every audit record of the change in write order, each stamped with the policy version the
+    /// change produced: its own record first, then the related ones.
+    #[must_use]
+    pub fn audits(&self, version: PolicyVersion) -> Vec<SecurityAuditEvent> {
+        let produced = self.resulting_policy_version(version);
+        std::iter::once(self.audit(version))
+            .chain(
+                self.related_audits
+                    .iter()
+                    .map(|audit| audit.with_policy_version(produced)),
+            )
+            .collect()
     }
 
     /// The receipt of the change when the transaction holds `version`.
     #[must_use]
     pub fn receipt(&self, version: PolicyVersion) -> ChangeReceipt {
-        let audit = self.0.audit.parts();
-        ChangeReceipt::new(
-            self.0.change_id,
+        let audit = self.parts.audit.parts();
+        let receipt = ChangeReceipt::new(
+            self.parts.change_id,
             audit.actor.clone(),
             audit.target.clone(),
-            self.0.entity_version,
+            self.parts.entity_version,
             self.resulting_policy_version(version),
-        )
+        );
+        match self.revoked_assignments {
+            Some(count) => receipt.with_revoked_assignments(count),
+            None => receipt,
+        }
     }
 
     /// The idempotency record of the change, when the write carries a key.
     #[must_use]
     pub fn idempotency_record(&self) -> Option<IdempotencyRecord> {
-        self.0.idempotency.clone().map(|request| {
+        self.parts.idempotency.clone().map(|request| {
             IdempotencyRecord::new(
-                self.0.audit.parts().actor.clone(),
+                self.parts.audit.parts().actor.clone(),
                 request,
-                self.0.change_id,
+                self.parts.change_id,
             )
         })
     }

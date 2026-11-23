@@ -19,6 +19,7 @@ struct Row {
     target_id: String,
     entity_version: i64,
     policy_version: Option<i64>,
+    revoked_assignments: Option<i32>,
 }
 
 impl PgChangeReceiptRepository {
@@ -32,7 +33,8 @@ impl PgChangeReceiptRepository {
         let id = change_id.as_uuid().as_uuid();
         let row = sqlx::query_as!(
             Row,
-            "SELECT actor, target_type, target_id, entity_version, policy_version
+            "SELECT actor, target_type, target_id, entity_version, policy_version,
+                revoked_assignments
             FROM iam_change_receipts WHERE change_id = $1",
             id,
         )
@@ -68,13 +70,13 @@ fn restore(change_id: ChangeId, row: &Row) -> Result<ChangeReceipt, RepositoryEr
         .map(PolicyVersion::new)
         .transpose()
         .map_err(unusable)?;
-    Ok(ChangeReceipt::new(
-        change_id,
-        actor,
-        target,
-        entity_version,
-        policy_version,
-    ))
+    let receipt = ChangeReceipt::new(change_id, actor, target, entity_version, policy_version);
+    match row.revoked_assignments {
+        Some(count) => Ok(receipt.with_revoked_assignments(
+            u32::try_from(count).map_err(|error| RepositoryError::Unavailable(Box::new(error)))?,
+        )),
+        None => Ok(receipt),
+    }
 }
 
 #[async_trait::async_trait]

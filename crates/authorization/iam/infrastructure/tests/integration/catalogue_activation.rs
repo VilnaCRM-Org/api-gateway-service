@@ -5,16 +5,17 @@
 use std::time::{Duration, SystemTime};
 
 use iam_domain::{
-    CatalogueStatement, CatalogueStatementParts, ContentHash, DecisionEffect, EntryFlags,
-    EntryInsert, GraphQlPermissionRepository as _, GraphQlSpecRepository as _,
-    GraphQlSpecStatement, IamUnitOfWork as _, KeyRename, OpenApiSpecRepository as _,
-    OpenApiSpecStatement, OrphanedGrant, PermissionFlags, PermissionId, PermissionKey,
-    PermissionKeyKind, PermissionPageQuery, PolicyEpochRepository as _, RepositoryError,
-    RestPermissionRepository as _, RoleId, ServiceName, SpecId, SpecStatus, SpecTransition,
+    ActorRef, CatalogueStatement, CatalogueStatementParts, ContentHash, DecisionEffect, EntryFlags,
+    EntryInsert, EventEnvelope, GrantRecord, GrantStatus, GraphQlPermissionRepository as _,
+    GraphQlPermissionsCreated, GraphQlSpecRepository as _, GraphQlSpecStatement,
+    IamUnitOfWork as _, KeyRename, OpenApiSpecRepository as _, OpenApiSpecStatement, OrphanedGrant,
+    PermissionFlags, PermissionId, PermissionKey, PermissionKeyKind, PermissionPageQuery,
+    PolicyEpochRepository as _, RepositoryError, RestPermissionRepository as _, RoleId,
+    RoleRepository as _, ServiceName, SpecId, SpecStatus, SpecTransition,
 };
 use iam_infrastructure::{
     PgGraphQlPermissionRepository, PgGraphQlSpecRepository, PgIamUnitOfWork,
-    PgOpenApiSpecRepository, PgPolicyEpochRepository, PgRestPermissionRepository,
+    PgOpenApiSpecRepository, PgPolicyEpochRepository, PgRestPermissionRepository, PgRoleRepository,
 };
 use sha2::{Digest as _, Sha256};
 use sqlx::PgPool;
@@ -22,7 +23,7 @@ use test_support::catalogue::catalogue_change;
 use test_support::graphql_spec::{SDL_FIXTURE, graphql_spec, graphql_spec_change};
 use test_support::openapi_spec::{DOCUMENT_FIXTURE, openapi_spec, openapi_spec_change};
 use test_support::seed::TestRng;
-use test_support::unit_of_work::uuid_v7;
+use test_support::unit_of_work::{rebuilt, uuid_v7};
 
 const SERVICE: &str = "billing";
 const PAY: &str = "gql:billing:Mutation.pay";
@@ -522,4 +523,107 @@ async fn a_rest_activation_stores_the_operations_and_pages_filter_by_method(pool
         epochs(&pool).await,
         (before.0.saturating_add(1), before.1.saturating_add(1))
     );
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn the_catalogue_grants_of_a_service_are_its_exact_keys_with_their_status(pool: PgPool) {
+    let mut rng = TestRng::from_env();
+    let role = seed_role(&pool, &mut rng, &[PAY, OLD]).await;
+    sqlx::query(
+        "UPDATE iam_role_permissions SET active = FALSE, orphaned_at = now()
+        WHERE role_id = $1 AND permission_key = $2",
+    )
+    .bind(role.as_uuid().as_uuid())
+    .bind(OLD)
+    .execute(&pool)
+    .await
+    .unwrap();
+    for (grant, kind, grant_service, wildcard) in [
+        ("gql:billing:Query.*", "gql", SERVICE, true),
+        ("gql:other:Query.users", "gql", "other", false),
+        ("rest:billing:GET /invoices", "rest", SERVICE, false),
+    ] {
+        sqlx::query(
+            "INSERT INTO iam_role_permissions (role_id, permission_key, key_kind, service,
+                is_wildcard, active, granted_by, granted_at)
+            VALUES ($1, $2, $3, $4, $5, TRUE, 'system:test', now())",
+        )
+        .bind(role.as_uuid().as_uuid())
+        .bind(grant)
+        .bind(kind)
+        .bind(grant_service)
+        .bind(wildcard)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let roles = PgRoleRepository::new(pool);
+
+    let graphql = roles
+        .find_catalogue_grants(&service(), PermissionKeyKind::Gql)
+        .await
+        .unwrap();
+    let rest = roles
+        .find_catalogue_grants(&service(), PermissionKeyKind::Rest)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        graphql,
+        vec![
+            GrantRecord {
+                role,
+                key: key(PAY),
+                status: GrantStatus::Active,
+            },
+            GrantRecord {
+                role,
+                key: key(OLD),
+                status: GrantStatus::Orphaned,
+            },
+        ]
+    );
+    assert_eq!(
+        rest,
+        vec![GrantRecord {
+            role,
+            key: key("rest:billing:GET /invoices"),
+            status: GrantStatus::Active,
+        }]
+    );
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn the_created_keys_of_an_activation_are_read_from_its_event(pool: PgPool) {
+    let mut rng = TestRng::from_env();
+    let spec_id = draft_graphql(&pool, &mut rng).await;
+    let event = GraphQlPermissionsCreated {
+        event_id: uuid_v7(&mut rng),
+        spec_id,
+        service: service(),
+        created_keys: vec![key(PAY), key(INVOICES)],
+        renamed: Vec::new(),
+        flag_changes: Vec::new(),
+        actor: ActorRef::User(uuid_v7(&mut rng)),
+        occurred_at: at(),
+    };
+    let statement = CatalogueStatement::new(parts(PermissionKeyKind::Gql, spec_id)).unwrap();
+    let change = rebuilt(
+        &catalogue_change(&mut rng, DecisionEffect::Affected, vec![statement]),
+        |change| change.events = vec![EventEnvelope::of(&event).unwrap()],
+    );
+    PgIamUnitOfWork::new(pool.clone())
+        .commit(change)
+        .await
+        .unwrap();
+    let permissions = PgGraphQlPermissionRepository::new(pool);
+
+    let found = permissions.find_created_keys(spec_id).await.unwrap();
+    let unknown = permissions
+        .find_created_keys(SpecId::from_uuid(uuid_v7(&mut rng)))
+        .await
+        .unwrap();
+
+    assert_eq!(found, Some(vec![key(PAY), key(INVOICES)]));
+    assert_eq!(unknown, None);
 }

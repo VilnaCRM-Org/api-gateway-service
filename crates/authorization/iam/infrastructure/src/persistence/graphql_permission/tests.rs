@@ -4,7 +4,9 @@ use iam_domain::{
 };
 use sqlx::types::Uuid as SqlUuid;
 
-use super::{Activity, EntryColumns, FlagColumns, PermissionRow, restore, restore_all};
+use super::{
+    Activity, EntryColumns, FlagColumns, PermissionRow, created_keys, restore, restore_all,
+};
 
 const ID_A: &str = "0b7e5d3c-2a19-4f8e-8d6c-5b4a39281706";
 const ID_B: &str = "7f1c2a4e-1d0b-4f5e-9a3c-2b6d8e0f1a2b";
@@ -138,4 +140,46 @@ fn flag_changes_become_parallel_columns() {
     assert_eq!(columns.keys, vec!["gql:billing:Mutation.pay"]);
     assert_eq!(columns.sensitive, vec![true]);
     assert_eq!(columns.audit_always, vec![true]);
+}
+
+#[test]
+fn the_created_keys_of_a_stored_event_payload_are_read_in_order() {
+    let payload = r#"{"id":"1","type":"iam.graphql_permissions.created","occurredAt":"x","data":{"createdKeys":["gql:billing:Query.invoices","gql:billing:Mutation.pay"],"renamed":[]}}"#;
+
+    assert_eq!(
+        created_keys(payload).unwrap(),
+        vec![
+            key("gql:billing:Query.invoices"),
+            key("gql:billing:Mutation.pay")
+        ]
+    );
+}
+
+#[test]
+fn an_event_payload_without_created_keys_is_unusable() {
+    assert!(matches!(
+        created_keys(r#"{"data":{}}"#),
+        Err(RepositoryError::Unavailable(_))
+    ));
+}
+
+#[test]
+fn a_payload_that_is_not_json_is_unusable() {
+    assert!(matches!(
+        created_keys("not json"),
+        Err(RepositoryError::Unavailable(_))
+    ));
+}
+
+#[test]
+fn a_created_key_that_is_not_text_or_not_a_key_is_unusable() {
+    for payload in [
+        r#"{"data":{"createdKeys":[1]}}"#,
+        r#"{"data":{"createdKeys":["not a key"]}}"#,
+    ] {
+        assert!(matches!(
+            created_keys(payload),
+            Err(RepositoryError::Unavailable(_))
+        ));
+    }
 }

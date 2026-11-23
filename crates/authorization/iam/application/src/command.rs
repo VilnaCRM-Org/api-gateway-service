@@ -4,7 +4,9 @@
 //! The caller reads the result of a committed command through its change receipt.
 
 pub mod assign_user_role;
+pub mod create_graphql_permissions;
 pub mod create_role;
+pub mod delete_role;
 pub mod load_graphql_spec;
 pub mod load_openapi_spec;
 pub mod revoke_user_role;

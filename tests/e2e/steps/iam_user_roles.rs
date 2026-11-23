@@ -24,6 +24,11 @@ async fn assignable_role_with_grants(world: &mut AppWorld, name: String, grants:
     world.seed_role(&name, &keys).await;
 }
 
+#[given("every update of an assignment fails in the store")]
+async fn assignment_updates_fail(world: &mut AppWorld) {
+    world.force_assignment_updates_to_fail().await;
+}
+
 #[then(expr = "the IAM policy version should be {int}")]
 async fn policy_version_is(world: &mut AppWorld, expected: i64) {
     assert_eq!(world.policy_epoch().await.version().value(), expected);

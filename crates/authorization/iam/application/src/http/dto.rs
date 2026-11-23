@@ -3,7 +3,7 @@
 //! Each one keeps its schema constraints and its validator attributes on the same field so that
 //! both stay equal.
 
-use iam_domain::{EntityVersion, RoleId, RoleKind, RoleParts, TokenRejection};
+use iam_domain::{ChangeReceipt, EntityVersion, RoleId, RoleKind, RoleParts, TokenRejection};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use shared_application::http::Violation;
 use utoipa::{IntoParams, ToSchema};
@@ -231,6 +231,37 @@ impl UpdateRoleRequest {
                 &self.description.0
             )
         )
+    }
+}
+
+/// The text that the idempotency digest of a role deletion covers: the operation, the role and
+/// the version.
+#[must_use]
+pub fn delete_role_canonical_form(id: RoleId, expected: EntityVersion) -> String {
+    format!("role.delete:{:?}", (id.to_string(), expected.value()))
+}
+
+/// The result of a role deletion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schema(as = DeletedRole)]
+pub struct DeleteRoleResponse {
+    /// The identifier of the deleted role.
+    #[schema(format = Uuid)]
+    pub id: String,
+    /// The number of assignments that the deletion revoked.
+    #[schema(minimum = 0)]
+    pub revoked_assignments: u32,
+}
+
+impl From<&ChangeReceipt> for DeleteRoleResponse {
+    /// The role that the receipt names and the number of assignments it revoked; a receipt that
+    /// reports no count is one of no revoked assignments.
+    fn from(receipt: &ChangeReceipt) -> Self {
+        Self {
+            id: receipt.target().target_id().to_owned(),
+            revoked_assignments: receipt.revoked_assignments().unwrap_or_default(),
+        }
     }
 }
 

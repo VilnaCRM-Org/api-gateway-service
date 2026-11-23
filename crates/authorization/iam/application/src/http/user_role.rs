@@ -97,7 +97,7 @@ pub(crate) async fn assign_user_role(
 }
 
 /// The receipt of the change that the key already committed for the same request, if any.
-async fn find_replay(
+pub(super) async fn find_replay(
     state: &IamState,
     actor: &ActorRef,
     idempotency: Option<&IdempotencyRequest>,

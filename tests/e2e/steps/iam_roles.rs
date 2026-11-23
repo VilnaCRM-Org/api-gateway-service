@@ -94,6 +94,24 @@ fn pointer_should_equal_text(world: &mut AppWorld, pointer: String, expected: St
     );
 }
 
+#[then(expr = "the JSON pointer {string} should equal the seeded role")]
+#[expect(
+    clippy::needless_pass_by_ref_mut,
+    reason = "cucumber fixes the step signature"
+)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "cucumber fixes the step signature"
+)]
+fn pointer_should_equal_seeded_role(world: &mut AppWorld, pointer: String) {
+    assert_eq!(
+        at(world, &pointer),
+        Some(Value::String(world.seeded_role().to_owned())),
+        "body: {}",
+        world.reply().body
+    );
+}
+
 #[then(expr = "the JSON pointer {string} should equal the number {int}")]
 #[expect(
     clippy::needless_pass_by_ref_mut,

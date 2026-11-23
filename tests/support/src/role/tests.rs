@@ -1,8 +1,9 @@
 use std::time::SystemTime;
 
 use iam_domain::{
-    ChangeStatement, RepositoryError, RoleKind, RolePageQuery, RoleParts, RoleRepository as _,
-    RoleStatement,
+    ChangeStatement, GrantRecord, GrantStatus, PermissionGrant, PermissionGrantSet, PermissionKey,
+    PermissionKeyKind, RepositoryError, RoleKind, RolePageQuery, RoleParts, RoleRepository as _,
+    RoleStatement, ServiceName,
 };
 
 use super::{FakeRoleRepository, role, role_change, role_writer};
@@ -146,4 +147,74 @@ fn a_failing_repository_is_unavailable() {
         block_on(repository.find_page(&query(1))),
         Err(RepositoryError::Unavailable(_))
     ));
+}
+
+fn holding_grants(rng: &mut TestRng, name: &str, grants: &[&str]) -> RoleParts {
+    let mut parts = parts(rng, name, RoleKind::Custom);
+    parts.grants = PermissionGrantSet::new(
+        grants
+            .iter()
+            .map(|grant| PermissionGrant::parse(grant).unwrap()),
+    )
+    .unwrap();
+    parts
+}
+
+#[test]
+fn the_catalogue_grants_of_a_role_are_its_exact_keys_of_the_service_and_the_form() {
+    let mut rng = TestRng::from_seed(4);
+    let role = holding_grants(
+        &mut rng,
+        "Billing",
+        &[
+            "gql:billing:Query.invoices",
+            "gql:billing:*",
+            "gql:other:Query.users",
+            "rest:billing:GET /invoices",
+        ],
+    );
+    let repository = FakeRoleRepository::holding(vec![role.clone()]);
+    let service = ServiceName::new("billing").unwrap();
+
+    let found =
+        block_on(repository.find_catalogue_grants(&service, PermissionKeyKind::Gql)).unwrap();
+
+    assert_eq!(
+        found,
+        vec![GrantRecord {
+            role: role.id,
+            key: PermissionKey::parse("gql:billing:Query.invoices").unwrap(),
+            status: GrantStatus::Active,
+        }]
+    );
+}
+
+#[test]
+fn explicit_grant_records_replace_the_grants_of_the_roles() {
+    let mut rng = TestRng::from_seed(4);
+    let role = holding_grants(&mut rng, "Billing", &["gql:billing:Query.invoices"]);
+    let orphaned = GrantRecord {
+        role: role.id,
+        key: PermissionKey::parse("gql:billing:Query.old").unwrap(),
+        status: GrantStatus::Orphaned,
+    };
+    let repository =
+        FakeRoleRepository::holding(vec![role]).with_grant_records(vec![orphaned.clone()]);
+    let service = ServiceName::new("billing").unwrap();
+
+    let found =
+        block_on(repository.find_catalogue_grants(&service, PermissionKeyKind::Gql)).unwrap();
+
+    assert_eq!(found, vec![orphaned]);
+}
+
+#[test]
+fn a_failing_repository_cannot_list_catalogue_grants() {
+    let service = ServiceName::new("billing").unwrap();
+
+    let found = block_on(
+        FakeRoleRepository::failing().find_catalogue_grants(&service, PermissionKeyKind::Gql),
+    );
+
+    assert!(matches!(found, Err(RepositoryError::Unavailable(_))));
 }

@@ -4,17 +4,19 @@
 use std::time::Duration;
 
 use iam_domain::{
-    AuditChainHead, ChangeReceipt, ChangeStatement, DecisionEffect, EventValue, IamChange,
-    IamUnitOfWork as _, PolicyVersion, RepositoryError, SecurityAuditLog as _,
+    AuditChainHead, ChangeReceipt, ChangeReceiptRepository as _, ChangeStatement, DecisionEffect,
+    EventValue, IamChange, IamUnitOfWork as _, PolicyVersion, RepositoryError,
+    SecurityAuditLog as _,
 };
 use iam_infrastructure::persistence::event_encoding::encode;
-use iam_infrastructure::{PgIamUnitOfWork, PgSecurityAuditLog};
+use iam_infrastructure::{PgChangeReceiptRepository, PgIamUnitOfWork, PgSecurityAuditLog};
 use serde_json::Value;
 use shared_infrastructure::persistence::{PostgresSettings, connect_lazy};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::types::Uuid as SqlUuid;
 use sqlx::{PgPool, Row as _};
 use test_support::log::LogRecorder;
+use test_support::security_audit::security_audit_event;
 use test_support::seed::TestRng;
 use test_support::unit_of_work::{iam_change, rebuilt};
 
@@ -628,4 +630,59 @@ async fn an_unreachable_database_is_unavailable() {
     let error = unit.commit(change).await.unwrap_err();
 
     assert!(matches!(error, RepositoryError::Unavailable(_)));
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn a_change_that_revokes_assignments_stores_their_number_and_every_audit_record(
+    pool: PgPool,
+) {
+    let mut rng = TestRng::from_env();
+    let change = iam_change(&mut rng, DecisionEffect::Affected, 3)
+        .with_revoked_assignments(2)
+        .with_related_audits(vec![
+            security_audit_event(&mut rng),
+            security_audit_event(&mut rng),
+        ])
+        .unwrap();
+    let unit = PgIamUnitOfWork::new(pool.clone());
+
+    let receipt = unit.commit(change.clone()).await.unwrap();
+
+    assert_eq!(receipt.revoked_assignments(), Some(2));
+    assert_eq!(counts(&pool).await.audit, 3);
+    let stored: Option<i32> = sqlx::query_scalar(
+        "SELECT revoked_assignments FROM iam_change_receipts WHERE change_id = $1",
+    )
+    .bind(change.parts().change_id.as_uuid().as_uuid())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(stored, Some(2));
+    let read = PgChangeReceiptRepository::new(pool.clone())
+        .find(change.parts().change_id)
+        .await
+        .unwrap();
+    assert_eq!(read, receipt);
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn a_change_that_revokes_no_assignments_stores_no_number(pool: PgPool) {
+    let change = iam_change(&mut TestRng::from_env(), DecisionEffect::Affected, 1);
+    let unit = PgIamUnitOfWork::new(pool.clone());
+
+    unit.commit(change.clone()).await.unwrap();
+
+    let stored: Option<i32> = sqlx::query_scalar(
+        "SELECT revoked_assignments FROM iam_change_receipts WHERE change_id = $1",
+    )
+    .bind(change.parts().change_id.as_uuid().as_uuid())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(stored, None);
+    let read = PgChangeReceiptRepository::new(pool)
+        .find(change.parts().change_id)
+        .await
+        .unwrap();
+    assert_eq!(read.revoked_assignments(), None);
 }

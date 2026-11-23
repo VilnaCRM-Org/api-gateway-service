@@ -5,7 +5,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use async_trait::async_trait;
 use iam_domain::{
     GqlCoordinate, GraphQlPermission, GraphQlPermissionParts, GraphQlPermissionRepository,
-    PermissionId, PermissionKey, PermissionPageQuery, RepositoryError, ServiceName,
+    PermissionId, PermissionKey, PermissionPageQuery, RepositoryError, ServiceName, SpecId,
 };
 
 /// A permission repository that keeps the GraphQL catalogue entries in memory with the rules of the
@@ -17,6 +17,7 @@ use iam_domain::{
 #[derive(Debug)]
 pub struct FakeGraphQlPermissionRepository {
     stored: Option<Mutex<Vec<GraphQlPermissionParts>>>,
+    created: Mutex<Vec<(SpecId, Vec<PermissionKey>)>>,
 }
 
 impl FakeGraphQlPermissionRepository {
@@ -25,13 +26,17 @@ impl FakeGraphQlPermissionRepository {
     pub const fn new() -> Self {
         Self {
             stored: Some(Mutex::new(Vec::new())),
+            created: Mutex::new(Vec::new()),
         }
     }
 
     /// A repository that answers `Unavailable`.
     #[must_use]
     pub const fn failing() -> Self {
-        Self { stored: None }
+        Self {
+            stored: None,
+            created: Mutex::new(Vec::new()),
+        }
     }
 
     /// Stores an entry.
@@ -52,6 +57,15 @@ impl FakeGraphQlPermissionRepository {
         stored.push(written.clone());
         drop(stored);
         Ok(())
+    }
+
+    /// Records the keys that the activation of `spec_id` created, as the event of the activation
+    /// holds them in production.
+    pub fn record_created_keys(&self, spec_id: SpecId, keys: Vec<PermissionKey>) {
+        self.created
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((spec_id, keys));
     }
 
     /// The state of every stored entry, in the order they were stored; empty for the failing
@@ -164,6 +178,20 @@ impl GraphQlPermissionRepository for FakeGraphQlPermissionRepository {
         found.sort_by_key(|parts| parts.id);
         found.truncate(limit);
         restored(found)
+    }
+
+    async fn find_created_keys(
+        &self,
+        spec_id: SpecId,
+    ) -> Result<Option<Vec<PermissionKey>>, RepositoryError> {
+        drop(self.lock()?);
+        Ok(self
+            .created
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|(recorded, _keys)| *recorded == spec_id)
+            .map(|(_recorded, keys)| keys.clone()))
     }
 }
 

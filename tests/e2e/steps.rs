@@ -5,6 +5,7 @@ mod graphql;
 mod health_check;
 mod http;
 mod iam;
+mod iam_graphql_activation;
 mod iam_graphql_specs;
 mod iam_openapi_specs;
 mod iam_roles;

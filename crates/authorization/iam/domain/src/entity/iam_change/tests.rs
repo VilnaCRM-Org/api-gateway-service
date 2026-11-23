@@ -136,3 +136,65 @@ fn a_change_with_a_rejected_audit_record_is_refused() {
 
     assert_eq!(change, Err(InvalidIamValue::ChangeAuditOutcome));
 }
+
+#[test]
+fn a_change_reports_no_revoked_assignments_unless_it_names_a_count() {
+    let change = IamChange::new(parts(DecisionEffect::Affected)).unwrap();
+    let version = PolicyVersion::new(8).unwrap();
+
+    assert_eq!(change.revoked_assignments(), None);
+    assert_eq!(change.receipt(version).revoked_assignments(), None);
+}
+
+#[test]
+fn the_receipt_of_a_change_carries_the_number_of_revoked_assignments() {
+    let change = IamChange::new(parts(DecisionEffect::Affected))
+        .unwrap()
+        .with_revoked_assignments(3);
+    let version = PolicyVersion::new(8).unwrap();
+
+    assert_eq!(change.revoked_assignments(), Some(3));
+    assert_eq!(change.receipt(version).revoked_assignments(), Some(3));
+}
+
+#[test]
+fn a_change_writes_its_own_audit_record_before_the_related_ones() {
+    let related = SecurityAuditEvent::record(SecurityAuditEventParts {
+        id: SecurityAuditEventId::parse("0190f2a8-7b3c-7d4e-8f00-000000000003").unwrap(),
+        target: AuditTarget::new("user_role", "ur-1").unwrap(),
+        policy_version: None,
+        ..audit(AuditOutcome::Committed).parts().clone()
+    })
+    .unwrap();
+    let change = IamChange::new(parts(DecisionEffect::Affected))
+        .unwrap()
+        .with_related_audits(vec![related.clone()])
+        .unwrap();
+    let version = PolicyVersion::new(8).unwrap();
+
+    let audits = change.audits(version);
+
+    assert_eq!(audits.len(), 2);
+    assert_eq!(audits[0].parts().id, change.parts().audit.parts().id);
+    assert_eq!(audits[1].parts().id, related.parts().id);
+    assert_eq!(audits[1].parts().policy_version, Some(version));
+}
+
+#[test]
+fn a_change_without_related_audits_writes_only_its_own_record() {
+    let change = IamChange::new(parts(DecisionEffect::Unaffected)).unwrap();
+
+    let audits = change.audits(PolicyVersion::new(8).unwrap());
+
+    assert_eq!(audits.len(), 1);
+    assert_eq!(audits[0].parts().policy_version, None);
+}
+
+#[test]
+fn a_related_audit_record_that_is_not_committed_is_refused() {
+    let change = IamChange::new(parts(DecisionEffect::Affected)).unwrap();
+
+    let refused = change.with_related_audits(vec![audit(AuditOutcome::Rejected)]);
+
+    assert_eq!(refused, Err(InvalidIamValue::ChangeAuditOutcome));
+}

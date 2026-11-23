@@ -18,6 +18,7 @@ fn row() -> Row {
         target_id: "r-1".to_owned(),
         entity_version: 4,
         policy_version: Some(9),
+        revoked_assignments: None,
     }
 }
 
@@ -49,12 +50,31 @@ fn a_row_without_a_policy_version_is_a_change_that_did_not_affect_decisions() {
     assert_eq!(receipt.policy_version(), None);
 }
 
+#[test]
+fn a_row_with_revoked_assignments_is_a_deletion_that_reports_their_number() {
+    let receipt = restore(
+        change_id(),
+        &Row {
+            revoked_assignments: Some(3),
+            ..row()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(receipt.revoked_assignments(), Some(3));
+    assert_eq!(
+        restore(change_id(), &row()).unwrap().revoked_assignments(),
+        None
+    );
+}
+
 #[rstest]
 #[case::actor(Row { actor: "robot:1".to_owned(), ..row() })]
 #[case::target_type(Row { target_type: "Role".to_owned(), ..row() })]
 #[case::target_id(Row { target_id: String::new(), ..row() })]
 #[case::entity_version(Row { entity_version: 0, ..row() })]
 #[case::policy_version(Row { policy_version: Some(-1), ..row() })]
+#[case::revoked_assignments(Row { revoked_assignments: Some(-1), ..row() })]
 fn a_row_that_breaks_a_domain_invariant_is_unavailable(#[case] row: Row) {
     let error = restore(change_id(), &row).unwrap_err();
 

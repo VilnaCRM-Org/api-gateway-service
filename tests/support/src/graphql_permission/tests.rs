@@ -1,6 +1,6 @@
 use iam_domain::{
     GqlName, GraphQlPermission, GraphQlPermissionRepository as _, PermissionFlags, PermissionId,
-    PermissionKey, PermissionPageQuery, RepositoryError, ServiceName,
+    PermissionKey, PermissionPageQuery, RepositoryError, ServiceName, SpecId,
 };
 
 use super::FakeGraphQlPermissionRepository;
@@ -183,4 +183,27 @@ fn the_failing_repository_answers_unavailable_and_holds_nothing() {
 #[test]
 fn the_default_repository_is_empty() {
     assert_eq!(FakeGraphQlPermissionRepository::default().stored().len(), 0);
+}
+
+#[test]
+fn the_created_keys_of_a_recorded_activation_are_found_by_version() {
+    let repository = FakeGraphQlPermissionRepository::new();
+    let spec = SpecId::parse("0b7e5d3c-2a19-4f8e-8d6c-5b4a39281709").unwrap();
+    let other = SpecId::parse("0b7e5d3c-2a19-4f8e-8d6c-5b4a39281710").unwrap();
+    repository.record_created_keys(spec, vec![key("gql:billing:Query.invoices")]);
+
+    assert_eq!(
+        block_on(repository.find_created_keys(spec)).unwrap(),
+        Some(vec![key("gql:billing:Query.invoices")])
+    );
+    assert_eq!(block_on(repository.find_created_keys(other)).unwrap(), None);
+}
+
+#[test]
+fn a_failing_repository_cannot_find_created_keys() {
+    let spec = SpecId::parse("0b7e5d3c-2a19-4f8e-8d6c-5b4a39281709").unwrap();
+
+    let found = block_on(FakeGraphQlPermissionRepository::failing().find_created_keys(spec));
+
+    assert!(matches!(found, Err(RepositoryError::Unavailable(_))));
 }

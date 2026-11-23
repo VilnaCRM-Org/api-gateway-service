@@ -16,11 +16,13 @@ use shared_application::http::{ApiPath, Problem, ValidatedJson, ValidatedQuery, 
 
 use super::IamState;
 use super::dto::{
-    CreateRoleRequest, ListRolesParams, RolePageResponse, RoleResponse, UpdateRoleRequest,
+    CreateRoleRequest, DeleteRoleResponse, ListRolesParams, RolePageResponse, RoleResponse,
+    UpdateRoleRequest, delete_role_canonical_form,
 };
 use super::extract::{CallerPrincipal, IdempotencyKeyHeader, VersionedWriteHeaders};
 use super::response::{WriteHeaders, change_headers, created_headers, etag};
 use crate::command::create_role::CreateRoleCommand;
+use crate::command::delete_role::DeleteRoleCommand;
 use crate::command::update_role::UpdateRoleCommand;
 use crate::error::IamError;
 use crate::principal::Principal;
@@ -160,6 +162,50 @@ pub(crate) async fn update_role(
     };
     let role = find_role(state, id).await?.ok_or(IamError::NotFound)?;
     Ok((role, receipt))
+}
+
+/// Deletes the role `id` as `caller` when it still holds the version `expected`, and revokes every
+/// assignment of it, or replays the deletion that `key` already committed; REST and GraphQL share
+/// it.
+///
+/// It returns the receipt of the change, which holds the number of revoked assignments, because a
+/// command returns no data and a deleted role can no longer be read.
+///
+/// # Errors
+///
+/// The problem of a refused request: 403 for a system role, 404 for an unknown or deleted role,
+/// 409 for a concurrent change or a role with more assignments than one transaction revokes, 412
+/// for a stale version, 422 for a key reused for another request, 500 for a storage failure.
+pub(crate) async fn delete_role(
+    state: &IamState,
+    caller: &Principal,
+    id: RoleId,
+    headers: VersionedWriteHeaders,
+) -> Result<ChangeReceipt, Problem> {
+    let VersionedWriteHeaders { expected, key } = headers;
+    let actor = caller.actor();
+    let idempotency = key.map(|key| IdempotencyRequest {
+        key,
+        request_digest: state
+            .request_digester
+            .digest(&delete_role_canonical_form(id, expected)),
+    });
+    if let Some(replayed) = find_replay(state, &actor, idempotency.as_ref()).await? {
+        return Ok(replayed);
+    }
+    let change_id = ChangeId::from_uuid(state.uuid_generator.generate());
+    let command = DeleteRoleCommand {
+        change_id,
+        role_id: id,
+        actor,
+        expected,
+        idempotency,
+    };
+    state.command_bus.dispatch(command).await?;
+    Ok(state
+        .query_bus
+        .ask(GetChangeReceiptQuery { change_id })
+        .await?)
 }
 
 /// The role with the identifier, none when it is unknown or deleted.
@@ -338,6 +384,67 @@ pub async fn update(
 ) -> Result<(WriteHeaders, Json<RoleResponse>), Problem> {
     let (role, receipt) = update_role(&state, &caller, parse_role_id(&id)?, headers, body).await?;
     Ok((change_headers(&receipt), Json(RoleResponse::from(role))))
+}
+
+/// Deletes a role.
+///
+/// # Errors
+///
+/// A problem document: 401 without a valid token, 403 for a system role, 404 for an unknown role,
+/// 409 for a concurrent change or too many assignments, 412 for a stale `If-Match`, 422 for an id
+/// that is not a UUID or a reused idempotency key, 428 without `If-Match`, 500 when the storage
+/// fails.
+#[utoipa::path(
+    delete,
+    path = "/roles/{id}",
+    operation_id = "api_roles_id_delete",
+    tag = "iam",
+    summary = "Deletes a role.",
+    description = "Deletes a custom role when `If-Match` holds the current `ETag` and revokes every assignment of it in the same transaction: the role and its assignments leave the active listings at once, the next policy version is committed, and `iam.role.deleted`, one `iam.user_role.revoked` per revoked assignment and the audit records are written. The response reports the number of revoked assignments. A system role cannot be deleted. A repeated `Idempotency-Key` with the same request within 24 hours returns the original result, including the number of revoked assignments.",
+    security(("bearerAuth" = [])),
+    params(
+        ("id" = String, Path, format = Uuid, description = "Role identifier"),
+        ("If-Match" = String, Header, description = "The `ETag` of the version the deletion ends, such as `\"3\"`."),
+        ("Idempotency-Key" = Option<String>, Header, description = "Makes the deletion safe to repeat for 24 hours; 1 to 255 visible ASCII characters.")
+    ),
+    responses(
+        (
+            status = 200,
+            description = "The role was deleted and its assignments were revoked.",
+            body = DeleteRoleResponse,
+            headers(
+                ("etag" = String, description = "The final version of the role in double quotes."),
+                ("iam-policy-version" = String, description = "The policy version that the change produced.")
+            )
+        ),
+        (status = 400, description = "Invalid identifier.", body = Problem, content_type = "application/problem+json"),
+        (
+            status = 401,
+            description = "The caller presented no valid bearer token.",
+            body = Problem,
+            content_type = "application/problem+json",
+            headers(("www-authenticate" = String, description = "The `Bearer` challenge."))
+        ),
+        (status = 403, description = "A system role cannot be deleted.", body = Problem, content_type = "application/problem+json"),
+        (status = 404, description = "Role not found.", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The role or one of its assignments changed concurrently, or the role has more assignments than one transaction revokes.", body = Problem, content_type = "application/problem+json"),
+        (status = 412, description = "`If-Match` is not the current version.", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Validation failed, or the idempotency key was used for another request.", body = Problem, content_type = "application/problem+json"),
+        (status = 428, description = "`If-Match` is missing.", body = Problem, content_type = "application/problem+json"),
+        (status = "default", description = "Problem response.", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+pub async fn delete(
+    State(state): State<IamState>,
+    CallerPrincipal(caller): CallerPrincipal,
+    ApiPath(id): ApiPath<String>,
+    headers: VersionedWriteHeaders,
+) -> Result<(WriteHeaders, Json<DeleteRoleResponse>), Problem> {
+    let receipt = delete_role(&state, &caller, parse_role_id(&id)?, headers).await?;
+    Ok((
+        change_headers(&receipt),
+        Json(DeleteRoleResponse::from(&receipt)),
+    ))
 }
 
 /// Lists roles.

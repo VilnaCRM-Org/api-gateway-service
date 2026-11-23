@@ -112,9 +112,7 @@ async fn write_records(
     for envelope in &change.parts().events {
         insert_event(connection, &EventRow::of(envelope, version, log_epoch)?).await?;
     }
-    let audit = change.audit(version);
-    let stored =
-        PgSecurityAuditLog::append_within(connection, std::slice::from_ref(&audit)).await?;
+    let stored = PgSecurityAuditLog::append_within(connection, &change.audits(version)).await?;
     insert_receipt(
         connection,
         &ReceiptRow::of(&change.receipt(version), changed_at),
@@ -259,6 +257,7 @@ struct ReceiptRow {
     target_id: String,
     entity_version: i64,
     policy_version: Option<i64>,
+    revoked_assignments: Option<i32>,
     created_at: OffsetDateTime,
 }
 
@@ -271,6 +270,9 @@ impl ReceiptRow {
             target_id: receipt.target().target_id().to_owned(),
             entity_version: receipt.entity_version().value(),
             policy_version: receipt.policy_version().map(PolicyVersion::value),
+            revoked_assignments: receipt
+                .revoked_assignments()
+                .map(|count| i32::try_from(count).unwrap_or(i32::MAX)),
             created_at,
         }
     }
@@ -289,12 +291,13 @@ async fn insert_receipt(
     ];
     sqlx::query!(
         "INSERT INTO iam_change_receipts (change_id, actor, target_type, target_id, entity_version,
-            policy_version, created_at)
-        VALUES ($1, ($2::text[])[1], ($2::text[])[2], ($2::text[])[3], $3, $4, $5)",
+            policy_version, revoked_assignments, created_at)
+        VALUES ($1, ($2::text[])[1], ($2::text[])[2], ($2::text[])[3], $3, $4, $5, $6)",
         row.change_id,
         texts.as_slice(),
         row.entity_version,
         row.policy_version,
+        row.revoked_assignments,
         row.created_at,
     )
     .execute(&mut *connection)

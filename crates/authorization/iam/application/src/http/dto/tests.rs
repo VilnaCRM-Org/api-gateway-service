@@ -11,8 +11,9 @@ use shared_domain::Uuid;
 use validator::Validate as _;
 
 use super::{
-    CreateRoleRequest, DescriptionPatch, ListRolesParams, RolePageResponse, RoleResponse,
-    TokenResolutionRequest, TokenResolutionResponse, UpdateRoleRequest,
+    CreateRoleRequest, DeleteRoleResponse, DescriptionPatch, ListRolesParams, RolePageResponse,
+    RoleResponse, TokenResolutionRequest, TokenResolutionResponse, UpdateRoleRequest,
+    delete_role_canonical_form,
 };
 use crate::command::update_role::DescriptionUpdate;
 use crate::error::IamError;
@@ -510,4 +511,56 @@ fn the_description_patch_serializes_as_its_text_or_null() {
         serde_json::to_value(DescriptionPatch(DescriptionUpdate::Remove)).unwrap(),
         json!(null)
     );
+}
+
+fn deletion_receipt(revoked: Option<u32>) -> iam_domain::ChangeReceipt {
+    let receipt = iam_domain::ChangeReceipt::new(
+        iam_domain::ChangeId::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ac").unwrap(),
+        iam_domain::ActorRef::User(Uuid::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ab").unwrap()),
+        iam_domain::AuditTarget::new("role", ROLE).unwrap(),
+        EntityVersion::new(4).unwrap(),
+        iam_domain::PolicyVersion::new(9).ok(),
+    );
+    match revoked {
+        Some(count) => receipt.with_revoked_assignments(count),
+        None => receipt,
+    }
+}
+
+#[test]
+fn the_deletion_response_names_the_role_and_the_revoked_assignments() {
+    let response = DeleteRoleResponse::from(&deletion_receipt(Some(3)));
+
+    assert_eq!(response.id, ROLE);
+    assert_eq!(response.revoked_assignments, 3);
+    assert_eq!(
+        serde_json::to_value(&response).unwrap(),
+        json!({ "id": ROLE, "revokedAssignments": 3 })
+    );
+}
+
+#[test]
+fn a_receipt_without_a_count_reports_no_revoked_assignments() {
+    let response = DeleteRoleResponse::from(&deletion_receipt(None));
+
+    assert_eq!(response.revoked_assignments, 0);
+}
+
+#[test]
+fn the_deletion_canonical_form_tells_one_request_from_another() {
+    let role = RoleId::parse(ROLE).unwrap();
+    let other = RoleId::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ce").unwrap();
+    let forms = [
+        delete_role_canonical_form(role, EntityVersion::new(1).unwrap()),
+        delete_role_canonical_form(role, EntityVersion::new(2).unwrap()),
+        delete_role_canonical_form(other, EntityVersion::new(1).unwrap()),
+    ];
+
+    assert_eq!(
+        forms[0],
+        delete_role_canonical_form(role, EntityVersion::new(1).unwrap())
+    );
+    assert_ne!(forms[0], forms[1]);
+    assert_ne!(forms[0], forms[2]);
+    assert!(forms[0].starts_with("role.delete:"));
 }

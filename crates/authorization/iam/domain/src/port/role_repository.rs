@@ -1,9 +1,12 @@
 //! Role read port (board name `RoleRepository`).
 
+use crate::policy::catalogue_activation::GrantRecord;
 use crate::port::RepositoryError;
 use crate::role::Role;
 use crate::value_object::identifier::RoleId;
+use crate::value_object::permission_key::PermissionKeyKind;
 use crate::value_object::role_kind::RoleKind;
+use crate::value_object::service_name::ServiceName;
 
 /// One page of roles to read: at most `limit` roles after the cursor, filtered by a name prefix
 /// (compared without regard to case) and a kind. The caller validates `limit` (1 to 100).
@@ -37,4 +40,17 @@ pub trait RoleRepository: std::fmt::Debug + Send + Sync {
     ///
     /// [`RepositoryError::Unavailable`] when the storage fails or holds unusable data.
     async fn find_page(&self, query: &RolePageQuery) -> Result<Vec<Role>, RepositoryError>;
+
+    /// Every grant of a role that is not deleted to an exact key of the service and the form, with
+    /// its status, in role then key order. Wildcard grants and reserved keys are not catalogue
+    /// grants and are left out.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when the storage fails or holds unusable data.
+    async fn find_catalogue_grants(
+        &self,
+        service: &ServiceName,
+        kind: PermissionKeyKind,
+    ) -> Result<Vec<GrantRecord>, RepositoryError>;
 }

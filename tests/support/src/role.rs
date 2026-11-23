@@ -4,9 +4,9 @@ use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use iam_domain::{
-    ActorRef, ChangeStatement, DecisionEffect, EntityVersion, IamChange, PermissionGrantSet,
-    RepositoryError, Role, RoleId, RoleKind, RoleName, RolePageQuery, RoleParts, RoleRepository,
-    RoleStatement,
+    ActorRef, ChangeStatement, DecisionEffect, EntityVersion, GrantRecord, GrantStatus, IamChange,
+    PermissionGrant, PermissionGrantSet, PermissionKeyKind, RepositoryError, Role, RoleId,
+    RoleKind, RoleName, RolePageQuery, RoleParts, RoleRepository, RoleStatement, ServiceName,
 };
 use rand::RngExt as _;
 
@@ -70,6 +70,7 @@ enum Answer {
 #[derive(Debug)]
 pub struct FakeRoleRepository {
     answer: Answer,
+    records: Option<Vec<GrantRecord>>,
 }
 
 impl FakeRoleRepository {
@@ -84,7 +85,16 @@ impl FakeRoleRepository {
     pub const fn holding(roles: Vec<RoleParts>) -> Self {
         Self {
             answer: Answer::Holding(roles),
+            records: None,
         }
+    }
+
+    /// The same repository with `records` as the catalogue grants it answers, instead of the
+    /// exact-key grants of its roles, which are all active.
+    #[must_use]
+    pub fn with_grant_records(mut self, records: Vec<GrantRecord>) -> Self {
+        self.records = Some(records);
+        self
     }
 
     /// A repository that answers `Unavailable`.
@@ -92,6 +102,7 @@ impl FakeRoleRepository {
     pub const fn failing() -> Self {
         Self {
             answer: Answer::Failing,
+            records: None,
         }
     }
 
@@ -131,6 +142,23 @@ fn selected(role: &RoleParts, query: &RolePageQuery) -> bool {
     after && prefix && kind
 }
 
+/// The exact-key grants of the live roles, all active, in role then key order.
+fn role_grant_records(roles: &[&RoleParts]) -> Vec<GrantRecord> {
+    roles
+        .iter()
+        .flat_map(|role| {
+            role.grants.iter().filter_map(|grant| match grant {
+                PermissionGrant::Key(key) => Some(GrantRecord {
+                    role: role.id,
+                    key: key.clone(),
+                    status: GrantStatus::Active,
+                }),
+                PermissionGrant::Wildcard(_) => None,
+            })
+        })
+        .collect()
+}
+
 #[async_trait]
 impl RoleRepository for FakeRoleRepository {
     async fn find_by_id(&self, id: RoleId) -> Result<Option<Role>, RepositoryError> {
@@ -150,6 +178,21 @@ impl RoleRepository for FakeRoleRepository {
             .take(limit)
             .map(|role| Role::restore(role.clone()))
             .collect())
+    }
+
+    async fn find_catalogue_grants(
+        &self,
+        service: &ServiceName,
+        kind: PermissionKeyKind,
+    ) -> Result<Vec<GrantRecord>, RepositoryError> {
+        let live = self.live()?;
+        let mut records = self
+            .records
+            .clone()
+            .unwrap_or_else(|| role_grant_records(&live));
+        records.retain(|record| record.key.kind() == kind && record.key.service() == service);
+        records.sort_by(|left, right| (left.role, &left.key).cmp(&(right.role, &right.key)));
+        Ok(records)
     }
 }
 

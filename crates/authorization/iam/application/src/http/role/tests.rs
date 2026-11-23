@@ -851,3 +851,152 @@ async fn a_key_reused_for_another_update_is_a_422_problem_and_dispatches_nothing
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(commands.dispatched(), Vec::<&str>::new());
 }
+
+fn delete(headers: &[(&str, &str)]) -> Request<Body> {
+    request(Method::DELETE, &format!("/roles/{ROLE}"), headers, None)
+}
+
+/// The answers of a deletion that revoked `revoked` assignments and took policy version 5.
+fn deleted(revoked: u32) -> Answers {
+    Answers {
+        receipt: receipt_at(2, Some(5)).with_revoked_assignments(revoked),
+        ..Answers::default()
+    }
+}
+
+#[tokio::test]
+async fn a_deleted_role_is_200_with_the_revoked_assignments_the_final_etag_and_the_policy_version()
+{
+    let (app, commands, queries, asked) = app(deleted(3));
+
+    let (status, headers, body) = answer(app, delete(&[("If-Match", "\"1\"")])).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(header(&headers, ETAG.as_str()), Some("\"2\"".to_owned()));
+    assert_eq!(header(&headers, "iam-policy-version"), Some("5".to_owned()));
+    assert_eq!(body, json!({ "id": ROLE, "revokedAssignments": 3 }));
+    assert_eq!(commands.dispatched(), ["DeleteRoleCommand"]);
+    assert_eq!(queries.asked(), ["GetChangeReceiptQuery"]);
+    let sent = recorded(&asked.deletions);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].actor, ActorRef::User(Uuid::parse(USER).unwrap()));
+    assert_eq!(sent[0].role_id, RoleId::parse(ROLE).unwrap());
+    assert_eq!(sent[0].expected.value(), 1);
+    assert_eq!(sent[0].idempotency, None);
+}
+
+#[tokio::test]
+async fn a_deletion_without_a_token_is_the_401_problem_and_dispatches_nothing() {
+    let (app, commands, _queries, _asked) = app(deleted(0));
+
+    let (status, _headers, problem) =
+        answer(app, anonymous(delete(&[("If-Match", "\"1\"")]))).await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(problem["status"], json!(401));
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}
+
+#[tokio::test]
+async fn a_deletion_without_if_match_is_the_428_problem_and_dispatches_nothing() {
+    let (app, commands, _queries, _asked) = app(deleted(0));
+
+    let (status, _headers, problem) = answer(app, delete(&[])).await;
+
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED);
+    assert_eq!(problem["status"], json!(428));
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}
+
+#[tokio::test]
+async fn a_deletion_with_an_if_match_that_is_no_etag_is_the_412_problem() {
+    let (app, commands, _queries, _asked) = app(deleted(0));
+
+    let (status, _headers, problem) = answer(app, delete(&[("If-Match", "W/\"1\"")])).await;
+
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+    assert_eq!(problem["status"], json!(412));
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}
+
+#[rstest]
+#[case::stale(|| IamError::PreconditionFailed, StatusCode::PRECONDITION_FAILED)]
+#[case::system_role(|| IamError::Forbidden, StatusCode::FORBIDDEN)]
+#[case::unknown(|| IamError::NotFound, StatusCode::NOT_FOUND)]
+#[case::concurrent(|| IamError::Conflict, StatusCode::CONFLICT)]
+#[case::storage(|| IamError::Storage("disk on fire".into()), StatusCode::INTERNAL_SERVER_ERROR)]
+#[tokio::test]
+async fn a_refused_deletion_is_its_problem_and_reads_nothing_back(
+    #[case] refusal: crate::fixtures::Refusal,
+    #[case] expected: StatusCode,
+) {
+    let answers = Answers {
+        delete: Err(refusal),
+        ..deleted(0)
+    };
+    let (app, _commands, queries, _asked) = app(answers);
+
+    let (status, _headers, problem) = answer(app, delete(&[("If-Match", "\"1\"")])).await;
+
+    assert_eq!(status, expected);
+    assert_eq!(problem["status"], json!(expected.as_u16()));
+    assert_eq!(queries.asked(), Vec::<&str>::new());
+}
+
+#[tokio::test]
+async fn a_deletion_with_an_id_that_is_no_uuid_is_a_422_problem() {
+    let (app, commands, _queries, _asked) = app(deleted(0));
+    let request = request(
+        Method::DELETE,
+        "/roles/nope",
+        &[("If-Match", "\"1\"")],
+        None,
+    );
+
+    let (status, _headers, problem) = answer(app, request).await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(problem["violations"][0]["propertyPath"], json!("id"));
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}
+
+#[tokio::test]
+async fn a_deletion_key_travels_with_the_command_and_a_replay_returns_the_original_count() {
+    let (app_new, _commands, _queries, asked) = app(deleted(3));
+    let answers = Answers {
+        replay: Ok(Some(receipt_at(2, Some(7)).with_revoked_assignments(3))),
+        ..deleted(0)
+    };
+    let (app_replay, commands, queries, _replayed) = app(answers);
+    let headers = [("If-Match", "\"1\""), ("Idempotency-Key", "delete-billing")];
+
+    let (status, _headers, _body) = answer(app_new, delete(&headers)).await;
+    let (replay_status, replay_headers, replay_body) = answer(app_replay, delete(&headers)).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let key = recorded(&asked.deletions)[0].idempotency.clone().unwrap();
+    assert_eq!(key.key.as_str(), "delete-billing");
+    assert_eq!(replay_status, StatusCode::OK);
+    assert_eq!(
+        header(&replay_headers, "iam-policy-version"),
+        Some("7".to_owned())
+    );
+    assert_eq!(replay_body, json!({ "id": ROLE, "revokedAssignments": 3 }));
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+    assert_eq!(queries.asked(), ["GetIdempotentReplayQuery"]);
+}
+
+#[tokio::test]
+async fn a_deletion_key_reused_for_another_request_is_a_422_problem() {
+    let answers = Answers {
+        replay: Err(|| IamError::IdempotencyMismatch),
+        ..deleted(0)
+    };
+    let (app, commands, _queries, _asked) = app(answers);
+    let headers = [("If-Match", "\"1\""), ("Idempotency-Key", "delete-billing")];
+
+    let (status, _headers, _problem) = answer(app, delete(&headers)).await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}

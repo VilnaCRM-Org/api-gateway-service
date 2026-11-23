@@ -23,3 +23,20 @@ fn a_receipt_keeps_the_change_its_target_and_both_versions() {
     assert_eq!(receipt.entity_version(), version);
     assert_eq!(receipt.policy_version(), policy);
 }
+
+#[test]
+fn a_receipt_reports_no_revoked_assignments_until_it_is_given_a_count() {
+    let receipt = ChangeReceipt::new(
+        ChangeId::parse("0190f2a8-7b3c-7d4e-8f00-000000000001").unwrap(),
+        ActorRef::User(Uuid::parse("0190f2a8-7b3c-7d4e-8f00-123456789abc").unwrap()),
+        AuditTarget::new("role", "r-1").unwrap(),
+        EntityVersion::new(4).unwrap(),
+        PolicyVersion::new(9).ok(),
+    );
+
+    assert_eq!(receipt.revoked_assignments(), None);
+    assert_eq!(
+        receipt.with_revoked_assignments(3).revoked_assignments(),
+        Some(3)
+    );
+}
