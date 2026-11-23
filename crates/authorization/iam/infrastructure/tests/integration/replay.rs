@@ -20,7 +20,7 @@ const DEAD_DATABASE_URL: &str = "postgres://app:unused@127.0.0.1:1/app";
 /// The rows of the outbox, the audit log, the receipts and the idempotency keys.
 async fn counts(pool: &PgPool) -> (i64, i64, i64, i64) {
     sqlx::query_as(
-        "SELECT (SELECT count(*) FROM iam_outbox), (SELECT count(*) FROM iam_security_audit_events), \
+        "SELECT (SELECT count(*) FROM iam_outbox WHERE kind = 'event'), (SELECT count(*) FROM iam_security_audit_events), \
          (SELECT count(*) FROM iam_change_receipts), (SELECT count(*) FROM iam_idempotency_keys)",
     )
     .fetch_one(pool)

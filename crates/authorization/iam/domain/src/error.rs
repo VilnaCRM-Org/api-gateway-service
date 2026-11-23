@@ -3,6 +3,7 @@
 mod catalogue;
 mod gateway;
 mod spec;
+mod state;
 
 pub use catalogue::{InvalidCatalogueEntry, RenameRefused};
 pub use gateway::{
@@ -10,6 +11,7 @@ pub use gateway::{
     RouteConflict, UpstreamChangeRefused,
 };
 pub use spec::{InvalidSpec, SpecPosition, SpecTransitionRefused};
+pub use state::InvalidStateRecord;
 
 use crate::value_object::entity_version::EntityVersion;
 

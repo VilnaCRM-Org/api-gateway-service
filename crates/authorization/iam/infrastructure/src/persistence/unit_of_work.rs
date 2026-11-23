@@ -1,7 +1,8 @@
 //! PostgreSQL implementation of the unit of work: one transaction per administrative change.
 //!
-//! Until Story 7.2 the unit of work writes outbox event rows only; the state rows, the policy
-//! digest and the `__head` row follow there, and Story 7.4 adds the relay wake-up.
+//! A versioned transaction writes one outbox state row for every entity it changed, the policy
+//! digest and the `__head` row of its version, next to the outbox event rows; Story 7.4 adds the
+//! relay wake-up.
 
 use std::time::SystemTime;
 
@@ -20,6 +21,7 @@ use crate::persistence::graphql_spec;
 use crate::persistence::openapi_spec;
 use crate::persistence::role::save_within;
 use crate::persistence::security_audit_log::{PgSecurityAuditLog, emit};
+use crate::persistence::state_writer::{StateCapture, Versioned};
 use crate::persistence::user_role;
 
 /// The topic of the IAM domain events.
@@ -30,7 +32,8 @@ const NANOS_PER_MICRO: i128 = 1_000;
 
 /// Commits administrative changes in one transaction.
 ///
-/// It writes the `iam_policy_epoch`, `iam_outbox`, `iam_security_audit_events`,
+/// It writes the `iam_policy_epoch` (the version, the digest and the catalogue epoch), the state
+/// and event rows of `iam_outbox`, `iam_security_audit_events`,
 /// `iam_change_receipts` and `iam_idempotency_keys` tables, and runs the role statements against
 /// `iam_roles` and `iam_role_permissions`, the assignment statements against `iam_user_roles` and
 /// the specification statements against `iam_graphql_specs`, `iam_graphql_spec_fields` and
@@ -81,9 +84,33 @@ async fn write(
     let locked = lock_epoch(connection).await?;
     let version = next_version(connection, change, &locked, changed_at).await?;
     check(&change.parts().statements, locked.version)?;
+    let capture = capture_state(connection, change).await?;
     run(connection, &change.parts().statements).await?;
+    if let Some(capture) = capture {
+        let target = Versioned {
+            version,
+            log_epoch: locked.log_epoch,
+            changed_at,
+        };
+        capture.write(connection, &target).await?;
+    }
     let stored = write_records(connection, change, version, locked.log_epoch, changed_at).await?;
     Ok((version, stored))
+}
+
+/// The state of the entities that a change affecting decisions may change, before its statements
+/// run; a change that does not affect decisions writes no state row.
+async fn capture_state(
+    connection: &mut PgConnection,
+    change: &IamChange,
+) -> Result<Option<StateCapture>, RepositoryError> {
+    if change.affects_decisions() {
+        StateCapture::before(connection, &change.parts().statements)
+            .await
+            .map(Some)
+    } else {
+        Ok(None)
+    }
 }
 
 /// The policy version of the transaction: the next one when the change affects decisions, the

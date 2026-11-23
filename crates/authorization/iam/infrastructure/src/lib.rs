@@ -5,18 +5,25 @@
 //! application layer. SQL lives here and nowhere else.
 
 pub mod kafka;
+pub mod kubernetes;
 pub mod persistence;
+pub mod policy_state;
 pub mod request_digest;
 pub mod rng;
 pub mod token;
 
 pub use kafka::{KafkaSecret, KafkaSecurity, KafkaSettings, KrafkaTopicInspector, SaslMechanism};
+pub use kubernetes::{
+    KubernetesEndpointWatch, KubernetesSettings, KubernetesSetupError, StaticEndpointWatch,
+    StaticEndpointsError,
+};
 pub use persistence::PgPolicyEpochRepository;
 pub use persistence::advisory_lock_leadership::AdvisoryLockLeadership;
 pub use persistence::change_receipt::PgChangeReceiptRepository;
 pub use persistence::graphql_permission::PgGraphQlPermissionRepository;
 pub use persistence::graphql_spec::PgGraphQlSpecRepository;
 pub use persistence::idempotency::PgIdempotencyRepository;
+pub use persistence::maintenance_store::PgMaintenanceStore;
 pub use persistence::openapi_spec::PgOpenApiSpecRepository;
 pub use persistence::policy_read::{PgPolicyReadRepository, PolicyReadHook};
 pub use persistence::rest_permission::PgRestPermissionRepository;
@@ -28,6 +35,8 @@ pub use persistence::startup_lock::PgStartupLock;
 pub use persistence::task_state::PgTaskStateRepository;
 pub use persistence::unit_of_work::PgIamUnitOfWork;
 pub use persistence::user_role::PgUserRoleRepository;
+pub use policy_state::json_state_record_codec::JsonStateRecordCodec;
+pub use policy_state::sha256_policy_digest::Sha256PolicyDigest;
 pub use request_digest::Sha256RequestDigester;
 pub use rng::SeededRng;
 pub use token::caching_token_repository::CachingTokenRepository;

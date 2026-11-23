@@ -4,13 +4,16 @@
 //! This crate is framework-free. It depends on domain crates only: its own context and the shared
 //! kernel, never another bounded context.
 
+pub mod audit_anchor;
 pub mod catalogue_event;
 pub mod catalogue_statement;
+pub mod endpoint;
 pub mod entity;
 pub mod error;
 pub mod graphql_permission;
 pub mod graphql_spec;
 pub mod kafka_topic;
+pub mod maintenance;
 mod micros;
 pub mod openapi_spec;
 pub mod policy;
@@ -20,14 +23,19 @@ pub mod rest_permission;
 pub mod revocation;
 pub mod role;
 pub mod route;
+pub mod state;
 pub mod upstream;
 pub mod user_role;
 pub mod value_object;
 
+pub use audit_anchor::{AnchorStamp, SecurityAuditAnchored};
 pub use catalogue_event::{GraphQlPermissionsCreated, PermissionsOrphaned, RestPermissionsCreated};
 pub use catalogue_statement::{
     CatalogueStatement, CatalogueStatementParts, EntryFlags, EntryInsert, SpecTransition,
 };
+pub use endpoint::selector::{Candidate, DEFAULT_SPILL_THRESHOLD, EndpointSelector};
+pub use endpoint::zone::{InvalidZone, Zone};
+pub use endpoint::{Condition, EndpointConditions, EndpointParts, UpstreamEndpoint};
 pub use entity::change_receipt::ChangeReceipt;
 pub use entity::event_envelope::{EventEnvelope, EventEnvelopeParts, IamDomainEvent};
 pub use entity::iam_change::{IamChange, IamChangeParts};
@@ -43,7 +51,7 @@ pub use error::{
     InvalidAccessCheck, InvalidEventEnvelope, InvalidIamValue, InvalidPermissionKey, InvalidRole,
     InvalidUserRole, RoleChangeRefused, UserRoleChangeRefused, VersionConflict,
 };
-pub use error::{InvalidCatalogueEntry, RenameRefused};
+pub use error::{InvalidCatalogueEntry, InvalidStateRecord, RenameRefused};
 pub use error::{InvalidSpec, SpecPosition, SpecTransitionRefused};
 pub use graphql_permission::{GraphQlPermission, GraphQlPermissionParts};
 pub use graphql_spec::event::{GraphQlSpecLoaded, GraphQlSpecRetired};
@@ -54,6 +62,10 @@ pub use graphql_spec::{
 pub use kafka_topic::{
     AllowEveryoneEvidence, CONTROL_PRINCIPAL, CheckSource, ConfigGates, ConfigurationRules,
     ConfigurationVerdict, TopicObservation, Violation,
+};
+pub use maintenance::{
+    ExpiredOrphanedGrant, INBOUND_EVENT_RETENTION, MAX_PURGED_GRANTS_PER_RUN, PurgedRecords,
+    RECORD_RETENTION, RetentionCutoffs,
 };
 pub use openapi_spec::event::{OpenApiSpecLoaded, OpenApiSpecRetired};
 pub use openapi_spec::statement::OpenApiSpecStatement;
@@ -88,6 +100,10 @@ pub use port::RepositoryError;
 pub use port::access_token_verifier::AccessTokenVerifier;
 pub use port::boot_clock::BootClock;
 pub use port::change_receipt_repository::ChangeReceiptRepository;
+pub use port::endpoint_watch::{
+    EndpointListing, EndpointSlice, EndpointWatch, EndpointWatchError, SliceChange, WatchBatch,
+    WatchTarget,
+};
 pub use port::graphql_document_analyzer::GraphQlDocumentAnalyzer;
 pub use port::graphql_permission_repository::GraphQlPermissionRepository;
 pub use port::graphql_schema_parser::GraphQlSchemaParser;
@@ -95,9 +111,11 @@ pub use port::graphql_spec_repository::{GraphQlSpecPageQuery, GraphQlSpecReposit
 pub use port::iam_unit_of_work::IamUnitOfWork;
 pub use port::idempotency_repository::IdempotencyRepository;
 pub use port::kafka_topic_inspector::{KafkaInspectionError, KafkaTopicInspector};
+pub use port::maintenance_store::MaintenanceStore;
 pub use port::openapi_document_parser::OpenApiDocumentParser;
 pub use port::openapi_spec_repository::{OpenApiSpecPageQuery, OpenApiSpecRepository};
 pub use port::permission_page_query::PermissionPageQuery;
+pub use port::policy_digest::PolicyDigest;
 pub use port::policy_epoch_repository::PolicyEpochRepository;
 pub use port::policy_read_repository::PolicyReadRepository;
 pub use port::rate_policy_repository::{RatePolicyPageQuery, RatePolicyRepository};
@@ -114,6 +132,7 @@ pub use port::singleton_leadership::{LeaderBatch, Leadership, SingletonLeadershi
 pub use port::startup_lock::{
     ADMINISTRATORS_LOCK, BOOTSTRAP_LOCK, LockGuard, OWN_SPECIFICATIONS_LOCK, StartupLock,
 };
+pub use port::state_record_codec::StateRecordCodec;
 pub use port::task_state_repository::{TaskState, TaskStateRepository};
 pub use port::token_memo::{TokenMemo, Verification};
 pub use port::token_repository::TokenRepository;
@@ -139,6 +158,13 @@ pub use route::settings::{
     BodyLimit, EnforcementMode, RetryPolicy, RouteFlag, RouteFlags, RouteTimeouts,
 };
 pub use route::{Route, RouteParts, RouteStamp};
+pub use state::batch::{StateBatch, StateChange, StateRow};
+pub use state::key::{CATALOGUE_CHUNK_VERSION, ChunkId, StateKey};
+pub use state::layout::{CatalogueLayout, MAX_CHUNK_BYTES};
+pub use state::model::{
+    AssignmentState, CatalogueChunk, CatalogueEntryState, CatalogueManifest, GrantState,
+    PolicyHead, PolicyState, RoleState, StateRecord, SubjectState,
+};
 pub use upstream::event::{UpstreamCreated, UpstreamDeleted, UpstreamUpdated};
 pub use upstream::settings::{
     UpstreamFields, UpstreamProtocol, UpstreamSettings, UpstreamSettingsDraft,

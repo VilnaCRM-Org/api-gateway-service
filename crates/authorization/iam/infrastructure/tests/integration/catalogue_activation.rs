@@ -667,3 +667,116 @@ async fn the_created_keys_of_a_rest_activation_are_read_from_its_event(pool: PgP
     assert_eq!(found, Some(created.to_vec()));
     assert_eq!(unknown, None);
 }
+
+/// The state rows of the policy version `version`: sequence, count, key and payload.
+async fn state_rows(pool: &PgPool, version: i64) -> Vec<(i32, i32, String, Option<String>)> {
+    sqlx::query_as(
+        "SELECT seq, count, record_key, payload FROM iam_outbox
+        WHERE kind = 'state' AND policy_version = $1 ORDER BY position",
+    )
+    .bind(version)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn an_activation_writes_the_manifest_and_the_chunks_of_the_catalogue(pool: PgPool) {
+    let mut rng = TestRng::from_env();
+    let spec_id = draft_graphql(&pool, &mut rng).await;
+    let mut activation = parts(PermissionKeyKind::Gql, spec_id);
+    activation.created = vec![
+        entry(&mut rng, INVOICES, PermissionFlags::NONE),
+        entry(&mut rng, PAY, PermissionFlags::NONE.with_sensitive()),
+    ];
+
+    commit(&pool, &mut rng, vec![activation]).await.unwrap();
+
+    let rows = state_rows(&pool, 1).await;
+    let keys: Vec<&str> = rows.iter().map(|row| row.2.as_str()).collect();
+    let chunk_key = keys[1];
+    assert_eq!(keys.len(), 3);
+    assert_eq!(keys[0], "catalog/billing/manifest");
+    assert!(chunk_key.starts_with("catalog/billing/1/"));
+    assert_eq!(keys[2], "__head");
+    assert_eq!(rows.iter().map(|row| row.0).collect::<Vec<_>>(), [1, 2, 3]);
+    assert!(rows.iter().all(|row| row.1 == 3));
+    let manifest = rows[0].3.as_deref().unwrap();
+    let chunk_id = chunk_key.rsplit('/').next().unwrap();
+    assert!(manifest.contains(&format!(r#""chunks":["{chunk_id}"]"#)));
+    assert!(manifest.contains(r#""catalogEpoch":1"#));
+    let chunk = rows[1].3.as_deref().unwrap();
+    assert!(chunk.contains(r#""key":"gql:billing:Mutation.pay""#));
+    assert!(chunk.contains(r#""sensitive":true"#));
+    assert!(chunk.len() <= 1_048_576);
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn a_second_activation_that_leaves_a_chunk_unchanged_does_not_write_it_again(pool: PgPool) {
+    let mut rng = TestRng::from_env();
+    let graphql = draft_graphql(&pool, &mut rng).await;
+    let mut first = parts(PermissionKeyKind::Gql, graphql);
+    first.created = vec![entry(&mut rng, INVOICES, PermissionFlags::NONE)];
+    commit(&pool, &mut rng, vec![first]).await.unwrap();
+    let openapi = draft_openapi(&pool, &mut rng).await;
+
+    commit(
+        &pool,
+        &mut rng,
+        vec![parts(PermissionKeyKind::Rest, openapi)],
+    )
+    .await
+    .unwrap();
+
+    let first_rows = state_rows(&pool, 1).await;
+    let second_rows = state_rows(&pool, 2).await;
+    let second_keys: Vec<&str> = second_rows.iter().map(|row| row.2.as_str()).collect();
+    assert_eq!(first_rows.len(), 3);
+    assert_eq!(second_keys, ["catalog/billing/manifest", "__head"]);
+    assert!(
+        second_rows[0]
+            .3
+            .as_deref()
+            .unwrap()
+            .contains(r#""catalogEpoch":2"#)
+    );
+    assert_eq!(
+        first_rows[0]
+            .3
+            .as_deref()
+            .unwrap()
+            .replace(r#""catalogEpoch":1"#, r#""catalogEpoch":2"#),
+        second_rows[0].3.as_deref().unwrap()
+    );
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn an_activation_that_orphans_a_grant_writes_the_state_of_the_role(pool: PgPool) {
+    let mut rng = TestRng::from_env();
+    let first_spec = draft_graphql(&pool, &mut rng).await;
+    let mut first = parts(PermissionKeyKind::Gql, first_spec);
+    first.created = vec![entry(&mut rng, OLD, PermissionFlags::NONE)];
+    commit(&pool, &mut rng, vec![first]).await.unwrap();
+    let role = seed_role(&pool, &mut rng, &[OLD]).await;
+    let mut retirement = parts(PermissionKeyKind::Gql, first_spec);
+    retirement.transition = transition(first_spec, SpecStatus::Active, SpecStatus::Retired);
+    retirement.deactivated = vec![key(OLD)];
+    retirement.orphaned = vec![OrphanedGrant {
+        role,
+        key: key(OLD),
+    }];
+
+    commit(&pool, &mut rng, vec![retirement]).await.unwrap();
+
+    let rows = state_rows(&pool, 2).await;
+    let role_row = rows
+        .iter()
+        .find(|row| row.2 == format!("role/{role}"))
+        .unwrap();
+    let payload = role_row.3.as_deref().unwrap();
+    assert!(payload.contains(r#"{"active":false,"key":"gql:billing:Query.old"}"#));
+    assert!(
+        rows.iter()
+            .any(|row| row.2 == "catalog/billing/manifest" && row.3.is_none())
+    );
+}

@@ -10,6 +10,10 @@ mod jwt_access_token_verifier;
 #[cfg(test)]
 mod kafka_topic_inspector;
 #[cfg(test)]
+mod kubernetes_watch;
+#[cfg(test)]
+mod maintenance_store;
+#[cfg(test)]
 mod migration;
 #[cfg(test)]
 mod openapi_spec_repository;
@@ -31,6 +35,8 @@ mod security_audit_migration;
 mod singleton_leadership;
 #[cfg(test)]
 mod startup_lock;
+#[cfg(test)]
+mod state_rows;
 #[cfg(test)]
 mod token_resolution;
 #[cfg(test)]

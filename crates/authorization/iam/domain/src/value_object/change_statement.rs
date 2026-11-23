@@ -4,8 +4,10 @@ use crate::catalogue_statement::CatalogueStatement;
 use crate::graphql_spec::statement::GraphQlSpecStatement;
 use crate::openapi_spec::statement::OpenApiSpecStatement;
 use crate::role::statement::RoleStatement;
+use crate::state::key::StateKey;
 use crate::user_role::statement::UserRoleStatement;
 use crate::value_object::policy_version::PolicyVersion;
+use crate::value_object::service_name::ServiceName;
 
 /// One aggregate statement or guard of a change, described for the unit of work to execute.
 ///
@@ -53,6 +55,51 @@ impl ChangeStatement {
             | Self::SaveGraphQlSpec(_)
             | Self::SaveOpenApiSpec(_)
             | Self::ApplyCatalogue(_) => true,
+        }
+    }
+
+    /// The keys of the state records that the statement changes directly: the role of a role write,
+    /// the subject of an assignment write, and the roles whose grants an activation orphans or
+    /// moves. The catalogue records of an activation are named by [`Self::catalogue_service`].
+    #[must_use]
+    pub fn state_keys(&self) -> Vec<StateKey> {
+        match self {
+            Self::ExpectPolicyVersion(_) | Self::SaveGraphQlSpec(_) | Self::SaveOpenApiSpec(_) => {
+                Vec::new()
+            }
+            Self::SaveRole(statement) => vec![StateKey::Role(statement.role().id)],
+            Self::SaveUserRole(statement) => {
+                vec![StateKey::Subject(statement.user_role().subject.clone())]
+            }
+            Self::ApplyCatalogue(statement) => {
+                let parts = statement.parts();
+                parts
+                    .orphaned
+                    .iter()
+                    .map(|grant| grant.role)
+                    .chain(
+                        parts
+                            .renames
+                            .iter()
+                            .flat_map(|rename| rename.roles.iter().copied()),
+                    )
+                    .map(StateKey::Role)
+                    .collect()
+            }
+        }
+    }
+
+    /// The service whose catalogue records the statement changes, when it is an activation or a
+    /// retirement.
+    #[must_use]
+    pub fn catalogue_service(&self) -> Option<&ServiceName> {
+        match self {
+            Self::ApplyCatalogue(statement) => Some(&statement.parts().service),
+            Self::ExpectPolicyVersion(_)
+            | Self::SaveRole(_)
+            | Self::SaveUserRole(_)
+            | Self::SaveGraphQlSpec(_)
+            | Self::SaveOpenApiSpec(_) => None,
         }
     }
 }
