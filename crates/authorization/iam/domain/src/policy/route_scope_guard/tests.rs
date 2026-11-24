@@ -1,9 +1,21 @@
+use std::collections::BTreeMap;
+use std::time::SystemTime;
+
 use rstest::rstest;
 
 use super::{RouteScopeGuard, RouteScopeRefused};
 use crate::policy::compiled_role_set::CompiledRoleSet;
+use crate::policy::decision_policy::RoleAssignment;
+use crate::policy::subject_policy::SubjectPolicy;
+use crate::value_object::assignment_scope::AssignmentScope;
+use crate::value_object::identifier::RoleId;
+use crate::value_object::log_epoch::LogEpoch;
 use crate::value_object::permission_grant::PermissionGrant;
 use crate::value_object::permission_grant_set::PermissionGrantSet;
+use crate::value_object::policy_digest_value::PolicyDigestValue;
+use crate::value_object::policy_epoch::PolicyEpoch;
+use crate::value_object::policy_version::PolicyVersion;
+use crate::value_object::relay_epoch::RelayEpoch;
 use crate::value_object::service_name::ServiceName;
 
 fn held(grants: &[&str]) -> CompiledRoleSet {
@@ -110,4 +122,76 @@ fn refusals_have_codes_and_messages() {
     assert_eq!(missing.code(), "forbidden");
     assert!(missing.to_string().contains("iam:route:core"));
     assert!(mismatch.to_string().contains("billing"));
+}
+
+const ROLE: &str = "0198d1a0-0000-7000-8000-000000000001";
+
+fn policy(grants: &[&str], scope: AssignmentScope) -> SubjectPolicy {
+    let role = RoleId::parse(ROLE).unwrap();
+    let epoch = PolicyEpoch::new(
+        PolicyVersion::new(1).unwrap(),
+        PolicyDigestValue::new(&[1; PolicyDigestValue::LENGTH]).unwrap(),
+        LogEpoch::new(0).unwrap(),
+        RelayEpoch::new(0).unwrap(),
+        0,
+    )
+    .unwrap();
+    SubjectPolicy::new(
+        epoch,
+        vec![RoleAssignment::new(role, scope, None)],
+        BTreeMap::from([(role, held(grants))]),
+    )
+}
+
+#[rstest]
+#[case::service_key(&["iam:route:core"], true)]
+#[case::global_key(&["iam:route:*"], true)]
+#[case::other_service_key(&["iam:route:billing"], false)]
+#[case::anonymous_key_only(&["iam:route:anonymous"], false)]
+#[case::nothing(&[], false)]
+fn the_policy_of_an_actor_needs_the_key_of_the_service_or_the_global_key(
+    #[case] grants: &[&str],
+    #[case] allowed: bool,
+) {
+    let core = service("core");
+
+    let result = RouteScopeGuard::check_policy(
+        &policy(grants, AssignmentScope::Global),
+        SystemTime::UNIX_EPOCH,
+        &core,
+    );
+
+    if allowed {
+        assert_eq!(result, Ok(()));
+    } else {
+        assert_eq!(result, Err(RouteScopeRefused::Missing { service: core }));
+    }
+}
+
+#[test]
+fn the_global_key_never_covers_the_iam_service_in_a_policy() {
+    let iam = service("iam");
+
+    let result = RouteScopeGuard::check_policy(
+        &policy(&["iam:route:*"], AssignmentScope::Global),
+        SystemTime::UNIX_EPOCH,
+        &iam,
+    );
+
+    assert_eq!(result, Err(RouteScopeRefused::Missing { service: iam }));
+}
+
+#[test]
+fn the_entries_nobody_may_change_are_named_without_a_policy() {
+    let core = service("core");
+
+    assert_eq!(
+        RouteScopeGuard::check_changeable(&service("iam"), false),
+        Err(RouteScopeRefused::IamService)
+    );
+    assert_eq!(
+        RouteScopeGuard::check_changeable(&core, true),
+        Err(RouteScopeRefused::SystemEntry)
+    );
+    assert_eq!(RouteScopeGuard::check_changeable(&core, false), Ok(()));
 }

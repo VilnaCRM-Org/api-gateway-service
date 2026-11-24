@@ -1,9 +1,10 @@
 use std::error::Error as _;
 
 use iam_domain::{
-    EntityVersion, InvalidCatalogueEntry, InvalidEventEnvelope, InvalidIamValue, InvalidRole,
-    InvalidUserRole, LastAdministratorRefused, RepositoryError, RoleChangeRefused, TokenRejection,
-    UserRoleChangeRefused, VersionConflict,
+    ConfigChangeRefused, EntityVersion, InvalidCatalogueEntry, InvalidEventEnvelope,
+    InvalidIamValue, InvalidRole, InvalidUpstream, InvalidUserRole, LastAdministratorRefused,
+    ReferencedByRoute, RepositoryError, RoleChangeRefused, RouteScopeRefused, ServiceName,
+    TokenRejection, UpstreamChangeRefused, UserRoleChangeRefused, VersionConflict,
 };
 use rstest::rstest;
 use shared_application::http::{Problem, TYPE_BLANK, Violation};
@@ -11,7 +12,7 @@ use test_support::log::LogRecorder;
 
 use super::{
     Confirmation, IamError, TYPE_FLAG_DOWNGRADE_CONFIRMATION, TYPE_LAST_ADMINISTRATOR,
-    TYPE_ORPHAN_CONFIRMATION,
+    TYPE_ORPHAN_CONFIRMATION, TYPE_REFERENCED_BY_ROUTE, TYPE_SYSTEM_ENTRY,
 };
 
 #[test]
@@ -452,4 +453,134 @@ fn a_change_that_a_guard_refused_is_forbidden() {
 
     assert!(matches!(error, IamError::Forbidden));
     assert_eq!(Problem::from(error).status, 403);
+}
+
+#[test]
+fn a_system_entry_is_the_409_problem_of_its_own_type() {
+    let (recorder, _guard) = LogRecorder::install();
+
+    let problem = Problem::from(IamError::SystemEntry);
+
+    assert_eq!(problem.status, 409);
+    assert_eq!(problem.title, "Conflict");
+    assert_eq!(problem.r#type, TYPE_SYSTEM_ENTRY);
+    assert_eq!(
+        problem.detail.as_deref(),
+        Some("Entries of the iam service and system entries cannot be changed through the API.")
+    );
+    assert_eq!(recorder.lines().len(), 0);
+}
+
+#[test]
+fn an_upstream_that_a_route_references_is_the_409_problem_of_its_own_type() {
+    let (recorder, _guard) = LogRecorder::install();
+
+    let error = IamError::from(ReferencedByRoute { count: 2 });
+    let problem = Problem::from(error);
+
+    assert_eq!(problem.status, 409);
+    assert_eq!(problem.r#type, TYPE_REFERENCED_BY_ROUTE);
+    assert_eq!(
+        problem.detail.as_deref(),
+        Some("The upstream is still referenced by a route.")
+    );
+    assert_eq!(recorder.lines().len(), 0);
+}
+
+#[test]
+fn upstream_violations_name_the_properties_of_the_request() {
+    let error = IamError::from(vec![
+        InvalidUpstream::NamePattern,
+        InvalidUpstream::ServiceFormat,
+        InvalidUpstream::OutlierThresholdRange,
+        InvalidUpstream::PortRange,
+    ]);
+
+    let IamError::Invalid(violations) = error else {
+        panic!("expected violations");
+    };
+    let paths: Vec<_> = violations
+        .iter()
+        .map(|violation| (violation.property_path.as_str(), violation.code.as_str()))
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            ("name", "pattern"),
+            ("service", "format"),
+            ("outlierConsecutiveErrors", "range"),
+            ("port", "range"),
+        ]
+    );
+    assert_eq!(
+        violations
+            .first()
+            .map(|violation| violation.message.as_str()),
+        Some("This value must be a lower-case service name such as user-service.")
+    );
+}
+
+#[test]
+fn a_renamed_upstream_is_a_violation_of_the_name() {
+    let error = IamError::from(UpstreamChangeRefused::Renamed);
+
+    let IamError::Invalid(violations) = error else {
+        panic!("expected a violation");
+    };
+    assert_eq!(violations.len(), 1);
+    assert_eq!(violations.first().unwrap().property_path, "name");
+    assert_eq!(violations.first().unwrap().code, "renamed");
+}
+
+#[rstest]
+#[case(ConfigChangeRefused::Deleted, 404)]
+#[case(ConfigChangeRefused::Version(VersionConflict::Missing), 428)]
+#[case(
+    ConfigChangeRefused::Version(VersionConflict::Stale {
+        expected: EntityVersion::INITIAL,
+        current: EntityVersion::INITIAL,
+    }),
+    412
+)]
+#[case(ConfigChangeRefused::Range(InvalidIamValue::EntityVersionRange), 500)]
+fn a_refused_change_of_the_gateway_configuration_has_the_status_of_its_cause(
+    #[case] refusal: ConfigChangeRefused,
+    #[case] status: u16,
+) {
+    let (_recorder, _guard) = LogRecorder::install();
+
+    assert_eq!(Problem::from(IamError::from(refusal)).status, status);
+    assert_eq!(
+        Problem::from(IamError::from(UpstreamChangeRefused::Refused(refusal))).status,
+        status
+    );
+}
+
+#[test]
+fn the_route_scope_refusals_have_the_status_of_their_cause() {
+    let core = ServiceName::new("core").unwrap();
+    let billing = ServiceName::new("billing").unwrap();
+
+    assert!(matches!(
+        IamError::from(RouteScopeRefused::IamService),
+        IamError::SystemEntry
+    ));
+    assert!(matches!(
+        IamError::from(RouteScopeRefused::SystemEntry),
+        IamError::SystemEntry
+    ));
+    assert!(matches!(
+        IamError::from(RouteScopeRefused::Missing {
+            service: core.clone()
+        }),
+        IamError::Forbidden
+    ));
+    let IamError::Invalid(violations) = IamError::from(RouteScopeRefused::ServiceMismatch {
+        route: core,
+        upstream: billing,
+    }) else {
+        panic!("expected a violation");
+    };
+    assert_eq!(violations.first().unwrap().property_path, "service");
+    assert_eq!(violations.first().unwrap().code, "service_mismatch");
 }

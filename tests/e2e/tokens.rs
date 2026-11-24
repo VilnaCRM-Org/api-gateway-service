@@ -28,6 +28,10 @@ pub(crate) const ADMINISTRATOR_ID: &str = "0190f2a8-7b3c-7d4e-8f10-00000000ad02"
 /// The administrator that lacks `iam:grant:wildcard`, for the scenarios of the escalation guard:
 /// the scenario policy gives it the keys of the bootstrapped role except that one.
 pub(crate) const RESTRICTED_ADMINISTRATOR_ID: &str = "0190f2a8-7b3c-7d4e-8f10-00000000ad03";
+/// The administrator that holds the route key of the service `core` and no other route key, for
+/// the scenarios of `RouteScopeGuard`: the scenario policy gives it the keys of the bootstrapped
+/// role except `iam:route:*`, and `iam:route:core`.
+pub(crate) const ROUTE_SCOPED_ADMINISTRATOR_ID: &str = "0190f2a8-7b3c-7d4e-8f10-00000000ad05";
 /// A service caller that holds no IAM key, for the scenarios of the authorization rule.
 pub(crate) const UNPRIVILEGED_SERVICE: &str = "e2e-unprivileged-caller";
 
@@ -103,6 +107,17 @@ impl SigningKey {
         self.sign(&user_claims(
             RESTRICTED_ADMINISTRATOR_ID,
             "e2e-restricted-administrator-session",
+            0,
+            600,
+        ))
+    }
+
+    /// A `ROLE_USER` token of [`ROUTE_SCOPED_ADMINISTRATOR_ID`], issued now and valid for 10
+    /// minutes.
+    pub(crate) fn route_scoped_administrator_token(&self) -> String {
+        self.sign(&user_claims(
+            ROUTE_SCOPED_ADMINISTRATOR_ID,
+            "e2e-route-scoped-administrator-session",
             0,
             600,
         ))

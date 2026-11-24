@@ -22,13 +22,19 @@ use iam_domain::{
 };
 use shared_domain::Uuid;
 
-use crate::tokens::{ADMINISTRATOR_ID, RESTRICTED_ADMINISTRATOR_ID, SERVICE_CALLERS};
+use crate::tokens::{
+    ADMINISTRATOR_ID, RESTRICTED_ADMINISTRATOR_ID, ROUTE_SCOPED_ADMINISTRATOR_ID, SERVICE_CALLERS,
+};
 
 /// The id of the in-memory role that holds the administrator's keys; no stored role has it.
 const ADMINISTRATOR_ROLE: &str = "0190f2a8-7b3c-7d4e-8f10-00000000ad01";
 
 /// The id of the in-memory role of the administrator that lacks `iam:grant:wildcard`.
 const RESTRICTED_ADMINISTRATOR_ROLE: &str = "0190f2a8-7b3c-7d4e-8f10-00000000ad04";
+
+/// The id of the in-memory role of the administrator that holds `iam:route:core` and no other
+/// route key.
+const ROUTE_SCOPED_ADMINISTRATOR_ROLE: &str = "0190f2a8-7b3c-7d4e-8f10-00000000ad06";
 
 /// The in-memory roles of the service callers of [`SERVICE_CALLERS`], in the same order.
 const SERVICE_ROLES: [&str; 2] = [
@@ -92,6 +98,17 @@ impl AdministratorCallerPolicy {
             RESTRICTED_ADMINISTRATOR_ROLE,
             &restricted_grants,
         );
+        let mut route_scoped_grants: Vec<&str> = PlatformAdministrator::GRANTS
+            .iter()
+            .copied()
+            .filter(|grant| *grant != "iam:route:*")
+            .collect();
+        route_scoped_grants.push("iam:route:core");
+        let route_scoped = InjectedCaller::new(
+            SubjectRef::user(Uuid::parse(ROUTE_SCOPED_ADMINISTRATOR_ID).expect("a valid user id")),
+            ROUTE_SCOPED_ADMINISTRATOR_ROLE,
+            &route_scoped_grants,
+        );
         let services = SERVICE_CALLERS
             .iter()
             .zip(SERVICE_ROLES)
@@ -104,7 +121,7 @@ impl AdministratorCallerPolicy {
             });
         Self {
             inner,
-            callers: [administrator, restricted]
+            callers: [administrator, restricted, route_scoped]
                 .into_iter()
                 .chain(services)
                 .collect(),

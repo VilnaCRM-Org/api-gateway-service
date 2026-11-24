@@ -27,4 +27,10 @@ pub enum GuardCheck {
         /// Whether the change confirms a flag downgrade, which also needs `iam:grant:sensitive`.
         flag_downgrade: bool,
     },
+    /// Create, change or delete an upstream or a route of these catalogue services:
+    /// `RouteScopeGuard`, which needs `iam:route:{service}` or `iam:route:*` for each of them.
+    RouteScope {
+        /// The catalogue services of the entry before and after the change, each once.
+        services: Vec<ServiceName>,
+    },
 }

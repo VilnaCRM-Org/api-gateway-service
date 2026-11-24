@@ -208,6 +208,12 @@ fn spec(name: &str, flag_downgrade: bool) -> GuardCheck {
     }
 }
 
+fn route_scope(names: &[&str]) -> GuardCheck {
+    GuardCheck::RouteScope {
+        services: names.iter().map(|name| service(name)).collect(),
+    }
+}
+
 async fn commit(world: &World, change: IamChange) -> Result<(), RepositoryError> {
     world
         .unit
@@ -572,4 +578,52 @@ async fn a_refusal_that_cannot_be_recorded_fails_the_change() {
 
     assert!(matches!(result, Err(RepositoryError::Unavailable(_))));
     assert_eq!(committed.committed(), Vec::<IamChange>::new());
+}
+
+#[tokio::test]
+async fn a_change_of_an_entry_of_a_service_needs_the_route_key_of_each_of_its_services() {
+    let world = Setup::holding(&["iam:route:core"]).build();
+
+    commit(&world, user_change(route_scope(&["core"])))
+        .await
+        .unwrap();
+    let refused = commit(&world, user_change(route_scope(&["core", "payment"]))).await;
+
+    assert!(matches!(refused, Err(RepositoryError::Forbidden)));
+    assert_eq!(world.committed.committed().len(), 1);
+    let recorded = world.audit.recorded();
+    let [record] = recorded.as_slice() else {
+        panic!("one rejected record expected: {recorded:?}");
+    };
+    let parts = record.event().parts();
+    assert_eq!(
+        parts.reason.as_ref().unwrap().as_str(),
+        "route_scope.denied"
+    );
+    assert_eq!(
+        parts.before.as_ref().unwrap().as_str(),
+        "missing=iam:route:payment"
+    );
+}
+
+#[tokio::test]
+async fn the_global_route_key_covers_every_service_but_iam() {
+    let world = Setup::holding(&["iam:route:*"]).build();
+
+    commit(&world, user_change(route_scope(&["core", "payment"])))
+        .await
+        .unwrap();
+    let result = commit(&world, user_change(route_scope(&["iam"]))).await;
+
+    assert!(matches!(result, Err(RepositoryError::Forbidden)));
+    assert_eq!(world.committed.committed().len(), 1);
+}
+
+#[tokio::test]
+async fn a_change_of_an_entry_without_the_route_key_is_refused_and_audited() {
+    let world = Setup::holding(&["iam:spec:*"]).build();
+
+    let result = commit(&world, user_change(route_scope(&["core"]))).await;
+
+    assert_refused(&world, &result, "route_scope.denied");
 }

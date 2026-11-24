@@ -1,6 +1,9 @@
 //! `RouteScopeGuard`: who may change the routes and upstreams of a catalogue service (FR-64).
 
+use std::time::SystemTime;
+
 use crate::policy::compiled_role_set::CompiledRoleSet;
+use crate::policy::subject_policy::SubjectPolicy;
 use crate::value_object::permission_flags::PermissionFlags;
 use crate::value_object::permission_key::PermissionKey;
 use crate::value_object::reserved_permission::{ReservedPermission, ServiceScope};
@@ -89,8 +92,35 @@ impl RouteScopeGuard {
         Self::check_held(held, service)
     }
 
-    /// Refuses the entries that nobody may change.
-    fn check_changeable(service: &ServiceName, system: bool) -> Result<(), RouteScopeRefused> {
+    /// Lets a change of an entry of `service` through when the actor's policy holds
+    /// `iam:route:{service}` or `iam:route:*` at global scope at `now`; the application has
+    /// refused the entries that nobody may change before it asks.
+    ///
+    /// # Errors
+    ///
+    /// [`RouteScopeRefused::Missing`] for an actor without the key.
+    pub fn check_policy(
+        policy: &SubjectPolicy,
+        now: SystemTime,
+        service: &ServiceName,
+    ) -> Result<(), RouteScopeRefused> {
+        let key = ReservedPermission::Route(ServiceScope::Service(service.clone()));
+        if policy.holds_reserved(&key, now) {
+            Ok(())
+        } else {
+            Err(RouteScopeRefused::Missing {
+                service: service.clone(),
+            })
+        }
+    }
+
+    /// Refuses the entries that nobody may change: those of the `iam` service and `system`
+    /// entries.
+    ///
+    /// # Errors
+    ///
+    /// [`RouteScopeRefused::IamService`] and [`RouteScopeRefused::SystemEntry`].
+    pub fn check_changeable(service: &ServiceName, system: bool) -> Result<(), RouteScopeRefused> {
         if service.is_iam() {
             return Err(RouteScopeRefused::IamService);
         }

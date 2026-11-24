@@ -688,3 +688,182 @@ Content-Type: application/json
   "query": "query ($first: Int, $after: String, $filter: UserRoleFilter) { userRoles(first: $first, after: $after, filter: $filter) { items { id subject { kind id } roleId roleName scope { kind projectId } expiresAt version createdAt updatedAt } nextCursor } }",
   "variables": { "first": 30, "filter": { "subjectKind": "service", "includeExpired": false } }
 }
+
+### Create a rate policy over REST: 201 with Location, ETag, Iam-Policy-Version, the id and version 1; 409 for a duplicate name; 422 for invalid fields (periodMs is a multiple of 1000) or a reused Idempotency-Key; 401 without a valid bearer token
+# key is ip, subject, subject_route or route; fallback is divided or full. The change writes the ratepolicy/<id> state record and iam.rate_policy.created.
+POST {{baseUrl}}/api/rate-policies
+Authorization: Bearer <caller token>
+Idempotency-Key: create-per-subject-route
+Content-Type: application/json
+
+{
+  "name": "per-subject-route",
+  "key": "subject_route",
+  "limit": 100,
+  "periodMs": 60000,
+  "burst": 20,
+  "fallback": "divided"
+}
+
+### Create a rate policy over GraphQL: the same data as the REST operation; the error codes CONFLICT, VALIDATION_FAILED and UNAUTHENTICATED
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: CreateRatePolicyInput!) { createRatePolicy(input: $input) { id name key limit periodMs burst fallback version createdAt updatedAt } }",
+  "variables": { "input": { "name": "per-subject-route", "key": "subject_route", "limit": 100, "periodMs": 60000, "burst": 20, "fallback": "divided" } }
+}
+
+### Get a rate policy over REST: 200 with its ETag, 404 for an unknown id, 422 for an id that is not a UUID
+GET {{baseUrl}}/api/rate-policies/01a1c6b5-cb86-7134-868a-7608036facfe
+Authorization: Bearer <caller token>
+
+### Get a rate policy over GraphQL: null for an unknown id
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($id: ID!) { ratePolicy(id: $id) { id name key limit periodMs burst fallback version createdAt updatedAt } }",
+  "variables": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe" }
+}
+
+### List rate policies over REST: a page of 1 to 100 rate policies in a stable order with the nextCursor of the next page
+GET {{baseUrl}}/api/rate-policies?limit=30
+Authorization: Bearer <caller token>
+
+### List rate policies over GraphQL: the same page; pass the nextCursor as after for the next page
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($first: Int, $after: String) { ratePolicies(first: $first, after: $after) { items { id name key limit periodMs burst fallback version } nextCursor } }",
+  "variables": { "first": 30 }
+}
+
+### Update a rate policy over REST: 200 with the new ETag and Iam-Policy-Version; only the members of the body change; 428 without If-Match; 412 for a stale If-Match; 404 for an unknown id; 409 for a duplicate name; 422 for invalid fields
+PATCH {{baseUrl}}/api/rate-policies/01a1c6b5-cb86-7134-868a-7608036facfe
+Authorization: Bearer <caller token>
+If-Match: "1"
+Content-Type: application/json
+
+{
+  "limit": 200,
+  "fallback": "full"
+}
+
+### Update a rate policy over GraphQL: the same data as the REST operation; the error codes PRECONDITION_REQUIRED, PRECONDITION_FAILED, NOT_FOUND, CONFLICT and VALIDATION_FAILED
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: UpdateRatePolicyInput!) { updateRatePolicy(input: $input) { id limit periodMs fallback version } }",
+  "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe", "expectedVersion": 1, "limit": 200, "fallback": "full" } }
+}
+
+### Delete a rate policy over REST: 200 with the final ETag and Iam-Policy-Version, and a tombstone state record; 409 while a route references the policy; 428 without If-Match; 412 for a stale If-Match; 404 for an unknown or deleted id
+DELETE {{baseUrl}}/api/rate-policies/01a1c6b5-cb86-7134-868a-7608036facfe
+Authorization: Bearer <caller token>
+If-Match: "1"
+
+### Delete a rate policy over GraphQL: the id, the final version and the policy version; the error codes PRECONDITION_REQUIRED, PRECONDITION_FAILED, NOT_FOUND and CONFLICT
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: DeleteRatePolicyInput!) { deleteRatePolicy(input: $input) { id version policyVersion } }",
+  "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe", "expectedVersion": 1 } }
+}
+
+### Create an upstream over REST: 201 with Location, ETag and Iam-Policy-Version; the caller needs iam:route:{catalogService} or iam:route:* (403 otherwise); 409 for a duplicate name or an upstream of the service iam (system-entry, audited); 422 for invalid fields; forwardCredentials defaults to false, connectTimeoutMs to 250, responseTimeoutMs to 10000, concurrencyLimit to 256, retryBudgetPercent to 10 and outlierConsecutiveErrors to 5
+POST {{baseUrl}}/api/upstreams
+Authorization: Bearer <caller token>
+Idempotency-Key: create-core-upstream
+Content-Type: application/json
+
+{
+  "name": "core",
+  "namespace": "platform",
+  "service": "core-service",
+  "catalogService": "core",
+  "port": 8080,
+  "protocol": "h2c"
+}
+
+### Create an upstream over GraphQL: the same data as the REST operation, with the propagation of the write; the error codes VALIDATION_FAILED, CONFLICT and FORBIDDEN
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: CreateUpstreamInput!) { createUpstream(input: $input) { id name namespace service catalogService forwardCredentials port protocol connectTimeoutMs responseTimeoutMs concurrencyLimit retryBudgetPercent outlierConsecutiveErrors system version createdAt updatedAt propagation { status policyVersion } } }",
+  "variables": { "input": { "name": "core", "namespace": "platform", "service": "core-service", "catalogService": "core", "port": 8080, "protocol": "h2c", "idempotencyKey": "create-core-upstream-gql" } }
+}
+
+### Read an upstream over REST: 200 with its ETag; 404 for an unknown or deleted id; 422 for an id that is not a UUID
+GET {{baseUrl}}/api/upstreams/01a1c6b5-cb86-7134-868a-7608036facfe
+Authorization: Bearer <caller token>
+
+### Read an upstream over GraphQL: null for an unknown or deleted id
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($id: ID!) { upstream(id: $id) { id name catalogService port protocol system version updatedAt } }",
+  "variables": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe" }
+}
+
+### List upstreams over REST: a page of 1 to 100 upstreams with the nextCursor of the next page
+GET {{baseUrl}}/api/upstreams?limit=30
+Authorization: Bearer <caller token>
+
+### List upstreams over GraphQL: the same page with cursor pagination
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($first: Int, $after: String) { upstreams(first: $first, after: $after) { items { id name catalogService port protocol version } nextCursor } }",
+  "variables": { "first": 30 }
+}
+
+### Update an upstream over REST: 200 with the new ETag and Iam-Policy-Version; only the members of the body change and the name cannot (422); 428 without If-Match; 412 for a stale If-Match; 404 for an unknown id; 403 without the route key of the catalogue service; 409 for a system upstream
+PATCH {{baseUrl}}/api/upstreams/01a1c6b5-cb86-7134-868a-7608036facfe
+Authorization: Bearer <caller token>
+If-Match: "1"
+Content-Type: application/json
+
+{
+  "port": 9090,
+  "protocol": "http1"
+}
+
+### Update an upstream over GraphQL: the same data as the REST operation; the error codes PRECONDITION_REQUIRED, PRECONDITION_FAILED, NOT_FOUND, FORBIDDEN, CONFLICT and VALIDATION_FAILED
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: UpdateUpstreamInput!) { updateUpstream(input: $input) { id port protocol version } }",
+  "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe", "expectedVersion": 1, "port": 9090, "protocol": "http1" } }
+}
+
+### Delete an upstream over REST: 204 with the final ETag and Iam-Policy-Version, and a tombstone state record; 409 while a route references the upstream (referenced-by-route) and for a system upstream (system-entry); 428 without If-Match; 412 for a stale If-Match; 404 for an unknown or deleted id
+DELETE {{baseUrl}}/api/upstreams/01a1c6b5-cb86-7134-868a-7608036facfe
+Authorization: Bearer <caller token>
+If-Match: "1"
+
+### Delete an upstream over GraphQL: the id, the final version and the policy version; the error codes PRECONDITION_REQUIRED, PRECONDITION_FAILED, NOT_FOUND, FORBIDDEN and CONFLICT
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: DeleteUpstreamInput!) { deleteUpstream(input: $input) { id version policyVersion } }",
+  "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe", "expectedVersion": 1 } }
+}

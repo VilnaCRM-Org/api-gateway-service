@@ -10,6 +10,7 @@ use iam_application::MaintenanceSettings;
 use iam_infrastructure::BufferedRejectedAttemptLog;
 use serde_json::Value;
 use test_support::access_token::{DEVELOPMENT_PUBLIC_KEYS_FILE, FakeAccessTokenVerifier};
+use test_support::bulk_operation::FakeBulkOperationRepository;
 use test_support::change_receipt::FakeChangeReceiptRepository;
 use test_support::clock::FixedClock;
 use test_support::graphql_permission::FakeGraphQlPermissionRepository;
@@ -83,6 +84,7 @@ fn adapters() -> Adapters {
         repository: Arc::new(InMemoryExampleApiResourceRepository::new()),
         policy_epochs: Arc::new(FakePolicyEpochRepository::new()),
         policy_reads: Arc::new(FakePolicyReadRepository::new()),
+        bulk_operations: Arc::new(FakeBulkOperationRepository::new()),
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
         rejected_attempts: Arc::new(BufferedRejectedAttemptLog::new()),
         startup_lock: Arc::new(FakeStartupLock::new()),

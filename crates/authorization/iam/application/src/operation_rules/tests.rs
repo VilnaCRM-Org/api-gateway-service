@@ -258,3 +258,32 @@ fn a_graphql_row_built_at_run_time_holds_its_parts() {
         }
     );
 }
+
+#[test]
+fn the_upstream_operations_need_their_catalogue_keys_on_both_interfaces() {
+    let rest = [
+        ("POST", "/api/upstreams", "upstream.create"),
+        ("GET", "/api/upstreams", "upstream.list"),
+        ("GET", "/api/upstreams/{id}", "upstream.read"),
+        ("PATCH", "/api/upstreams/{id}", "upstream.update"),
+        ("DELETE", "/api/upstreams/{id}", "upstream.delete"),
+    ];
+    let graphql = [
+        ("Query.upstream", "upstream.read"),
+        ("Query.upstreams", "upstream.list"),
+        ("Mutation.createUpstream", "upstream.create"),
+        ("Mutation.updateUpstream", "upstream.update"),
+        ("Mutation.deleteUpstream", "upstream.delete"),
+    ];
+
+    for (method, template, action) in rest {
+        let rule = OperationRules::find(method, template).unwrap();
+        assert_eq!(rule.action, action);
+        assert_eq!(rule.requirement, Requirement::Catalogue);
+    }
+    for (coordinate, action) in graphql {
+        let rule = OperationRules::find_graphql(coordinate).unwrap();
+        assert_eq!(rule.action, action);
+        assert_eq!(rule.requirement, Requirement::Catalogue);
+    }
+}

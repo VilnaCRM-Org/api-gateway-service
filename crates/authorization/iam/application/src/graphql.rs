@@ -10,18 +10,21 @@
 
 pub mod access_validation;
 pub mod authorization;
+pub mod bulk_operation;
 pub mod document_analyzer;
 pub mod graphql_activation;
 pub mod graphql_permission;
 pub mod graphql_spec;
 pub mod openapi_spec;
 pub mod propagation;
+pub mod rate_policy;
 pub mod rest_activation;
 pub mod rest_permission;
 pub mod role_deletion;
 pub mod role_permission;
 pub mod schema_parser;
 pub mod spec_retirement;
+pub mod upstream;
 pub mod user_role;
 pub mod user_role_permission;
 
@@ -52,6 +55,9 @@ use propagation::{PropagationObject, WriteOutcomeMapper, write_mode};
 use access_validation::{
     AccessValidationObject, ValidateAccessInput, validate_access_batch_field, validate_access_field,
 };
+use bulk_operation::{
+    BulkOperationObject, BulkOperationPageObject, bulk_operation_field, bulk_operations_field,
+};
 use graphql_activation::{
     CreateGraphQlPermissionsInput, GraphQlPermissionsActivationObject,
     create_graphql_permissions_field,
@@ -68,6 +74,11 @@ use openapi_spec::{
     LoadOpenApiSpecInput, OpenApiSpecFilterInput, OpenApiSpecObject, OpenApiSpecPageObject,
     load_openapi_spec_field, openapi_spec_field, openapi_specs_field,
 };
+use rate_policy::{
+    CreateRatePolicyInput, DeleteRatePolicyInput, DeleteRatePolicyPayload, RatePolicyObject,
+    RatePolicyPageObject, UpdateRatePolicyInput, create_rate_policy_field,
+    delete_rate_policy_field, rate_policies_field, rate_policy_field, update_rate_policy_field,
+};
 use rest_activation::{
     CreateRestPermissionsInput, RestPermissionsActivationObject, create_rest_permissions_field,
 };
@@ -83,6 +94,11 @@ use role_permission::{
 use spec_retirement::{
     RetireGraphQlSpecInput, RetireOpenApiSpecInput, SpecRetirementObject,
     retire_graphql_spec_field, retire_openapi_spec_field,
+};
+use upstream::{
+    CreateUpstreamInput, DeleteUpstreamInput, DeleteUpstreamPayload, UpdateUpstreamInput,
+    UpstreamObject, UpstreamPageObject, create_upstream_field, delete_upstream_field,
+    update_upstream_field, upstream_field, upstreams_field,
 };
 use user_role::{
     AssignUserRoleInput, RevokeUserRoleInput, RevokeUserRolePayload, UpdateUserRoleInput,
@@ -384,6 +400,39 @@ impl IamMutation {
             .map_err(iam_problem_to_graphql_error)
     }
 
+    /// Registers an upstream at version 1, writes its `upstream/<name>` state record, takes the next policy version and records `iam.upstream.created`. The caller needs `iam:route:{catalogService}` or `iam:route:*`; an upstream of the `iam` service is refused with `CONFLICT`. A repeated `idempotencyKey` with the same input within 24 hours returns the original result.
+    async fn create_upstream(
+        &self,
+        ctx: &Context<'_>,
+        input: CreateUpstreamInput,
+    ) -> async_graphql::Result<UpstreamObject> {
+        create_upstream_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Changes the settings named in the input when `expectedVersion` is the current version, increases the version, takes the next policy version and records `iam.upstream.updated`. The name cannot change. The caller needs `iam:route:{catalogService}` or `iam:route:*` for the service before and after the change; a system upstream and one of the `iam` service are refused with `CONFLICT`.
+    async fn update_upstream(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateUpstreamInput,
+    ) -> async_graphql::Result<UpstreamObject> {
+        update_upstream_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Deletes an upstream when `expectedVersion` is the current version and no route references it: its state record becomes a tombstone, the next policy version is committed, and `iam.upstream.deleted` and an audit record are written in the same transaction. An upstream that a route references is refused with `CONFLICT`, and so are a system upstream and one of the `iam` service.
+    async fn delete_upstream(
+        &self,
+        ctx: &Context<'_>,
+        input: DeleteUpstreamInput,
+    ) -> async_graphql::Result<DeleteUpstreamPayload> {
+        delete_upstream_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
     /// Assigns an existing role to a user or a service principal at global or project scope, takes the next policy version and records `iam.user_role.assigned`, and `iam.privileged_role.assigned` as well when the role grants a wildcard or a reserved key.
     async fn assign_user_role(
         &self,
@@ -435,6 +484,39 @@ impl IamMutation {
         input: DeleteRoleInput,
     ) -> async_graphql::Result<DeleteRolePayload> {
         delete_role_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Creates a rate policy at version 1, takes the next policy version and records `iam.rate_policy.created`. The period `periodMs` is a multiple of 1,000.
+    async fn create_rate_policy(
+        &self,
+        ctx: &Context<'_>,
+        input: CreateRatePolicyInput,
+    ) -> async_graphql::Result<RatePolicyObject> {
+        create_rate_policy_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Changes the fields of a rate policy that the input names when `expectedVersion` is the current version, increases the version, takes the next policy version and records `iam.rate_policy.updated`.
+    async fn update_rate_policy(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateRatePolicyInput,
+    ) -> async_graphql::Result<RatePolicyObject> {
+        update_rate_policy_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Deletes a rate policy when `expectedVersion` is the current version and no route references it: the rate policy leaves the listings at once, the next policy version is committed, and `iam.rate_policy.deleted` and an audit record are written. A rate policy that a route references fails with `CONFLICT`.
+    async fn delete_rate_policy(
+        &self,
+        ctx: &Context<'_>,
+        input: DeleteRatePolicyInput,
+    ) -> async_graphql::Result<DeleteRatePolicyPayload> {
+        delete_rate_policy_field(ctx, input)
             .await
             .map_err(iam_problem_to_graphql_error)
     }
@@ -526,6 +608,30 @@ impl IamQuery {
             .map_err(iam_problem_to_graphql_error)
     }
 
+    /// Retrieves an upstream by id; null when it is unknown or deleted.
+    async fn upstream(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> async_graphql::Result<Option<UpstreamObject>> {
+        upstream_field(ctx, &id)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves one page of the upstreams that are not deleted, in a stable order.
+    #[graphql(complexity = "page_complexity(first, child_complexity)")]
+    async fn upstreams(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 30, desc = "Page size, from 1 to 100.")] first: Option<i32>,
+        #[graphql(desc = "The nextCursor of the previous page.")] after: Option<String>,
+    ) -> async_graphql::Result<UpstreamPageObject> {
+        upstreams_field(ctx, first, after)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
     /// Retrieves a role assignment by id; null when it is unknown or revoked.
     async fn user_role(
         &self,
@@ -548,6 +654,29 @@ impl IamQuery {
         >,
     ) -> async_graphql::Result<UserRolePageObject> {
         user_roles_field(ctx, first, after, filter.unwrap_or_default())
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves a bulk operation by id; null when it is unknown.
+    async fn bulk_operation(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> async_graphql::Result<Option<BulkOperationObject>> {
+        bulk_operation_field(ctx, &id)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves one page of bulk operations, oldest first.
+    async fn bulk_operations(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 30, desc = "Page size, from 1 to 100.")] first: Option<i32>,
+        #[graphql(desc = "The nextCursor of the previous page.")] after: Option<String>,
+    ) -> async_graphql::Result<BulkOperationPageObject> {
+        bulk_operations_field(ctx, first, after)
             .await
             .map_err(iam_problem_to_graphql_error)
     }
@@ -584,6 +713,30 @@ impl IamQuery {
             kind: filter.kind,
         };
         roles_field(ctx, params)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves a rate policy by id; null when it is unknown or deleted.
+    async fn rate_policy(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> async_graphql::Result<Option<RatePolicyObject>> {
+        rate_policy_field(ctx, &id)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves one page of rate policies in a stable order.
+    #[graphql(complexity = "page_complexity(first, child_complexity)")]
+    async fn rate_policies(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 30, desc = "Page size, from 1 to 100.")] first: Option<i32>,
+        #[graphql(desc = "The nextCursor of the previous page.")] after: Option<String>,
+    ) -> async_graphql::Result<RatePolicyPageObject> {
+        rate_policies_field(ctx, first, after)
             .await
             .map_err(iam_problem_to_graphql_error)
     }

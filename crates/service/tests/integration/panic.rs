@@ -20,6 +20,7 @@ use service::cli::{Cli, Command};
 use service::config::Config;
 use service::telemetry;
 use test_support::access_token::{DEVELOPMENT_PUBLIC_KEYS_FILE, FakeAccessTokenVerifier};
+use test_support::bulk_operation::FakeBulkOperationRepository;
 use test_support::change_receipt::FakeChangeReceiptRepository;
 use test_support::clock::FixedClock;
 use test_support::graphql_permission::FakeGraphQlPermissionRepository;
@@ -87,6 +88,7 @@ async fn a_panic_is_one_json_line_with_the_request_id_and_a_500_problem() {
         repository: Arc::new(InMemoryExampleApiResourceRepository::new()),
         policy_epochs: Arc::new(FakePolicyEpochRepository::new()),
         policy_reads: Arc::new(FakePolicyReadRepository::new()),
+        bulk_operations: Arc::new(FakeBulkOperationRepository::new()),
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
         startup_lock: Arc::new(FakeStartupLock::new()),
         singleton_leadership: Arc::new(FakeSingletonLeadership::leading()),

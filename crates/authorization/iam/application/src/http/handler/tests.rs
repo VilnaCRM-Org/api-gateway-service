@@ -147,6 +147,10 @@ fn handlers_use_only_the_problem_aware_extractors() {
             vec!["create", "get_one", "update", "delete", "list"],
         ),
         (
+            include_str!("../rate_policy.rs"),
+            vec!["create", "get_one", "update", "delete", "list"],
+        ),
+        (
             include_str!("../role_permission.rs"),
             vec!["list", "replace"],
         ),
@@ -159,6 +163,14 @@ fn handlers_use_only_the_problem_aware_extractors() {
             vec!["assign", "get_one", "update", "revoke", "list"],
         ),
         (include_str!("../user_role_permission.rs"), vec!["list"]),
+        (
+            include_str!("../upstream.rs"),
+            vec!["create", "get_one", "update", "delete", "list"],
+        ),
+        (
+            include_str!("../bulk_operation.rs"),
+            vec!["get_one", "list"],
+        ),
     ];
 
     for (source, expected) in sources {

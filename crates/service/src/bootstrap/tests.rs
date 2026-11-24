@@ -24,6 +24,7 @@ use test_support::access_token::{DEVELOPMENT_PUBLIC_KEYS_FILE, FakeAccessTokenVe
 use test_support::anti_entropy::{
     FakeAntiEntropyStore, FakePolicyLogTail, HashDigest, TextHeadCodec,
 };
+use test_support::bulk_operation::FakeBulkOperationRepository;
 use test_support::bus::RecordingEventBus;
 use test_support::cache::StubCache;
 use test_support::change_receipt::{FakeChangeReceiptRepository, change_receipt};
@@ -112,6 +113,7 @@ fn adapters() -> Adapters {
         repository: Arc::new(InMemoryExampleApiResourceRepository::new()),
         policy_epochs: Arc::new(FakePolicyEpochRepository::new()),
         policy_reads: Arc::new(FakePolicyReadRepository::new()),
+        bulk_operations: Arc::new(FakeBulkOperationRepository::new()),
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
         rejected_attempts: Arc::new(BufferedRejectedAttemptLog::new()),
         startup_lock: Arc::new(FakeStartupLock::new()),

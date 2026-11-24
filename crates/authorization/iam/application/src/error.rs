@@ -2,8 +2,9 @@
 
 use axum::http::StatusCode;
 use iam_domain::{
-    InvalidCatalogueEntry, InvalidEventEnvelope, InvalidIamValue, InvalidRole, InvalidSpec,
-    InvalidUserRole, LastAdministratorRefused, RepositoryError, RoleChangeRefused, TokenRejection,
+    ConfigChangeRefused, InvalidCatalogueEntry, InvalidEventEnvelope, InvalidIamValue, InvalidRole,
+    InvalidSpec, InvalidUpstream, InvalidUserRole, LastAdministratorRefused, ReferencedByRoute,
+    RepositoryError, RoleChangeRefused, RouteScopeRefused, TokenRejection, UpstreamChangeRefused,
     UserRoleChangeRefused, VersionConflict,
 };
 use shared_application::http::{Problem, Violation};
@@ -17,6 +18,13 @@ pub const TYPE_ORPHAN_CONFIRMATION: &str = "/problems/orphan-confirmation-requir
 /// The `type` of the 409 problem of a change that would leave the platform without an active
 /// global administrator.
 pub const TYPE_LAST_ADMINISTRATOR: &str = "/problems/last-administrator";
+
+/// The `type` of the 409 problem of a change of an entry of the gateway configuration that IAM
+/// manages itself: an entry of the `iam` service or a `system` entry.
+pub const TYPE_SYSTEM_ENTRY: &str = "/problems/system-entry";
+
+/// The `type` of the 409 problem of a deletion of an upstream that a route still references.
+pub const TYPE_REFERENCED_BY_ROUTE: &str = "/problems/referenced-by-route";
 
 /// What an activation needs the caller to confirm before it changes the catalogue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +81,13 @@ pub enum IamError {
         "The last active administrator assignment cannot be revoked or given an earlier expiry."
     )]
     LastAdministrator,
+    /// The change would alter an entry of the gateway configuration that IAM manages itself: an
+    /// entry of the `iam` service or a `system` entry.
+    #[error("Entries of the iam service and system entries cannot be changed through the API.")]
+    SystemEntry,
+    /// The upstream is still referenced by a route.
+    #[error("The upstream is still referenced by a route.")]
+    ReferencedByRoute,
     /// The change needs a confirmation the request did not give; the violations list the keys or
     /// the grants it affects.
     #[error("The change needs a confirmation.")]
@@ -113,6 +128,32 @@ impl From<Vec<InvalidRole>> for IamError {
                 })
                 .collect(),
         )
+    }
+}
+
+impl From<Vec<InvalidUpstream>> for IamError {
+    /// Every violation of an upstream, named by the property of the request: the Service is
+    /// `service` and the outlier threshold `outlierConsecutiveErrors` on the wire.
+    fn from(violations: Vec<InvalidUpstream>) -> Self {
+        Self::Invalid(
+            violations
+                .into_iter()
+                .map(|violation| Violation {
+                    property_path: upstream_property(violation.property_path()).to_owned(),
+                    message: violation.to_string(),
+                    code: violation.code().to_owned(),
+                })
+                .collect(),
+        )
+    }
+}
+
+/// The property of the request that carries the value an upstream violation names.
+fn upstream_property(domain: &str) -> &str {
+    match domain {
+        "serviceName" => "service",
+        "outlierThreshold" => "outlierConsecutiveErrors",
+        other => other,
     }
 }
 
@@ -236,6 +277,50 @@ impl From<UserRoleChangeRefused> for IamError {
     }
 }
 
+impl From<ConfigChangeRefused> for IamError {
+    /// A deleted entry is not found, a missing or stale version is a failed precondition, and a
+    /// version that cannot grow is a defect.
+    fn from(refusal: ConfigChangeRefused) -> Self {
+        match refusal {
+            ConfigChangeRefused::Deleted => Self::NotFound,
+            ConfigChangeRefused::Version(conflict) => Self::from(conflict),
+            ConfigChangeRefused::Range(invalid) => Self::from(invalid),
+        }
+    }
+}
+
+impl From<UpstreamChangeRefused> for IamError {
+    /// A new name is a violation of `name`; every other refusal is that of the entry.
+    fn from(refusal: UpstreamChangeRefused) -> Self {
+        match refusal {
+            UpstreamChangeRefused::Renamed => {
+                Self::invalid_property("name", &refusal.to_string(), refusal.code())
+            }
+            UpstreamChangeRefused::Refused(refused) => Self::from(refused),
+        }
+    }
+}
+
+impl From<RouteScopeRefused> for IamError {
+    /// An entry of IAM itself is a system entry, a key the caller lacks is forbidden, and a route
+    /// that names another service than its upstream is a violation of `service`.
+    fn from(refusal: RouteScopeRefused) -> Self {
+        match refusal {
+            RouteScopeRefused::IamService | RouteScopeRefused::SystemEntry => Self::SystemEntry,
+            RouteScopeRefused::Missing { .. } => Self::Forbidden,
+            RouteScopeRefused::ServiceMismatch { .. } => {
+                Self::invalid_property("service", &refusal.to_string(), refusal.code())
+            }
+        }
+    }
+}
+
+impl From<ReferencedByRoute> for IamError {
+    fn from(_refusal: ReferencedByRoute) -> Self {
+        Self::ReferencedByRoute
+    }
+}
+
 impl From<IamError> for Problem {
     fn from(error: IamError) -> Self {
         let status = match &error {
@@ -249,6 +334,18 @@ impl From<IamError> for Problem {
             IamError::LastAdministrator => {
                 return Self {
                     r#type: TYPE_LAST_ADMINISTRATOR,
+                    ..Self::new(StatusCode::CONFLICT).with_detail(error.to_string())
+                };
+            }
+            IamError::SystemEntry => {
+                return Self {
+                    r#type: TYPE_SYSTEM_ENTRY,
+                    ..Self::new(StatusCode::CONFLICT).with_detail(error.to_string())
+                };
+            }
+            IamError::ReferencedByRoute => {
+                return Self {
+                    r#type: TYPE_REFERENCED_BY_ROUTE,
                     ..Self::new(StatusCode::CONFLICT).with_detail(error.to_string())
                 };
             }

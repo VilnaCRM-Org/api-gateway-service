@@ -3,7 +3,7 @@
 //!
 //! A change names the check it needs ([`GuardCheck`]); this unit of work reads the actor's policy
 //! from the policy store (PostgreSQL, never the snapshot) and decides with `EscalationGuard` or
-//! `SpecScopeGuard`. A refusal appends a rejected audit record and answers
+//! `SpecScopeGuard`, or `RouteScopeGuard` for a change of the gateway configuration. A refusal appends a rejected audit record and answers
 //! [`RepositoryError::Forbidden`]. A change that passes commits through the unit of work it wraps
 //! with the policy version the decision read added as a guard: the transaction locks the policy
 //! version, so a change that a concurrent write made stale is refused as a conflict instead of
@@ -17,9 +17,9 @@ use iam_domain::{
     ActorRef, AuditOutcome, AuditReason, AuditSummary, ChangeReceipt, EscalationDenied,
     EscalationGuard, GrantedKey, GraphQlPermissionRepository, GuardCheck, IamChange, IamUnitOfWork,
     InvalidIamValue, PermissionGrant, PermissionKey, PermissionKeyKind, PolicyReadRepository,
-    RepositoryError, RestPermissionRepository, RoleId, RoleRepository, SecurityAuditEvent,
-    SecurityAuditEventId, SecurityAuditEventParts, SecurityAuditLog, ServiceName, SpecScopeDenied,
-    SpecScopeGuard, SubjectPolicy, SubjectRef, WriteMode,
+    RepositoryError, RestPermissionRepository, RoleId, RoleRepository, RouteScopeGuard,
+    SecurityAuditEvent, SecurityAuditEventId, SecurityAuditEventParts, SecurityAuditLog,
+    ServiceName, SpecScopeDenied, SpecScopeGuard, SubjectPolicy, SubjectRef, WriteMode,
 };
 use shared_domain::{Clock, UuidGenerator};
 
@@ -38,11 +38,17 @@ pub struct GuardReads {
     pub audit_log: Arc<dyn SecurityAuditLog>,
 }
 
+/// The machine-readable reason of the rejected audit record of a change of the gateway
+/// configuration whose actor lacks the route key of a service.
+const ROUTE_SCOPE_DENIED: &str = "route_scope.denied";
+
 /// Why a guard refused a change.
 #[derive(Debug)]
 enum Denied {
     Escalation(EscalationDenied),
     SpecScope(SpecScopeDenied),
+    /// The actor holds neither `iam:route:{service}` nor `iam:route:*` for this service.
+    RouteScope(ServiceName),
 }
 
 impl Denied {
@@ -51,6 +57,7 @@ impl Denied {
         match self {
             Self::Escalation(_) => EscalationDenied::CODE,
             Self::SpecScope(_) => SpecScopeDenied::CODE,
+            Self::RouteScope(_) => ROUTE_SCOPE_DENIED,
         }
     }
 
@@ -60,6 +67,7 @@ impl Denied {
             Self::Escalation(EscalationDenied::Missing { key }) => format!("missing={key}"),
             Self::Escalation(EscalationDenied::OwnAssignment) => "subject=actor".to_owned(),
             Self::SpecScope(denied) => format!("missing={}", denied.key),
+            Self::RouteScope(service) => format!("missing=iam:route:{service}"),
         }
     }
 }
@@ -128,6 +136,11 @@ impl GuardedUnitOfWork {
             } => Ok(SpecScopeGuard::check(policy, now, service, *flag_downgrade)
                 .err()
                 .map(Denied::SpecScope)),
+            GuardCheck::RouteScope { services } => Ok(services
+                .iter()
+                .find(|service| RouteScopeGuard::check_policy(policy, now, service).is_err())
+                .cloned()
+                .map(Denied::RouteScope)),
             GuardCheck::Grants(grants) => {
                 let granted = self.granted(grants).await?;
                 Ok(EscalationGuard::check(policy, now, &granted)

@@ -2,6 +2,7 @@
 //! them, the header extractors of the writes and their response headers.
 
 pub mod access_validation;
+pub mod bulk_operation;
 pub mod dto;
 pub mod extract;
 pub mod graphql_activation;
@@ -10,12 +11,14 @@ pub mod graphql_spec;
 pub mod handler;
 pub mod openapi_document_parser;
 pub mod openapi_spec;
+pub mod rate_policy;
 pub mod response;
 pub mod rest_activation;
 pub mod rest_permission;
 pub mod role;
 pub mod role_permission;
 pub mod spec_retirement;
+pub mod upstream;
 pub mod user_role;
 pub mod user_role_permission;
 
@@ -63,6 +66,9 @@ where
         .merge(user_role_router())
         .merge(role_permission_router())
         .merge(user_role_permission_router())
+        .merge(rate_policy_router())
+        .merge(bulk_operation_router())
+        .merge(upstream_router())
 }
 
 /// The routes of the access validation, single and batch, merged into [`router`].
@@ -152,6 +158,47 @@ where
     IamState: FromRef<S>,
 {
     OpenApiRouter::new().routes(routes!(user_role_permission::list))
+}
+
+/// The routes that read the bulk operations, merged into [`router`].
+fn bulk_operation_router<S>() -> OpenApiRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+    IamState: FromRef<S>,
+{
+    OpenApiRouter::new()
+        .routes(routes!(bulk_operation::list))
+        .routes(routes!(bulk_operation::get_one))
+}
+
+/// The routes of the rate policies, merged into [`router`].
+fn rate_policy_router<S>() -> OpenApiRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+    IamState: FromRef<S>,
+{
+    OpenApiRouter::new()
+        .routes(routes!(rate_policy::create, rate_policy::list))
+        .routes(routes!(
+            rate_policy::get_one,
+            rate_policy::update,
+            rate_policy::delete
+        ))
+}
+
+/// The routes of the upstreams of the gateway configuration, merged into [`router`].
+fn upstream_router<S>() -> OpenApiRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+    IamState: FromRef<S>,
+{
+    OpenApiRouter::new()
+        .routes(routes!(upstream::create, upstream::list))
+        .routes(routes!(
+            upstream::get_one,
+            upstream::update,
+            upstream::delete
+        ))
 }
 
 /// The routes that upload specification documents, to be nested under `/api`.

@@ -26,6 +26,7 @@ use crate::query::resolve_subject_token::{ResolveSubjectTokenQuery, TokenResolut
 
 mod role_deletion;
 mod roles;
+mod upstreams;
 mod user_roles;
 
 fn default_of<T: Default>() -> T {
