@@ -6,7 +6,8 @@ use sqlx::types::Uuid as SqlUuid;
 use sqlx::types::time::OffsetDateTime;
 
 use super::{
-    restore_epoch, restore_head, restore_orphan, translate, unavailable, unencodable, unusable,
+    restore_epoch, restore_expired, restore_head, restore_orphan, translate, unavailable,
+    unencodable, unusable,
 };
 
 const ROLE: &str = "0190f2a8-7b3c-7d4e-8f10-1234567890ad";
@@ -142,4 +143,33 @@ fn a_unique_violation_is_a_duplicate() {
     let error = translate(sqlx::Error::Database(Box::new(UniqueViolation)));
 
     assert!(matches!(error, RepositoryError::AlreadyExists));
+}
+
+#[test]
+fn a_stored_session_row_becomes_an_expired_revocation() {
+    let prune_after = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+
+    let expired = restore_expired("session", "sid-1", prune_after).unwrap();
+
+    assert_eq!(expired.target_id(), "sid-1");
+}
+
+#[test]
+fn a_stored_user_row_becomes_an_expired_cutoff() {
+    let prune_after = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+
+    let expired = restore_expired("user", ROLE, prune_after).unwrap();
+
+    assert_eq!(expired.target_id(), ROLE);
+}
+
+#[test]
+fn a_stored_target_that_is_no_session_id_or_user_id_is_unusable_data() {
+    let prune_after = OffsetDateTime::from_unix_timestamp(0).unwrap();
+
+    let session = restore_expired("session", "", prune_after).unwrap_err();
+    let user = restore_expired("user", "not a uuid", prune_after).unwrap_err();
+
+    assert!(matches!(session, RepositoryError::Unavailable(_)));
+    assert!(matches!(user, RepositoryError::Unavailable(_)));
 }

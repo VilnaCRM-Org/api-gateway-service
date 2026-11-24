@@ -142,6 +142,7 @@ fn following(
             retry_delay: Duration::from_millis(1),
             ready_bound: Duration::ZERO,
             hard_bound: Duration::from_secs(15),
+            derived_check_interval: Duration::from_secs(1),
         },
     })
 }
@@ -403,7 +404,6 @@ async fn a_tail_whose_apply_thread_died_ends_as_not_stopped() {
     tokio::time::timeout(BOUND, death).await.unwrap().unwrap();
     let (_stop, stopping) = watch::channel(false);
     let installed = Installed {
-        version: PolicyVersion::ZERO,
         incomplete: None,
         tail_from: 0,
         read_to: 0,

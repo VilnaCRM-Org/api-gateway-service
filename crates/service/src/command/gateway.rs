@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::serve::Listener;
+use iam_domain::PolicyView;
 use shared_domain::BoxError;
 use tokio::net::TcpListener;
 use tokio::runtime::{Builder, Runtime};
@@ -86,10 +87,10 @@ where
 fn start_public(
     socket: TcpListener,
     tls: Option<&TlsFiles>,
+    router: Router,
     tasks: &mut TaskSupervisor,
     stopping: &watch::Receiver<bool>,
 ) -> Result<Server, BoxError> {
-    let router = listener::stale_router();
     let Some(files) = tls else {
         return Ok(spawn_server(socket, router, stopping.clone()));
     };
@@ -109,14 +110,33 @@ fn start_public(
     Ok(spawn_server(secured, router, stopping.clone()))
 }
 
+/// The routers of the public and the internal listener: with a freshness state, the public one
+/// allows only while the pod is fresh and the internal one serves `/internal/freshness`.
+fn routers(policy: &policy::PolicyAdapters) -> (Router, Router) {
+    policy.freshness.as_ref().map_or_else(
+        || (listener::stale_router(), internal::router()),
+        |freshness| {
+            let view: Arc<dyn PolicyView> =
+                Arc::<iam_infrastructure::ArcSwapPolicySnapshot>::clone(&policy.cell);
+            (
+                listener::public_router(Arc::clone(&freshness.state), Arc::clone(&view)),
+                internal::router_with_freshness(Arc::clone(&freshness.state), view),
+            )
+        },
+    )
+}
+
 fn start_servers(
     config: &GatewayConfig,
     sockets: Sockets,
+    policy: &policy::PolicyAdapters,
     tasks: &mut TaskSupervisor,
     stopping: &watch::Receiver<bool>,
 ) -> Result<Vec<Server>, BoxError> {
-    let public = start_public(sockets.public, config.tls.as_ref(), tasks, stopping)?;
-    let internal = spawn_server(sockets.internal, internal::router(), stopping.clone());
+    let (public_router, internal_router) = routers(policy);
+    let tls = config.tls.as_ref();
+    let public = start_public(sockets.public, tls, public_router, tasks, stopping)?;
+    let internal = spawn_server(sockets.internal, internal_router, stopping.clone());
     let probe = spawn_server(sockets.probe, probe::router(), stopping.clone());
     Ok(vec![public, internal, probe])
 }
@@ -216,7 +236,7 @@ async fn gateway(config: &GatewayConfig) -> Result<Shutdown, BoxError> {
     let death = policy::start_policy(&adapters.policy, &mut tasks)?;
     let sockets = bind_all(config).await?;
     let bound = sockets.addresses()?;
-    let servers = start_servers(config, sockets, &mut tasks, &stopping)?;
+    let servers = start_servers(config, sockets, &adapters.policy, &mut tasks, &stopping)?;
     log_listening(config, &bound);
     let outcome = tokio::select! {
         received = signals.received() => {

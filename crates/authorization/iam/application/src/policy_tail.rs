@@ -15,6 +15,6 @@ pub use bootstrap::{
     BootstrapOutcome, BootstrapPorts, BootstrapSnapshot, run_bootstrap,
 };
 pub use tail::{
-    ApplyResult, FenceCause, MAX_APPEND_AGE_MS, TailAction, TailApplier, TailEnd, TailInput,
-    TailMachine, TailPorts, rebootstrap_delay, run_tail,
+    ApplyResult, FenceCause, IgnoredProgress, MAX_APPEND_AGE_MS, TailAction, TailApplier, TailEnd,
+    TailInput, TailMachine, TailPorts, TailProgress, rebootstrap_delay, run_tail,
 };

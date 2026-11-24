@@ -25,6 +25,27 @@ pub enum ApplyResult {
 pub trait TailApplier: std::fmt::Debug + Send + Sync {
     /// Applies `records`, in offset order.
     async fn apply(&self, records: Vec<FramedRecord>) -> ApplyResult;
+
+    /// A fault that the applier found on its own, between batches: the tail stops on it at its next
+    /// step. The fault is reported once.
+    fn fault(&self) -> Option<FenceCause> {
+        None
+    }
+}
+
+/// Learns how far the committed log reaches without a record: the apply thread uses it to cover
+/// the commit markers behind the last record (FR-73).
+pub trait TailProgress: std::fmt::Debug + Send + Sync {
+    /// The tail polled at `position` and found no record before `high`, the last stable offset.
+    fn caught_up(&self, position: i64, high: i64);
+}
+
+/// A progress sink for a tail whose pod proves no freshness.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IgnoredProgress;
+
+impl TailProgress for IgnoredProgress {
+    fn caught_up(&self, _position: i64, _high: i64) {}
 }
 
 /// The ports of the driver.
@@ -36,6 +57,8 @@ pub struct TailPorts {
     pub applier: Arc<dyn TailApplier>,
     /// The wall clock, for the append-time check.
     pub clock: Arc<dyn Clock>,
+    /// Told when a poll finds the tail at the end of the committed log.
+    pub progress: Arc<dyn TailProgress>,
 }
 
 /// How the tail ended.
@@ -79,6 +102,9 @@ async fn drive(
         if *stopping.borrow() {
             return TailEnd::Stopped;
         }
+        if let Some(cause) = ports.applier.fault() {
+            return TailEnd::Fenced(cause);
+        }
         let (next, actions) = machine.step(input);
         machine = next;
         match settle(actions, ports, retry).await {
@@ -113,10 +139,15 @@ fn stalled() -> TailInput {
 
 async fn poll(ports: &TailPorts, position: i64) -> TailInput {
     match ports.log.poll(position).await {
-        Ok(batch) => TailInput::Polled {
-            batch,
-            now_ms: now_ms(ports.clock.now()),
-        },
+        Ok(batch) => {
+            if batch.records.is_empty() {
+                ports.progress.caught_up(position, batch.high);
+            }
+            TailInput::Polled {
+                batch,
+                now_ms: now_ms(ports.clock.now()),
+            }
+        }
         Err(error) => failed_poll(&error, position),
     }
 }

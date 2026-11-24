@@ -7,7 +7,9 @@
 //! (Story 9.4): the raw batches go to the apply thread, which checks the digest of each version
 //! before it publishes it. Any fault of the log fences the tail: the pod keeps its last verified
 //! snapshot and rebootstraps after a random delay between 0 and `FRESHNESS_READY_BOUND`. A tail
-//! task that dies ends the process. Before the first bootstrap the pod waits for the topic to pass
+//! task that dies ends the process. The apply thread also checks the derived structures against the
+//! raw records (Story 9.6): a mismatch withdraws the snapshot and the tail ends through the same
+//! rebootstrap path. Before the first bootstrap the pod waits for the topic to pass
 //! the configuration verdict under `KAFKA_CONFIG_GATES`.
 
 use std::sync::Arc;
@@ -15,8 +17,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iam_application::{
-    BootstrapMachine, BootstrapOutcome, BootstrapPorts, BootstrapSnapshot, FenceCause, TailApplier,
-    TailEnd, TailMachine, TailPorts, rebootstrap_delay, run_bootstrap, run_tail,
+    BootstrapMachine, BootstrapOutcome, BootstrapPorts, BootstrapSnapshot, DerivedStateChecker,
+    FenceCause, FreshnessProber, ProofSink, TailApplier, TailEnd, TailMachine, TailPorts,
+    TailProgress, rebootstrap_delay, run_bootstrap, run_tail,
 };
 use iam_domain::{
     BootClock, KafkaTopicInspector, PolicyBootstrapLog, PolicyDigest, PolicyTailLog, Rng,
@@ -32,6 +35,7 @@ use shared_infrastructure::clock::SystemClock;
 use tokio::sync::{oneshot, watch};
 
 use super::apply_thread::{ApplyError, ApplyThread};
+use super::freshness::FreshnessAdapters;
 use crate::bootstrap::TaskSupervisor;
 use crate::config::GatewayConfig;
 
@@ -50,6 +54,9 @@ pub struct TailSettings {
     pub ready_bound: Duration,
     /// The longest a fenced pod keeps its last verified snapshot (`FRESHNESS_HARD_BOUND`).
     pub hard_bound: Duration,
+    /// How often a group of shards is checked against the raw records
+    /// (`DERIVED_STATE_CHECK_INTERVAL`).
+    pub derived_check_interval: Duration,
 }
 
 /// The ports of the tail and of the topic verdict.
@@ -82,6 +89,8 @@ pub struct PolicyAdapters {
     pub boot_clock: Arc<dyn BootClock>,
     /// The tail and the topic verdict; `None` leaves the pod on the snapshot of its bootstrap.
     pub tail: Option<TailAdapters>,
+    /// The proof of freshness and its probe; `None` leaves the pod without a proof (Story 9.5).
+    pub freshness: Option<FreshnessAdapters>,
 }
 
 impl PolicyAdapters {
@@ -91,6 +100,7 @@ impl PolicyAdapters {
     #[must_use]
     pub fn from_config(config: &GatewayConfig) -> Self {
         let boot_clock: Arc<dyn BootClock> = Arc::new(LinuxBootClock);
+        let freshness = FreshnessAdapters::from_config(config, Arc::clone(&boot_clock));
         let tail = TailAdapters {
             log: Arc::new(KrafkaPolicyLogTail::tail(
                 config.kafka_tail.clone(),
@@ -103,6 +113,7 @@ impl PolicyAdapters {
                 retry_delay: config.kafka_tail.retry_delay,
                 ready_bound: config.freshness_ready_bound,
                 hard_bound: config.freshness_hard_bound,
+                derived_check_interval: config.derived_state_check_interval,
             },
         };
         Self::with(
@@ -110,6 +121,14 @@ impl PolicyAdapters {
             boot_clock,
         )
         .following(tail)
+        .proving(freshness)
+    }
+
+    /// The same wiring with the proof of freshness.
+    #[must_use]
+    pub fn proving(mut self, freshness: FreshnessAdapters) -> Self {
+        self.freshness = Some(freshness);
+        self
     }
 
     /// The same wiring with the tail and the topic verdict.
@@ -140,6 +159,7 @@ impl PolicyAdapters {
             },
             boot_clock,
             tail: None,
+            freshness: None,
         }
     }
 }
@@ -154,21 +174,49 @@ pub fn start_policy(
     policy: &PolicyAdapters,
     tasks: &mut TaskSupervisor,
 ) -> std::io::Result<oneshot::Receiver<()>> {
+    start_policy_with_thread(policy, tasks).map(|(death, _thread)| death)
+}
+
+/// Like [`start_policy`], and the handle to the apply thread comes back too: the tests that corrupt
+/// a derived structure on the thread (Story 9.6) run their hook through it.
+///
+/// # Errors
+///
+/// Returns the error of starting the apply thread.
+pub fn start_policy_with_thread(
+    policy: &PolicyAdapters,
+    tasks: &mut TaskSupervisor,
+) -> std::io::Result<(oneshot::Receiver<()>, Arc<ApplyThread>)> {
     let builder = PolicySnapshotBuilder::new(
         policy.snapshot.clone(),
         Arc::clone(&policy.cell),
         PUBLISH_INTERVAL,
     );
-    let (thread, apply_death) = ApplyThread::spawn(builder, Arc::clone(&policy.cell))?;
+    let checker = policy
+        .tail
+        .as_ref()
+        .map(|tail| DerivedStateChecker::new(tail.settings.derived_check_interval));
+    let freshness = policy.freshness.as_ref();
+    let state = freshness.map(|adapters| Arc::clone(&adapters.state));
+    let cell = Arc::clone(&policy.cell);
+    let (thread, apply_death) = ApplyThread::spawn_proving(builder, cell, checker, state)?;
     let (tail_dead, tail_death) = oneshot::channel();
     let (dead, death) = oneshot::channel();
     tokio::spawn(merge_deaths(apply_death, tail_death, dead));
     let policy = policy.clone();
     let thread = Arc::new(thread);
+    let handle = Arc::clone(&thread);
+    if let Some(freshness) = policy.freshness.as_ref() {
+        let sink: Arc<dyn ProofSink> = Arc::<ApplyThread>::clone(&thread);
+        let prober = freshness.prober(Arc::<ArcSwapPolicySnapshot>::clone(&policy.cell), sink);
+        tasks.spawn(FreshnessProber::name(), move |stopping| {
+            prober.run(stopping)
+        });
+    }
     tasks.spawn(BOOTSTRAP_TASK, move |stopping| {
         policy_task(policy, thread, stopping, tail_dead)
     });
-    Ok(death)
+    Ok((death, handle))
 }
 
 /// Sends the one death notice when either side dies; two clean endings send none.
@@ -266,10 +314,12 @@ async fn tail_loop(
 ) -> bool {
     let concrete: Arc<ApplyThread> = Arc::clone(&thread);
     let applier: Arc<dyn TailApplier> = concrete;
+    let progress: Arc<dyn TailProgress> = Arc::<ApplyThread>::clone(&thread);
     let ports = TailPorts {
         log: Arc::clone(&tail.log),
         applier,
         clock: Arc::clone(&tail.clock),
+        progress,
     };
     loop {
         let machine = TailMachine::new(installed.tail_from, installed.read_to);
@@ -333,10 +383,9 @@ enum StartError {
     Install(#[from] ApplyError),
 }
 
-/// What the bootstrap installed: the version, the incomplete trailing version if any, and where the
+/// What the bootstrap installed: the incomplete trailing version if any, and where the
 /// tail starts.
 struct Installed {
-    version: iam_domain::PolicyVersion,
     incomplete: Option<iam_domain::PolicyVersion>,
     tail_from: i64,
     read_to: i64,
@@ -356,30 +405,22 @@ async fn install(
 ) -> Result<Installed, StartError> {
     let (incomplete, tail_from, read_to) =
         (snapshot.incomplete, snapshot.tail_from, snapshot.read_to);
-    let version = thread.install(snapshot).await?;
+    thread.install(snapshot).await?;
     Ok(Installed {
-        version,
         incomplete,
         tail_from,
         read_to,
     })
 }
 
-/// The two metric events of the bootstrap: the version the pod published and how long it took.
+/// The metric event of the bootstrap that the publication does not emit, how long it took, and the
+/// warning for an incomplete trailing version. The version, digest and derived hash of the pod are
+/// reported by every publication of the builder.
 fn report_started(installed: &Installed, elapsed: Duration) {
-    log_applied_version(installed.version.value());
     log_bootstrap_seconds(elapsed.as_secs_f64());
     if let Some(trailing) = installed.incomplete {
         log_incomplete(trailing.value());
     }
-}
-
-fn log_applied_version(version: i64) {
-    tracing::info!(
-        metric = "policy_applied_version",
-        version,
-        "policy snapshot published"
-    );
 }
 
 fn log_bootstrap_seconds(seconds: f64) {

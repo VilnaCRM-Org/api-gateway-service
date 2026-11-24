@@ -20,11 +20,13 @@ pub mod bulk_operation_runner;
 pub mod bulk_role_deletion;
 pub mod caller_rule;
 pub mod command;
+pub mod derived_state_checker;
 pub mod endpoint_directory;
 pub mod endpoint_watcher;
 pub mod error;
 #[cfg(test)]
 mod fixtures;
+pub mod freshness;
 pub mod graphql;
 #[cfg(test)]
 mod graphql_activation_fixtures;
@@ -61,6 +63,9 @@ mod rest_permission_fixtures;
 pub mod resync_chunks;
 #[cfg(test)]
 mod revocation_fixtures;
+#[cfg(test)]
+mod revocation_read_fixtures;
+pub mod revocation_tombstone_emitter;
 #[cfg(test)]
 mod role_permission_fixtures;
 #[cfg(test)]
@@ -113,6 +118,9 @@ pub use command::delete_route::{DeleteRouteCommand, DeleteRouteCommandHandler, D
 pub use command::delete_upstream::{
     DeleteUpstreamCommand, DeleteUpstreamCommandHandler, DeleteUpstreamPorts,
 };
+pub use command::emit_revocation_tombstones::{
+    EmitRevocationTombstonesCommand, EmitRevocationTombstonesCommandHandler,
+};
 pub use command::load_graphql_spec::{LoadGraphQlSpecCommand, LoadGraphQlSpecCommandHandler};
 pub use command::load_openapi_spec::{LoadOpenApiSpecCommand, LoadOpenApiSpecCommandHandler};
 pub use command::record_rejected_attempt::{
@@ -146,9 +154,14 @@ pub use command::update_upstream::{
     UpdateUpstreamCommand, UpdateUpstreamCommandHandler, UpstreamPatch,
 };
 pub use command::update_user_role::{UpdateUserRoleCommand, UpdateUserRoleCommandHandler};
+pub use derived_state_checker::{CheckOutcome, DerivedStateChecker};
 pub use endpoint_directory::{EndpointDirectory, EndpointView, ZoneSource};
 pub use endpoint_watcher::{EndpointWatcher, WatcherSettings};
 pub use error::IamError;
+pub use freshness::{
+    FreshnessProber, FreshnessReading, FreshnessState, PEER_LAG_TOLERANCE, PeerLag, PeerLagTracker,
+    ProberPorts, ProberSettings, ProofAttachment, ProofSink, WATCHDOG_INTERVAL,
+};
 pub use guarded_unit_of_work::{GuardReads, GuardedUnitOfWork};
 pub use iam_access_guard::{
     AuthorizationUnavailable, GraphQlOperationRequest, IamAccessGuard, OperationRequest,
@@ -157,8 +170,8 @@ pub use operation_rules::{GraphQlRule, OperationRule, OperationRules, Requiremen
 pub use outbox_relay::{OutboxRelay, OutboxRelayPorts, OutboxRelaySettings};
 pub use policy_maintenance::{MaintenanceSettings, PolicyMaintenance};
 pub use policy_tail::{
-    ApplyResult, FenceCause, MAX_APPEND_AGE_MS, TailAction, TailApplier, TailEnd, TailInput,
-    TailMachine, TailPorts, rebootstrap_delay, run_tail,
+    ApplyResult, FenceCause, IgnoredProgress, MAX_APPEND_AGE_MS, TailAction, TailApplier, TailEnd,
+    TailInput, TailMachine, TailPorts, TailProgress, rebootstrap_delay, run_tail,
 };
 pub use policy_tail::{
     BootstrapAction, BootstrapEntry, BootstrapFailure, BootstrapInput, BootstrapMachine,
@@ -171,6 +184,9 @@ pub use query::find_graphql_spec::{FindGraphQlSpecQuery, FindGraphQlSpecQueryHan
 pub use query::find_openapi_spec::{FindOpenApiSpecQuery, FindOpenApiSpecQueryHandler};
 pub use query::get_bulk_operation::{GetBulkOperationQuery, GetBulkOperationQueryHandler};
 pub use query::get_change_receipt::{GetChangeReceiptQuery, GetChangeReceiptQueryHandler};
+pub use query::get_global_token_cutoff::{
+    GetGlobalTokenCutoffQuery, GetGlobalTokenCutoffQueryHandler,
+};
 pub use query::get_graphql_permission::{
     GetGraphQlPermissionQuery, GetGraphQlPermissionQueryHandler,
 };
@@ -220,10 +236,16 @@ pub use query::get_security_audit_event::{
 pub use query::get_security_audit_events::{
     GetSecurityAuditEventsQuery, GetSecurityAuditEventsQueryHandler, SecurityAuditEventPage,
 };
+pub use query::get_session_revocation::{
+    GetSessionRevocationQuery, GetSessionRevocationQueryHandler,
+};
 pub use query::get_upstream::{GetUpstreamQuery, GetUpstreamQueryHandler};
 pub use query::get_user_role::{GetUserRoleQuery, GetUserRoleQueryHandler, UserRoleView};
 pub use query::get_user_role_permissions::{
     GetUserRolePermissionsQuery, GetUserRolePermissionsQueryHandler, UserRolePermissionsView,
+};
+pub use query::get_user_token_cutoff::{
+    GetUserTokenCutoffQuery, GetUserTokenCutoffQueryHandler, UserTokenCutoffView,
 };
 pub use query::list_bulk_operations::{
     BulkOperationPage, ListBulkOperationsQuery, ListBulkOperationsQueryHandler,
@@ -233,6 +255,9 @@ pub use query::list_rate_policies::{
 };
 pub use query::list_roles::{ListRolesQuery, ListRolesQueryHandler, RolePage};
 pub use query::list_routes::{ListRoutesQuery, ListRoutesQueryHandler, RoutePage};
+pub use query::list_session_revocations::{
+    ListSessionRevocationsQuery, ListSessionRevocationsQueryHandler, SessionRevocationPage,
+};
 pub use query::list_upstreams::{ListUpstreamsQuery, ListUpstreamsQueryHandler, UpstreamPage};
 pub use query::list_user_roles::{ListUserRolesQuery, ListUserRolesQueryHandler, UserRolePage};
 pub use query::preview_route_configuration::{
@@ -251,6 +276,7 @@ pub use rate_policy_values::{RatePolicyPatch, RatePolicyValues};
 pub use rejected_attempt_writer::{FLUSH_INTERVAL, FlushOutcome, RejectedAttemptWriter};
 pub use required_key_resolver::RequiredKeyResolver;
 pub use resync_chunks::{ResyncChunkCommitter, ResyncPorts};
+pub use revocation_tombstone_emitter::RevocationTombstoneEmitter;
 pub use service_catalog_loader::ServiceCatalogLoader;
 pub use singleton_loop::{
     BatchOutcome, InvalidSingletonInterval, MAX_SINGLETON_INTERVAL, SingletonInterval,

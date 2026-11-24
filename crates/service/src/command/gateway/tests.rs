@@ -114,7 +114,8 @@ async fn the_plain_public_server_answers_503_and_ends_on_the_stop_flag() {
     let socket = bind(loopback()).await.unwrap();
     let address = socket.local_addr().unwrap();
 
-    let server = start_public(socket, None, &mut tasks, &stopping).unwrap();
+    let router = listener::stale_router();
+    let server = start_public(socket, None, router, &mut tasks, &stopping).unwrap();
     let answer = raw_get(address).await;
     stop.send_replace(true);
 
@@ -122,6 +123,69 @@ async fn the_plain_public_server_answers_503_and_ends_on_the_stop_flag() {
     assert!(answer.to_lowercase().contains("retry-after: 1"), "{answer}");
     assert!(server.await.unwrap().is_ok());
     assert!(tasks.is_empty());
+}
+
+#[test]
+fn a_gateway_without_a_freshness_state_wires_the_stale_router_and_the_bare_internal_router() {
+    use test_support::boot_clock::FakeBootClock;
+    use test_support::policy_bootstrap_log::FakePolicyBootstrapLog;
+
+    let policy = policy::PolicyAdapters::with(
+        Arc::new(FakePolicyBootstrapLog::with(Vec::new())),
+        Arc::new(FakeBootClock::new()),
+    );
+
+    let (_public, _internal) = routers(&policy);
+
+    assert!(policy.freshness.is_none());
+}
+
+#[tokio::test]
+async fn a_gateway_with_a_freshness_state_serves_the_freshness_endpoint_and_gates_the_public_listener()
+ {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use iam_application::FreshnessState;
+    use iam_domain::FreshnessRule;
+    use test_support::boot_clock::FakeBootClock;
+    use test_support::peer_freshness_client::FakePeerFreshnessClient;
+    use test_support::policy_bootstrap_log::FakePolicyBootstrapLog;
+    use test_support::policy_log_probe::FakePolicyLogProbe;
+    use tower::ServiceExt as _;
+
+    use crate::bootstrap::gateway::freshness::FreshnessAdapters;
+
+    let clock = Arc::new(FakeBootClock::new());
+    let freshness = FreshnessAdapters {
+        state: Arc::new(FreshnessState::new(
+            FreshnessRule::new(Duration::from_secs(15), Duration::from_secs(2)),
+            Arc::<FakeBootClock>::clone(&clock),
+        )),
+        probe: Arc::new(FakePolicyLogProbe::scripted(Vec::new())),
+        peers: Arc::new(FakePeerFreshnessClient::new()),
+        clock: Arc::<FakeBootClock>::clone(&clock),
+        probe_interval: Duration::from_secs(1),
+    };
+    let policy =
+        policy::PolicyAdapters::with(Arc::new(FakePolicyBootstrapLog::with(Vec::new())), clock)
+            .proving(freshness);
+
+    let (public, internal) = routers(&policy);
+    let gated = public
+        .oneshot(Request::get("/anything").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let report = internal
+        .oneshot(
+            Request::get("/internal/freshness")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(gated.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(report.status(), StatusCode::OK);
 }
 
 async fn raw_get(address: SocketAddr) -> String {

@@ -48,7 +48,25 @@ impl TailApplier for ScriptedApplier {
     }
 }
 
+/// A progress sink that remembers what it was told.
+#[derive(Debug, Default)]
+struct RecordedProgress(Mutex<Vec<(i64, i64)>>);
+
+impl TailProgress for RecordedProgress {
+    fn caught_up(&self, position: i64, high: i64) {
+        self.0.lock().unwrap().push((position, high));
+    }
+}
+
 fn ports(log: &Arc<FakePolicyTailLog>, applier: &Arc<ScriptedApplier>) -> TailPorts {
+    ports_with(log, applier, Arc::new(IgnoredProgress))
+}
+
+fn ports_with(
+    log: &Arc<FakePolicyTailLog>,
+    applier: &Arc<ScriptedApplier>,
+    progress: Arc<dyn TailProgress>,
+) -> TailPorts {
     TailPorts {
         log: Arc::<FakePolicyTailLog>::clone(log),
         applier: Arc::<ScriptedApplier>::clone(applier),
@@ -57,6 +75,7 @@ fn ports(log: &Arc<FakePolicyTailLog>, applier: &Arc<ScriptedApplier>) -> TailPo
                 .checked_add(Duration::from_secs(10_000))
                 .unwrap(),
         )),
+        progress,
     }
 }
 
@@ -166,4 +185,78 @@ async fn a_step_that_asks_for_nothing_counts_as_a_failed_poll() {
         matches!(&settled, Settled::Next(TailInput::ReadFailed(reason)) if reason == "the tail made no progress")
     );
     assert_eq!(log.positions(), Vec::<i64>::new());
+}
+
+/// An applier that has found a fault of its own before the first batch.
+#[derive(Debug)]
+struct FaultedApplier {
+    fault: Mutex<Option<FenceCause>>,
+}
+
+#[async_trait::async_trait]
+impl TailApplier for FaultedApplier {
+    async fn apply(&self, _records: Vec<FramedRecord>) -> ApplyResult {
+        ApplyResult::Applied
+    }
+
+    fn fault(&self) -> Option<FenceCause> {
+        self.fault.lock().unwrap().take()
+    }
+}
+
+#[tokio::test]
+async fn a_fault_the_applier_found_on_its_own_ends_the_tail_before_the_next_poll() {
+    let log = Arc::new(FakePolicyTailLog::scripted(Vec::new(), 6));
+    let applier = Arc::new(FaultedApplier {
+        fault: Mutex::new(Some(FenceCause::DerivedMismatch { shard: 9 })),
+    });
+    let ports = TailPorts {
+        log: Arc::<FakePolicyTailLog>::clone(&log),
+        applier: Arc::<FaultedApplier>::clone(&applier),
+        clock: Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH)),
+        progress: Arc::new(IgnoredProgress),
+    };
+    let (_stop, stopping) = watch::channel(false);
+
+    let end = run_tail(TailMachine::new(3, 3), &ports, Duration::ZERO, &stopping).await;
+
+    assert_eq!(
+        end,
+        TailEnd::Fenced(FenceCause::DerivedMismatch { shard: 9 })
+    );
+}
+
+#[tokio::test]
+async fn an_applier_without_a_fault_of_its_own_never_stops_the_tail() {
+    let applier = ScriptedApplier::answering(Vec::new());
+
+    assert_eq!(applier.fault(), None);
+}
+
+#[tokio::test]
+async fn an_idle_poll_tells_the_progress_sink_where_the_committed_log_ends() {
+    let steps = vec![
+        PollStep::Batch(batch(vec![timed(row(3), None)], 0, 4)),
+        PollStep::Batch(batch(Vec::new(), 0, 5)),
+        PollStep::Batch(batch(Vec::new(), 0, 4)),
+    ];
+    let log = Arc::new(FakePolicyTailLog::scripted(steps, 6));
+    let applier = Arc::new(ScriptedApplier::answering(Vec::new()));
+    let progress = Arc::new(RecordedProgress::default());
+    let (_stop, stopping) = watch::channel(false);
+    let sink: Arc<dyn TailProgress> = Arc::<RecordedProgress>::clone(&progress);
+
+    let end = run_tail(
+        TailMachine::new(3, 3),
+        &ports_with(&log, &applier, sink),
+        Duration::ZERO,
+        &stopping,
+    )
+    .await;
+
+    assert_eq!(
+        end,
+        TailEnd::Fenced(FenceCause::WatermarkRegression { seen: 5, high: 4 })
+    );
+    assert_eq!(*progress.0.lock().unwrap(), vec![(4, 5), (4, 4)]);
 }

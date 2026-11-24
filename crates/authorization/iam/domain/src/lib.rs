@@ -8,9 +8,11 @@ pub mod audit_anchor;
 pub mod bulk_operation;
 pub mod catalogue_event;
 pub mod catalogue_statement;
+pub mod derived_check;
 pub mod endpoint;
 pub mod entity;
 pub mod error;
+pub mod freshness;
 pub mod gateway_seed;
 pub mod gateway_statement;
 pub mod graphql_permission;
@@ -50,6 +52,7 @@ pub use catalogue_event::{GraphQlPermissionsCreated, PermissionsOrphaned, RestPe
 pub use catalogue_statement::{
     CatalogueStatement, CatalogueStatementParts, EntryFlags, EntryInsert, SpecTransition,
 };
+pub use derived_check::{CHECK_GROUPS, DerivedMismatch, DerivedStateAudit, in_group};
 pub use endpoint::selector::{Candidate, DEFAULT_SPILL_THRESHOLD, EndpointSelector};
 pub use endpoint::zone::{InvalidZone, Zone};
 pub use endpoint::{Condition, EndpointConditions, EndpointParts, UpstreamEndpoint};
@@ -70,6 +73,8 @@ pub use error::{
 };
 pub use error::{InvalidCatalogueEntry, InvalidStateRecord, RenameRefused};
 pub use error::{InvalidSpec, SpecPosition, SpecTransitionRefused};
+pub use freshness::probe_error::ProbeError;
+pub use freshness::rule::{Freshness, FreshnessRule, StaleCause};
 pub use gateway_seed::IamGatewaySeed;
 pub use gateway_statement::{GatewayPrecondition, GatewayStatement};
 pub use graphql_permission::{GraphQlPermission, GraphQlPermissionParts};
@@ -135,6 +140,7 @@ pub use port::endpoint_watch::{
     EndpointListing, EndpointSlice, EndpointWatch, EndpointWatchError, SliceChange, WatchBatch,
     WatchTarget,
 };
+pub use port::expired_revocation_store::ExpiredRevocationStore;
 pub use port::graphql_document_analyzer::GraphQlDocumentAnalyzer;
 pub use port::graphql_permission_repository::GraphQlPermissionRepository;
 pub use port::graphql_schema_parser::GraphQlSchemaParser;
@@ -147,10 +153,12 @@ pub use port::maintenance_store::MaintenanceStore;
 pub use port::openapi_document_parser::OpenApiDocumentParser;
 pub use port::openapi_spec_repository::{OpenApiSpecPageQuery, OpenApiSpecRepository};
 pub use port::outbox_store::{OutboxKind, OutboxRow, OutboxStore, PublishedRow, RelayTakeover};
+pub use port::peer_freshness_client::PeerFreshnessClient;
 pub use port::permission_page_query::PermissionPageQuery;
 pub use port::policy_bootstrap_log::{FramedRecord, PolicyBootstrapLog};
 pub use port::policy_digest::PolicyDigest;
 pub use port::policy_epoch_repository::PolicyEpochRepository;
+pub use port::policy_log_probe::PolicyLogProbe;
 pub use port::policy_log_producer::{
     LOG_SCHEMA, PolicyLogError, PolicyLogProducer, PolicyLogRecord, STATE_PARTITION,
 };
@@ -198,12 +206,14 @@ pub use rejected_attempt::{
 pub use rest_permission::{RestPermission, RestPermissionParts};
 pub use resync::{EpochChange, InventoryEntry, PolicyResynced, Republication, ResyncStart};
 pub use revocation::event::{GlobalTokensCutOff, SessionRevoked, UserTokensCutOff};
+pub use revocation::expired_revocation::{ExpiredRevocation, MAX_TOMBSTONES_PER_RUN};
 pub use revocation::global_token_cutoff::GlobalTokenCutoff;
 pub use revocation::inbound_event::{InboundEvent, InboundOutcome};
 pub use revocation::prune_policy::{CUTOFF_MARGIN, PRUNE_MARGIN, PrunePolicy, SKEW_ALLOWANCE};
 pub use revocation::revocation_rule::{RevocationRule, RevocationStatus};
 pub use revocation::revocation_source::RevocationSource;
 pub use revocation::session_revocation::SessionRevocation;
+pub use revocation::session_revocation_search::SessionRevocationSearch;
 pub use revocation::statement::RevocationStatement;
 pub use revocation::user_token_cutoff::UserTokenCutoff;
 pub use role::event::{RoleCreated, RoleDeleted, RolePermissionsChanged, RoleUpdated};

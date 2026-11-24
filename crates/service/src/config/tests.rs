@@ -2326,6 +2326,57 @@ fn the_tail_and_the_freshness_bounds_have_defaults() {
     assert_eq!(config.kafka_fetch_max_wait, Duration::from_millis(100));
     assert_eq!(config.freshness_ready_bound, Duration::from_secs(2));
     assert_eq!(config.freshness_hard_bound, Duration::from_secs(15));
+    assert_eq!(config.freshness_probe_interval, Duration::from_millis(500));
+    assert_eq!(config.derived_state_check_interval, Duration::from_secs(1));
+}
+
+#[rstest]
+#[case("0s")]
+#[case("0ms")]
+#[case("often")]
+fn a_derived_state_check_interval_that_is_not_positive_names_its_variable(#[case] raw: &str) {
+    let mut args = valid_gateway();
+    args.derived_state_check_interval = some(raw);
+
+    assert_eq!(
+        gateway_variables(&args),
+        vec!["DERIVED_STATE_CHECK_INTERVAL"]
+    );
+}
+
+#[test]
+fn a_positive_derived_state_check_interval_is_taken_as_given() {
+    let mut args = valid_gateway();
+    args.derived_state_check_interval = some("250ms");
+
+    let config = GatewayConfig::from_args(&args).unwrap();
+
+    assert_eq!(
+        config.derived_state_check_interval,
+        Duration::from_millis(250)
+    );
+}
+
+#[rstest]
+#[case("0s")]
+#[case("0ms")]
+#[case("-1s")]
+#[case("often")]
+fn a_probe_interval_that_is_not_positive_names_its_variable(#[case] raw: &str) {
+    let mut args = valid_gateway();
+    args.freshness_probe_interval = some(raw);
+
+    assert_eq!(gateway_variables(&args), vec!["FRESHNESS_PROBE_INTERVAL"]);
+}
+
+#[test]
+fn a_positive_probe_interval_is_taken_as_given() {
+    let mut args = valid_gateway();
+    args.freshness_probe_interval = some("500ms");
+
+    let config = GatewayConfig::from_args(&args).unwrap();
+
+    assert_eq!(config.freshness_probe_interval, Duration::from_millis(500));
 }
 
 #[rstest]

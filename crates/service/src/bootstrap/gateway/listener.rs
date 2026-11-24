@@ -14,10 +14,13 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use axum::Router;
+use axum::extract::State;
 use axum::http::header::RETRY_AFTER;
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse as _, Response};
 use axum::serve::Listener;
+use iam_application::FreshnessState;
+use iam_domain::PolicyView;
 use rustls::ServerConfig;
 use rustls::crypto::aws_lc_rs::default_provider;
 use rustls::crypto::aws_lc_rs::sign::any_supported_type;
@@ -26,6 +29,7 @@ use rustls::sign::CertifiedKey;
 use rustls_pki_types::pem::PemObject as _;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use shared_application::http::Problem;
+use shared_application::http::fallback::not_found;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tokio_rustls::TlsAcceptor;
@@ -376,16 +380,49 @@ pub fn stale_router() -> Router {
 }
 
 async fn iam_stale() -> Response {
+    stale_response("No policy snapshot is published yet.")
+}
+
+/// 503 `iam_stale` with `Retry-After: 1`.
+fn stale_response(detail: &'static str) -> Response {
     let problem = Problem {
         r#type: TYPE_IAM_STALE,
-        ..Problem::new(StatusCode::SERVICE_UNAVAILABLE)
-            .with_detail("No policy snapshot is published yet.")
+        ..Problem::new(StatusCode::SERVICE_UNAVAILABLE).with_detail(detail)
     };
     let mut response = problem.into_response();
     response
         .headers_mut()
         .insert(RETRY_AFTER, HeaderValue::from_static("1"));
     response
+}
+
+/// What the snapshot step of the public listener reads: the published snapshot and the freshness of
+/// the pod (Story 9.5).
+#[derive(Debug, Clone)]
+struct Gate {
+    freshness: Arc<FreshnessState>,
+    view: Arc<dyn PolicyView>,
+}
+
+/// The router of the public listener until the pipeline of Story 10.2 exists.
+///
+/// Its snapshot step is the one the pipeline will have: a request is allowed to proceed only while a snapshot is
+/// published and `FreshnessRule` finds the pod fresh, that is, a proof no older than
+/// `FRESHNESS_HARD_BOUND` and no gap above `FRESHNESS_READY_BOUND` since it; any other request is
+/// answered 503 `iam_stale` with `Retry-After: 1`. A request that proceeds meets no route yet and
+/// is answered with the 404 problem.
+pub fn public_router(freshness: Arc<FreshnessState>, view: Arc<dyn PolicyView>) -> Router {
+    Router::new()
+        .fallback(snapshot_step)
+        .with_state(Gate { freshness, view })
+}
+
+async fn snapshot_step(State(gate): State<Gate>) -> Response {
+    if gate.view.current().is_some() && gate.freshness.is_fresh() {
+        not_found().await.into_response()
+    } else {
+        stale_response("The policy snapshot is not proven fresh.")
+    }
 }
 
 fn log_reloaded() {

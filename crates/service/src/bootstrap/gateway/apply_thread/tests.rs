@@ -2,11 +2,15 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use iam_application::{ApplyResult, BootstrapEntry, BootstrapSnapshot, FenceCause, TailApplier};
+use iam_application::{
+    ApplyResult, BootstrapEntry, BootstrapSnapshot, DerivedStateChecker, FenceCause,
+    FreshnessState, ProofSink as _, TailApplier,
+};
+use iam_domain::freshness::proof::FreshnessProof;
 use iam_domain::{
-    FramedRecord, LogEpoch, PolicyDigest as _, PolicyDigestValue, PolicyHead, PolicyState,
-    PolicyVersion, PolicyView as _, RelayEpoch, StateKey, StateRecordCodec as _, SubjectRef,
-    SubjectState, VersionedRecord,
+    BootClock as _, DerivedMismatch, FramedRecord, FreshnessRule, LogEpoch, PolicyDigest as _,
+    PolicyDigestValue, PolicyHead, PolicyState, PolicyVersion, PolicyView as _, RelayEpoch,
+    StateKey, StateRecordCodec as _, SubjectRef, SubjectState, VersionedRecord,
 };
 use iam_infrastructure::{
     ArcSwapPolicySnapshot, JsonStateRecordCodec, MatchitRouteTableCompiler, PUBLISH_INTERVAL,
@@ -14,6 +18,7 @@ use iam_infrastructure::{
 };
 use shared_domain::Uuid;
 use test_support::boot_clock::FakeBootClock;
+use test_support::log::LogRecorder;
 use tokio::sync::oneshot;
 
 use super::{ApplyError, ApplyThread};
@@ -412,4 +417,179 @@ async fn a_batch_for_a_thread_that_died_finds_it_gone() {
 
     assert_eq!(result, ApplyResult::Gone);
     assert!(!thread.stop());
+}
+
+const CHECK_INTERVAL: Duration = Duration::from_secs(1);
+
+/// A thread that checks the derived structures every second of a clock the test moves.
+fn checked() -> (ApplyThread, Arc<FakeBootClock>, Arc<ArcSwapPolicySnapshot>) {
+    let clock = Arc::new(FakeBootClock::new());
+    let cell = Arc::new(ArcSwapPolicySnapshot::deferred());
+    let ports = SnapshotPorts {
+        codec: Arc::new(JsonStateRecordCodec),
+        digest: Arc::new(Sha256PolicyDigest),
+        compiler: Arc::new(MatchitRouteTableCompiler),
+        boot_clock: Arc::<FakeBootClock>::clone(&clock),
+    };
+    let builder = PolicySnapshotBuilder::new(ports, Arc::clone(&cell), PUBLISH_INTERVAL);
+    let (thread, _death) = ApplyThread::spawn_checked(
+        builder,
+        Arc::clone(&cell),
+        Some(DerivedStateChecker::new(CHECK_INTERVAL)),
+    )
+    .unwrap();
+    (thread, clock, cell)
+}
+
+fn subject_key() -> StateKey {
+    StateKey::Subject(SubjectRef::user(
+        Uuid::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ab").unwrap(),
+    ))
+}
+
+/// Moves the clock one interval at a time, for at most a full rotation and one more, until the
+/// snapshot is withdrawn; whether it was.
+fn run_rotation(clock: &FakeBootClock, cell: &ArcSwapPolicySnapshot) -> bool {
+    for _ in 0..18 {
+        clock.advance(CHECK_INTERVAL);
+        for _ in 0..40 {
+            if cell.current().is_none() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    false
+}
+
+#[tokio::test]
+async fn a_consistent_state_survives_a_full_rotation_of_checks() {
+    let (thread, clock, cell) = checked();
+    thread.install(one_subject(4)).await.unwrap();
+
+    let withdrawn = run_rotation(&clock, &cell);
+
+    assert!(!withdrawn);
+    assert_eq!(cell.current().unwrap().version(), version(4));
+    assert_eq!(thread.fault(), None);
+    assert!(thread.stop());
+}
+
+#[tokio::test]
+async fn a_corrupt_structure_withdraws_the_snapshot_and_reports_the_fault_once() {
+    let (thread, clock, cell) = checked();
+    thread.install(one_subject(4)).await.unwrap();
+    let healthy = cell.current().unwrap().derived_hash();
+    let key = subject_key();
+    thread
+        .run_on_thread(move |builder| assert!(builder.corrupt_derived(&key)))
+        .unwrap();
+    wait_until(|| {
+        cell.current()
+            .is_some_and(|snapshot| snapshot.derived_hash() != healthy)
+    });
+
+    let withdrawn = run_rotation(&clock, &cell);
+
+    assert!(withdrawn, "no snapshot may serve a wrong structure");
+    let fault = thread.fault();
+    assert!(matches!(fault, Some(FenceCause::DerivedMismatch { .. })));
+    assert_eq!(thread.fault(), None, "the fault is reported once");
+    assert!(thread.stop());
+}
+
+#[tokio::test]
+async fn after_a_mismatch_nothing_is_applied_or_published_until_a_state_is_installed() {
+    let (thread, clock, cell) = checked();
+    thread.install(one_subject(4)).await.unwrap();
+    let key = subject_key();
+    thread
+        .run_on_thread(move |builder| assert!(builder.corrupt_derived(&key)))
+        .unwrap();
+    assert!(run_rotation(&clock, &cell));
+
+    let refused = thread.apply_batch(Vec::new()).await;
+    clock.advance(Duration::from_secs(30));
+    std::thread::sleep(Duration::from_millis(150));
+
+    assert!(matches!(
+        refused,
+        ApplyResult::Fenced(FenceCause::DerivedMismatch { .. })
+    ));
+    assert!(cell.current().is_none(), "nothing is published again");
+
+    thread.install(one_subject(5)).await.unwrap();
+
+    assert_eq!(cell.current().unwrap().version(), version(5));
+    assert_eq!(thread.fault(), None, "the install lifted the fault");
+    assert!(matches!(
+        thread.apply_batch(Vec::new()).await,
+        ApplyResult::Applied
+    ));
+    assert!(thread.stop());
+}
+
+#[tokio::test]
+async fn a_thread_without_a_checker_never_withdraws_or_reports_anything() {
+    let (thread, cell) = running();
+    thread.install(one_subject(4)).await.unwrap();
+    let key = subject_key();
+    thread
+        .run_on_thread(move |builder| assert!(builder.corrupt_derived(&key)))
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(150));
+
+    assert!(cell.current().is_some());
+    assert_eq!(thread.fault(), None);
+    assert!(thread.stop());
+}
+
+#[tokio::test]
+async fn a_proof_offered_to_the_thread_is_attached_once_the_state_covers_it() {
+    let cell = Arc::new(ArcSwapPolicySnapshot::deferred());
+    let clock = Arc::new(FakeBootClock::new());
+    let state = Arc::new(FreshnessState::new(
+        FreshnessRule::new(Duration::from_secs(15), Duration::from_secs(2)),
+        Arc::<FakeBootClock>::clone(&clock),
+    ));
+    let (thread, _death) = ApplyThread::spawn_proving(
+        builder(&cell),
+        Arc::clone(&cell),
+        None,
+        Some(Arc::clone(&state)),
+    )
+    .unwrap();
+    let mut installed = empty_state(3);
+    installed.tail_from = 3;
+    installed.read_to = 3;
+    thread.install(installed).await.unwrap();
+    assert!(!state.is_fresh());
+
+    thread.offer(FreshnessProof {
+        taken_at: clock.now(),
+        watermark: 3,
+    });
+
+    wait_until(|| state.is_fresh());
+    assert!(thread.stop());
+}
+
+#[test]
+fn a_mismatch_is_logged_with_its_shard_and_both_hashes() {
+    let (recorder, _guard) = LogRecorder::install();
+
+    super::log_mismatch(&DerivedMismatch {
+        shard: 9,
+        rebuilt: PolicyDigestValue::ZERO,
+        held: PolicyDigestValue::ZERO,
+    });
+
+    let lines = recorder.lines();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].field("metric"), Some("policy_derived_mismatch"));
+    assert_eq!(lines[0].field("shard"), Some("9"));
+    assert_eq!(
+        lines[0].field("rebuilt"),
+        Some(PolicyDigestValue::ZERO.to_hex().as_str())
+    );
 }

@@ -418,6 +418,22 @@ pub struct GatewayArgs {
         hide_env_values = true
     )]
     pub freshness_hard_bound: Option<String>,
+    /// How often the pod probes the state topic for a proof of freshness (default `500ms`,
+    /// positive).
+    #[arg(
+        long = "freshness-probe-interval",
+        env = "FRESHNESS_PROBE_INTERVAL",
+        hide_env_values = true
+    )]
+    pub freshness_probe_interval: Option<String>,
+    /// How often the apply thread checks a sixteenth of the shards against the raw records
+    /// (default `1s`, positive).
+    #[arg(
+        long = "derived-state-check-interval",
+        env = "DERIVED_STATE_CHECK_INTERVAL",
+        hide_env_values = true
+    )]
+    pub derived_state_check_interval: Option<String>,
 }
 
 /// Arguments of `check-config`: the run mode and the settings of both modes.

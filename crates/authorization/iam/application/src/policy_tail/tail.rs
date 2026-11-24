@@ -18,7 +18,9 @@ use std::time::Duration;
 
 use iam_domain::{FramedRecord, Rng, TailBatch};
 
-pub use run::{ApplyResult, TailApplier, TailEnd, TailPorts, run_tail};
+pub use run::{
+    ApplyResult, IgnoredProgress, TailApplier, TailEnd, TailPorts, TailProgress, run_tail,
+};
 
 /// The oldest broker append time that the tail accepts, in milliseconds.
 pub const MAX_APPEND_AGE_MS: i64 = 3_600_000;
@@ -77,6 +79,13 @@ pub enum FenceCause {
     /// A complete version cannot be applied.
     #[error("a complete version cannot be applied: {0}")]
     Unappliable(String),
+    /// The derived structures of a shard differ from what its raw records give: the published
+    /// snapshot is wrong, so the pod stopped allowing before it rebootstraps.
+    #[error("the derived structures of shard {shard} do not match the raw records")]
+    DerivedMismatch {
+        /// The shard whose structures differ.
+        shard: usize,
+    },
 }
 
 /// What the driver tells the machine.

@@ -141,7 +141,17 @@ fn without_a_snapshot_the_public_listener_answers_503_iam_stale_and_ping_answers
     assert_eq!(ping.status, 200);
     assert_eq!(ping.body, "pong");
     assert_eq!(public_ping.status, 503);
-    assert_eq!(internal.status, 404);
+    assert_eq!(internal.status, 200);
+    assert!(
+        internal.body.contains("\"fresh\":false"),
+        "{}",
+        internal.body
+    );
+    assert!(
+        internal.body.contains("\"version\":null"),
+        "{}",
+        internal.body
+    );
     assert_eq!(unknown_probe.status, 404);
     assert_eq!(finished.code, Some(0));
 }

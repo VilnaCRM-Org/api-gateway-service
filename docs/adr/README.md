@@ -26,6 +26,7 @@ These records explain why the structure of the template is what it is. Each one 
 | [0020](0020-effective-permissions-composed-at-check-time.md) | Effective permissions composed at check time | IAM architecture section 6, FR-1, FR-39, NFR-16 |
 | [0021](0021-rest-and-graphql-parity.md) | REST and GraphQL parity for IAM operations | IAM architecture sections 5.5 and 8, FR-1, FR-19, NFR-7 |
 | [0023](0023-allow-list-additions-for-the-gateway.md) | Allow-list additions for the gateway | IAM architecture section 3.1, NFR-6 |
+| [0024](0024-freshness-contract.md) | Freshness contract: watermark proof, replica-quorum epoch check, `T_hard` and Sync-Fence (proposed) | IAM architecture sections 9.5 to 9.8, FR-73, NFR-36 |
 | [0026](0026-krafka-as-the-kafka-client.md) | krafka as the Kafka client: phase-0 spike results and rdkafka fallback | IAM architecture section 20.4, NFR-30 |
 
 A downstream service keeps its own records in this directory next to the twelve of the template. To add one, copy the form of an existing record, number it with the next free four-digit prefix and add a row to the table above.

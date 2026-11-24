@@ -37,10 +37,11 @@ tracing.workspace = true
 [dev-dependencies]
 aws-lc-rs.workspace = true
 hyper = { workspace = true, features = ["server"] }
+krafka = { workspace = true, features = ["test-broker"] }
 rstest.workspace = true
 shared-infrastructure.workspace = true
 test-support.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

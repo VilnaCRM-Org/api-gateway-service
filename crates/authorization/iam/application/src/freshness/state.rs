@@ -1,0 +1,131 @@
+//! The proof a pod holds and the verdict it gives.
+
+use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::Duration;
+
+use iam_domain::freshness::proof::FreshnessProof;
+use iam_domain::{BootClock, BootInstant, Freshness, FreshnessRule, PolicyVersion, StaleCause};
+
+/// What the pod holds: the proof attached to its snapshot, and what the watchdog saw since.
+#[derive(Debug, Default)]
+struct Held {
+    proof: Option<FreshnessProof>,
+    version: Option<PolicyVersion>,
+    largest_gap: Duration,
+    last_tick: Option<BootInstant>,
+}
+
+/// One reading of the state: the verdict and the facts behind it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FreshnessReading {
+    /// The verdict of the rule.
+    pub verdict: Freshness,
+    /// The age of the proof, `None` while the pod holds none.
+    pub proof_age: Option<Duration>,
+    /// The version of the snapshot the proof was attached to.
+    pub proven_version: Option<PolicyVersion>,
+}
+
+/// The freshness state of the pod: written by the apply thread (attach) and the prober (watchdog,
+/// cross-check), read by every request and by `/internal/freshness`.
+#[derive(Debug)]
+pub struct FreshnessState {
+    rule: FreshnessRule,
+    clock: Arc<dyn BootClock>,
+    held: RwLock<Held>,
+}
+
+fn read(lock: &RwLock<Held>) -> RwLockReadGuard<'_, Held> {
+    lock.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn write(lock: &RwLock<Held>) -> RwLockWriteGuard<'_, Held> {
+    lock.write().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl FreshnessState {
+    /// A state that holds no proof.
+    #[must_use]
+    pub fn new(rule: FreshnessRule, clock: Arc<dyn BootClock>) -> Self {
+        Self {
+            rule,
+            clock,
+            held: RwLock::new(Held::default()),
+        }
+    }
+
+    /// The rule that judges the proof.
+    #[must_use]
+    pub const fn rule(&self) -> FreshnessRule {
+        self.rule
+    }
+
+    /// Attaches `proof` to the snapshot at `version`. The gap counter starts anew; a watchdog that
+    /// has been silent for longer than the ready bound makes the new proof stale at once.
+    pub fn attach(&self, proof: FreshnessProof, version: PolicyVersion) {
+        let now = self.clock.now();
+        let mut held = write(&self.held);
+        let silent = held
+            .last_tick
+            .map_or(Duration::ZERO, |tick| now.saturating_since(tick));
+        held.proof = Some(proof);
+        held.version = Some(version);
+        held.largest_gap = silent;
+    }
+
+    /// Records a tick of the watchdog; the gap since the previous tick, `None` for the first.
+    pub fn tick(&self) -> Option<Duration> {
+        let now = self.clock.now();
+        let mut held = write(&self.held);
+        let gap = held.last_tick.map(|tick| now.saturating_since(tick));
+        if let Some(gap) = gap {
+            held.largest_gap = held.largest_gap.max(gap);
+        }
+        held.last_tick = Some(now);
+        gap
+    }
+
+    /// Withdraws the proof: the pod is stale until a new proof is attached.
+    pub fn invalidate(&self) {
+        let mut held = write(&self.held);
+        held.proof = None;
+        held.version = None;
+        held.largest_gap = Duration::ZERO;
+    }
+
+    /// The verdict now.
+    #[must_use]
+    pub fn verdict(&self) -> Freshness {
+        self.reading().verdict
+    }
+
+    /// The verdict now with the facts behind it.
+    #[must_use]
+    pub fn reading(&self) -> FreshnessReading {
+        let now = self.clock.now();
+        let held = read(&self.held);
+        FreshnessReading {
+            verdict: self.rule.judge(now, held.proof.as_ref(), held.largest_gap),
+            proof_age: held.proof.as_ref().map(|proof| proof.age(now)),
+            proven_version: held.version,
+        }
+    }
+
+    /// Whether the pod may allow a request now.
+    #[must_use]
+    pub fn is_fresh(&self) -> bool {
+        self.verdict().is_fresh()
+    }
+
+    /// Why the pod is stale, `None` while it is fresh.
+    #[must_use]
+    pub fn stale_cause(&self) -> Option<StaleCause> {
+        match self.verdict() {
+            Freshness::Fresh(_age) => None,
+            Freshness::Stale(cause) => Some(cause),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -20,6 +20,7 @@ use crate::config::GatewayConfig;
 
 pub mod apply_thread;
 pub mod endpoints;
+pub mod freshness;
 pub mod internal;
 pub mod listener;
 pub mod policy;

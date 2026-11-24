@@ -9,6 +9,7 @@ pub mod buffered_rejected_attempt_log;
 pub mod clock;
 pub mod kafka;
 pub mod kubernetes;
+pub mod peer_freshness;
 pub mod persistence;
 pub mod policy_snapshot;
 pub mod policy_state;
@@ -20,13 +21,15 @@ pub use bucket_local_rate_limiter::BucketLocalRateLimiter;
 pub use buffered_rejected_attempt_log::BufferedRejectedAttemptLog;
 pub use clock::LinuxBootClock;
 pub use kafka::{
-    BOOTSTRAP_PRINCIPAL, KafkaSecret, KafkaSecurity, KafkaSettings, KrafkaPolicyLogProducer,
-    KrafkaPolicyLogTail, KrafkaTopicInspector, ProbeCredentials, RelayMode, SaslMechanism,
+    BOOTSTRAP_PRINCIPAL, KafkaSecret, KafkaSecurity, KafkaSettings, KrafkaPolicyLogProbe,
+    KrafkaPolicyLogProducer, KrafkaPolicyLogTail, KrafkaTopicInspector, ProbeCredentials,
+    RelayMode, SaslMechanism,
 };
 pub use kubernetes::{
     KubernetesEndpointWatch, KubernetesSettings, KubernetesSetupError, StaticEndpointWatch,
     StaticEndpointsError,
 };
+pub use peer_freshness::EmptyPeerFreshnessClient;
 pub use persistence::PgPolicyEpochRepository;
 pub use persistence::advisory_lock_leadership::AdvisoryLockLeadership;
 pub use persistence::anti_entropy_store::PgAntiEntropyStore;

@@ -11,13 +11,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iam_domain::{
-    ApplyPosition, ApplyRules, BootClock, BootInstant, DigestRing, FenceVerdict,
-    InvalidStateRecord, LogEpoch, Offer, PolicyDigest, PolicyDigestValue, PolicyVersion,
-    RecordVerdict, RelayEpoch, RouteConflict, RouteTableCompiler, StateKey, StateRecordCodec,
-    VersionAssembly, VersionedRecord,
+    ApplyPosition, ApplyRules, BootClock, BootInstant, DerivedMismatch, DerivedStateAudit,
+    DigestRing, FenceVerdict, InvalidStateRecord, LogEpoch, Offer, PolicyDigest, PolicyDigestValue,
+    PolicyVersion, RecordVerdict, RelayEpoch, RouteConflict, RouteTableCompiler, StateKey,
+    StateRecordCodec, VersionAssembly, VersionedRecord,
 };
 
 use super::arc_swap_policy_snapshot::ArcSwapPolicySnapshot;
+use super::audit;
 use super::data::SnapshotData;
 use super::working::{Applier, Working};
 
@@ -147,6 +148,23 @@ impl PolicySnapshotBuilder {
     #[must_use]
     pub const fn digest(&self) -> PolicyDigestValue {
         self.working.digest
+    }
+
+    /// The current instant of the boot clock the builder measures its interval on.
+    #[must_use]
+    pub fn now(&self) -> BootInstant {
+        self.clock.now()
+    }
+
+    /// Drops the derived structure of `key` from the working state, as a bug of the incremental
+    /// maintenance would, and publishes the result. It exists for the tests that corrupt a
+    /// structure to see the derived-state check fence the pod; it reports whether the key is live.
+    pub fn corrupt_derived(&mut self, key: &StateKey) -> bool {
+        let corrupted = audit::corrupt(&self.applier, &mut self.working, key);
+        if corrupted {
+            self.publish();
+        }
+        corrupted
     }
 
     /// How many distinct assignment lists the builder interned.
@@ -344,7 +362,48 @@ impl PolicySnapshotBuilder {
             .publish(Arc::new(SnapshotData::new(self.working.clone(), now)));
         self.published_at = Some(now);
         self.dirty = false;
+        self.report_published();
     }
+
+    /// The metric events of a publication: the version, the digest of the raw state and the hash of
+    /// the derived structures. Two pods with the same history report the same values.
+    fn report_published(&self) {
+        log_applied_version(self.working.version.value());
+        log_digest_info(self.working.digest);
+        log_derived_hash_info(self.working.derived_hash);
+    }
+}
+
+impl DerivedStateAudit for PolicySnapshotBuilder {
+    fn audit_group(&mut self, group: usize) -> Result<usize, DerivedMismatch> {
+        audit::audit_group(&self.applier, &self.working, group)
+    }
+}
+
+fn log_applied_version(version: i64) {
+    tracing::info!(
+        metric = "policy_applied_version",
+        version,
+        "policy snapshot published"
+    );
+}
+
+fn log_digest_info(digest: PolicyDigestValue) {
+    let digest = digest.to_hex();
+    tracing::info!(
+        metric = "policy_digest_info",
+        digest = %digest,
+        "policy snapshot digest"
+    );
+}
+
+fn log_derived_hash_info(hash: PolicyDigestValue) {
+    let derived_hash = hash.to_hex();
+    tracing::info!(
+        metric = "policy_derived_hash_info",
+        derived_hash = %derived_hash,
+        "policy snapshot derived hash"
+    );
 }
 
 #[cfg(test)]

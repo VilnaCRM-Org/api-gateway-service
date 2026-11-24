@@ -30,6 +30,8 @@ mod outbox_listener;
 #[cfg(test)]
 mod outbox_store;
 #[cfg(test)]
+mod policy_log_probe;
+#[cfg(test)]
 mod policy_log_producer;
 #[cfg(test)]
 mod policy_log_tail;

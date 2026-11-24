@@ -284,8 +284,9 @@ async fn the_supervisor_of_the_production_wiring_starts_the_writer_the_maintenan
     let supervisor = start_tasks(&adapters, TaskMode::Serve, stopping);
 
     // The rejected-attempt writer, the maintenance loop, the outbox relay loop, the listener of
-    // `iam_outbox`, the anti-entropy loop and the bulk operation runner.
-    assert_eq!(supervisor.len(), 6);
+    // `iam_outbox`, the anti-entropy loop, the revocation tombstone emitter and the bulk operation
+    // runner.
+    assert_eq!(supervisor.len(), 7);
     stop.send_replace(true);
     assert_eq!(
         supervisor.stop(Duration::from_secs(5)).await,

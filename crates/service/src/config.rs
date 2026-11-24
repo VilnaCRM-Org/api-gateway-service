@@ -305,6 +305,12 @@ pub struct GatewayConfig {
     pub freshness_ready_bound: Duration,
     /// `FRESHNESS_HARD_BOUND`: the longest a fenced pod keeps serving its last verified snapshot.
     pub freshness_hard_bound: Duration,
+    /// `FRESHNESS_PROBE_INTERVAL`: how often the pod probes the state topic for a proof of
+    /// freshness.
+    pub freshness_probe_interval: Duration,
+    /// `DERIVED_STATE_CHECK_INTERVAL`: how often a sixteenth of the shards is checked against the
+    /// raw records.
+    pub derived_state_check_interval: Duration,
 }
 
 /// How the gateway discovers the endpoints of its upstreams (`UPSTREAM_DISCOVERY`).
@@ -375,6 +381,8 @@ impl GatewayConfig {
                 kafka_fetch_max_wait: tail.fetch_max_wait,
                 freshness_ready_bound: tail.ready_bound,
                 freshness_hard_bound: tail.hard_bound,
+                freshness_probe_interval: tail.probe_interval,
+                derived_state_check_interval: tail.derived_check_interval,
                 pod_name,
                 pod_namespace,
                 endpoints,
@@ -444,10 +452,12 @@ struct TailSettings {
     fetch_max_wait: Duration,
     ready_bound: Duration,
     hard_bound: Duration,
+    probe_interval: Duration,
+    derived_check_interval: Duration,
 }
 
-/// `KAFKA_FETCH_MAX_WAIT` (100ms), `FRESHNESS_READY_BOUND` (2s) and `FRESHNESS_HARD_BOUND` (15s):
-/// the hard bound lies from 3s to 30s and above the ready bound.
+/// `KAFKA_FETCH_MAX_WAIT` (100ms), `FRESHNESS_READY_BOUND` (2s), `FRESHNESS_HARD_BOUND` (15s) and
+/// `FRESHNESS_PROBE_INTERVAL` (500ms) and `DERIVED_STATE_CHECK_INTERVAL` (1s): the hard bound lies from 3s to 30s and above the ready bound.
 fn tail_settings(collector: &mut Collector, args: &GatewayArgs) -> Option<TailSettings> {
     let fetch_max_wait = collector.collect(
         "KAFKA_FETCH_MAX_WAIT",
@@ -473,10 +483,26 @@ fn tail_settings(collector: &mut Collector, args: &GatewayArgs) -> Option<TailSe
         "FRESHNESS_READY_BOUND",
         ready_bound,
     );
+    let derived_check_interval = collector.collect(
+        "DERIVED_STATE_CHECK_INTERVAL",
+        positive_duration(
+            args.derived_state_check_interval.as_deref(),
+            Duration::from_secs(1),
+        ),
+    );
+    let probe_interval = collector.collect(
+        "FRESHNESS_PROBE_INTERVAL",
+        positive_duration(
+            args.freshness_probe_interval.as_deref(),
+            Duration::from_millis(500),
+        ),
+    );
     Some(TailSettings {
         fetch_max_wait: fetch_max_wait?,
         ready_bound: ready_bound?,
         hard_bound: hard_bound?,
+        probe_interval: probe_interval?,
+        derived_check_interval: derived_check_interval?,
     })
 }
 

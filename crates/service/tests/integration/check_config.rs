@@ -781,6 +781,14 @@ fn the_same_configuration_in_control_mode_names_the_database() {
     ("KAFKA_FETCH_MAX_WAIT", "0s"),
     "KAFKA_FETCH_MAX_WAIT: must be a positive duration such as 10m or 90d\n"
 )]
+#[case::zero_probe_interval(
+    ("FRESHNESS_PROBE_INTERVAL", "0s"),
+    "FRESHNESS_PROBE_INTERVAL: must be a positive duration such as 10m or 90d\n"
+)]
+#[case::zero_derived_state_check_interval(
+    ("DERIVED_STATE_CHECK_INTERVAL", "0s"),
+    "DERIVED_STATE_CHECK_INTERVAL: must be a positive duration such as 10m or 90d\n"
+)]
 fn a_freshness_or_fetch_setting_out_of_range_exits_2_naming_the_variable(
     #[case] setting: (&str, &str),
     #[case] expected: &str,
