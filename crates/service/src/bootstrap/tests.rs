@@ -7,18 +7,23 @@ use axum::http::{HeaderMap, Request, StatusCode, header};
 use health_check_domain::{Dependency, HealthProbe};
 use health_check_infrastructure::CacheProbe;
 use http_body_util::BodyExt as _;
+use iam_application::{AntiEntropyCounters, AntiEntropyPorts, AntiEntropySettings, TopicAheadHold};
 use iam_application::{
     GetChangeReceiptQuery, GetIdempotentReplayQuery, GetPolicyEpochQuery,
     GetPolicyEpochQueryHandler,
 };
 use iam_application::{MaintenanceSettings, OutboxRelayPorts, OutboxRelaySettings, SingletonLoop};
-use iam_domain::{Credential, PolicyEpochRepository, TokenRejection};
+use iam_domain::{Credential, PolicyDigestValue, PolicyEpochRepository, TokenRejection};
+use iam_infrastructure::BufferedRejectedAttemptLog;
 use serde_json::Value;
 use shared_domain::{EventBus, QueryBus};
 use shared_infrastructure::bus::{InMemoryCommandBus, InMemoryQueryBus};
 use some_module_application::{CreateExampleApiResourceHandler, GetExampleApiResourceHandler};
 use some_module_domain::ExampleApiResourceRepository;
 use test_support::access_token::{DEVELOPMENT_PUBLIC_KEYS_FILE, FakeAccessTokenVerifier};
+use test_support::anti_entropy::{
+    FakeAntiEntropyStore, FakePolicyLogTail, HashDigest, TextHeadCodec,
+};
 use test_support::bus::RecordingEventBus;
 use test_support::cache::StubCache;
 use test_support::change_receipt::{FakeChangeReceiptRepository, change_receipt};
@@ -56,9 +61,9 @@ use tokio::sync::{Notify, watch};
 use tower::ServiceExt as _;
 
 use super::{
-    Adapters, BootstrapError, OutboxRelayAdapters, TaskMode, access_token_verifier, event_bus,
-    register_change_queries, register_commands, register_iam_specs, register_queries, router,
-    singleton_set, start_tasks,
+    Adapters, AntiEntropyAdapters, BootstrapError, OutboxRelayAdapters, TaskMode,
+    access_token_verifier, event_bus, register_change_queries, register_commands,
+    register_iam_specs, register_queries, router, singleton_set, start_tasks,
 };
 use crate::cli::{KafkaArgs, ServeArgs};
 use crate::config::Config;
@@ -108,6 +113,7 @@ fn adapters() -> Adapters {
         policy_epochs: Arc::new(FakePolicyEpochRepository::new()),
         policy_reads: Arc::new(FakePolicyReadRepository::new()),
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
+        rejected_attempts: Arc::new(BufferedRejectedAttemptLog::new()),
         startup_lock: Arc::new(FakeStartupLock::new()),
         singleton_leadership: Arc::new(FakeSingletonLeadership::leading()),
         maintenance_store: Arc::new(FakeMaintenanceStore::new()),
@@ -121,6 +127,7 @@ fn adapters() -> Adapters {
         routes: Arc::new(FakeRouteRepository::new()),
         rate_policies: Arc::new(FakeRatePolicyRepository::new()),
         unit_of_work: Arc::new(FakeIamUnitOfWork::new()),
+        write_unit_of_work: Arc::new(FakeIamUnitOfWork::new()),
         request_digester: Arc::new(FakeRequestDigester),
         user_roles: Arc::new(FakeUserRoleRepository::new()),
         graphql_specs: Arc::new(FakeGraphQlSpecRepository::new()),
@@ -615,6 +622,29 @@ fn user_identity(session: &str, audiences: &[&str]) -> iam_domain::TokenIdentity
     )
 }
 
+/// A policy repository in which the user of [`user_identity`] holds the reserved key
+/// `iam:validate:*` and nothing else.
+fn validating_caller() -> FakePolicyReadRepository {
+    let role = iam_domain::RoleId::parse("00000000-0000-7000-8000-000000000102").unwrap();
+    let grants = [(
+        iam_domain::PermissionGrant::parse("iam:validate:*").unwrap(),
+        iam_domain::GrantStatus::Active,
+    )];
+    let policy = iam_domain::SubjectPolicy::new(
+        seeded_policy_epoch(),
+        vec![iam_domain::RoleAssignment::new(
+            role,
+            iam_domain::AssignmentScope::Global,
+            None,
+        )],
+        std::collections::BTreeMap::from([(role, iam_domain::CompiledRoleSet::compile(grants))]),
+    );
+    let subject = iam_domain::SubjectRef::user(
+        shared_domain::Uuid::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ab").unwrap(),
+    );
+    FakePolicyReadRepository::new().with_subject(subject, policy)
+}
+
 fn resolution_request(bearer: Option<&str>, credential: &str) -> Request<Body> {
     let mut request =
         Request::post("/api/token-resolutions").header(header::CONTENT_TYPE, "application/json");
@@ -640,6 +670,7 @@ async fn the_token_resolution_operation_is_registered_behind_the_caller_authenti
         .rejecting("expired-token", TokenRejection::Expired);
     let mut wiring = adapters();
     wiring.tokens = Arc::new(tokens);
+    wiring.policy_reads = Arc::new(validating_caller());
     let app = app(wiring);
 
     let resolved = send(
@@ -661,6 +692,31 @@ async fn the_token_resolution_operation_is_registered_behind_the_caller_authenti
     assert_eq!(expired.json()["reason"], "token_expired");
     assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
     assert_eq!(anonymous.headers[header::WWW_AUTHENTICATE], "Bearer");
+}
+
+#[tokio::test]
+async fn a_caller_without_the_reserved_validate_key_is_refused_token_resolution_with_403() {
+    let tokens = FakeTokenRepository::new()
+        .accepting(
+            "caller-token",
+            user_identity("caller-session", &["vilnacrm-api"]),
+        )
+        .accepting(
+            "subject-token",
+            user_identity("subject-session", &["vilnacrm-api"]),
+        );
+    let mut wiring = adapters();
+    wiring.tokens = Arc::new(tokens);
+    let app = app(wiring);
+
+    let refused = send(
+        &app,
+        resolution_request(Some("caller-token"), "subject-token"),
+    )
+    .await;
+
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    assert_eq!(refused.json()["status"], 403);
 }
 
 #[tokio::test]
@@ -735,7 +791,7 @@ async fn the_serve_mode_registers_the_singleton_set_with_the_maintenance_task() 
 
     let supervisor = start_tasks(&adapters(), TaskMode::Serve, stopping);
 
-    assert_eq!(supervisor.len(), 1);
+    assert_eq!(supervisor.len(), 2);
     let set = singleton_set(&adapters());
     assert_eq!(set.len(), 1);
     assert_eq!(set[0].name(), "policy-maintenance");
@@ -760,6 +816,7 @@ fn relay_adapters() -> OutboxRelayAdapters {
             .unwrap(),
         wake: Arc::new(Notify::new()),
         leading: Arc::new(watch::channel(false).0),
+        anti_entropy: None,
     }
 }
 
@@ -771,7 +828,7 @@ async fn the_serve_mode_adds_the_outbox_relay_and_its_listener() {
 
     let supervisor = start_tasks(&adapters, TaskMode::Serve, stopping);
 
-    assert_eq!(supervisor.len(), 3);
+    assert_eq!(supervisor.len(), 4);
     let names: Vec<_> = singleton_set(&adapters)
         .iter()
         .map(SingletonLoop::name)
@@ -784,6 +841,35 @@ async fn the_serve_mode_adds_the_outbox_relay_and_its_listener() {
     );
 }
 
+#[tokio::test]
+async fn the_serve_mode_adds_the_anti_entropy_task_after_the_relay_and_shares_its_hold() {
+    let mut relay = relay_adapters();
+    relay.anti_entropy = Some(AntiEntropyAdapters {
+        ports: AntiEntropyPorts {
+            store: Arc::new(FakeAntiEntropyStore::at(0, PolicyDigestValue::ZERO)),
+            tail: Arc::new(FakePolicyLogTail::with(Vec::new())),
+            task_states: Arc::new(FakeTaskStateRepository::new()),
+            codec: Arc::new(TextHeadCodec),
+            digest: Arc::new(HashDigest),
+        },
+        settings: AntiEntropySettings::default(),
+        counters: Arc::new(AntiEntropyCounters::new()),
+        hold: Arc::new(TopicAheadHold::new()),
+    });
+    let mut adapters = adapters();
+    adapters.outbox_relay = Some(relay);
+
+    let names: Vec<_> = singleton_set(&adapters)
+        .iter()
+        .map(SingletonLoop::name)
+        .collect();
+
+    assert_eq!(
+        names,
+        ["policy-maintenance", "outbox-relay", "anti-entropy"]
+    );
+}
+
 #[test]
 fn a_zero_maintenance_interval_registers_no_task() {
     let mut adapters = adapters();
@@ -793,12 +879,12 @@ fn a_zero_maintenance_interval_registers_no_task() {
 }
 
 #[tokio::test]
-async fn the_test_mode_starts_no_singleton_task_and_stops_at_once() {
+async fn the_test_mode_starts_only_the_rejected_attempt_writer_and_stops_at_once() {
     let (stop, stopping) = watch::channel(false);
 
     let supervisor = start_tasks(&adapters(), TaskMode::Test, stopping);
 
-    assert!(supervisor.is_empty());
+    assert_eq!(supervisor.len(), 1);
     stop.send_replace(true);
     assert_eq!(
         supervisor.stop(Duration::from_secs(1)).await,
@@ -812,14 +898,16 @@ async fn the_test_mode_starts_no_singleton_task_and_stops_at_once() {
 mod access_validation {
     use std::collections::BTreeMap;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use async_trait::async_trait;
     use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
     use iam_domain::{
         AssignmentScope, CompiledRoleSet, GrantStatus, HttpMethod, PathTemplate, PermissionFlags,
-        PermissionGrant, RestOperation, RestOperationSet, RoleAssignment, RoleId, ServiceCatalog,
-        ServiceName, SubjectPolicy, SubjectRef,
+        PermissionGrant, PolicyReadRepository, RepositoryError, RestOperation, RestOperationSet,
+        RoleAssignment, RoleId, ServiceCatalog, ServiceName, SubjectPolicy, SubjectRef,
     };
     use serde_json::{Value, json};
     use test_support::policy_epoch::{FakePolicyEpochRepository, seeded_policy_epoch};
@@ -852,13 +940,20 @@ mod access_validation {
         )
     }
 
-    /// A subject that holds the templated operation globally and nothing else.
+    /// A subject that holds the templated operation globally and the reserved key of the decision
+    /// API (FR-4), which the caller needs to call it, and nothing else.
     fn holding_policy() -> FakePolicyReadRepository {
         let role = RoleId::parse("00000000-0000-7000-8000-000000000101").unwrap();
-        let grants = [(
-            PermissionGrant::parse("rest:orders:GET /api/orders/{}").unwrap(),
-            GrantStatus::Active,
-        )];
+        let grants = [
+            (
+                PermissionGrant::parse("rest:orders:GET /api/orders/{}").unwrap(),
+                GrantStatus::Active,
+            ),
+            (
+                PermissionGrant::parse("iam:validate:*").unwrap(),
+                GrantStatus::Active,
+            ),
+        ];
         let policy = SubjectPolicy::new(
             seeded_policy_epoch(),
             vec![RoleAssignment::new(role, AssignmentScope::Global, None)],
@@ -870,7 +965,39 @@ mod access_validation {
             .with_subject(subject, policy)
     }
 
-    fn wiring(policy: FakePolicyReadRepository, epochs: FakePolicyEpochRepository) -> Router {
+    /// Reads the policy of the first subject lookup from `inner` and fails every other read, so
+    /// that the authorization of the caller passes and the decision path meets the failure.
+    #[derive(Debug)]
+    struct FailsAfterTheCaller {
+        inner: FakePolicyReadRepository,
+        subject_reads: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl PolicyReadRepository for FailsAfterTheCaller {
+        async fn read_subject_policy(
+            &self,
+            subject: &SubjectRef,
+        ) -> Result<SubjectPolicy, RepositoryError> {
+            if self.subject_reads.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.inner.read_subject_policy(subject).await
+            } else {
+                Err(RepositoryError::Unavailable("policy read failed".into()))
+            }
+        }
+
+        async fn read_service_catalog(
+            &self,
+            _service: &ServiceName,
+        ) -> Result<Option<ServiceCatalog>, RepositoryError> {
+            Err(RepositoryError::Unavailable("catalogue read failed".into()))
+        }
+    }
+
+    fn wiring(
+        policy: impl PolicyReadRepository + 'static,
+        epochs: FakePolicyEpochRepository,
+    ) -> Router {
         let tokens = FakeTokenRepository::new()
             .accepting(
                 "caller-token",
@@ -961,10 +1088,11 @@ mod access_validation {
 
     #[tokio::test]
     async fn a_failing_database_is_a_200_deny_with_unavailable_over_rest_and_graphql() {
-        let app = wiring(
-            FakePolicyReadRepository::failing(),
-            FakePolicyEpochRepository::new(),
-        );
+        let failing = FailsAfterTheCaller {
+            inner: holding_policy(),
+            subject_reads: AtomicUsize::new(0),
+        };
+        let app = wiring(failing, FakePolicyEpochRepository::new());
 
         let over_rest = send(
             &app,

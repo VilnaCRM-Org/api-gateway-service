@@ -25,6 +25,48 @@ fn idempotency_key(world: &mut AppWorld, key: String) {
     world.set_idempotency_key(key);
 }
 
+#[given(expr = "the Prefer header {string}")]
+fn prefer_header(world: &mut AppWorld, value: String) {
+    world.set_prefer(value);
+}
+
+#[then("the Iam-Policy-Offset header should equal the stored offset of the version's head row")]
+async fn policy_offset_is_the_stored_head_offset(world: &mut AppWorld) {
+    let header_number = |world: &mut AppWorld, name: &str| -> i64 {
+        world
+            .reply()
+            .headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| panic!("header {name:?} is missing or not a number"))
+    };
+    let version = header_number(world, "iam-policy-version");
+    let offset = header_number(world, "iam-policy-offset");
+    assert_eq!(world.stored_head_offset(version).await, Some(offset));
+}
+
+#[then(
+    expr = "the GraphQL propagation status should be {string} with the version of a stored head row"
+)]
+async fn graphql_propagation_matches_the_head_row(world: &mut AppWorld, status: String) {
+    let json = world.reply().json();
+    // The payload of the one mutation the document sent, whatever its name.
+    let payload = json
+        .get("data")
+        .and_then(Value::as_object)
+        .and_then(|data| data.values().next())
+        .and_then(|mutation| mutation.get("propagation"))
+        .unwrap_or_else(|| panic!("no propagation in {json}"))
+        .clone();
+    assert_eq!(payload["status"], status);
+    let version = payload["policyVersion"].as_i64().expect("a policy version");
+    assert!(
+        world.stored_head_offset(version).await.is_some(),
+        "no stored offset for the head row of version {version}"
+    );
+}
+
 #[given(expr = "the If-Match header {string}")]
 fn if_match_header(world: &mut AppWorld, value: String) {
     world.set_if_match(value);

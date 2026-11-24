@@ -6,6 +6,7 @@ use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::middleware::{from_fn, from_fn_with_state};
 use axum::routing::{get, post};
+use iam_application::IamAccessGuard;
 use iam_application::http::access_validation::ACCESS_VALIDATION_BATCH_BODY_LIMIT_BYTES;
 use shared_application::http::fallback::{method_not_allowed, not_found, panic_response};
 use shared_application::http::middleware::request_timeout;
@@ -18,6 +19,7 @@ use crate::config::{AppEnv, Config};
 use crate::graphql::handler::{execute, explorer};
 use crate::graphql::schema::ApiSchema;
 use crate::http::authentication::{Authenticator, require_principal, resolve_principal};
+use crate::http::authorization::require_operation;
 use crate::http::docs::{docs_asset, docs_page, openapi_json};
 use crate::http::ping::ping;
 use crate::http::request_id::{REQUEST_ID_HEADER, sanitize_request_id};
@@ -35,7 +37,9 @@ pub const GRAPHQL_BODY_LIMIT_BYTES: usize = ACCESS_VALIDATION_BATCH_BODY_LIMIT_B
 /// the outermost.
 ///
 /// Every IAM route requires a valid bearer token (`require_principal`), inside the request-id,
-/// security-header and `TraceLayer` layers; the `GraphQL` route resolves the token when one is
+/// security-header and `TraceLayer` layers, and the operations of the IAM router also the keys of
+/// their row of the rule table (`require_operation`, FR-4); `iam_routes` are the extra routes of a
+/// test and take the authentication only. The `GraphQL` route resolves the token when one is
 /// present (`resolve_principal`) and refuses nothing; every other route keeps its template
 /// behaviour.
 pub fn assemble_with_iam_routes(
@@ -43,11 +47,12 @@ pub fn assemble_with_iam_routes(
     schema: ApiSchema,
     config: &Config,
     iam_routes: Router<AppState>,
+    guard: Arc<IamAccessGuard>,
 ) -> Router {
     let authenticator = Authenticator::new(Arc::clone(&state.iam.query_bus));
     let (rest, _document) = template_api_router().split_for_parts();
     let (iam, _iam_document) = iam_api_router().split_for_parts();
-    let iam = protect(iam.merge(iam_routes), &authenticator);
+    let iam = authenticate(authorize(iam, guard).merge(iam_routes), &authenticator);
     let mut graphql = post(execute);
     if config.app_env == AppEnv::Dev {
         graphql = graphql.get(explorer);
@@ -83,9 +88,14 @@ pub fn assemble_with_iam_routes(
         .layer(middleware)
 }
 
-/// The IAM routes behind `require_principal`.
-fn protect(iam: Router<AppState>, authenticator: &Authenticator) -> Router<AppState> {
-    iam.route_layer(from_fn_with_state(authenticator.clone(), require_principal))
+/// The routes behind `require_principal`.
+fn authenticate(routes: Router<AppState>, authenticator: &Authenticator) -> Router<AppState> {
+    routes.route_layer(from_fn_with_state(authenticator.clone(), require_principal))
+}
+
+/// The routes behind `require_operation`; the authentication layered on top of them runs first.
+fn authorize(routes: Router<AppState>, guard: Arc<IamAccessGuard>) -> Router<AppState> {
+    routes.route_layer(from_fn_with_state(guard, require_operation))
 }
 
 #[cfg(test)]

@@ -406,7 +406,13 @@ fn the_input_is_read_from_a_graphql_object_and_rejects_other_values() {
     assert_eq!(parsed.keys, ["gql:billing:*"]);
     assert_eq!(parsed.idempotency_key.as_deref(), Some("grants-1"));
     assert!(SetRolePermissionsInput::parse(Some(Value::Boolean(true))).is_err());
-    for field in ["id", "expectedVersion", "keys", "idempotencyKey"] {
+    for field in [
+        "id",
+        "expectedVersion",
+        "keys",
+        "idempotencyKey",
+        "consistency",
+    ] {
         let wrong = input(vec![
             ("id", Value::String(ROLE.to_owned())),
             ("keys", Value::List(Vec::new())),

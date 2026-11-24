@@ -23,7 +23,11 @@ mod outbox_listener;
 #[cfg(test)]
 mod panic;
 #[cfg(test)]
+mod publish_wait;
+#[cfg(test)]
 mod register_iam_specs;
+#[cfg(test)]
+mod rejected_attempts;
 #[cfg(test)]
 mod serve;
 #[cfg(test)]

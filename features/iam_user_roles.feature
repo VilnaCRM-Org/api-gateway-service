@@ -3,6 +3,24 @@ Feature: IAM role assignments
   As an administrator
   I want to assign roles to users and services, globally or per project, and see the assignments
 
+  Scenario: A write that affects decisions returns after the Kafka acknowledgement of its policy version over REST and GraphQL
+    Given a caller authenticated with a valid service token
+    And an assignable role "Billing administrator"
+    When POST request is sent to "/api/user-roles" with body:
+      """
+      {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "{role}", "scope": {"kind": "global"}}
+      """
+    Then the response status code should be 201
+    And the response header "iam-policy-version" should be present
+    And the response header "iam-policy-offset" should be present
+    And the Iam-Policy-Offset header should equal the stored offset of the version's head row
+    When the GraphQL operation is sent:
+      """
+      mutation { assignUserRole(input: {subject: {kind: "user", id: "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, roleId: "{role}", scope: {kind: "project", projectId: "0190f2a8-7b3c-7d4e-8f10-1234567890cd"}}) { id propagation { status policyVersion } } }
+      """
+    Then the GraphQL response should have no errors
+    And the GraphQL propagation status should be "PUBLISHED" with the version of a stored head row
+
   Scenario: Assigning a role to a user at global scope over REST commits the assignment, its event, its audit record and a policy version
     Given a caller authenticated with a valid service token
     And an assignable role "Billing administrator"

@@ -279,7 +279,7 @@ fn the_deletion_input_is_read_from_a_graphql_object_and_rejects_other_values() {
     assert_eq!(parsed.expected_version, Some(3));
     assert_eq!(parsed.idempotency_key.as_deref(), Some("k"));
     assert!(DeleteRoleInput::parse(Some(Value::Boolean(true))).is_err());
-    for field in ["id", "expectedVersion", "idempotencyKey"] {
+    for field in ["id", "expectedVersion", "idempotencyKey", "consistency"] {
         let wrong = Value::Object(
             [
                 (Name::new("id"), Value::String(ROLE.to_owned())),

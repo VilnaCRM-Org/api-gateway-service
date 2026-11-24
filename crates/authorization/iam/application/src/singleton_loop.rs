@@ -84,6 +84,18 @@ pub trait SingletonWork: std::fmt::Debug + Send + Sync {
     /// holds a resource only while it leads can let it go. Does nothing unless the work says
     /// otherwise.
     async fn on_follower(&self) {}
+
+    /// Called once when the loop stops, after its last batch, so that work that holds a resource
+    /// can release it. Does nothing unless the work says otherwise.
+    async fn on_stop(&self) {}
+
+    /// Whether a batch in flight may be abandoned when the service stops, because the work only
+    /// verifies and anything it leaves half done is found again by its next batch. A batch that
+    /// is abandoned is dropped, which rolls back what it wrote through the batch. Batches run to
+    /// their end unless the work says otherwise.
+    fn interruptible(&self) -> bool {
+        false
+    }
 }
 
 /// How one attempt at a batch ended.
@@ -169,14 +181,37 @@ impl SingletonLoop {
     }
 
     /// Runs batches until the stop flag is set or its sender is gone. A batch in flight when the
-    /// flag is set ends first, by a commit or a rollback. Every batch runs inside a
+    /// flag is set ends first, by a commit or a rollback, unless the work is
+    /// [interruptible](SingletonWork::interruptible); the work then hears that the loop stopped. Every batch runs inside a
     /// `singleton.batch` span that names the task, so its log lines are told apart from those of a
     /// request.
     pub async fn run(self, mut shutdown: watch::Receiver<bool>) {
         while !*shutdown.borrow() {
-            self.run_traced_batch().await;
-            if !self.pause(&mut shutdown).await {
+            if !self.batch_unless_stopped(&mut shutdown).await || !self.pause(&mut shutdown).await {
                 break;
+            }
+        }
+        self.stop_work().await;
+    }
+
+    /// Tells the work that the loop stopped, inside a `singleton.stop` span that names the task.
+    async fn stop_work(&self) {
+        let span = tracing::info_span!("singleton.stop", task = self.task.name());
+        self.work.on_stop().instrument(span).await;
+    }
+
+    /// Runs one batch; `false` when the service stopped while an interruptible batch ran, which
+    /// abandons that batch.
+    async fn batch_unless_stopped(&self, shutdown: &mut watch::Receiver<bool>) -> bool {
+        if !self.work.interruptible() {
+            self.run_traced_batch().await;
+            return true;
+        }
+        tokio::select! {
+            _outcome = self.run_traced_batch() => true,
+            stopping = shutdown.wait_for(|stopping| *stopping) => {
+                drop(stopping);
+                false
             }
         }
     }

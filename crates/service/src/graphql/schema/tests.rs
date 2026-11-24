@@ -67,6 +67,8 @@ type AccessValidation {
 
 "Input of the assignment mutation."
 input AssignUserRoleInput {
+  "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
+  consistency: String
   "When the assignment expires, as an RFC 3339 UTC time in the future; null for an assignment that never expires."
   expiresAt: String
   "Makes the assignment safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
@@ -157,6 +159,8 @@ input CreateRestPermissionsInput {
 
 "Input of the role-creation mutation."
 input CreateRoleInput {
+  "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
+  consistency: String
   "What the role is for, at most 1,000 characters."
   description: String
   "Makes the creation safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
@@ -167,6 +171,8 @@ input CreateRoleInput {
 
 "Input of the role-deletion mutation."
 input DeleteRoleInput {
+  "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
+  consistency: String
   "The version the caller read; required, and the deletion is refused when it is not the current one."
   expectedVersion: Int
   "The role to delete."
@@ -181,6 +187,8 @@ type DeleteRolePayload {
   id: ID!
   "The policy version that the deletion produced."
   policyVersion: Int
+  "What the deletion learned about the publication of its policy version."
+  propagation: Propagation
   "The number of assignments that the deletion revoked."
   revokedAssignments: Int!
   "The final version of the role."
@@ -461,6 +469,18 @@ type OperationWildcardGain {
   role: String!
 }
 
+"What a write learned about the publication of its policy version."
+type Propagation {
+  "The number of gateway pods that applied the version; null until Story 13.4."
+  podsAcknowledged: Int
+  "The number of gateway pods that did not apply the version in time; null until Story 13.4."
+  podsTimedOut: Int
+  "The policy version that the change produced."
+  policyVersion: Int
+  "How far the change got: `PUBLISHED` when Kafka acknowledged the policy version, or `COMMITTED_PENDING` when the change is committed and Kafka did not acknowledge the version within the wait."
+  status: String!
+}
+
 "Query root."
 type Query {
   "Retrieves an example API resource by id."
@@ -648,6 +668,8 @@ input RetireOpenapiSpecInput {
 
 "Input of the assignment-revocation mutation."
 input RevokeUserRoleInput {
+  "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
+  consistency: String
   "The version the caller read; required, and the revocation is refused when it is not the current one."
   expectedVersion: Int
   "The assignment to revoke."
@@ -662,6 +684,8 @@ type RevokeUserRolePayload {
   id: ID!
   "The policy version that the revocation produced."
   policyVersion: Int
+  "What the revocation learned about the publication of its policy version."
+  propagation: Propagation
   "The final version of the assignment."
   version: Int!
 }
@@ -682,6 +706,8 @@ type Role {
   name: String!
   "The grants of the role in key order, each with its key, kind, service, active flag and wildcard flag."
   permissions: [RolePermission!]!
+  "What the write that returned the role learned about the publication of its policy version; null for a read and for a change that does not affect decisions."
+  propagation: Propagation
   "When the role was last changed, as an RFC 3339 UTC time."
   updatedAt: String!
   "The version of the role."
@@ -720,6 +746,8 @@ type RolePermission {
 
 "Input of the mutation that replaces the grants of a role."
 input SetRolePermissionsInput {
+  "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
+  consistency: String
   "The version the caller read; required, and the replacement is refused when it is not the current one."
   expectedVersion: Int
   "The role to change."
@@ -762,6 +790,8 @@ type TokenResolution {
 
 "Input of the role-update mutation."
 input UpdateRoleInput {
+  "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
+  consistency: String
   "The new description, at most 1,000 characters; null removes it and an absent field keeps it."
   description: String
   "The version the caller read; required, and the update is refused when it is not the current one."
@@ -776,6 +806,8 @@ input UpdateRoleInput {
 
 "Input of the assignment-update mutation."
 input UpdateUserRoleInput {
+  "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
+  consistency: String
   "The version the caller read; required, and the update is refused when it is not the current one."
   expectedVersion: Int
   "The new expiry, as an RFC 3339 UTC time in the future; null clears the expiry. The field is required."
@@ -794,6 +826,8 @@ type UserRole {
   expiresAt: String
   "The identifier of the assignment."
   id: ID!
+  "What the write that returned the assignment learned about the publication of its policy version; null for a read."
+  propagation: Propagation
   "The assigned role."
   roleId: ID!
   "The name of the assigned role."

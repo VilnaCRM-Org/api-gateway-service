@@ -479,12 +479,13 @@ fn the_role_inputs_print_their_fields() {
         name: "Billing".to_owned(),
         description: None,
         idempotency_key: None,
+        consistency: None,
     };
     let filter = crate::graphql::RoleFilterInput::default();
 
     assert_eq!(
         format!("{create:?}"),
-        "CreateRoleInput { name: \"Billing\", description: None, idempotency_key: None }"
+        "CreateRoleInput { name: \"Billing\", description: None, idempotency_key: None, consistency: None }"
     );
     assert_eq!(
         format!("{filter:?}"),
@@ -515,7 +516,7 @@ fn the_role_inputs_are_read_from_graphql_objects_and_reject_other_values() {
     let wrong_kind =
         Value::Object(std::iter::once((Name::new("kind"), Value::Boolean(true))).collect());
     assert!(crate::graphql::CreateRoleInput::parse(Some(wrong_name)).is_err());
-    for field in ["description", "idempotencyKey"] {
+    for field in ["description", "idempotencyKey", "consistency"] {
         let wrong = Value::Object(
             [
                 (Name::new("name"), Value::String("Billing".to_owned())),
@@ -764,6 +765,7 @@ fn the_update_input_is_read_from_a_graphql_object_and_rejects_other_values() {
         "name",
         "description",
         "idempotencyKey",
+        "consistency",
     ] {
         let mut fields = vec![(Name::new("id"), Value::String(ROLE.to_owned()))];
         fields.push((Name::new(field), Value::List(Vec::new())));

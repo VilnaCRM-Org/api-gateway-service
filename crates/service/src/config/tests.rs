@@ -434,6 +434,7 @@ fn every_variable_accepts_a_valid_value() {
         kafka: valid().kafka,
         maintenance: valid().maintenance,
         relay: valid().relay,
+        anti_entropy: valid().anti_entropy,
     };
 
     let config = Config::from_args(args).unwrap();
@@ -1069,7 +1070,7 @@ type Mutator = fn(&mut ServeArgs);
 
 /// One row per variable of `ServeArgs`: the variable, a way to make it the only problem, and the
 /// variable that the problem names.
-const FIELDS: [(&str, Mutator, &str); 45] = [
+const FIELDS: [(&str, Mutator, &str); 48] = [
     ("APP_ENV", |a| a.app_env = some("x"), "APP_ENV"),
     ("APP_HOST", |a| a.app_host = some("x"), "APP_HOST"),
     ("APP_PORT", |a| a.app_port = some("x"), "APP_PORT"),
@@ -1251,6 +1252,21 @@ const FIELDS: [(&str, Mutator, &str); 45] = [
         "KAFKA_TRANSACTION_TIMEOUT",
         |a| a.relay.transaction_timeout = some("x"),
         "KAFKA_TRANSACTION_TIMEOUT",
+    ),
+    (
+        "PUBLISH_WAIT_TIMEOUT",
+        |a| a.relay.publish_wait_timeout = some("x"),
+        "PUBLISH_WAIT_TIMEOUT",
+    ),
+    (
+        "ANTI_ENTROPY_HEAD_INTERVAL",
+        |a| a.anti_entropy.head_interval = some("x"),
+        "ANTI_ENTROPY_HEAD_INTERVAL",
+    ),
+    (
+        "ANTI_ENTROPY_FULL_INTERVAL",
+        |a| a.anti_entropy.full_interval = some("x"),
+        "ANTI_ENTROPY_FULL_INTERVAL",
     ),
     (
         "KAFKA_CONFIG_GATES",
@@ -1843,6 +1859,7 @@ fn the_relay_listens_on_the_database_url_by_default_with_a_ten_second_transactio
         RelaySettings {
             listen_url: "postgres://app:secret@localhost:5432/app".to_owned(),
             transaction_timeout: Duration::from_secs(10),
+            publish_wait_timeout: Duration::from_secs(5),
         }
     );
 }
@@ -1853,6 +1870,7 @@ fn the_relay_variables_accept_a_direct_url_and_a_timeout_from_one_to_ten_seconds
         relay: RelayArgs {
             listen_url: some("postgresql://app:secret@db-direct:5432/app"),
             transaction_timeout: some("1s"),
+            publish_wait_timeout: some("250ms"),
         },
         ..valid()
     };
@@ -1864,6 +1882,10 @@ fn the_relay_variables_accept_a_direct_url_and_a_timeout_from_one_to_ten_seconds
         "postgresql://app:secret@db-direct:5432/app"
     );
     assert_eq!(config.relay.transaction_timeout, Duration::from_secs(1));
+    assert_eq!(
+        config.relay.publish_wait_timeout,
+        Duration::from_millis(250)
+    );
 }
 
 #[test]
@@ -1924,4 +1946,112 @@ fn a_missing_database_url_is_reported_once_and_not_again_for_the_listen_url() {
             .count(),
         1
     );
+}
+
+#[rstest]
+#[case("soon", "must be a duration such as 500ms, 2s or 1m")]
+#[case("0s", "must be a duration from 100ms to 30s")]
+#[case("99ms", "must be a duration from 100ms to 30s")]
+#[case("31s", "must be a duration from 100ms to 30s")]
+fn a_publish_wait_timeout_outside_the_accepted_range_names_its_variable(
+    #[case] raw: &str,
+    #[case] reason: &str,
+) {
+    let args = ServeArgs {
+        relay: RelayArgs {
+            publish_wait_timeout: some(raw),
+            ..RelayArgs::default()
+        },
+        ..valid()
+    };
+
+    assert_eq!(
+        problems(args),
+        [("PUBLISH_WAIT_TIMEOUT", reason.to_owned())]
+    );
+}
+
+#[rstest]
+#[case("100ms", Duration::from_millis(100))]
+#[case("30s", Duration::from_secs(30))]
+fn the_publish_wait_timeout_bounds_are_accepted(#[case] raw: &str, #[case] expected: Duration) {
+    let args = ServeArgs {
+        relay: RelayArgs {
+            publish_wait_timeout: some(raw),
+            ..RelayArgs::default()
+        },
+        ..valid()
+    };
+
+    assert_eq!(
+        Config::from_args(args).unwrap().relay.publish_wait_timeout,
+        expected
+    );
+}
+
+#[test]
+fn the_anti_entropy_defaults_are_five_seconds_and_ten_minutes() {
+    let config = Config::from_args(valid()).unwrap();
+
+    assert_eq!(config.anti_entropy.head_interval(), Duration::from_secs(5));
+    assert_eq!(config.anti_entropy.full_interval(), Duration::from_mins(10));
+}
+
+#[test]
+fn the_anti_entropy_variables_accept_positive_durations() {
+    let args = ServeArgs {
+        anti_entropy: AntiEntropyArgs {
+            head_interval: some("2s"),
+            full_interval: some("30s"),
+        },
+        ..valid()
+    };
+
+    let config = Config::from_args(args).unwrap();
+
+    assert_eq!(config.anti_entropy.head_interval(), Duration::from_secs(2));
+    assert_eq!(config.anti_entropy.full_interval(), Duration::from_secs(30));
+}
+
+#[rstest]
+#[case("0s")]
+#[case("soon")]
+fn an_anti_entropy_head_interval_that_is_not_positive_names_its_variable(#[case] raw: &str) {
+    let args = ServeArgs {
+        anti_entropy: AntiEntropyArgs {
+            head_interval: some(raw),
+            ..AntiEntropyArgs::default()
+        },
+        ..valid()
+    };
+
+    assert_eq!(variables(args), vec!["ANTI_ENTROPY_HEAD_INTERVAL"]);
+}
+
+#[rstest]
+#[case("0s")]
+#[case("soon")]
+fn an_anti_entropy_full_interval_that_is_not_positive_names_its_variable(#[case] raw: &str) {
+    let args = ServeArgs {
+        anti_entropy: AntiEntropyArgs {
+            full_interval: some(raw),
+            ..AntiEntropyArgs::default()
+        },
+        ..valid()
+    };
+
+    assert_eq!(variables(args), vec!["ANTI_ENTROPY_FULL_INTERVAL"]);
+}
+
+#[test]
+fn a_full_interval_shorter_than_the_head_interval_names_the_full_interval() {
+    let args = ServeArgs {
+        anti_entropy: AntiEntropyArgs {
+            head_interval: some("30s"),
+            full_interval: some("10s"),
+        },
+        ..valid()
+    };
+
+    assert_eq!(variables(args), vec!["ANTI_ENTROPY_FULL_INTERVAL"]);
 }

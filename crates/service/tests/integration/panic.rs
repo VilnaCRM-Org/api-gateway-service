@@ -13,6 +13,7 @@ use clap::Parser as _;
 use health_check_domain::Dependency;
 use http_body_util::BodyExt as _;
 use iam_application::MaintenanceSettings;
+use iam_infrastructure::BufferedRejectedAttemptLog;
 use serde_json::Value;
 use service::bootstrap::{Adapters, event_bus, router};
 use service::cli::{Cli, Command};
@@ -100,6 +101,7 @@ async fn a_panic_is_one_json_line_with_the_request_id_and_a_500_problem() {
         routes: Arc::new(FakeRouteRepository::new()),
         rate_policies: Arc::new(FakeRatePolicyRepository::new()),
         unit_of_work: Arc::new(FakeIamUnitOfWork::new()),
+        write_unit_of_work: Arc::new(FakeIamUnitOfWork::new()),
         request_digester: Arc::new(FakeRequestDigester),
         user_roles: Arc::new(FakeUserRoleRepository::new()),
         graphql_specs: Arc::new(FakeGraphQlSpecRepository::new()),
@@ -109,6 +111,7 @@ async fn a_panic_is_one_json_line_with_the_request_id_and_a_500_problem() {
         access_tokens: Arc::new(FakeAccessTokenVerifier::new()),
         tokens: Arc::new(FakeTokenRepository::new()),
         revocations: Arc::new(FakeRevocationRepository::new()),
+        rejected_attempts: Arc::new(BufferedRejectedAttemptLog::new()),
         probes: vec![Arc::new(StubProbe::panicking(Dependency::Database))],
         event_bus: event_bus(),
         clock: Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH)),

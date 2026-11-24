@@ -12,7 +12,7 @@ use crate::support::{DEAD_DATABASE_URL, Scratch, database_url, silent_listener, 
 const TABLE_EXISTS: &str = "SELECT to_regclass('example_api_resources') IS NOT NULL";
 /// The embedded migrations, oldest first: the version and what the migration creates, a table
 /// (`table`) or a column of an existing table (`table.column`).
-const MIGRATIONS: [(&str, &str); 14] = [
+const MIGRATIONS: [(&str, &str); 15] = [
     ("20261110000000", "example_api_resources"),
     ("20261122000224", "iam_policy_epoch"),
     ("20261122125604", "iam_security_audit_events"),
@@ -27,6 +27,7 @@ const MIGRATIONS: [(&str, &str); 14] = [
     ("20261123022344", "iam_change_receipts.revoked_assignments"),
     ("20261123111053", "iam_task_state"),
     ("20261123163401", "iam_route_rate_policies"),
+    ("20261123201326", "iam_change_receipts.propagation_status"),
 ];
 /// What a process start and the output handling may add to a wait that is bounded by its timeout.
 const MARGIN: Duration = Duration::from_millis(700);
@@ -79,13 +80,13 @@ async fn migrate_applies_once_and_changes_nothing_the_second_time(pool: PgPool) 
     let second = scratch.run(&["migrate"], &[("DATABASE_URL", &url)]);
 
     assert!(first.status.success());
-    assert_eq!(stdout(&first), "applied 14 migration(s)\n");
+    assert_eq!(stdout(&first), "applied 15 migration(s)\n");
     assert_eq!(stderr(&first), "");
-    assert_eq!(tables_after_first, applied(14));
+    assert_eq!(tables_after_first, applied(15));
     assert!(second.status.success());
     assert_eq!(stdout(&second), "applied 0 migration(s)\n");
     assert_eq!(stderr(&second), "");
-    assert_eq!(tables(&pool).await, applied(14));
+    assert_eq!(tables(&pool).await, applied(15));
 }
 
 #[sqlx::test(migrations = false)]
@@ -109,8 +110,8 @@ async fn revert_removes_the_newest_table_first_and_migrate_creates_all_again(poo
     assert!(nothing.status.success());
     assert_eq!(stdout(&nothing), "nothing to revert\n");
     assert!(again.status.success());
-    assert_eq!(stdout(&again), "applied 14 migration(s)\n");
-    assert_eq!(tables(&pool).await, applied(14));
+    assert_eq!(stdout(&again), "applied 15 migration(s)\n");
+    assert_eq!(tables(&pool).await, applied(15));
 }
 
 #[sqlx::test(migrations = false)]

@@ -625,7 +625,7 @@ fn the_assignment_inputs_are_read_from_graphql_objects_and_reject_other_values()
             "scope {field}"
         );
     }
-    for field in ["roleId", "expiresAt", "idempotencyKey"] {
+    for field in ["roleId", "expiresAt", "idempotencyKey", "consistency"] {
         let wrong = object(vec![
             ("subject", subject()),
             ("roleId", text(ROLE)),
@@ -935,14 +935,19 @@ fn the_update_and_revocation_inputs_are_read_from_graphql_objects_and_reject_oth
     assert_eq!(parsed_revoke.expected_version, Some(4));
     assert!(UpdateUserRoleInput::parse(Some(Value::Boolean(true))).is_err());
     assert!(RevokeUserRoleInput::parse(Some(Value::Boolean(true))).is_err());
-    for field in ["expectedVersion", "expiresAt", "idempotencyKey"] {
+    for field in [
+        "expectedVersion",
+        "expiresAt",
+        "idempotencyKey",
+        "consistency",
+    ] {
         let wrong = object(vec![
             ("id", Value::String(USER_ROLE.to_owned())),
             (field, Value::List(Vec::new())),
         ]);
         assert!(UpdateUserRoleInput::parse(Some(wrong)).is_err(), "{field}");
     }
-    for field in ["expectedVersion", "idempotencyKey"] {
+    for field in ["expectedVersion", "idempotencyKey", "consistency"] {
         let wrong = object(vec![
             ("id", Value::String(USER_ROLE.to_owned())),
             (field, Value::List(Vec::new())),

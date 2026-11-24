@@ -39,6 +39,24 @@ Feature: IAM roles
     And the outbox should hold 1 "iam.role.created" event
     And the audit log should hold 1 committed "role.create" record
 
+  Scenario: Waiting for the propagated mode is refused before Story 13.4 over REST and GraphQL
+    Given a caller authenticated with a valid service token
+    And the Prefer header "wait=propagated"
+    When POST request is sent to "/api/roles" with body:
+      """
+      {"name": "Billing administrator"}
+      """
+    Then the response status code should be 422
+    And the response body should contain "/problems/validation-failed"
+    And the response body should contain "The write mode `propagated` is not supported yet"
+    When the GraphQL operation is sent:
+      """
+      mutation { createRole(input: {name: "Billing administrator", consistency: "PROPAGATED"}) { id } }
+      """
+    Then the GraphQL error code should be "VALIDATION_FAILED"
+    And the response body should contain "The write mode `propagated` is not supported yet"
+    And the outbox should hold 0 "iam.role.created" events
+
   Scenario: A duplicate name is a conflict over REST and GraphQL
     Given a caller authenticated with a valid service token
     And a role exists with name "Billing administrator"

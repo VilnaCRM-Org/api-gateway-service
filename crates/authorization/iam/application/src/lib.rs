@@ -10,6 +10,7 @@ pub mod access_decision_service;
 #[cfg(test)]
 mod access_validation_fixtures;
 pub mod administrator_safeguard;
+pub mod anti_entropy;
 pub mod command;
 pub mod endpoint_directory;
 pub mod endpoint_watcher;
@@ -24,12 +25,18 @@ mod graphql_permission_fixtures;
 #[cfg(test)]
 mod graphql_spec_fixtures;
 pub mod http;
+pub mod iam_access_guard;
 #[cfg(test)]
 mod openapi_spec_fixtures;
+pub mod operation_rules;
 pub mod outbox_relay;
 pub mod policy_maintenance;
 pub mod principal;
+pub mod publishing_unit_of_work;
 pub mod query;
+#[cfg(test)]
+mod rejected_attempt_fixtures;
+pub mod rejected_attempt_writer;
 pub mod required_key_resolver;
 #[cfg(test)]
 mod rest_activation_fixtures;
@@ -47,6 +54,10 @@ mod user_role_fixtures;
 
 pub use access_decision_service::AccessDecisionService;
 pub use administrator_safeguard::{AdministratorSafeguard, Admission, SafeguardPorts};
+pub use anti_entropy::{
+    AntiEntropyAlert, AntiEntropyChecker, AntiEntropyCounters, AntiEntropyPorts,
+    AntiEntropySettings, InvalidAntiEntropySettings, TopicAheadHold,
+};
 pub use command::assign_user_role::{AssignUserRoleCommand, AssignUserRoleCommandHandler};
 pub use command::bootstrap_iam::{BootstrapIamCommand, BootstrapIamCommandHandler};
 pub use command::create_graphql_permissions::{
@@ -59,6 +70,9 @@ pub use command::create_role::{CreateRoleCommand, CreateRoleCommandHandler};
 pub use command::delete_role::{DeleteRoleCommand, DeleteRoleCommandHandler};
 pub use command::load_graphql_spec::{LoadGraphQlSpecCommand, LoadGraphQlSpecCommandHandler};
 pub use command::load_openapi_spec::{LoadOpenApiSpecCommand, LoadOpenApiSpecCommandHandler};
+pub use command::record_rejected_attempt::{
+    RecordRejectedAttemptCommand, RecordRejectedAttemptCommandHandler,
+};
 pub use command::register_own_specs::{RegisterOwnSpecsCommand, RegisterOwnSpecsCommandHandler};
 pub use command::retire_graphql_spec::{RetireGraphQlSpecCommand, RetireGraphQlSpecCommandHandler};
 pub use command::retire_openapi_spec::{RetireOpenApiSpecCommand, RetireOpenApiSpecCommandHandler};
@@ -74,9 +88,12 @@ pub use command::update_user_role::{UpdateUserRoleCommand, UpdateUserRoleCommand
 pub use endpoint_directory::{EndpointDirectory, EndpointView, ZoneSource};
 pub use endpoint_watcher::{EndpointWatcher, WatcherSettings};
 pub use error::IamError;
+pub use iam_access_guard::{AuthorizationUnavailable, IamAccessGuard, OperationRequest};
+pub use operation_rules::{OperationRule, OperationRules, Requirement};
 pub use outbox_relay::{OutboxRelay, OutboxRelayPorts, OutboxRelaySettings};
 pub use policy_maintenance::{MaintenanceSettings, PolicyMaintenance};
 pub use principal::Principal;
+pub use publishing_unit_of_work::PublishingUnitOfWork;
 pub use query::find_graphql_spec::{FindGraphQlSpecQuery, FindGraphQlSpecQueryHandler};
 pub use query::find_openapi_spec::{FindOpenApiSpecQuery, FindOpenApiSpecQueryHandler};
 pub use query::get_change_receipt::{GetChangeReceiptQuery, GetChangeReceiptQueryHandler};
@@ -129,6 +146,7 @@ pub use query::validate_access::{ValidateAccessQuery, ValidateAccessQueryHandler
 pub use query::validate_access_batch::{
     BatchCheck, ValidateAccessBatchQuery, ValidateAccessBatchQueryHandler,
 };
+pub use rejected_attempt_writer::{FLUSH_INTERVAL, FlushOutcome, RejectedAttemptWriter};
 pub use required_key_resolver::RequiredKeyResolver;
 pub use service_catalog_loader::ServiceCatalogLoader;
 pub use singleton_loop::{

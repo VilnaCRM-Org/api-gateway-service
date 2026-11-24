@@ -1,6 +1,8 @@
 //! End-to-end suite: the Gherkin runner for the features of the repository.
 
 #[cfg(test)]
+mod administrator_policy;
+#[cfg(test)]
 mod steps;
 #[cfg(test)]
 mod tokens;

@@ -22,8 +22,11 @@ const CALLER_AUDIENCE: &str = "vilnacrm-iam";
 
 /// The user that the subject tokens of the scenarios name.
 pub(crate) const USER_ID: &str = "0190f2a8-7b3c-7d4e-8f10-1234567890ab";
-/// The service that the caller tokens of the scenarios name.
+/// The service that the caller tokens of the scenarios name; the scenario policy gives it the
+/// administrator's keys (see `administrator_policy`).
 pub(crate) const CALLER_SERVICE: &str = "e2e-caller";
+/// A service caller that holds no IAM key, for the scenarios of the authorization rule.
+pub(crate) const UNPRIVILEGED_SERVICE: &str = "e2e-unprivileged-caller";
 
 /// An RSA key pair: the private half signs, the public half goes into a key file.
 pub(crate) struct SigningKey {
@@ -76,13 +79,24 @@ impl SigningKey {
     /// A `ROLE_SERVICE` token of [`CALLER_SERVICE`] that names the IAM caller audience and lives
     /// for 10 minutes: what a microservice presents to call IAM.
     pub(crate) fn caller_token(&self) -> String {
+        self.service_token(CALLER_SERVICE)
+    }
+
+    /// A caller token like [`Self::caller_token`] of [`UNPRIVILEGED_SERVICE`], which holds no IAM
+    /// key.
+    pub(crate) fn unprivileged_caller_token(&self) -> String {
+        self.service_token(UNPRIVILEGED_SERVICE)
+    }
+
+    /// A `ROLE_SERVICE` token of `service` with the IAM caller audience, valid for 10 minutes.
+    fn service_token(&self, service: &str) -> String {
         let now = seconds_from_now(0);
         self.sign(&json!({
             "iss": ISSUER,
             "aud": [AUDIENCE, CALLER_AUDIENCE],
-            "sub": CALLER_SERVICE,
-            "sid": "e2e-caller-session",
-            "jti": "e2e-caller-token",
+            "sub": service,
+            "sid": format!("{service}-session"),
+            "jti": format!("{service}-token"),
             "roles": ["ROLE_SERVICE"],
             "iat": now,
             "nbf": now,

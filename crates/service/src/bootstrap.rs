@@ -13,6 +13,7 @@ use health_check_application::HealthService;
 use health_check_domain::HealthProbe;
 use health_check_infrastructure::{CacheProbe, PostgresProbe, SqsProbe};
 use iam_application::MaintenanceSettings;
+use iam_application::PublishingUnitOfWork;
 use iam_application::graphql::AsyncGraphQlSchemaParser;
 use iam_application::http::IamState;
 use iam_application::http::JsonOpenApiDocumentParser;
@@ -56,6 +57,7 @@ use iam_application::{
 use iam_application::{
     GetRolePermissionsQueryHandler, SetRolePermissionsCommandHandler, SetRolePermissionsReads,
 };
+use iam_application::{IamAccessGuard, RecordRejectedAttemptCommandHandler};
 use iam_application::{RegisterOwnSpecsCommand, RegisterOwnSpecsCommandHandler};
 use iam_application::{ResolveSubjectTokenQueryHandler, ResolveTokenQueryHandler};
 use iam_application::{RetireGraphQlSpecCommandHandler, RetireOpenApiSpecCommandHandler};
@@ -72,11 +74,12 @@ use iam_domain::UpstreamRepository;
 use iam_domain::UserRoleRepository;
 use iam_domain::{
     AccessTokenVerifier, ChangeReceiptRepository, IdempotencyRepository, PolicyEpochRepository,
-    PolicyReadRepository, SecurityAuditLog,
+    PolicyReadRepository, RejectedAttemptLog, SecurityAuditLog,
 };
 use iam_domain::{IamUnitOfWork, OWN_SPECIFICATIONS_LOCK, RepositoryError, RequestDigester};
 use iam_domain::{MaintenanceStore, TaskStateRepository};
 use iam_domain::{RevocationRepository, RevocationView, TokenMemo, TokenRepository};
+use iam_infrastructure::BufferedRejectedAttemptLog;
 use iam_infrastructure::KrafkaTopicInspector;
 use iam_infrastructure::PgGraphQlPermissionRepository;
 use iam_infrastructure::PgGraphQlSpecRepository;
@@ -88,7 +91,9 @@ use iam_infrastructure::PgRouteRepository;
 use iam_infrastructure::PgUpstreamRepository;
 use iam_infrastructure::PgUserRoleRepository;
 use iam_infrastructure::Sha256RequestDigester;
-use iam_infrastructure::{AdvisoryLockLeadership, PgIamUnitOfWork, PgStartupLock};
+use iam_infrastructure::{
+    AdvisoryLockLeadership, PgIamUnitOfWork, PgPropagationStore, PgStartupLock,
+};
 use iam_infrastructure::{
     CachingTokenRepository, MokaTokenMemo, PgRevocationRepository, PgRevocationView,
 };
@@ -121,6 +126,7 @@ use crate::http::router::assemble_with_iam_routes;
 use crate::openapi::{self, ExportError};
 
 pub use administrator::{AdministratorError, bootstrap_administrator};
+pub use anti_entropy::AntiEntropyAdapters;
 pub use kafka_probe::KafkaProbe;
 pub use outbox_relay::{OutboxRelayAdapters, forward_notifications};
 pub use tasks::{TaskMode, TaskStop, TaskSupervisor, singleton_set, start_tasks};
@@ -136,6 +142,9 @@ pub struct Adapters {
     pub policy_reads: Arc<dyn PolicyReadRepository>,
     /// The hash-chained IAM security audit log.
     pub security_audit_log: Arc<dyn SecurityAuditLog>,
+    /// The per-replica buffer of refused IAM requests that the rejected-attempt writer appends to
+    /// the audit log.
+    pub rejected_attempts: Arc<dyn RejectedAttemptLog>,
     /// The cross-instance lock that serializes the startup registration of IAM's specifications.
     pub startup_lock: Arc<dyn StartupLock>,
     /// Fences each batch of a singleton task to one replica with an advisory lock.
@@ -163,6 +172,10 @@ pub struct Adapters {
     pub rate_policies: Arc<dyn RatePolicyRepository>,
     /// Commits an administrative IAM change atomically.
     pub unit_of_work: Arc<dyn IamUnitOfWork>,
+    /// Commits the changes of the REST and GraphQL writes and waits for the Kafka acknowledgement
+    /// of their policy version (`PUBLISH_WAIT_TIMEOUT`); the bootstrap and the maintenance task
+    /// commit through [`Self::unit_of_work`] and wait for nothing.
+    pub write_unit_of_work: Arc<dyn IamUnitOfWork>,
     /// Digests the request of an idempotent IAM write.
     pub request_digester: Arc<dyn RequestDigester>,
     /// Reader of the IAM role assignments.
@@ -231,14 +244,20 @@ impl Adapters {
     pub async fn connect(config: &Config) -> Result<Self, BootstrapError> {
         let pool = connect_lazy(&config.database)?;
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+        let unit_of_work: Arc<dyn IamUnitOfWork> = Arc::new(PgIamUnitOfWork::new(pool.clone()));
+        let write_unit_of_work: Arc<dyn IamUnitOfWork> = Arc::new(PublishingUnitOfWork::new(
+            Arc::clone(&unit_of_work),
+            Arc::new(PgPropagationStore::new(pool.clone())),
+            Arc::clone(&clock),
+            config.relay.publish_wait_timeout,
+        ));
         let access_tokens = access_token_verifier(config, Arc::clone(&clock))?;
-        let sqs = sqs_client(&config.sqs).await;
-        let cache = Arc::new(MokaCache::new());
         Ok(Self {
             repository: Arc::new(PgExampleApiResourceRepository::new(pool.clone())),
             policy_epochs: Arc::new(PgPolicyEpochRepository::new(pool.clone())),
             policy_reads: Arc::new(PgPolicyReadRepository::new(pool.clone())),
             security_audit_log: Arc::new(PgSecurityAuditLog::new(pool.clone())),
+            rejected_attempts: Arc::new(BufferedRejectedAttemptLog::new()),
             startup_lock: Arc::new(PgStartupLock::new(pool.clone())),
             singleton_leadership: Arc::new(AdvisoryLockLeadership::new(pool.clone())),
             maintenance_store: Arc::new(PgMaintenanceStore::new(pool.clone())),
@@ -251,7 +270,8 @@ impl Adapters {
             upstreams: Arc::new(PgUpstreamRepository::new(pool.clone())),
             routes: Arc::new(PgRouteRepository::new(pool.clone())),
             rate_policies: Arc::new(PgRatePolicyRepository::new(pool.clone())),
-            unit_of_work: Arc::new(PgIamUnitOfWork::new(pool.clone())),
+            unit_of_work,
+            write_unit_of_work,
             request_digester: Arc::new(Sha256RequestDigester),
             user_roles: Arc::new(PgUserRoleRepository::new(pool.clone())),
             graphql_specs: Arc::new(PgGraphQlSpecRepository::new(pool.clone())),
@@ -261,14 +281,7 @@ impl Adapters {
             tokens: token_repository(config, Arc::clone(&access_tokens), &clock, &pool),
             revocations: Arc::new(PgRevocationRepository::new(pool.clone())),
             access_tokens,
-            probes: vec![
-                Arc::new(PostgresProbe::new(pool)),
-                Arc::new(CacheProbe::new(cache)),
-                Arc::new(SqsProbe::new(sqs)),
-                Arc::new(KafkaProbe::new(Arc::new(KrafkaTopicInspector::new(
-                    &config.kafka,
-                )))),
-            ],
+            probes: probes(config, pool).await,
             event_bus: event_bus(),
             clock,
             uuid_generator: Arc::new(UuidV7Generator),
@@ -288,6 +301,21 @@ impl Adapters {
         }
         self
     }
+}
+
+/// The production probes: PostgreSQL over `pool`, an in-process cache, the SQS client and the
+/// Kafka topic inspector.
+async fn probes(config: &Config, pool: sqlx::PgPool) -> Vec<Arc<dyn HealthProbe>> {
+    let sqs = sqs_client(&config.sqs).await;
+    let cache = Arc::new(MokaCache::new());
+    vec![
+        Arc::new(PostgresProbe::new(pool)),
+        Arc::new(CacheProbe::new(cache)),
+        Arc::new(SqsProbe::new(sqs)),
+        Arc::new(KafkaProbe::new(Arc::new(KrafkaTopicInspector::new(
+            &config.kafka,
+        )))),
+    ]
 }
 
 /// The JWT verifier over the keys of `JWT_PUBLIC_KEYS_FILE`, with a watcher that reloads the file
@@ -355,22 +383,23 @@ fn register_queries(
 fn register_role_commands(
     bus: InMemoryCommandBus,
     adapters: &Adapters,
+    unit_of_work: &Arc<dyn IamUnitOfWork>,
 ) -> Result<InMemoryCommandBus, BootstrapError> {
     let create = CreateRoleCommandHandler::new(
-        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(unit_of_work),
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
     let update = UpdateRoleCommandHandler::new(
         Arc::clone(&adapters.roles),
-        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(unit_of_work),
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
     let delete = DeleteRoleCommandHandler::new(
         Arc::clone(&adapters.roles),
         Arc::clone(&adapters.user_roles),
-        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(unit_of_work),
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
@@ -380,7 +409,7 @@ fn register_role_commands(
             graphql_permissions: Arc::clone(&adapters.graphql_permissions),
             rest_permissions: Arc::clone(&adapters.rest_permissions),
         },
-        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(unit_of_work),
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
@@ -434,6 +463,31 @@ fn register_token_queries(
     Ok(bus.register(resolve)?.register(subject)?)
 }
 
+/// The decision path over the ports of the application: the access-validation operations and the
+/// authorization of IAM's own operations share its rule.
+fn decision_service(adapters: &Adapters) -> Arc<AccessDecisionService> {
+    Arc::new(AccessDecisionService::new(
+        Arc::clone(&adapters.tokens),
+        ServiceCatalogLoader::new(Arc::clone(&adapters.policy_reads)),
+        Arc::clone(&adapters.policy_reads),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    ))
+}
+
+/// Registers the command handler that offers the refusals of IAM's operations to the buffer of the
+/// audit log.
+fn register_rejected_attempt_commands(
+    bus: InMemoryCommandBus,
+    adapters: &Adapters,
+) -> Result<InMemoryCommandBus, BootstrapError> {
+    let record = RecordRejectedAttemptCommandHandler::new(
+        Arc::clone(&adapters.rejected_attempts),
+        Arc::clone(&adapters.clock),
+    );
+    Ok(bus.register(record)?)
+}
+
 /// Registers the handlers behind the access-validation operations, single and batch.
 ///
 /// The decision path reads the subject's token through the token repository and the catalogue and
@@ -444,14 +498,7 @@ fn register_access_validation_queries(
     bus: InMemoryQueryBus,
     adapters: &Adapters,
 ) -> Result<InMemoryQueryBus, BootstrapError> {
-    let decisions = AccessDecisionService::new(
-        Arc::clone(&adapters.tokens),
-        ServiceCatalogLoader::new(Arc::clone(&adapters.policy_reads)),
-        Arc::clone(&adapters.policy_reads),
-        Arc::clone(&adapters.clock),
-        Arc::clone(&adapters.uuid_generator),
-    );
-    let decisions = Arc::new(decisions);
+    let decisions = decision_service(adapters);
     let validate = ValidateAccessQueryHandler::new(
         Arc::clone(&decisions),
         Arc::clone(&adapters.policy_epochs),
@@ -468,9 +515,10 @@ fn register_access_validation_queries(
 fn register_graphql_spec_commands(
     bus: InMemoryCommandBus,
     adapters: &Adapters,
+    unit_of_work: &Arc<dyn IamUnitOfWork>,
 ) -> Result<InMemoryCommandBus, BootstrapError> {
     let load = LoadGraphQlSpecCommandHandler::new(
-        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(unit_of_work),
         Arc::new(AsyncGraphQlSchemaParser),
         Arc::clone(&adapters.request_digester),
         Arc::clone(&adapters.clock),
@@ -503,6 +551,7 @@ fn register_graphql_spec_queries(
 fn register_graphql_activation_commands(
     bus: InMemoryCommandBus,
     adapters: &Adapters,
+    unit_of_work: &Arc<dyn IamUnitOfWork>,
 ) -> Result<InMemoryCommandBus, BootstrapError> {
     let reads = ActivationReads {
         specs: Arc::clone(&adapters.graphql_specs),
@@ -512,13 +561,13 @@ fn register_graphql_activation_commands(
     };
     let activate = CreateGraphQlPermissionsCommandHandler::new(
         reads.clone(),
-        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(unit_of_work),
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
     let retire = RetireGraphQlSpecCommandHandler::new(
         reads,
-        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(unit_of_work),
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
@@ -569,6 +618,7 @@ fn register_rest_permission_queries(
 fn register_rest_activation_commands(
     bus: InMemoryCommandBus,
     adapters: &Adapters,
+    unit_of_work: &Arc<dyn IamUnitOfWork>,
 ) -> Result<InMemoryCommandBus, BootstrapError> {
     let reads = RestActivationReads {
         specs: Arc::clone(&adapters.openapi_specs),
@@ -578,13 +628,13 @@ fn register_rest_activation_commands(
     };
     let activate = CreateRestPermissionsCommandHandler::new(
         reads.clone(),
-        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(unit_of_work),
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
     let retire = RetireOpenApiSpecCommandHandler::new(
         reads,
-        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(unit_of_work),
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
@@ -606,9 +656,10 @@ fn register_rest_activation_queries(
 fn register_openapi_spec_commands(
     bus: InMemoryCommandBus,
     adapters: &Adapters,
+    unit_of_work: &Arc<dyn IamUnitOfWork>,
 ) -> Result<InMemoryCommandBus, BootstrapError> {
     let load = LoadOpenApiSpecCommandHandler::new(
-        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(unit_of_work),
         Arc::new(JsonOpenApiDocumentParser),
         Arc::clone(&adapters.request_digester),
         Arc::clone(&adapters.clock),
@@ -641,10 +692,11 @@ fn register_openapi_spec_queries(
 fn register_user_role_commands(
     bus: InMemoryCommandBus,
     adapters: &Adapters,
+    unit_of_work: &Arc<dyn IamUnitOfWork>,
 ) -> Result<InMemoryCommandBus, BootstrapError> {
     let assign = AssignUserRoleCommandHandler::new(
         Arc::clone(&adapters.roles),
-        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(unit_of_work),
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
@@ -660,7 +712,7 @@ fn register_user_role_commands(
     ));
     let update = UpdateUserRoleCommandHandler::new(
         Arc::clone(&adapters.user_roles),
-        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(unit_of_work),
         Arc::clone(&safeguard),
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
@@ -670,7 +722,7 @@ fn register_user_role_commands(
             user_roles: Arc::clone(&adapters.user_roles),
             roles: Arc::clone(&adapters.roles),
         },
-        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(unit_of_work),
         safeguard,
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
@@ -707,12 +759,17 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
         Arc::clone(&adapters.uuid_generator),
     );
     let commands = register_commands(InMemoryCommandBus::new(), create)?;
-    let commands = register_role_commands(commands, adapters)?;
-    let commands = register_graphql_spec_commands(commands, adapters)?;
-    let commands = register_graphql_activation_commands(commands, adapters)?;
-    let commands = register_openapi_spec_commands(commands, adapters)?;
-    let commands = register_rest_activation_commands(commands, adapters)?;
-    let commands = register_user_role_commands(commands, adapters)?;
+    let commands = register_role_commands(commands, adapters, &adapters.write_unit_of_work)?;
+    let commands =
+        register_graphql_spec_commands(commands, adapters, &adapters.write_unit_of_work)?;
+    let commands =
+        register_graphql_activation_commands(commands, adapters, &adapters.write_unit_of_work)?;
+    let commands =
+        register_openapi_spec_commands(commands, adapters, &adapters.write_unit_of_work)?;
+    let commands =
+        register_rest_activation_commands(commands, adapters, &adapters.write_unit_of_work)?;
+    let commands = register_user_role_commands(commands, adapters, &adapters.write_unit_of_work)?;
+    let commands = register_rejected_attempt_commands(commands, adapters)?;
     let queries = InMemoryQueryBus::new();
     let queries = register_queries(queries, &adapters.repository, &adapters.policy_epochs)?;
     let (receipts, keys) = (&adapters.change_receipts, &adapters.idempotency_records);
@@ -733,10 +790,12 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
 /// The buses of the registration: the loads and activations of both kinds of specification and the
 /// lookups of an identical version.
 fn registration_buses(adapters: &Adapters) -> Result<Buses, BootstrapError> {
-    let commands = register_graphql_spec_commands(InMemoryCommandBus::new(), adapters)?;
-    let commands = register_graphql_activation_commands(commands, adapters)?;
-    let commands = register_openapi_spec_commands(commands, adapters)?;
-    let commands = register_rest_activation_commands(commands, adapters)?;
+    let bus = InMemoryCommandBus::new();
+    let commands = register_graphql_spec_commands(bus, adapters, &adapters.unit_of_work)?;
+    let commands =
+        register_graphql_activation_commands(commands, adapters, &adapters.unit_of_work)?;
+    let commands = register_openapi_spec_commands(commands, adapters, &adapters.unit_of_work)?;
+    let commands = register_rest_activation_commands(commands, adapters, &adapters.unit_of_work)?;
     let find_graphql = FindGraphQlSpecQueryHandler::new(Arc::clone(&adapters.graphql_specs));
     let find_openapi = FindOpenApiSpecQueryHandler::new(Arc::clone(&adapters.openapi_specs));
     let queries = InMemoryQueryBus::new()
@@ -824,6 +883,10 @@ pub fn router_with_iam_routes(
     iam_routes: Router<AppState>,
 ) -> Result<Router, BootstrapError> {
     let (commands, queries) = register_buses(&adapters, config)?;
+    let guard = Arc::new(IamAccessGuard::new(
+        decision_service(&adapters),
+        Arc::clone(&commands),
+    ));
     let some_module = SomeModuleState {
         command_bus: Arc::clone(&commands),
         query_bus: Arc::clone(&queries),
@@ -849,12 +912,15 @@ pub fn router_with_iam_routes(
         some_module,
         iam,
     };
-    Ok(assemble_with_iam_routes(state, schema, config, iam_routes))
+    Ok(assemble_with_iam_routes(
+        state, schema, config, iam_routes, guard,
+    ))
 }
 
 pub mod gateway;
 
 mod administrator;
+mod anti_entropy;
 mod kafka_probe;
 mod outbox_relay;
 mod tasks;

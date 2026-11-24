@@ -434,3 +434,22 @@ fn the_incomplete_acknowledgement_names_both_counts() {
         "the producer acknowledged 1 of 3 records"
     );
 }
+
+#[tokio::test]
+async fn a_relay_publishes_nothing_while_the_topic_is_ahead_and_resumes_when_it_is_not() {
+    let mut rig = simple(vec![row(1)]);
+    let hold = Arc::new(crate::anti_entropy::TopicAheadHold::new());
+    hold.set(true);
+    rig.relay = rig.relay.with_hold(Arc::clone(&hold));
+
+    run(&rig).await.unwrap();
+
+    assert_eq!(rig.producer.batches().len(), 0);
+    assert_eq!(rig.store.published().len(), 0);
+    assert!(*rig.leading.borrow());
+
+    hold.set(false);
+    run(&rig).await.unwrap();
+
+    assert_eq!(rig.store.published().len(), 1);
+}

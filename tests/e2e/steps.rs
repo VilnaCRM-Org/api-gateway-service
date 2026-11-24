@@ -6,6 +6,7 @@ mod health_check;
 mod http;
 mod iam;
 mod iam_access_validation;
+mod iam_authorization;
 mod iam_bootstrap;
 mod iam_graphql_activation;
 mod iam_graphql_specs;

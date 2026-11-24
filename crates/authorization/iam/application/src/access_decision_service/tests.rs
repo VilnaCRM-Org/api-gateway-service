@@ -414,3 +414,87 @@ fn the_malformed_outcome_is_a_deny_with_a_new_identifier_and_no_facts() {
     assert_eq!(first.policy_version(), None);
     assert_ne!(first.decision_id(), second.decision_id());
 }
+
+fn reserved_policy(grants: &[&str]) -> SubjectPolicy {
+    let grants = grants
+        .iter()
+        .map(|raw| (PermissionGrant::parse(raw).unwrap(), GrantStatus::Active));
+    SubjectPolicy::new(
+        seeded_policy_epoch(),
+        vec![RoleAssignment::new(role(), AssignmentScope::Global, None)],
+        BTreeMap::from([(role(), CompiledRoleSet::compile(grants))]),
+    )
+}
+
+fn reserved(raw: &str) -> iam_domain::PermissionKey {
+    iam_domain::PermissionKey::parse(raw).unwrap()
+}
+
+#[tokio::test]
+async fn a_subject_is_decided_without_resolving_a_credential() {
+    let service = service_over(FakeTokenRepository::new(), repository(None));
+
+    let outcome = service
+        .decide_for_subject(user(), &rest_check("/api/orders/42"))
+        .await;
+
+    assert_eq!(outcome.decision(), Decision::Allow);
+    assert_eq!(outcome.subject(), Some(&user()));
+}
+
+#[tokio::test]
+async fn a_reserved_key_is_decided_from_the_policy_without_a_catalogue() {
+    let policy = FakePolicyReadRepository::new().with_subject(
+        user(),
+        reserved_policy(&["iam:validate:*", "iam:audit:read"]),
+    );
+    let service = service_over(FakeTokenRepository::new(), policy);
+
+    let held = service
+        .decide_reserved(
+            user(),
+            vec![reserved("iam:validate:*"), reserved("iam:audit:read")],
+        )
+        .await;
+    let missing = service
+        .decide_reserved(
+            user(),
+            vec![reserved("iam:validate:*"), reserved("iam:revoke:global")],
+        )
+        .await;
+
+    assert_eq!(held.decision(), Decision::Allow);
+    assert_eq!(held.subject(), Some(&user()));
+    assert_eq!(held.policy_version(), Some(seeded_policy_epoch().version()));
+    assert_eq!(missing.reason(), DecisionReason::PermissionMissing);
+    assert_eq!(missing.denied(), ["iam:revoke:global"]);
+    assert_ne!(held.decision_id(), missing.decision_id());
+}
+
+#[tokio::test]
+async fn a_reserved_key_without_an_assignment_is_denied_and_without_a_key_it_is_malformed() {
+    let service = service_over(FakeTokenRepository::new(), FakePolicyReadRepository::new());
+
+    let none = service
+        .decide_reserved(user(), vec![reserved("iam:validate:*")])
+        .await;
+    let empty = service.decide_reserved(user(), Vec::new()).await;
+
+    assert_eq!(none.reason(), DecisionReason::PermissionMissing);
+    assert_eq!(empty.reason(), DecisionReason::MalformedOperation);
+}
+
+#[tokio::test]
+async fn an_unreadable_policy_is_unavailable_for_a_reserved_key() {
+    let service = service_over(
+        FakeTokenRepository::new(),
+        SubjectReadFailing(FakePolicyReadRepository::new()),
+    );
+
+    let outcome = service
+        .decide_reserved(user(), vec![reserved("iam:validate:*")])
+        .await;
+
+    assert_eq!(outcome.reason(), DecisionReason::Unavailable);
+    assert_eq!(outcome.policy_version(), None);
+}

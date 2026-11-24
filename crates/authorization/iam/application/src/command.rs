@@ -11,6 +11,7 @@ pub mod create_role;
 pub mod delete_role;
 pub mod load_graphql_spec;
 pub mod load_openapi_spec;
+pub mod record_rejected_attempt;
 pub mod register_own_specs;
 pub mod retire_graphql_spec;
 pub mod retire_openapi_spec;

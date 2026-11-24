@@ -32,7 +32,7 @@ use tower::ServiceExt as _;
 use crate::support::database_url;
 
 #[path = "../../../authorization/iam/infrastructure/src/token/test_keys.rs"]
-mod test_keys;
+pub(crate) mod test_keys;
 
 use test_keys::{
     AUDIENCE, ISSUER, NOW, TestKey, USER_ID, key_file, scratch_dir, service_claims, unsigned,
@@ -56,7 +56,7 @@ fn with(mut claims: Value, name: &str, value: Value) -> Value {
 
 /// The configuration of the binary with the token settings of the test keys: 15-minute tokens,
 /// 30 seconds of skew and service callers limited to 10 minutes with the IAM audience.
-fn config(name: &str, key: &TestKey) -> Config {
+pub(crate) fn config(name: &str, key: &TestKey) -> Config {
     let Command::Serve(args) = Cli::parse_from(["service", "serve"]).command else {
         panic!("`serve` arguments expected");
     };

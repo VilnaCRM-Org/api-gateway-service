@@ -6,6 +6,7 @@ Runbooks for operating the service and for maintaining the repository that hosts
 
 - [Migrations and rollback](#migrations-and-rollback)
 - [Health-probe runbook](#health-probe-runbook)
+- [Anti-entropy alerts](#anti-entropy-alerts)
 - [The first IAM administrator](#the-first-iam-administrator)
 - [Logs and request ids](#logs-and-request-ids)
 - [Shutdown sequence](#shutdown-sequence)
@@ -81,6 +82,10 @@ When every administrator has lost access (all of them expired, or the identities
 4. The new administrator assigns the roles of the other administrators through the API. Do not edit the tables by hand.
 
 The Schemathesis credential target `make schemathesis-iam` bootstraps the service principal `schemathesis` with `--admin-service schemathesis` in the isolated load-test environment before it runs; against a service you started yourself (`SCHEMATHESIS_URL` set) run the command there first.
+
+### Refused IAM requests
+
+Every REST operation of IAM requires a valid bearer token (`401` otherwise, and nothing is audited) and the keys of its row in the rule table of the application layer: its catalogue key (`rest:iam:POST /api/roles`), except the decision API (`/api/access-validations`, its batch form and `/api/token-resolutions`), which requires the reserved key `iam:validate:*` and no catalogue key. A caller that lacks a key receives `403` with a problem document, and so does a request for an operation that has no row in the table. The refusal is offered, without waiting, to a per-replica buffer, and the rejected-attempt writer appends the buffered records to the audit log in one batch at most once a second: the log holds a record with the outcome `rejected` and the reason `forbidden` (`operation_unlisted` for an operation without a row), whose summary reads `attempts=<n>`. Identical refusals of one actor, action and reason are summarised: the first one is appended at the next flush, the others within 60 seconds are appended together as one record with their count when the window ends. A refusal that was not appended, because the database was unreachable, stays in the buffer for the next flush; a replica that stops flushes once more. When the policy of the caller cannot be read, the request fails closed with `500` and nothing is audited.
 
 ## Health-probe runbook
 
@@ -181,6 +186,27 @@ Singleton tasks (a task that exactly one replica may run at a time, such as the 
 The maintenance task (`PolicyMaintenance`, story 7.8) is a singleton task of `service serve`. Every `MAINTENANCE_INTERVAL` (default 10 minutes) the replica that leads the batch runs one pass, and the others skip it; a replica polls at the shorter of the interval and 10 seconds, and a poll that finds the last committed pass younger than the interval ends without running anything and without recording a run in `iam_task_state`. A pass does four things, in this order. It purges the grants that stayed orphaned for more than `ORPHANED_GRANT_RETENTION` (default 90 days; at most 1 000 grants per pass, the rest go with the next pass): one change per role through the unit of work, which removes the grants, writes `iam.role_permissions.changed`, takes the next policy version and appends one audit record `role.orphaned_grant.purged` of the actor `system:maintenance` for each purged grant; a role that changed while the pass ran keeps its grants until the next pass. It removes idempotency records and change receipts created more than 24 hours ago and the ids of consumed User service events processed more than 7 days ago. It never removes session revocations or cut-offs, which leave only through the tombstones of a later story, and it reconciles no cache: drift detection is the anti-entropy task of Story 7.7. Last it publishes the head of the audit chain as the outbox event `iam.security_audit.anchored` (`seq` and the hex `hash` of the newest audit record, actor `system:maintenance`), so that the audit history can be verified from outside IAM by comparing a chain head with its anchor. A pass that fails is logged as `singleton batch rolled back` and retried at the next poll; what it already committed stays, because every purge is a transaction of its own.
 
 The outbox relay (`OutboxRelay`, story 7.4) is the singleton task that publishes the outbox to Kafka. The replica that leads a batch (advisory lock `7004`) publishes up to 500 unpublished rows in `(policy_version, seq)` order: state rows to partition 0 of `POLICY_TOPIC`, event rows to `EVENTS_TOPIC` keyed by the aggregate id, through the transactional producer `iam-relay` (`KAFKA_TRANSACTION_TIMEOUT`, 1 to 10 seconds) with the headers `iam-version`, `iam-seq`, `iam-count`, `iam-digest-after`, `iam-op`, `iam-schema`, `iam-log-epoch` and `iam-relay-epoch`. A row is marked published, with its offset, only after its transaction committed; while the broker is down the rows stay unpublished and are sent again. A replica that starts to lead increments `iam_policy_epoch.relay_epoch` and publishes the latest state of every key again under the new epoch, and a replica whose epoch is no longer the current one cannot mark a row. The relay publishes nothing and logs `the Kafka topics are misconfigured: nothing is published` while the configuration verdict of the topics fails (the state topic must have exactly one partition). It wakes on the `LISTEN iam_outbox` connection of `DATABASE_LISTEN_URL`, which only the leader holds, or every 100 ms, and it deletes rows published more than 7 days ago.
+
+## Anti-entropy alerts
+
+The `AntiEntropyChecker` task of `iam-control` (Story 7.7) compares the state topic `POLICY_TOPIC` with PostgreSQL. Every `ANTI_ENTROPY_HEAD_INTERVAL` it republishes a record that was lost or that a zombie relay left lower than the PostgreSQL version, by clearing the publication marks of its outbox row so the relay sends it again; every `ANTI_ENTROPY_FULL_INTERVAL` it rebuilds the state from the whole topic and compares the digest with the newest `__head` and with PostgreSQL. A repair is counted in `anti_entropy_repairs_total`. What the task cannot repair is an alert: an `error` line `anti-entropy alert: follow the runbook in docs/operations.md` with the fields `alert`, `runbook` and `metric`, and the same counter. The `runbook` field names the section below that applies.
+
+### topic-ahead
+
+The `runbook` field is `topic-ahead`: the newest `__head` of the state topic carries a version above the PostgreSQL version, so something other than the relay of this database wrote the topic (a restored database, a test producer or another environment). The task holds the relay: it publishes nothing while the alert stands, so no record is appended to a log that already diverged, and logs `the state topic is ahead of PostgreSQL: nothing is published`.
+
+Checks:
+
+1. Read the `alert` field: it names the topic version and the PostgreSQL version.
+2. Find out why the database is behind: a restore from a backup, a failover to a replica that lagged, or a topic shared with another environment.
+3. If the database lost committed versions, restore it from the most recent consistent state and run the resync of Story 7.10, which republishes the full state as a new log epoch with versions above the highest `__head` of the topic.
+4. If the topic belongs to another environment, point `POLICY_TOPIC` at the right topic and restart the replicas.
+
+The hold ends by itself at the next head check that finds the topic no longer ahead.
+
+### resync
+
+The `runbook` field is `resync`: a digest mismatch, a loss older than the 7-day outbox retention, an unreadable record, or a topic that stays behind PostgreSQL with nothing left to publish. The task cannot repair these from the outbox. Run the resync of Story 7.10 (`POST /api/policy-resyncs` or the GraphQL mutation `resyncPolicy`), which republishes the complete current policy as a new log epoch, and check that the next shadow bootstrap raises no alert.
 
 ## Logs and request ids
 

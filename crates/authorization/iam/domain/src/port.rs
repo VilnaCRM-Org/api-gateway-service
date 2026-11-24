@@ -1,6 +1,7 @@
 //! Ports of the IAM context and the error they share.
 
 pub mod access_token_verifier;
+pub mod anti_entropy_store;
 pub mod boot_clock;
 pub mod change_receipt_repository;
 pub mod endpoint_watch;
@@ -20,10 +21,13 @@ pub mod permission_page_query;
 pub mod policy_digest;
 pub mod policy_epoch_repository;
 pub mod policy_log_producer;
+pub mod policy_log_tail;
 pub mod policy_read_repository;
 pub mod policy_view;
+pub mod propagation_store;
 pub mod rate_limit_store;
 pub mod rate_policy_repository;
+pub mod rejected_attempt_log;
 pub mod request_digester;
 pub mod rest_permission_repository;
 pub mod revocation_repository;

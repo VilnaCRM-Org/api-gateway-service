@@ -297,6 +297,94 @@ async fn the_loop_ends_when_the_stop_flag_is_set_during_the_pause() {
     assert_eq!(work.runs.load(Ordering::SeqCst), 1);
 }
 
+/// Work that counts how often it heard that its loop stopped.
+#[derive(Debug, Default)]
+struct StoppingWork {
+    stops: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl SingletonWork for StoppingWork {
+    async fn run(&self, _batch: &mut dyn LeaderBatch) -> Result<(), BoxError> {
+        Ok(())
+    }
+
+    async fn on_stop(&self) {
+        self.stops.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn work_hears_once_that_its_loop_stopped() {
+    let work = Arc::new(StoppingWork::default());
+    let singleton = SingletonLoop::new(
+        TASK,
+        interval(),
+        Arc::new(FakeSingletonLeadership::leading()),
+        Arc::new(FixedClock::at(UNIX_EPOCH)),
+        Arc::<StoppingWork>::clone(&work),
+    );
+    let (stop, stopping) = watch::channel(false);
+    let handle = tokio::spawn(singleton.run(stopping));
+    tokio::task::yield_now().await;
+    assert_eq!(work.stops.load(Ordering::SeqCst), 0);
+
+    stop.send_replace(true);
+    handle.await.unwrap();
+
+    assert_eq!(work.stops.load(Ordering::SeqCst), 1);
+}
+
+/// Work whose batch never ends and that may be abandoned when the service stops.
+#[derive(Debug, Default)]
+struct EndlessWork {
+    started: AtomicUsize,
+    stops: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl SingletonWork for EndlessWork {
+    async fn run(&self, _batch: &mut dyn LeaderBatch) -> Result<(), BoxError> {
+        self.started.fetch_add(1, Ordering::SeqCst);
+        std::future::pending().await
+    }
+
+    async fn on_stop(&self) {
+        self.stops.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn interruptible(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_interruptible_batch_in_flight_is_abandoned_when_the_service_stops() {
+    let work = Arc::new(EndlessWork::default());
+    let singleton = SingletonLoop::new(
+        TASK,
+        interval(),
+        Arc::new(FakeSingletonLeadership::leading()),
+        Arc::new(FixedClock::at(UNIX_EPOCH)),
+        Arc::<EndlessWork>::clone(&work),
+    );
+    let (stop, stopping) = watch::channel(false);
+    let handle = tokio::spawn(singleton.run(stopping));
+    tokio::task::yield_now().await;
+    assert_eq!(work.started.load(Ordering::SeqCst), 1);
+
+    stop.send_replace(true);
+    handle.await.unwrap();
+
+    assert_eq!(work.started.load(Ordering::SeqCst), 1);
+    assert_eq!(work.stops.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_batch_runs_to_its_end_unless_the_work_says_otherwise() {
+    assert!(!CountingWork::default().interruptible());
+}
+
 #[tokio::test]
 async fn the_loop_runs_no_batch_when_it_starts_stopped() {
     let leadership = Arc::new(FakeSingletonLeadership::leading());

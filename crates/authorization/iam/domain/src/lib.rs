@@ -21,6 +21,7 @@ pub mod policy;
 pub mod port;
 pub mod rate_limit;
 pub mod rate_policy;
+pub mod rejected_attempt;
 pub mod rest_permission;
 pub mod revocation;
 pub mod role;
@@ -102,6 +103,7 @@ pub use policy::token_lifetime_rule::{TokenLifetimeRule, TokenTimes};
 pub use policy::wildcard_matcher::WildcardMatcher;
 pub use port::RepositoryError;
 pub use port::access_token_verifier::AccessTokenVerifier;
+pub use port::anti_entropy_store::{AntiEntropyStore, PublishedRecord, StoredHead, WrittenKey};
 pub use port::boot_clock::BootClock;
 pub use port::change_receipt_repository::ChangeReceiptRepository;
 pub use port::endpoint_watch::{
@@ -126,10 +128,13 @@ pub use port::policy_epoch_repository::PolicyEpochRepository;
 pub use port::policy_log_producer::{
     LOG_SCHEMA, PolicyLogError, PolicyLogProducer, PolicyLogRecord, STATE_PARTITION,
 };
+pub use port::policy_log_tail::{PolicyLogTail, PolicyLogTailError, TAIL_READ_LIMIT, TailRecord};
 pub use port::policy_read_repository::PolicyReadRepository;
 pub use port::policy_view::PolicyView;
+pub use port::propagation_store::PropagationStore;
 pub use port::rate_limit_store::{RateLimitStore, RateLimitStoreError};
 pub use port::rate_policy_repository::{RatePolicyPageQuery, RatePolicyRepository};
+pub use port::rejected_attempt_log::RejectedAttemptLog;
 pub use port::request_digester::RequestDigester;
 pub use port::rest_permission_repository::RestPermissionRepository;
 pub use port::revocation_repository::RevocationRepository;
@@ -156,6 +161,9 @@ pub use rate_policy::event::{RatePolicyCreated, RatePolicyDeleted, RatePolicyUpd
 pub use rate_policy::fields::{RateFallback, RateKeyKind, RatePolicyDraft, RatePolicyFields};
 pub use rate_policy::statement::RatePolicyStatement;
 pub use rate_policy::{RatePolicy, RatePolicyParts, RatePolicyStamp};
+pub use rejected_attempt::{
+    AttemptSummary, RejectedAttempt, RejectedAttemptBuffer, SUMMARY_WINDOW,
+};
 pub use rest_permission::{RestPermission, RestPermissionParts};
 pub use revocation::global_token_cutoff::GlobalTokenCutoff;
 pub use revocation::inbound_event::{InboundEvent, InboundOutcome};
@@ -186,6 +194,7 @@ pub use state::model::{
     PolicyHead, PolicyState, RatePolicyState, RoleState, RouteState, StateRecord, SubjectState,
     UpstreamState,
 };
+pub use state::shadow::{ShadowState, ShadowVerdict};
 pub use upstream::event::{UpstreamCreated, UpstreamDeleted, UpstreamUpdated};
 pub use upstream::settings::{
     UpstreamFields, UpstreamProtocol, UpstreamSettings, UpstreamSettingsDraft,
@@ -251,6 +260,7 @@ pub use value_object::permission_key::{GqlCoordinate, PermissionKey, PermissionK
 pub use value_object::policy_digest_value::PolicyDigestValue;
 pub use value_object::policy_epoch::PolicyEpoch;
 pub use value_object::policy_version::PolicyVersion;
+pub use value_object::propagation_outcome::PropagationOutcome;
 pub use value_object::relay_epoch::RelayEpoch;
 pub use value_object::request_digest::RequestDigest;
 pub use value_object::request_id::RequestId;
@@ -273,3 +283,4 @@ pub use value_object::token_identity::TokenIdentity;
 pub use value_object::token_rejection::TokenRejection;
 pub use value_object::upstream_name::UpstreamName;
 pub use value_object::wildcard_pattern::WildcardPattern;
+pub use value_object::write_mode::WriteMode;

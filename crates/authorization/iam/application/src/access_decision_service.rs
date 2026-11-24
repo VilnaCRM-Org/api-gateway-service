@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use iam_domain::{
     AccessCheck, Credential, DecisionId, DecisionOutcome, DecisionPolicy, DecisionReason,
-    DecisionRequest, DecisionVerdict, PolicyReadRepository, PolicyVersion, SubjectId, SubjectRef,
-    TokenIdentity, TokenRepository,
+    DecisionRequest, DecisionVerdict, PermissionFlags, PermissionKey, PolicyReadRepository,
+    PolicyVersion, ProjectId, RequiredKey, SubjectId, SubjectRef, TokenIdentity, TokenRepository,
 };
 use shared_domain::{Clock, UuidGenerator};
 
@@ -102,6 +102,46 @@ impl AccessDecisionService {
         )
     }
 
+    /// Decides `check` for a subject that a verified token already proved, without resolving a
+    /// credential: the caller of IAM's own API was authenticated before its operation is
+    /// authorized.
+    pub async fn decide_for_subject(
+        &self,
+        subject: SubjectRef,
+        check: &AccessCheck,
+    ) -> DecisionOutcome {
+        let decision_id = DecisionId::from_uuid(self.ids.generate());
+        let decided = self.decide_subject(subject, check).await;
+        DecisionOutcome::new(
+            decided.verdict,
+            decision_id,
+            decided.subject,
+            decided.policy_version,
+        )
+    }
+
+    /// Decides whether `subject` holds every key of `keys` at global scope, from its policy alone:
+    /// no token is resolved and no catalogue is read, because a reserved `iam:` key has no
+    /// catalogue entry.
+    pub async fn decide_reserved(
+        &self,
+        subject: SubjectRef,
+        keys: Vec<PermissionKey>,
+    ) -> DecisionOutcome {
+        let decision_id = DecisionId::from_uuid(self.ids.generate());
+        let required: Vec<RequiredKey> = keys
+            .into_iter()
+            .map(|key| RequiredKey::new(key, PermissionFlags::NONE))
+            .collect();
+        let decided = self.decide_policy(subject, &required, None).await;
+        DecisionOutcome::new(
+            decided.verdict,
+            decision_id,
+            decided.subject,
+            decided.policy_version,
+        )
+    }
+
     /// The outcome of a check that could not be decided: the deny `unavailable` with a new decision
     /// id, no subject and no policy version. A caller that fails before the decision path uses it,
     /// so that the failure still answers with a decision.
@@ -164,13 +204,24 @@ impl AccessDecisionService {
                 return Decided::of(verdict, Some(subject), Some(catalog.policy_version()));
             }
         };
+        self.decide_policy(subject, &required, check.project())
+            .await
+    }
+
+    /// Reads the policy of `subject` and decides `required` against it.
+    async fn decide_policy(
+        &self,
+        subject: SubjectRef,
+        required: &[RequiredKey],
+        project: Option<ProjectId>,
+    ) -> Decided {
         match self.policy.read_subject_policy(&subject).await {
             Ok(policy) => {
                 let verdict = DecisionPolicy::decide(&DecisionRequest {
                     assignments: policy.assignments(),
                     role_sets: policy.role_sets(),
-                    required: &required,
-                    project: check.project(),
+                    required,
+                    project,
                     now: self.clock.now(),
                 });
                 Decided::of(verdict, Some(subject), Some(policy.policy_version()))

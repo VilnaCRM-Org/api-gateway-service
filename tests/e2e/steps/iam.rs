@@ -1,5 +1,7 @@
 //! The steps of the IAM context.
 
+use std::time::Duration;
+
 use axum::http::header::WWW_AUTHENTICATE;
 use cucumber::{given, then};
 use serde_json::{Value, json};
@@ -8,10 +10,26 @@ use test_support::policy_epoch::seeded_policy_epoch;
 use crate::tokens::{SigningKey, USER_ID};
 use crate::world::AppWorld;
 
+/// How often the step reads the policy epoch while the relay of the scenario takes its lease.
+const RELAY_POLL: Duration = Duration::from_millis(100);
+
+/// How many times the step reads before it gives up on the lease of the relay.
+const RELAY_POLLS: u32 = 50;
+
 #[then("the IAM policy epoch should be the one of the startup registration")]
 async fn policy_epoch_should_be_the_one_of_the_startup_registration(world: &mut AppWorld) {
     let seeded = seeded_policy_epoch();
-    let epoch = world.policy_epoch().await;
+    // The outbox relay of the scenario runs as in `service serve` (Story 7.6) and fences the epoch
+    // once when it takes its lease (Story 7.4), so the relay epoch is the next one after the seed.
+    let fenced = seeded.relay_epoch().value().checked_add(1).unwrap();
+    let mut epoch = world.policy_epoch().await;
+    for _ in 0..RELAY_POLLS {
+        if epoch.relay_epoch().value() == fenced {
+            break;
+        }
+        tokio::time::sleep(RELAY_POLL).await;
+        epoch = world.policy_epoch().await;
+    }
     // The activations of IAM's own OpenAPI and GraphQL specifications each take a policy version
     // and change the catalogue, and their state rows move the digest to the one of the newest
     // `__head` row; nothing else moves from the seeded epoch.
@@ -23,12 +41,17 @@ async fn policy_epoch_should_be_the_one_of_the_startup_registration(world: &mut 
         world.latest_head_digest().await
     );
     assert_eq!(epoch.log_epoch(), seeded.log_epoch());
-    assert_eq!(epoch.relay_epoch(), seeded.relay_epoch());
+    assert_eq!(epoch.relay_epoch().value(), fenced);
 }
 
 #[given("a caller authenticated with a valid service token")]
 fn caller_with_a_valid_service_token(world: &mut AppWorld) {
     world.authenticate_as_service();
+}
+
+#[given("a caller authenticated with a valid service token that holds no IAM key")]
+fn caller_without_iam_keys(world: &mut AppWorld) {
+    world.authenticate_as_unprivileged_service();
 }
 
 #[given("a caller presenting a token signed by an unknown key")]

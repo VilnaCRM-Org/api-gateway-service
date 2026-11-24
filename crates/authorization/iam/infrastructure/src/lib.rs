@@ -5,6 +5,7 @@
 //! application layer. SQL lives here and nowhere else.
 
 pub mod bucket_local_rate_limiter;
+pub mod buffered_rejected_attempt_log;
 pub mod kafka;
 pub mod kubernetes;
 pub mod persistence;
@@ -15,9 +16,10 @@ pub mod rng;
 pub mod token;
 
 pub use bucket_local_rate_limiter::BucketLocalRateLimiter;
+pub use buffered_rejected_attempt_log::BufferedRejectedAttemptLog;
 pub use kafka::{
-    KafkaSecret, KafkaSecurity, KafkaSettings, KrafkaPolicyLogProducer, KrafkaTopicInspector,
-    RelayMode, SaslMechanism,
+    KafkaSecret, KafkaSecurity, KafkaSettings, KrafkaPolicyLogProducer, KrafkaPolicyLogTail,
+    KrafkaTopicInspector, RelayMode, SaslMechanism,
 };
 pub use kubernetes::{
     KubernetesEndpointWatch, KubernetesSettings, KubernetesSetupError, StaticEndpointWatch,
@@ -25,6 +27,7 @@ pub use kubernetes::{
 };
 pub use persistence::PgPolicyEpochRepository;
 pub use persistence::advisory_lock_leadership::AdvisoryLockLeadership;
+pub use persistence::anti_entropy_store::PgAntiEntropyStore;
 pub use persistence::change_receipt::PgChangeReceiptRepository;
 pub use persistence::graphql_permission::PgGraphQlPermissionRepository;
 pub use persistence::graphql_spec::PgGraphQlSpecRepository;
@@ -34,6 +37,7 @@ pub use persistence::openapi_spec::PgOpenApiSpecRepository;
 pub use persistence::outbox_listener::PgOutboxListener;
 pub use persistence::outbox_store::PgOutboxStore;
 pub use persistence::policy_read::{PgPolicyReadRepository, PolicyReadHook};
+pub use persistence::propagation_store::PgPropagationStore;
 pub use persistence::rate_policy::PgRatePolicyRepository;
 pub use persistence::rest_permission::PgRestPermissionRepository;
 pub use persistence::revocation::PgRevocationRepository;

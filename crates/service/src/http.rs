@@ -6,6 +6,7 @@ use iam_application::http::IamState;
 use some_module_application::http::SomeModuleState;
 
 pub mod authentication;
+pub mod authorization;
 pub mod docs;
 pub mod ping;
 pub mod request_id;

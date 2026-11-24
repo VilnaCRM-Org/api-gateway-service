@@ -217,7 +217,10 @@ fn documents_the_role_operations_with_the_bearer_requirement_and_the_iam_tag() {
             "/api/roles",
             "post",
             "api_roles_post",
-            ["201", "400", "401", "409", "413", "415", "422", "default"].as_slice(),
+            [
+                "201", "202", "400", "401", "409", "413", "415", "422", "default",
+            ]
+            .as_slice(),
         ),
         (
             "/api/roles",
@@ -236,7 +239,7 @@ fn documents_the_role_operations_with_the_bearer_requirement_and_the_iam_tag() {
             "patch",
             "api_roles_id_patch",
             [
-                "200", "400", "401", "403", "404", "409", "412", "413", "415", "422", "428",
+                "200", "202", "400", "401", "403", "404", "409", "412", "413", "415", "422", "428",
                 "default",
             ]
             .as_slice(),
@@ -246,7 +249,7 @@ fn documents_the_role_operations_with_the_bearer_requirement_and_the_iam_tag() {
             "delete",
             "api_roles_id_delete",
             [
-                "200", "400", "401", "403", "404", "409", "412", "422", "428", "default",
+                "200", "202", "400", "401", "403", "404", "409", "412", "422", "428", "default",
             ]
             .as_slice(),
         ),
@@ -269,10 +272,7 @@ fn documents_the_role_operations_with_the_bearer_requirement_and_the_iam_tag() {
             .collect();
         documented.sort_unstable();
         assert_eq!(documented, statuses, "{operation_id}");
-        for status in statuses
-            .iter()
-            .filter(|status| **status != "200" && **status != "201")
-        {
+        for status in statuses.iter().filter(|status| !status.starts_with('2')) {
             assert_eq!(
                 operation["responses"][status]["content"]["application/problem+json"]["schema"]["$ref"],
                 "#/components/schemas/Problem",
@@ -299,7 +299,7 @@ fn the_role_deletion_documents_its_headers_and_the_revoked_assignments() {
         .iter()
         .filter_map(|parameter| parameter["name"].as_str())
         .collect();
-    assert_eq!(names, ["id", "If-Match", "Idempotency-Key"]);
+    assert_eq!(names, ["id", "If-Match", "Idempotency-Key", "Prefer"]);
     let schema = &json["components"]["schemas"]["DeletedRole"];
     assert_eq!(schema["required"], json!(["id", "revokedAssignments"]));
     assert_eq!(schema["properties"]["revokedAssignments"]["minimum"], 0);
@@ -742,9 +742,12 @@ fn the_role_creation_documents_its_request_headers_and_schemas() {
         .collect();
     assert_eq!(headers, ["etag", "location"]);
     let parameters = operation["parameters"].as_array().unwrap();
-    assert_eq!(parameters.len(), 1);
+    assert_eq!(parameters.len(), 2);
     assert_eq!(parameters[0]["name"], "Idempotency-Key");
     assert_eq!(parameters[0]["in"], "header");
+    assert_eq!(parameters[1]["name"], "Prefer");
+    assert_eq!(parameters[1]["in"], "header");
+    assert_eq!(parameters[1]["required"], false);
     let schemas = &json["components"]["schemas"];
     assert_eq!(schemas["CreateRoleRequest"]["additionalProperties"], false);
     assert_eq!(schemas["CreateRoleRequest"]["required"], json!(["name"]));
@@ -800,7 +803,8 @@ fn the_role_update_documents_its_request_headers_and_schemas() {
         [
             ("id", "path", true),
             ("If-Match", "header", true),
-            ("Idempotency-Key", "header", false)
+            ("Idempotency-Key", "header", false),
+            ("Prefer", "header", false)
         ]
     );
     let schema = &json["components"]["schemas"]["UpdateRoleRequest"];
@@ -837,7 +841,10 @@ fn documents_the_assignment_operations_with_the_bearer_requirement_and_the_iam_t
             "/api/user-roles",
             "post",
             "api_user_roles_post",
-            ["201", "400", "401", "409", "413", "415", "422", "default"].as_slice(),
+            [
+                "201", "202", "400", "401", "409", "413", "415", "422", "default",
+            ]
+            .as_slice(),
         ),
         (
             "/api/user-roles",
@@ -856,7 +863,7 @@ fn documents_the_assignment_operations_with_the_bearer_requirement_and_the_iam_t
             "patch",
             "api_user_roles_id_patch",
             [
-                "200", "400", "401", "404", "412", "413", "415", "422", "428", "default",
+                "200", "202", "400", "401", "404", "412", "413", "415", "422", "428", "default",
             ]
             .as_slice(),
         ),
@@ -864,7 +871,10 @@ fn documents_the_assignment_operations_with_the_bearer_requirement_and_the_iam_t
             "/api/user-roles/{id}",
             "delete",
             "api_user_roles_id_delete",
-            ["204", "400", "401", "404", "412", "422", "428", "default"].as_slice(),
+            [
+                "202", "204", "400", "401", "404", "412", "422", "428", "default",
+            ]
+            .as_slice(),
         ),
     ];
 
@@ -918,11 +928,21 @@ fn the_assignment_creation_documents_its_request_headers_and_schemas() {
         .keys()
         .map(String::as_str)
         .collect();
-    assert_eq!(headers, ["etag", "iam-policy-version", "location"]);
+    assert_eq!(
+        headers,
+        [
+            "etag",
+            "iam-policy-offset",
+            "iam-policy-version",
+            "location"
+        ]
+    );
     let parameters = operation["parameters"].as_array().unwrap();
-    assert_eq!(parameters.len(), 1);
+    assert_eq!(parameters.len(), 2);
     assert_eq!(parameters[0]["name"], "Idempotency-Key");
     assert_eq!(parameters[0]["in"], "header");
+    assert_eq!(parameters[1]["name"], "Prefer");
+    assert_eq!(parameters[1]["in"], "header");
     let schemas = &json["components"]["schemas"];
     assert_eq!(
         schemas["AssignUserRoleRequest"]["additionalProperties"],
@@ -966,7 +986,7 @@ fn the_assignment_update_and_revocation_document_their_versioning_headers_and_sc
             .map(|parameter| parameter["name"].as_str().unwrap())
             .collect();
         names.sort_unstable();
-        assert_eq!(names, ["Idempotency-Key", "If-Match", "id"]);
+        assert_eq!(names, ["Idempotency-Key", "If-Match", "Prefer", "id"]);
     }
     let schema = &json["components"]["schemas"]["UpdateUserRoleRequest"];
     assert_eq!(schema["additionalProperties"], false);
@@ -1308,12 +1328,16 @@ fn the_role_permissions_document_their_responses_headers_and_schemas() {
     assert_eq!(
         statuses,
         [
-            "200", "400", "401", "404", "409", "412", "413", "415", "422", "428", "default"
+            "200", "202", "400", "401", "404", "409", "412", "413", "415", "422", "428", "default"
         ]
     );
     let headers = &replace["responses"]["200"]["headers"];
     assert!(headers["etag"].is_object());
     assert!(headers["iam-policy-version"].is_object());
+    assert!(headers["iam-policy-offset"].is_object());
+    let pending = &replace["responses"]["202"]["headers"];
+    assert!(pending["iam-policy-version"].is_object());
+    assert!(pending["iam-propagation-status"].is_object());
     let mut names: Vec<&str> = replace["parameters"]
         .as_array()
         .unwrap()
@@ -1321,7 +1345,7 @@ fn the_role_permissions_document_their_responses_headers_and_schemas() {
         .filter_map(|parameter| parameter["name"].as_str())
         .collect();
     names.sort_unstable();
-    assert_eq!(names, ["Idempotency-Key", "If-Match", "id"]);
+    assert_eq!(names, ["Idempotency-Key", "If-Match", "Prefer", "id"]);
     let request = &json["components"]["schemas"]["SetRolePermissionsRequest"];
     assert_eq!(request["properties"]["keys"]["maxItems"], 5000);
     let grant = &json["components"]["schemas"]["RolePermission"];

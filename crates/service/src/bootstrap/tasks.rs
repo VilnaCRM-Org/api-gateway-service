@@ -2,8 +2,8 @@
 //!
 //! Every replica runs its own copy of each per-replica task. A singleton task is a
 //! [`SingletonLoop`]: every replica runs the loop, and the advisory lock of its leadership lets
-//! exactly one of them run each batch. [`start_tasks`] builds the supervisor and, under
-//! `service serve`, starts the singleton set ([`singleton_set`]); the stories that add a task
+//! exactly one of them run each batch. [`start_tasks`] builds the supervisor, starts the rejected-attempt
+//! writer and, under `service serve`, starts the singleton set ([`singleton_set`]); the stories that add a task
 //! register it there. A task takes the stop
 //! flag of the service and ends when it is set; [`TaskSupervisor::stop`] waits for every task for
 //! the grace period and aborts what is left.
@@ -12,14 +12,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iam_application::{
-    InvalidSingletonInterval, OutboxRelay, PolicyMaintenance, RunMaintenanceCommandHandler,
-    SingletonLoop,
+    AntiEntropyChecker, InvalidSingletonInterval, OutboxRelay, PolicyMaintenance,
+    RejectedAttemptWriter, RunMaintenanceCommandHandler, SingletonLoop,
 };
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tracing::Instrument as _;
 
-use super::{Adapters, OutboxRelayAdapters, forward_notifications};
+use super::{Adapters, AntiEntropyAdapters, OutboxRelayAdapters, forward_notifications};
 
 /// Where the supervisor runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +130,8 @@ fn log_failed(error: &tokio::task::JoinError) {
     tracing::error!(error = %error, "task failed");
 }
 
-/// The singleton tasks that `service serve` runs: the policy maintenance and the outbox relay.
+/// The singleton tasks that `service serve` runs: maintenance, the outbox relay, anti-entropy.
+///
 /// There is no `service worker` mode, so the set runs inside `serve`; the stories that add a task
 /// extend it here.
 #[must_use]
@@ -143,19 +144,46 @@ pub fn singleton_set(adapters: &Adapters) -> Vec<SingletonLoop> {
             .as_ref()
             .map(|relay| relay_loop(adapters, relay)),
     );
+    set.extend(
+        adapters
+            .outbox_relay
+            .as_ref()
+            .and_then(|relay| relay.anti_entropy.as_ref())
+            .map(|anti_entropy| anti_entropy_loop(adapters, anti_entropy)),
+    );
     set
+}
+
+/// The loop of the anti-entropy task: a head check every `ANTI_ENTROPY_HEAD_INTERVAL` (polled at
+/// most every 10 seconds) and a shadow bootstrap every `ANTI_ENTROPY_FULL_INTERVAL`.
+fn anti_entropy_loop(adapters: &Adapters, anti_entropy: &AntiEntropyAdapters) -> SingletonLoop {
+    AntiEntropyChecker::new(
+        anti_entropy.ports.clone(),
+        Arc::clone(&adapters.clock),
+        anti_entropy.settings,
+        Arc::clone(&anti_entropy.counters),
+        Arc::clone(&anti_entropy.hold),
+    )
+    .into_loop(
+        Arc::clone(&adapters.singleton_leadership),
+        Arc::clone(&adapters.clock),
+    )
 }
 
 /// The loop of the outbox relay: a fenced batch every 100 ms, or as soon as the listener of
 /// `iam_outbox` reports a committed change.
 fn relay_loop(adapters: &Adapters, relay: &OutboxRelayAdapters) -> SingletonLoop {
-    OutboxRelay::new(
+    let task = OutboxRelay::new(
         relay.ports.clone(),
         Arc::clone(&adapters.clock),
         relay.settings,
         Arc::clone(&relay.leading),
-    )
-    .into_loop(
+    );
+    let task = match &relay.anti_entropy {
+        Some(anti_entropy) => task.with_hold(Arc::clone(&anti_entropy.hold)),
+        None => task,
+    };
+    task.into_loop(
         Arc::clone(&adapters.singleton_leadership),
         Arc::clone(&adapters.clock),
         Arc::clone(&relay.wake),
@@ -193,8 +221,19 @@ fn log_not_started(error: &InvalidSingletonInterval) {
     tracing::error!(error = %error, "the maintenance task is not started");
 }
 
-/// Starts the tasks of the service: the singleton set and the listener of the outbox wake-up under
-/// `service serve`.
+/// The writer that appends the buffered refusals of IAM's operations to the audit chain: it runs on
+/// every replica, in every mode, because the append itself takes the chain-head lock.
+fn rejected_attempt_writer(adapters: &Adapters) -> RejectedAttemptWriter {
+    RejectedAttemptWriter::new(
+        Arc::clone(&adapters.rejected_attempts),
+        Arc::clone(&adapters.security_audit_log),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    )
+}
+
+/// Starts the tasks of the service: the rejected-attempt writer in every mode, and under
+/// `service serve` the singleton set and the listener of the outbox wake-up.
 ///
 /// `shutdown` is the stop flag of the service: tasks end when it is set.
 #[must_use]
@@ -204,6 +243,8 @@ pub fn start_tasks(
     shutdown: watch::Receiver<bool>,
 ) -> TaskSupervisor {
     let mut supervisor = TaskSupervisor::new(mode, shutdown);
+    let writer = rejected_attempt_writer(adapters);
+    supervisor.spawn("rejected-attempt-writer", |stop| writer.run(stop));
     if mode == TaskMode::Serve {
         supervisor.spawn_singletons(singleton_set(adapters));
         if let Some(relay) = adapters.outbox_relay.clone() {

@@ -14,13 +14,13 @@ use clap::Parser as _;
 use health_check_domain::Dependency;
 use http_body_util::BodyExt as _;
 use iam_domain::{
-    ActorRef, PolicyEpoch, RevocationSource, SessionId, SessionRevocation, SessionRevocationId,
-    SubjectRef, SystemComponent,
+    ActorRef, PolicyEpoch, RejectedAttemptLog, RevocationSource, SessionId, SessionRevocation,
+    SessionRevocationId, SubjectRef, SystemComponent,
 };
 use serde_json::Value;
 use service::bootstrap::{
     Adapters, TaskMode, TaskSupervisor, bootstrap_administrator, register_iam_specs, router,
-    start_tasks,
+    singleton_set, start_tasks,
 };
 use service::cli::{Cli, Command};
 use service::config::Config;
@@ -32,6 +32,7 @@ use test_support::probe::StubProbe;
 use tokio::sync::watch;
 use tower::ServiceExt as _;
 
+use crate::administrator_policy::AdministratorCallerPolicy;
 use crate::tokens::{SigningKey, USER_ID, instant_after};
 
 /// Counter that makes the database names of the scenarios of one process unique.
@@ -97,9 +98,14 @@ pub(crate) struct AppWorld {
     subject_token: Option<String>,
     idempotency_key: Option<String>,
     if_match: Option<String>,
+    prefer: Option<String>,
     cursor: Option<String>,
     role: Option<String>,
     tasks: Option<(watch::Sender<bool>, TaskSupervisor)>,
+    /// The buffer of rejected attempts that the writer of the per-replica tasks flushes; every
+    /// application instance of the scenario offers its refusals to it, as one `service serve`
+    /// process does.
+    rejected_attempts: Option<Arc<dyn RejectedAttemptLog>>,
 }
 
 /// The configuration as the binary reads it from the environment.
@@ -209,6 +215,11 @@ impl AppWorld {
         self.idempotency_key = Some(key);
     }
 
+    /// Makes the following requests carry this `Prefer` header.
+    pub(crate) fn set_prefer(&mut self, value: String) {
+        self.prefer = Some(value);
+    }
+
     /// Makes the following requests carry this `If-Match` header.
     pub(crate) fn set_if_match(&mut self, value: String) {
         self.if_match = Some(value);
@@ -232,6 +243,30 @@ impl AppWorld {
         .expect("the newest head row");
         connection.close().await.expect("close");
         digest
+    }
+
+    /// The stored offset of the published `__head` row of policy version `version` in the
+    /// scenario database; `None` when the relay stored none.
+    pub(crate) async fn stored_head_offset(&mut self, version: i64) -> Option<i64> {
+        let url = self.database_url().await;
+        let options = PgConnectOptions::from_str(&url).expect("valid database URL");
+        let mut connection = options
+            .connect()
+            .await
+            .expect("connect to the scenario database");
+        let offset = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT published_offset FROM iam_outbox \
+             WHERE kind = 'state' AND record_key = '__head' AND policy_version = $1 \
+                 AND published_at IS NOT NULL \
+             ORDER BY seq DESC NULLS LAST LIMIT 1",
+        )
+        .bind(version)
+        .fetch_optional(&mut connection)
+        .await
+        .expect("the head row query")
+        .flatten();
+        connection.close().await.expect("close");
+        offset
     }
 
     /// Stores a system role named `name` at version 1 in the scenario database, as a fixture,
@@ -532,6 +567,12 @@ impl AppWorld {
         self.caller_token = Some(self.signing_key().caller_token());
     }
 
+    /// Makes the following requests carry the bearer token of a valid service caller that holds
+    /// no IAM key.
+    pub(crate) fn authenticate_as_unprivileged_service(&mut self) {
+        self.caller_token = Some(self.signing_key().unprivileged_caller_token());
+    }
+
     /// Makes the following requests carry a bearer token that no key file of the application
     /// holds the key of.
     pub(crate) fn authenticate_with_unknown_key(&mut self) {
@@ -598,7 +639,17 @@ impl AppWorld {
             .await
             .expect("register IAM's own specifications");
         let (stop, stopping) = watch::channel(false);
-        let supervisor = start_tasks(&adapters, TaskMode::Test, stopping);
+        let mut supervisor = start_tasks(&adapters, TaskMode::Test, stopping);
+        self.rejected_attempts = Some(Arc::clone(&adapters.rejected_attempts));
+        // A write returns after the Kafka acknowledgement of its policy version (Story 7.6), so
+        // the relay runs for the scenario; maintenance and anti-entropy stay off, so versions and
+        // counts stay as the scenarios expect.
+        supervisor.spawn_singletons(
+            singleton_set(&adapters)
+                .into_iter()
+                .filter(|singleton| singleton.name() == "outbox-relay")
+                .collect(),
+        );
         self.tasks = Some((stop, supervisor));
     }
 
@@ -648,6 +699,12 @@ impl AppWorld {
     ) {
         let config = self.config().await;
         let mut adapters = Adapters::connect(&config).await.expect("production wiring");
+        if let Some(buffer) = &self.rejected_attempts {
+            adapters.rejected_attempts = Arc::clone(buffer);
+        }
+        adapters.policy_reads = Arc::new(AdministratorCallerPolicy::wrapping(Arc::clone(
+            &adapters.policy_reads,
+        )));
         for dependency in &self.failing {
             adapters = adapters.with_probe(Arc::new(StubProbe::failing(*dependency)));
         }
@@ -663,6 +720,9 @@ impl AppWorld {
         }
         if let Some(value) = &self.if_match {
             request = request.header(header::IF_MATCH, value);
+        }
+        if let Some(value) = &self.prefer {
+            request = request.header("prefer", value);
         }
         let request = request
             .body(Body::from(self.substitute(body)))

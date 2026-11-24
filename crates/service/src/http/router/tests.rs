@@ -7,6 +7,7 @@ use axum::http::{HeaderMap, Method, Request, StatusCode, header};
 use health_check_domain::{Dependency, HealthProbe};
 use http_body_util::BodyExt as _;
 use iam_application::MaintenanceSettings;
+use iam_infrastructure::BufferedRejectedAttemptLog;
 use serde_json::Value;
 use test_support::access_token::{DEVELOPMENT_PUBLIC_KEYS_FILE, FakeAccessTokenVerifier};
 use test_support::change_receipt::FakeChangeReceiptRepository;
@@ -83,6 +84,7 @@ fn adapters() -> Adapters {
         policy_epochs: Arc::new(FakePolicyEpochRepository::new()),
         policy_reads: Arc::new(FakePolicyReadRepository::new()),
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
+        rejected_attempts: Arc::new(BufferedRejectedAttemptLog::new()),
         startup_lock: Arc::new(FakeStartupLock::new()),
         singleton_leadership: Arc::new(FakeSingletonLeadership::leading()),
         maintenance_store: Arc::new(FakeMaintenanceStore::new()),
@@ -96,6 +98,7 @@ fn adapters() -> Adapters {
         routes: Arc::new(FakeRouteRepository::new()),
         rate_policies: Arc::new(FakeRatePolicyRepository::new()),
         unit_of_work: Arc::new(FakeIamUnitOfWork::new()),
+        write_unit_of_work: Arc::new(FakeIamUnitOfWork::new()),
         request_digester: Arc::new(FakeRequestDigester),
         user_roles: Arc::new(FakeUserRoleRepository::new()),
         graphql_specs: Arc::new(FakeGraphQlSpecRepository::new()),
@@ -610,6 +613,7 @@ fn handlers_use_only_the_problem_aware_extractors() {
         .map(|(file, _)| (*file).to_owned())
         .chain([
             "http/authentication.rs".to_owned(),
+            "http/authorization.rs".to_owned(),
             "http/request_id.rs".to_owned(),
         ])
         .collect();
