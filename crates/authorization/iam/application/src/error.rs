@@ -3,9 +3,9 @@
 use axum::http::StatusCode;
 use iam_domain::{
     ConfigChangeRefused, InvalidCatalogueEntry, InvalidEventEnvelope, InvalidIamValue, InvalidRole,
-    InvalidSpec, InvalidUpstream, InvalidUserRole, LastAdministratorRefused, ReferencedByRoute,
-    RepositoryError, RoleChangeRefused, RouteScopeRefused, TokenRejection, UpstreamChangeRefused,
-    UserRoleChangeRefused, VersionConflict,
+    InvalidRoute, InvalidSpec, InvalidUpstream, InvalidUserRole, LastAdministratorRefused,
+    ReferencedByRoute, RepositoryError, RoleChangeRefused, RouteConflict, RouteScopeRefused,
+    TokenRejection, UpstreamChangeRefused, UserRoleChangeRefused, VersionConflict,
 };
 use shared_application::http::{Problem, Violation};
 use shared_domain::BoxError;
@@ -25,6 +25,10 @@ pub const TYPE_SYSTEM_ENTRY: &str = "/problems/system-entry";
 
 /// The `type` of the 409 problem of a deletion of an upstream that a route still references.
 pub const TYPE_REFERENCED_BY_ROUTE: &str = "/problems/referenced-by-route";
+
+/// The `type` of the 409 problem of a route whose host and pattern conflict with a stored route, or
+/// whose candidate route table the gateway could not build.
+pub const TYPE_ROUTE_TABLE_CONFLICT: &str = "/problems/route-table-conflict";
 
 /// What an activation needs the caller to confirm before it changes the catalogue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +92,14 @@ pub enum IamError {
     /// The upstream is still referenced by a route.
     #[error("The upstream is still referenced by a route.")]
     ReferencedByRoute,
+    /// The route conflicts with another route of its host: the same host and pattern with a
+    /// method in common, an anonymous route that shadows a protected one, or a candidate route
+    /// table that the gateway could not build.
+    #[error("The route conflicts with another route of its host ({code}).")]
+    RouteTableConflict {
+        /// The machine-readable conflict code.
+        code: &'static str,
+    },
     /// The change needs a confirmation the request did not give; the violations list the keys or
     /// the grants it affects.
     #[error("The change needs a confirmation.")]
@@ -315,6 +327,41 @@ impl From<RouteScopeRefused> for IamError {
     }
 }
 
+impl From<Vec<InvalidRoute>> for IamError {
+    /// Every violation of a route, named by the property of the request.
+    fn from(violations: Vec<InvalidRoute>) -> Self {
+        Self::Invalid(
+            violations
+                .into_iter()
+                .map(|violation| Violation {
+                    property_path: route_property(violation.property_path()).to_owned(),
+                    message: violation.to_string(),
+                    code: violation.code().to_owned(),
+                })
+                .collect(),
+        )
+    }
+}
+
+/// The property of the request that carries the value a route violation names.
+fn route_property(domain: &str) -> &str {
+    match domain {
+        "bodyLimit" => "bodyLimitBytes",
+        "timeouts.requestMs" => "requestTimeoutMs",
+        "timeouts.idleMs" => "idleTimeoutMs",
+        "ratePolicies" => "ratePolicyIds",
+        other => other,
+    }
+}
+
+impl From<RouteConflict> for IamError {
+    fn from(conflict: RouteConflict) -> Self {
+        Self::RouteTableConflict {
+            code: conflict.code(),
+        }
+    }
+}
+
 impl From<ReferencedByRoute> for IamError {
     fn from(_refusal: ReferencedByRoute) -> Self {
         Self::ReferencedByRoute
@@ -347,6 +394,13 @@ impl From<IamError> for Problem {
                 return Self {
                     r#type: TYPE_REFERENCED_BY_ROUTE,
                     ..Self::new(StatusCode::CONFLICT).with_detail(error.to_string())
+                };
+            }
+            IamError::RouteTableConflict { code } => {
+                return Self {
+                    r#type: TYPE_ROUTE_TABLE_CONFLICT,
+                    ..Self::new(StatusCode::CONFLICT)
+                        .with_detail(format!("{error} The conflict code is {code}."))
                 };
             }
             IamError::Invalid(violations) => return Self::validation_failed(violations.clone()),

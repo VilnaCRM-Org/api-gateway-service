@@ -14,12 +14,13 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use iam_domain::{
-    ActorRef, AuditOutcome, AuditReason, AuditSummary, ChangeReceipt, EscalationDenied,
-    EscalationGuard, GrantedKey, GraphQlPermissionRepository, GuardCheck, IamChange, IamUnitOfWork,
-    InvalidIamValue, PermissionGrant, PermissionKey, PermissionKeyKind, PolicyReadRepository,
-    RepositoryError, RestPermissionRepository, RoleId, RoleRepository, RouteScopeGuard,
-    SecurityAuditEvent, SecurityAuditEventId, SecurityAuditEventParts, SecurityAuditLog,
-    ServiceName, SpecScopeDenied, SpecScopeGuard, SubjectPolicy, SubjectRef, WriteMode,
+    ActorRef, AnonymousRouteGuard, AnonymousRouteRefused, AuditOutcome, AuditReason, AuditSummary,
+    ChangeReceipt, EscalationDenied, EscalationGuard, GrantedKey, GraphQlPermissionRepository,
+    GuardCheck, IamChange, IamUnitOfWork, InvalidIamValue, PermissionGrant, PermissionKey,
+    PermissionKeyKind, PolicyReadRepository, RepositoryError, RestPermissionRepository, RoleId,
+    RoleRepository, RouteScopeGuard, SecurityAuditEvent, SecurityAuditEventId,
+    SecurityAuditEventParts, SecurityAuditLog, ServiceName, SpecScopeDenied, SpecScopeGuard,
+    SubjectPolicy, SubjectRef, WriteMode,
 };
 use shared_domain::{Clock, UuidGenerator};
 
@@ -49,6 +50,8 @@ enum Denied {
     SpecScope(SpecScopeDenied),
     /// The actor holds neither `iam:route:{service}` nor `iam:route:*` for this service.
     RouteScope(ServiceName),
+    /// The actor lacks `iam:route:anonymous`.
+    AnonymousRoute,
 }
 
 impl Denied {
@@ -58,6 +61,7 @@ impl Denied {
             Self::Escalation(_) => EscalationDenied::CODE,
             Self::SpecScope(_) => SpecScopeDenied::CODE,
             Self::RouteScope(_) => ROUTE_SCOPE_DENIED,
+            Self::AnonymousRoute => AnonymousRouteRefused::CODE,
         }
     }
 
@@ -68,6 +72,7 @@ impl Denied {
             Self::Escalation(EscalationDenied::OwnAssignment) => "subject=actor".to_owned(),
             Self::SpecScope(denied) => format!("missing={}", denied.key),
             Self::RouteScope(service) => format!("missing=iam:route:{service}"),
+            Self::AnonymousRoute => "missing=iam:route:anonymous".to_owned(),
         }
     }
 }
@@ -141,6 +146,10 @@ impl GuardedUnitOfWork {
                 .find(|service| RouteScopeGuard::check_policy(policy, now, service).is_err())
                 .cloned()
                 .map(Denied::RouteScope)),
+            GuardCheck::Route {
+                services,
+                anonymous_key,
+            } => Ok(Self::route_verdict(policy, now, services, *anonymous_key)),
             GuardCheck::Grants(grants) => {
                 let granted = self.granted(grants).await?;
                 Ok(EscalationGuard::check(policy, now, &granted)
@@ -158,6 +167,25 @@ impl GuardedUnitOfWork {
                     .map(Denied::Escalation))
             }
         }
+    }
+
+    /// The reason a change of a route is refused: a service whose route key the actor lacks, then
+    /// the anonymous key when the change needs it.
+    fn route_verdict(
+        policy: &SubjectPolicy,
+        now: SystemTime,
+        services: &[ServiceName],
+        anonymous_key: bool,
+    ) -> Option<Denied> {
+        let scope = services
+            .iter()
+            .find(|service| RouteScopeGuard::check_policy(policy, now, service).is_err())
+            .cloned()
+            .map(Denied::RouteScope);
+        scope.or_else(|| {
+            (anonymous_key && AnonymousRouteGuard::check_policy(policy, now).is_err())
+                .then_some(Denied::AnonymousRoute)
+        })
     }
 
     /// The grants of the role; none for a role that is unknown or deleted.

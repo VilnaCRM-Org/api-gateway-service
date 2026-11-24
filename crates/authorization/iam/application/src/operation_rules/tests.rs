@@ -287,3 +287,32 @@ fn the_upstream_operations_need_their_catalogue_keys_on_both_interfaces() {
         assert_eq!(rule.requirement, Requirement::Catalogue);
     }
 }
+
+#[test]
+fn the_route_operations_need_their_catalogue_keys_on_both_interfaces() {
+    let rest = [
+        ("POST", "/api/routes", "route.create"),
+        ("GET", "/api/routes", "route.list"),
+        ("GET", "/api/routes/{id}", "route.read"),
+        ("PATCH", "/api/routes/{id}", "route.update"),
+        ("DELETE", "/api/routes/{id}", "route.delete"),
+    ];
+    let graphql = [
+        ("Query.route", "route.read"),
+        ("Query.routes", "route.list"),
+        ("Mutation.createRoute", "route.create"),
+        ("Mutation.updateRoute", "route.update"),
+        ("Mutation.deleteRoute", "route.delete"),
+    ];
+
+    for (method, template, action) in rest {
+        let rule = OperationRules::find(method, template).unwrap();
+        assert_eq!(rule.action, action);
+        assert_eq!(rule.requirement, Requirement::Catalogue);
+    }
+    for (coordinate, action) in graphql {
+        let rule = OperationRules::find_graphql(coordinate).unwrap();
+        assert_eq!(rule.action, action);
+        assert_eq!(rule.requirement, Requirement::Catalogue);
+    }
+}

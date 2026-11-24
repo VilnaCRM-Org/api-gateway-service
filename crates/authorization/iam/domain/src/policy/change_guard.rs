@@ -33,4 +33,13 @@ pub enum GuardCheck {
         /// The catalogue services of the entry before and after the change, each once.
         services: Vec<ServiceName>,
     },
+    /// Create or change a route of these catalogue services: `RouteScopeGuard` for each of them,
+    /// and `AnonymousRouteGuard` (`iam:route:anonymous`) when the change sets or changes the
+    /// `anonymous` or `enforcement` flag.
+    Route {
+        /// The catalogue services of the route before and after the change, each once.
+        services: Vec<ServiceName>,
+        /// Whether the change needs `iam:route:anonymous`.
+        anonymous_key: bool,
+    },
 }

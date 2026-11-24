@@ -2,9 +2,10 @@ use std::error::Error as _;
 
 use iam_domain::{
     ConfigChangeRefused, EntityVersion, InvalidCatalogueEntry, InvalidEventEnvelope,
-    InvalidIamValue, InvalidRole, InvalidUpstream, InvalidUserRole, LastAdministratorRefused,
-    ReferencedByRoute, RepositoryError, RoleChangeRefused, RouteScopeRefused, ServiceName,
-    TokenRejection, UpstreamChangeRefused, UserRoleChangeRefused, VersionConflict,
+    InvalidIamValue, InvalidRole, InvalidRoute, InvalidUpstream, InvalidUserRole,
+    LastAdministratorRefused, ReferencedByRoute, RepositoryError, RoleChangeRefused, RouteConflict,
+    RouteId, RouteScopeRefused, ServiceName, TokenRejection, UpstreamChangeRefused,
+    UserRoleChangeRefused, VersionConflict,
 };
 use rstest::rstest;
 use shared_application::http::{Problem, TYPE_BLANK, Violation};
@@ -12,7 +13,8 @@ use test_support::log::LogRecorder;
 
 use super::{
     Confirmation, IamError, TYPE_FLAG_DOWNGRADE_CONFIRMATION, TYPE_LAST_ADMINISTRATOR,
-    TYPE_ORPHAN_CONFIRMATION, TYPE_REFERENCED_BY_ROUTE, TYPE_SYSTEM_ENTRY,
+    TYPE_ORPHAN_CONFIRMATION, TYPE_REFERENCED_BY_ROUTE, TYPE_ROUTE_TABLE_CONFLICT,
+    TYPE_SYSTEM_ENTRY,
 };
 
 #[test]
@@ -583,4 +585,51 @@ fn the_route_scope_refusals_have_the_status_of_their_cause() {
     };
     assert_eq!(violations.first().unwrap().property_path, "service");
     assert_eq!(violations.first().unwrap().code, "service_mismatch");
+}
+
+#[test]
+fn a_route_conflict_is_the_409_problem_of_its_own_type_with_the_conflict_code() {
+    let (recorder, _guard) = LogRecorder::install();
+    let id = RouteId::parse("0190f2a8-7b3c-7d4e-8f10-1234567890e1").unwrap();
+
+    let error = IamError::from(RouteConflict::SamePattern {
+        first: id,
+        second: id,
+    });
+    let problem = Problem::from(error);
+
+    assert_eq!(problem.status, 409);
+    assert_eq!(problem.r#type, TYPE_ROUTE_TABLE_CONFLICT);
+    assert!(problem.detail.unwrap().contains("same_pattern"));
+    assert_eq!(recorder.lines().len(), 0);
+}
+
+#[test]
+fn route_violations_name_the_properties_of_the_request() {
+    let error = IamError::from(vec![
+        InvalidRoute::HostFormat,
+        InvalidRoute::BodyLimitRange,
+        InvalidRoute::RequestTimeoutRange,
+        InvalidRoute::IdleTimeoutRange,
+        InvalidRoute::RatePolicyCount,
+    ]);
+
+    let IamError::Invalid(violations) = error else {
+        panic!("expected violations");
+    };
+    let paths: Vec<&str> = violations
+        .iter()
+        .map(|violation| violation.property_path.as_str())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "host",
+            "bodyLimitBytes",
+            "requestTimeoutMs",
+            "idleTimeoutMs",
+            "ratePolicyIds"
+        ]
+    );
+    assert_eq!(violations[0].code, "format");
 }

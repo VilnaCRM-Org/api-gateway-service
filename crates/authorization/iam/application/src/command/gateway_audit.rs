@@ -15,6 +15,10 @@ use crate::error::IamError;
 /// The reason that the rejected record of a refused change of a system entry carries.
 const SYSTEM_ENTRY_REASON: &str = "system_entry";
 
+/// The reason that the rejected record of a change whose actor lacks the route key of the
+/// catalogue service carries; the unit of work records the same reason for its own refusals.
+const ROUTE_SCOPE_REASON: &str = "route_scope.denied";
+
 /// What the committed audit record of a change of one entry says.
 #[derive(Debug)]
 pub(crate) struct ChangeRecord<'a> {
@@ -100,17 +104,41 @@ pub(crate) fn refuse_system_entry(
     log: &dyn RejectedAttemptLog,
     refusal: SystemEntryRefusal<'_>,
 ) -> IamError {
-    match rejected(refusal) {
+    offer(log, refusal, SYSTEM_ENTRY_REASON, IamError::SystemEntry)
+}
+
+/// Offers the refusal of an actor without the route key of the catalogue service to the buffer of
+/// the audit log and returns the error that answers the caller: [`IamError::Forbidden`].
+///
+/// # Errors
+///
+/// [`IamError::Internal`] when a value of the record breaks an invariant of the domain; the
+/// refusal is not recorded then.
+pub(crate) fn refuse_route_scope(
+    log: &dyn RejectedAttemptLog,
+    refusal: SystemEntryRefusal<'_>,
+) -> IamError {
+    offer(log, refusal, ROUTE_SCOPE_REASON, IamError::Forbidden)
+}
+
+/// Records the refusal with its reason and answers with `error`.
+fn offer(
+    log: &dyn RejectedAttemptLog,
+    refusal: SystemEntryRefusal<'_>,
+    reason: &str,
+    error: IamError,
+) -> IamError {
+    match rejected(refusal, reason) {
         Ok(attempt) => {
             log.offer(attempt);
-            IamError::SystemEntry
+            error
         }
         Err(error) => error,
     }
 }
 
 /// The rejected attempt that the refusal records.
-fn rejected(refusal: SystemEntryRefusal<'_>) -> Result<RejectedAttempt, IamError> {
+fn rejected(refusal: SystemEntryRefusal<'_>, reason: &str) -> Result<RejectedAttempt, IamError> {
     let SystemEntryRefusal {
         action,
         kind,
@@ -121,7 +149,7 @@ fn rejected(refusal: SystemEntryRefusal<'_>) -> Result<RejectedAttempt, IamError
     Ok(RejectedAttempt {
         actor: actor.clone(),
         action: AuditAction::new(action)?,
-        reason: AuditReason::new(SYSTEM_ENTRY_REASON)?,
+        reason: AuditReason::new(reason)?,
         target: AuditTarget::new(kind, &target_id)?,
         occurred_at,
         request_id: None,

@@ -6,7 +6,7 @@ use iam_domain::{
 use shared_domain::Uuid;
 use test_support::id::SequenceUuidGenerator;
 
-use super::{ChangeRecord, SystemEntryRefusal, committed, refuse_system_entry};
+use super::{ChangeRecord, SystemEntryRefusal, committed, refuse_route_scope, refuse_system_entry};
 use crate::error::IamError;
 use crate::rejected_attempt_fixtures::FakeRejectedAttemptLog;
 
@@ -144,4 +144,29 @@ fn a_refusal_that_cannot_be_described_is_an_internal_failure_and_offers_nothing(
 
     assert!(matches!(error, IamError::Internal(_)));
     assert_eq!(log.offered(), Vec::new());
+}
+
+#[test]
+fn a_refusal_for_a_missing_route_key_is_forbidden_and_audited_with_the_route_scope_reason() {
+    let log = FakeRejectedAttemptLog::new();
+    let actor = actor();
+
+    let error = refuse_route_scope(
+        &log,
+        SystemEntryRefusal {
+            action: "route.create",
+            kind: "route",
+            target_id: TARGET.to_owned(),
+            actor: &actor,
+            occurred_at: at(),
+        },
+    );
+
+    assert!(matches!(error, IamError::Forbidden));
+    let offered = log.offered();
+    let [attempt] = offered.as_slice() else {
+        panic!("one attempt expected: {offered:?}");
+    };
+    assert_eq!(attempt.action.as_str(), "route.create");
+    assert_eq!(attempt.reason.as_str(), "route_scope.denied");
 }

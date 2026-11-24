@@ -26,6 +26,7 @@ use crate::query::resolve_subject_token::{ResolveSubjectTokenQuery, TokenResolut
 
 mod role_deletion;
 mod roles;
+mod routes;
 mod upstreams;
 mod user_roles;
 

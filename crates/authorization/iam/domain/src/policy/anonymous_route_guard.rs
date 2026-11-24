@@ -1,7 +1,10 @@
 //! `AnonymousRouteGuard`: only a holder of `iam:route:anonymous` makes a route anonymous or
 //! audit-only, or changes either flag (FR-57).
 
+use std::time::SystemTime;
+
 use crate::policy::compiled_role_set::CompiledRoleSet;
+use crate::policy::subject_policy::SubjectPolicy;
 use crate::route::fields::RouteFields;
 use crate::route::settings::EnforcementMode;
 use crate::value_object::permission_flags::PermissionFlags;
@@ -34,9 +37,39 @@ impl AnonymousRouteGuard {
         held: &CompiledRoleSet,
         fields: &RouteFields,
     ) -> Result<(), AnonymousRouteRefused> {
-        let needs_key =
-            fields.flags().anonymous() || fields.enforcement() == EnforcementMode::Audit;
-        Self::require(held, needs_key)
+        Self::require(held, Self::needs_key_on_create(fields))
+    }
+
+    /// Whether creating a route with these fields needs the key: the route is anonymous or
+    /// audit-only.
+    #[must_use]
+    pub fn needs_key_on_create(fields: &RouteFields) -> bool {
+        fields.flags().anonymous() || fields.enforcement() == EnforcementMode::Audit
+    }
+
+    /// Whether an update needs the key: it changes `anonymous` or `enforcement`, in either
+    /// direction.
+    #[must_use]
+    pub fn needs_key_on_update(before: &RouteFields, after: &RouteFields) -> bool {
+        before.flags().anonymous() != after.flags().anonymous()
+            || before.enforcement() != after.enforcement()
+    }
+
+    /// Lets a change that needs the key through when the actor's policy holds
+    /// `iam:route:anonymous` at global scope at `now`.
+    ///
+    /// # Errors
+    ///
+    /// [`AnonymousRouteRefused`] for an actor without the key.
+    pub fn check_policy(
+        policy: &SubjectPolicy,
+        now: SystemTime,
+    ) -> Result<(), AnonymousRouteRefused> {
+        if policy.holds_reserved(&ReservedPermission::RouteAnonymous, now) {
+            Ok(())
+        } else {
+            Err(AnonymousRouteRefused)
+        }
     }
 
     /// Checks an update: changing `anonymous` or `enforcement` in either direction needs the key.
@@ -50,9 +83,7 @@ impl AnonymousRouteGuard {
         before: &RouteFields,
         after: &RouteFields,
     ) -> Result<(), AnonymousRouteRefused> {
-        let needs_key = before.flags().anonymous() != after.flags().anonymous()
-            || before.enforcement() != after.enforcement();
-        Self::require(held, needs_key)
+        Self::require(held, Self::needs_key_on_update(before, after))
     }
 
     fn require(held: &CompiledRoleSet, needs_key: bool) -> Result<(), AnonymousRouteRefused> {
