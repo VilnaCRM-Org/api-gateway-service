@@ -118,6 +118,9 @@ pub struct Config {
     pub anti_entropy: AntiEntropySettings,
     /// The chunk size and the rate cap of the bulk operation runner.
     pub bulk: BulkSettings,
+    /// `ROUTE_CONFIGURATION_MAX_ROUTES`: the most routes one route configuration of a host may
+    /// hold, 1 to 1,000.
+    pub route_configuration_max_routes: usize,
 }
 
 /// The settings of the bulk operation runner.
@@ -210,6 +213,7 @@ impl Config {
                 relay,
                 anti_entropy,
                 bulk,
+                route_configuration_max_routes: limits.route_configuration_max_routes,
             }),
             _ => Err(ConfigErrors(collector.problems)),
         }
@@ -601,6 +605,7 @@ struct Limits {
     request_timeout: Duration,
     max_body_bytes: usize,
     shutdown_grace_period: Duration,
+    route_configuration_max_routes: usize,
 }
 
 type Parsed<T> = Result<T, String>;
@@ -817,6 +822,9 @@ fn sqs(collector: &mut Collector, args: &ServeArgs) -> Option<SqsSettings> {
     })
 }
 
+/// The default and the largest `ROUTE_CONFIGURATION_MAX_ROUTES`.
+const DEFAULT_ROUTE_CONFIGURATION_MAX_ROUTES: usize = 1_000;
+
 fn limits(collector: &mut Collector, args: &ServeArgs) -> Option<Limits> {
     let probe = collector.collect(
         "HEALTH_PROBE_TIMEOUT",
@@ -844,11 +852,20 @@ fn limits(collector: &mut Collector, args: &ServeArgs) -> Option<Limits> {
             Duration::from_secs(10),
         ),
     );
+    let max_routes = collector.collect(
+        "ROUTE_CONFIGURATION_MAX_ROUTES",
+        bounded(
+            args.route_configuration.max_routes.as_deref(),
+            DEFAULT_ROUTE_CONFIGURATION_MAX_ROUTES,
+            1..=DEFAULT_ROUTE_CONFIGURATION_MAX_ROUTES,
+        ),
+    );
     Some(Limits {
         health_probe_timeout: probe?,
         request_timeout: request?,
         max_body_bytes: body?,
         shutdown_grace_period: grace?,
+        route_configuration_max_routes: max_routes?,
     })
 }
 

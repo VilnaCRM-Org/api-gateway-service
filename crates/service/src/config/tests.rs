@@ -4,6 +4,7 @@ use rstest::rstest;
 use test_support::access_token::DEVELOPMENT_PUBLIC_KEYS_FILE;
 
 use super::*;
+use crate::cli::RouteConfigurationArgs;
 
 mod endpoints;
 
@@ -436,6 +437,7 @@ fn every_variable_accepts_a_valid_value() {
         relay: valid().relay,
         anti_entropy: valid().anti_entropy,
         bulk: valid().bulk,
+        route_configuration: valid().route_configuration,
     };
 
     let config = Config::from_args(args).unwrap();
@@ -1071,7 +1073,7 @@ type Mutator = fn(&mut ServeArgs);
 
 /// One row per variable of `ServeArgs`: the variable, a way to make it the only problem, and the
 /// variable that the problem names.
-const FIELDS: [(&str, Mutator, &str); 50] = [
+const FIELDS: [(&str, Mutator, &str); 51] = [
     ("APP_ENV", |a| a.app_env = some("x"), "APP_ENV"),
     ("APP_HOST", |a| a.app_host = some("x"), "APP_HOST"),
     ("APP_PORT", |a| a.app_port = some("x"), "APP_PORT"),
@@ -1278,6 +1280,11 @@ const FIELDS: [(&str, Mutator, &str); 50] = [
         "BULK_MAX_RECORDS_PER_SECOND",
         |a| a.bulk.max_records_per_second = some("x"),
         "BULK_MAX_RECORDS_PER_SECOND",
+    ),
+    (
+        "ROUTE_CONFIGURATION_MAX_ROUTES",
+        |a| a.route_configuration.max_routes = some("x"),
+        "ROUTE_CONFIGURATION_MAX_ROUTES",
     ),
     (
         "KAFKA_CONFIG_GATES",
@@ -2132,6 +2139,43 @@ fn a_bulk_rate_below_one_names_its_variable(#[case] raw: &str) {
     };
 
     assert_eq!(variables(args), vec!["BULK_MAX_RECORDS_PER_SECOND"]);
+}
+
+#[test]
+fn a_route_configuration_holds_one_thousand_routes_by_default() {
+    let config = Config::from_args(valid()).unwrap();
+
+    assert_eq!(config.route_configuration_max_routes, 1_000);
+}
+
+#[test]
+fn the_route_configuration_limit_accepts_a_value_within_its_bounds() {
+    let args = ServeArgs {
+        route_configuration: RouteConfigurationArgs {
+            max_routes: some("25"),
+        },
+        ..valid()
+    };
+
+    let config = Config::from_args(args).unwrap();
+
+    assert_eq!(config.route_configuration_max_routes, 25);
+}
+
+#[rstest]
+#[case("0")]
+#[case("1001")]
+#[case("-1")]
+#[case("many")]
+fn a_route_configuration_limit_outside_one_to_one_thousand_names_its_variable(#[case] raw: &str) {
+    let args = ServeArgs {
+        route_configuration: RouteConfigurationArgs {
+            max_routes: some(raw),
+        },
+        ..valid()
+    };
+
+    assert_eq!(variables(args), vec!["ROUTE_CONFIGURATION_MAX_ROUTES"]);
 }
 
 #[test]

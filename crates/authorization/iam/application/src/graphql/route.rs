@@ -181,7 +181,7 @@ impl From<CorsPolicyDto> for CorsPolicyObject {
 }
 
 /// The names of the methods.
-fn methods_text(methods: Vec<HttpMethodDto>) -> Vec<String> {
+pub(super) fn methods_text(methods: Vec<HttpMethodDto>) -> Vec<String> {
     methods
         .into_iter()
         .map(|method| HttpMethod::from(method).as_str().to_owned())
@@ -313,31 +313,31 @@ fn method_of(text: &str) -> Result<HttpMethodDto, IamError> {
 }
 
 /// The methods that the texts name.
-fn methods_of(texts: &[String]) -> Result<Vec<HttpMethodDto>, IamError> {
+pub(super) fn methods_of(texts: &[String]) -> Result<Vec<HttpMethodDto>, IamError> {
     texts.iter().map(|text| method_of(text)).collect()
 }
 
 /// The enforcement mode that the text names.
-fn enforcement_of(text: &str) -> Result<EnforcementDto, IamError> {
+pub(super) fn enforcement_of(text: &str) -> Result<EnforcementDto, IamError> {
     EnforcementMode::parse(text)
         .map(EnforcementDto::from)
         .ok_or_else(|| choice("enforcement", "enforce or audit"))
 }
 
 /// The retry policy that the text names.
-fn retry_of(text: &str) -> Result<RetryPolicyDto, IamError> {
+pub(super) fn retry_of(text: &str) -> Result<RetryPolicyDto, IamError> {
     RetryPolicy::parse(text)
         .map(RetryPolicyDto::from)
         .ok_or_else(|| choice("retryPolicy", "none or idempotent"))
 }
 
 /// The identifiers as the texts of a request.
-fn texts_of(ids: Vec<ID>) -> Vec<String> {
+pub(super) fn texts_of(ids: Vec<ID>) -> Vec<String> {
     ids.into_iter().map(|id| id.as_str().to_owned()).collect()
 }
 
 /// The CORS policy that the input describes.
-fn cors_of(input: CorsPolicyInput) -> Result<CorsPolicyDto, IamError> {
+pub(super) fn cors_of(input: CorsPolicyInput) -> Result<CorsPolicyDto, IamError> {
     Ok(CorsPolicyDto {
         origins: input.origins,
         methods: input

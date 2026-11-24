@@ -192,6 +192,22 @@ pub struct ServeArgs {
     /// Settings of the bulk operation runner.
     #[command(flatten)]
     pub bulk: BulkArgs,
+    /// Settings of the declarative route configuration.
+    #[command(flatten)]
+    pub route_configuration: RouteConfigurationArgs,
+}
+
+/// Settings of the declarative route configuration of `serve`.
+#[derive(Debug, Clone, Default, Args)]
+pub struct RouteConfigurationArgs {
+    /// The most routes one route configuration of a host may hold, an integer from 1 to 1000
+    /// (default 1000).
+    #[arg(
+        long = "route-configuration-max-routes",
+        env = "ROUTE_CONFIGURATION_MAX_ROUTES",
+        hide_env_values = true
+    )]
+    pub max_routes: Option<String>,
 }
 
 /// Settings of the bulk operation runner of `serve`.
@@ -568,6 +584,14 @@ pub struct IamBootstrapArgs {
     /// `--admin-user` and `--admin-service` is required.
     #[arg(long = "admin-service")]
     pub admin_service: Option<String>,
+    /// Host of IAM's management routes: the bootstrap also seeds the upstream `iam-control` and
+    /// the routes of IAM's management API on it; without the option the seed is skipped.
+    #[arg(long = "iam-host")]
+    pub iam_host: Option<String>,
+    /// Restores the seeded upstream and routes of `--iam-host` instead of creating an
+    /// administrator; `--iam-host` is required and the subject options are not accepted.
+    #[arg(long = "repair-routes")]
+    pub repair_routes: bool,
 }
 
 /// Arguments of `openapi-export` and `graphql-export`.

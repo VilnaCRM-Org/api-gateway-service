@@ -927,6 +927,34 @@ fn an_invalid_bulk_setting_exits_2_naming_the_variable(
     assert_eq!(stderr(&output), problems);
 }
 
+#[rstest]
+#[case::zero(&[("ROUTE_CONFIGURATION_MAX_ROUTES", "0")])]
+#[case::above_one_thousand(&[("ROUTE_CONFIGURATION_MAX_ROUTES", "1001")])]
+fn an_invalid_route_configuration_limit_exits_2_naming_the_variable(
+    #[case] extra: &[(&str, &str)],
+) {
+    let scratch = Scratch::new();
+
+    let output = check_config_with(&scratch, extra);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(
+        stderr(&output),
+        "ROUTE_CONFIGURATION_MAX_ROUTES: must be an integer from 1 to 1000\n"
+    );
+}
+
+#[test]
+fn the_route_configuration_limit_at_its_bounds_is_accepted() {
+    let scratch = Scratch::new();
+
+    let output = check_config_with(&scratch, &[("ROUTE_CONFIGURATION_MAX_ROUTES", "1")]);
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout(&output), "configuration OK\n");
+}
+
 #[test]
 fn bulk_settings_at_their_bounds_are_accepted() {
     let scratch = Scratch::new();

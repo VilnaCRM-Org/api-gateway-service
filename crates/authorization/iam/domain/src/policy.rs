@@ -18,6 +18,8 @@ pub mod rest_spec_diff;
 pub mod route_conflict_guard;
 pub mod route_revocation_rule;
 pub mod route_scope_guard;
+pub mod route_set_diff;
+pub mod route_set_version;
 pub mod service_catalog;
 pub mod spec_diff;
 pub mod spec_scope_guard;

@@ -399,6 +399,7 @@ fn serve_declares_exactly_the_variables_of_the_configuration_table() {
         "MAINTENANCE_INTERVAL",
         "MAX_TOKEN_LIFETIME",
         "ORPHANED_GRANT_RETENTION",
+        "ROUTE_CONFIGURATION_MAX_ROUTES",
         "SHUTDOWN_GRACE_PERIOD",
         "SQS_CONNECT_TIMEOUT",
         "SQS_MAX_ATTEMPTS",
@@ -492,6 +493,41 @@ fn iam_bootstrap_takes_the_service_settings_and_one_subject_option() {
     );
     assert_eq!(service.admin_service.as_deref(), Some("schemathesis"));
     assert_eq!(service.admin_user, None);
+}
+
+#[test]
+fn iam_bootstrap_takes_an_iam_host_and_the_repair_flag() {
+    let seeded = parse(&[
+        "iam-bootstrap",
+        "--admin-user",
+        "0190f2a8-7b3c-7d4e-8f10-1234567890ab",
+        "--iam-host",
+        "iam.example.test",
+    ])
+    .unwrap();
+    let repair = parse(&[
+        "iam-bootstrap",
+        "--repair-routes",
+        "--iam-host",
+        "iam.example.test",
+    ])
+    .unwrap();
+    let plain = parse(&["iam-bootstrap", "--admin-service", "schemathesis"]).unwrap();
+
+    let (
+        Command::IamBootstrap(seeded),
+        Command::IamBootstrap(repair),
+        Command::IamBootstrap(plain),
+    ) = (seeded.command, repair.command, plain.command)
+    else {
+        panic!("expected iam-bootstrap");
+    };
+    assert_eq!(seeded.iam_host.as_deref(), Some("iam.example.test"));
+    assert!(!seeded.repair_routes);
+    assert_eq!(repair.iam_host.as_deref(), Some("iam.example.test"));
+    assert!(repair.repair_routes);
+    assert_eq!(plain.iam_host, None);
+    assert!(!plain.repair_routes);
 }
 
 #[test]

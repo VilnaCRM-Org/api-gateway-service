@@ -134,23 +134,23 @@ impl From<RetryPolicy> for RetryPolicyDto {
     }
 }
 
-const fn default_enforcement() -> EnforcementDto {
+pub(crate) const fn default_enforcement() -> EnforcementDto {
     EnforcementDto::Enforce
 }
 
-const fn default_retry_policy() -> RetryPolicyDto {
+pub(crate) const fn default_retry_policy() -> RetryPolicyDto {
     RetryPolicyDto::None
 }
 
-const fn default_body_limit_bytes() -> i64 {
+pub(crate) const fn default_body_limit_bytes() -> i64 {
     DEFAULT_BODY_LIMIT_BYTES
 }
 
-const fn default_request_timeout_ms() -> i64 {
+pub(crate) const fn default_request_timeout_ms() -> i64 {
     DEFAULT_REQUEST_TIMEOUT_MS
 }
 
-const fn default_idle_timeout_ms() -> i64 {
+pub(crate) const fn default_idle_timeout_ms() -> i64 {
     DEFAULT_IDLE_TIMEOUT_MS
 }
 

@@ -126,22 +126,65 @@ fn a_deleted_route_names_its_identity() {
 }
 
 #[test]
-fn an_applied_configuration_names_the_host_and_the_route_count() {
+fn an_applied_configuration_names_the_host_the_count_and_the_changed_routes() {
     let change = ChangeId::parse(ROUTE).unwrap();
+    let created = RouteId::parse("00000000-0000-7000-8000-000000000001").unwrap();
+    let deleted = RouteId::parse("00000000-0000-7000-8000-000000000002").unwrap();
     let event = RouteConfigurationApplied {
         event_id: Uuid::parse(EVENT).unwrap(),
         change_id: change,
         host: host(),
         route_count: 12,
+        created: vec![created],
+        updated: Vec::new(),
+        deleted: vec![deleted],
         actor: actor(),
         occurred_at: at(),
     };
 
     let envelope = EventEnvelope::of(&event).unwrap();
 
-    assert_eq!(event.event_name(), "iam.route.configuration_applied");
+    assert_eq!(event.event_name(), "iam.route_configuration.applied");
     assert_eq!(event.aggregate_id(), change.as_uuid());
     assert_eq!(event.entity_version(), None);
     assert_eq!(field(&envelope, "host"), &text("api.example.com"));
     assert_eq!(field(&envelope, "routeCount"), &EventValue::Integer(12));
+    assert_eq!(
+        field(&envelope, "created"),
+        &EventValue::List(vec![text("00000000-0000-7000-8000-000000000001")])
+    );
+    assert_eq!(field(&envelope, "updated"), &EventValue::List(Vec::new()));
+    assert_eq!(
+        field(&envelope, "deleted"),
+        &EventValue::List(vec![text("00000000-0000-7000-8000-000000000002")])
+    );
+    assert_eq!(field(&envelope, "createdCount"), &EventValue::Integer(1));
+    assert_eq!(field(&envelope, "updatedCount"), &EventValue::Integer(0));
+    assert_eq!(field(&envelope, "deletedCount"), &EventValue::Integer(1));
+}
+
+#[test]
+fn an_applied_configuration_lists_at_most_400_ids_and_counts_them_all() {
+    let created = (0..450_u32)
+        .map(|number| RouteId::parse(&format!("00000000-0000-7000-8000-{number:012x}")).unwrap())
+        .collect::<Vec<_>>();
+    let event = RouteConfigurationApplied {
+        event_id: Uuid::parse(EVENT).unwrap(),
+        change_id: ChangeId::parse(ROUTE).unwrap(),
+        host: host(),
+        route_count: 450,
+        created,
+        updated: Vec::new(),
+        deleted: Vec::new(),
+        actor: actor(),
+        occurred_at: at(),
+    };
+
+    let envelope = EventEnvelope::of(&event).unwrap();
+
+    let EventValue::List(listed) = field(&envelope, "created") else {
+        panic!("created is a list");
+    };
+    assert_eq!(listed.len(), 400);
+    assert_eq!(field(&envelope, "createdCount"), &EventValue::Integer(450));
 }
