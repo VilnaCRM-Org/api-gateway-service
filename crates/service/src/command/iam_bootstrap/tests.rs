@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use iam_domain::SubjectKind;
 
-use super::{run, subject_of};
+use super::{Plan, host_of, plan_of, report, run, subject_of};
 use crate::cli::IamBootstrapArgs;
 
 const USER: &str = "0190f2a8-7b3c-7d4e-8f10-1234567890ab";
@@ -98,4 +98,131 @@ fn an_output_that_cannot_be_written_exits_with_1() {
 
     assert_eq!(status, std::process::ExitCode::from(1));
     assert_eq!(stdout, b"");
+}
+
+fn args(user: Option<&str>, host: Option<&str>, repair: bool) -> IamBootstrapArgs {
+    IamBootstrapArgs {
+        admin_user: user.map(str::to_owned),
+        iam_host: host.map(str::to_owned),
+        repair_routes: repair,
+        ..IamBootstrapArgs::default()
+    }
+}
+
+#[test]
+fn a_host_is_a_lower_case_dns_name_and_optional() {
+    assert_eq!(
+        host_of(Some("iam.example.test"))
+            .unwrap()
+            .unwrap()
+            .to_string(),
+        "iam.example.test"
+    );
+    assert!(host_of(None).unwrap().is_none());
+    assert_eq!(
+        host_of(Some("Not A Host")).unwrap_err(),
+        "--iam-host: \"Not A Host\" is not a lower-case host name"
+    );
+}
+
+#[test]
+fn a_subject_with_or_without_a_host_is_a_create_plan() {
+    let with_host = plan_of(&args(Some(USER), Some("iam.example.test"), false)).unwrap();
+    let without_host = plan_of(&args(Some(USER), None, false)).unwrap();
+
+    assert!(matches!(
+        with_host,
+        Plan::Create {
+            iam_host: Some(_),
+            ..
+        }
+    ));
+    assert!(matches!(without_host, Plan::Create { iam_host: None, .. }));
+}
+
+#[test]
+fn an_invalid_host_is_a_message_even_with_a_valid_subject() {
+    let message = plan_of(&args(Some(USER), Some("Nope!"), false)).unwrap_err();
+
+    assert!(message.starts_with("--iam-host: "), "{message}");
+}
+
+#[test]
+fn the_subject_is_checked_before_the_host() {
+    let message = plan_of(&args(None, Some("Nope!"), false)).unwrap_err();
+
+    assert_eq!(
+        message,
+        "one of --admin-user and --admin-service is required"
+    );
+}
+
+#[test]
+fn repair_needs_a_host_and_takes_no_subject() {
+    let plan = plan_of(&args(None, Some("iam.example.test"), true)).unwrap();
+
+    assert!(matches!(plan, Plan::Repair { .. }));
+    assert_eq!(
+        plan_of(&args(None, None, true)).unwrap_err(),
+        "--repair-routes requires --iam-host"
+    );
+    assert_eq!(
+        plan_of(&args(Some(USER), Some("iam.example.test"), true)).unwrap_err(),
+        "--repair-routes cannot be used with --admin-user or --admin-service"
+    );
+    assert!(
+        plan_of(&args(None, Some("Nope!"), true))
+            .unwrap_err()
+            .starts_with("--iam-host: ")
+    );
+}
+
+#[test]
+fn repair_without_a_host_exits_with_2_before_any_connection() {
+    let (status, stdout, stderr) = run_with(args(None, None, true));
+
+    assert_eq!(status, std::process::ExitCode::from(2));
+    assert_eq!(stdout, "");
+    assert_eq!(stderr, "--repair-routes requires --iam-host\n");
+}
+
+#[test]
+fn an_invalid_host_exits_with_2_before_any_connection() {
+    let (status, stdout, stderr) = run_with(args(Some(USER), Some("Nope!"), false));
+
+    assert_eq!(status, std::process::ExitCode::from(2));
+    assert_eq!(stdout, "");
+    assert!(stderr.starts_with("--iam-host: "), "{stderr}");
+}
+
+#[test]
+fn the_report_says_whether_the_routes_were_seeded_or_repaired() {
+    let subject = subject_of(Some(USER), None).unwrap();
+    let host = host_of(Some("iam.example.test")).unwrap().unwrap();
+    let render = |plan: &Plan| {
+        let mut stdout = Vec::new();
+        report(plan, &mut stdout).unwrap();
+        String::from_utf8(stdout).unwrap()
+    };
+
+    assert_eq!(
+        render(&Plan::Create {
+            subject: subject.clone(),
+            iam_host: Some(host.clone()),
+        }),
+        format!(
+            "bootstrapped user:{USER}\nseeded the IAM upstream and routes of iam.example.test\n"
+        )
+    );
+    assert_eq!(
+        render(&Plan::Create {
+            subject,
+            iam_host: None,
+        }),
+        format!("bootstrapped user:{USER}\nno IAM routes seeded: --iam-host is absent\n")
+    );
+    assert_eq!(
+        render(&Plan::Repair { iam_host: host }),
+        "repaired the IAM upstream and routes of iam.example.test\n"
+    );
 }

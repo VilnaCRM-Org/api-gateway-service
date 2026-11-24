@@ -22,6 +22,18 @@ async fn first_administrator(world: &mut AppWorld) {
     world.bootstrap_administrator(USER_ID).await;
 }
 
+#[given(expr = "the first administrator is bootstrapped with the IAM host {string}")]
+async fn first_administrator_with_iam_host(world: &mut AppWorld, host: String) {
+    world
+        .bootstrap_administrator_with_iam_host(USER_ID, &host)
+        .await;
+}
+
+#[given(expr = "the seeded IAM route {string} is remembered")]
+async fn seeded_route_remembered(world: &mut AppWorld, path_pattern: String) {
+    world.remember_seeded_route(&path_pattern).await;
+}
+
 #[then(
     expr = "the audit log should hold {int} rejected {string} record(s) with the reason {string}"
 )]

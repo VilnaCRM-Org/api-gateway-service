@@ -14,13 +14,13 @@ use clap::Parser as _;
 use health_check_domain::Dependency;
 use http_body_util::BodyExt as _;
 use iam_domain::{
-    ActorRef, PolicyEpoch, RejectedAttemptLog, RevocationSource, SessionId, SessionRevocation,
-    SessionRevocationId, SubjectRef, SystemComponent,
+    ActorRef, PolicyEpoch, RejectedAttemptLog, RevocationSource, RouteHost, SessionId,
+    SessionRevocation, SessionRevocationId, SubjectRef, SystemComponent,
 };
 use serde_json::Value;
 use service::bootstrap::{
-    Adapters, TaskMode, TaskSupervisor, bootstrap_administrator, register_iam_specs, router,
-    singleton_set, start_tasks,
+    Adapters, TaskMode, TaskSupervisor, bootstrap_administrator, bootstrap_with_routes,
+    register_iam_specs, router, singleton_set, start_tasks,
 };
 use service::cli::{Cli, Command};
 use service::config::Config;
@@ -399,6 +399,25 @@ impl AppWorld {
         self.remembered = Some(id);
     }
 
+    /// Remembers the id of the seeded system route of IAM for `path_pattern` for `{id}` and its
+    /// version for the `If-Match` header.
+    ///
+    /// # Panics
+    ///
+    /// When no system route has the pattern.
+    pub(crate) async fn remember_seeded_route(&mut self, path_pattern: &str) {
+        let id = self
+            .select_text(
+                "SELECT id::text FROM iam_routes \
+                 WHERE path_pattern = $1 AND system AND deleted_at IS NULL",
+                path_pattern,
+            )
+            .await
+            .expect("the bootstrap seeded the route");
+        self.remembered = Some(id);
+        self.if_match = Some("\"1\"".to_owned());
+    }
+
     /// Stores an upstream and a route that applies the remembered rate policy in the scenario
     /// database, as a fixture: the state that a route write leaves behind.
     pub(crate) async fn seed_route_with_remembered_rate_policy(&mut self) {
@@ -680,6 +699,34 @@ impl AppWorld {
         bootstrap_administrator(&adapters, subject)
             .await
             .expect("bootstrap the first administrator");
+        self.remember_administrator(user_id).await;
+    }
+
+    /// Bootstraps the first administrator as [`Self::bootstrap_administrator`] does and seeds the
+    /// upstream `iam-control` and the routes of IAM's management API on `iam_host`, as
+    /// `service iam-bootstrap --iam-host` does.
+    ///
+    /// # Panics
+    ///
+    /// When the host is invalid, the bootstrap fails or leaves no assignment.
+    pub(crate) async fn bootstrap_administrator_with_iam_host(
+        &mut self,
+        user_id: &str,
+        iam_host: &str,
+    ) {
+        let config = self.config().await;
+        let adapters = Adapters::connect(&config).await.expect("production wiring");
+        let subject = SubjectRef::user(Uuid::parse(user_id).expect("a valid user id"));
+        let host = RouteHost::new(iam_host).expect("a valid IAM host");
+        bootstrap_with_routes(&adapters, subject, Some(host))
+            .await
+            .expect("bootstrap the first administrator and seed the IAM routes");
+        self.remember_administrator(user_id).await;
+    }
+
+    /// Remembers the id of the assignment of `user_id` for `{id}`, the id of the system role for
+    /// `{role}` and the version of the assignment for the `If-Match` header.
+    async fn remember_administrator(&mut self, user_id: &str) {
         let id = self
             .select_text(ADMINISTRATOR_ASSIGNMENT, user_id)
             .await
@@ -1067,6 +1114,21 @@ impl AppWorld {
         self.record(&reply);
         self.history.push(reply.clone());
         self.reply = Some(reply);
+    }
+
+    /// Sends the request as [`Self::send`] does, but leaves the `{id}` token of the path and the
+    /// body as it is: a route path pattern may name a parameter `id`. An id that the reply
+    /// records replaces the remembered one, as after [`Self::send`].
+    pub(crate) async fn send_verbatim(
+        &mut self,
+        method: &str,
+        path: &str,
+        content_type: Option<&str>,
+        body: &str,
+    ) {
+        let remembered = self.remembered.take();
+        self.send(method, path, content_type, body).await;
+        self.remembered = self.remembered.take().or(remembered);
     }
 
     /// Remembers the id of a created resource: a 201 body or a GraphQL mutation result.
