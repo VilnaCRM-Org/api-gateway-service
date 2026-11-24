@@ -13,8 +13,10 @@ use test_support::policy_epoch::seeded_policy_epoch;
 use test_support::request_digester::FakeRequestDigester;
 use tower::ServiceExt as _;
 
-use super::{IamState, router};
+use super::{IamState, decision_router, router, stale_decision_router};
+use crate::access_validation_fixtures::{denied, recorded, scenario};
 use crate::query::get_policy_epoch::GetPolicyEpochQuery;
+use iam_domain::DecisionReason;
 
 /// The state of a whole application that holds the IAM state as one of its fields.
 #[derive(Debug, Clone, FromRef)]
@@ -204,4 +206,91 @@ async fn the_router_serves_no_other_route() {
     let response = app.oneshot(request).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[test]
+fn the_decision_router_documents_the_three_decision_operations_and_nothing_else() {
+    let (_routes, document) = decision_router::<ApplicationState>().split_for_parts();
+
+    let mut paths: Vec<&str> = document.paths.paths.keys().map(String::as_str).collect();
+    paths.sort_unstable();
+
+    assert_eq!(
+        paths,
+        [
+            "/access-validations",
+            "/access-validations/batch",
+            "/token-resolutions"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn the_decision_router_serves_no_management_route() {
+    let (routes, _document) = decision_router::<ApplicationState>().split_for_parts();
+    let app = routes.with_state(ApplicationState { iam: state() });
+
+    let response = app
+        .oneshot(Request::get("/roles").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn the_stale_router_decides_a_check_without_authenticating_the_caller() {
+    let (state, asked) = scenario(Ok(denied(DecisionReason::Unavailable, &[])));
+    let app = stale_decision_router().with_state(state);
+    let body = serde_json::json!({
+        "credential": "token",
+        "service": "orders",
+        "permissions": ["rest:orders:GET /api/orders"],
+        "requestId": "request-1",
+    });
+
+    let response = app
+        .oneshot(
+            Request::post("/api/access-validations")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let decision: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(decision["decision"], "deny");
+    assert_eq!(decision["reason"], "unavailable");
+    assert_eq!(decision["requestId"], "request-1");
+    assert_eq!(recorded(&asked).len(), 1);
+}
+
+#[tokio::test]
+async fn the_stale_router_serves_the_two_validations_and_nothing_else() {
+    let app = stale_decision_router().with_state(state());
+
+    for path in ["/api/token-resolutions", "/api/roles"] {
+        let response = app
+            .clone()
+            .oneshot(Request::post(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+    let response = app
+        .oneshot(
+            Request::post("/api/access-validations/batch")
+                .header("content-type", "application/json")
+                .body(Body::from("{\"checks\":[]}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }

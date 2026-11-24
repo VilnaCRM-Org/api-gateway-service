@@ -1630,6 +1630,10 @@ fn the_gateway_defaults_are_the_documented_ones() {
         config.probe_listen,
         "0.0.0.0:9092".parse::<SocketAddr>().unwrap()
     );
+    assert_eq!(
+        config.decision_listen,
+        "0.0.0.0:9091".parse::<SocketAddr>().unwrap()
+    );
     assert_eq!(config.tls, None);
     assert_eq!(config.pod_name, None);
     assert_eq!(config.pod_namespace, None);
@@ -1667,6 +1671,7 @@ fn the_gateway_takes_the_listeners_pod_and_grace_period_it_is_given() {
     args.listen = some("127.0.0.1:1");
     args.internal_listen = some("[::1]:2");
     args.probe_listen = some("127.0.0.1:3");
+    args.decision_listen = some("127.0.0.1:4");
     args.pod_name = some("gateway-0");
     args.pod_namespace = some("iam");
     args.service.shutdown_grace_period = some("3s");
@@ -1679,6 +1684,7 @@ fn the_gateway_takes_the_listeners_pod_and_grace_period_it_is_given() {
         "[::1]:2".parse::<SocketAddr>().unwrap()
     );
     assert_eq!(config.probe_listen.port(), 3);
+    assert_eq!(config.decision_listen.port(), 4);
     assert_eq!(config.pod_name.as_deref(), Some("gateway-0"));
     assert_eq!(config.pod_namespace.as_deref(), Some("iam"));
     assert_eq!(config.shutdown_grace_period, Duration::from_secs(3));
@@ -1689,30 +1695,56 @@ fn the_gateway_takes_the_listeners_pod_and_grace_period_it_is_given() {
     "127.0.0.1:5000",
     "127.0.0.1:5000",
     "127.0.0.1:5002",
+    "127.0.0.1:5003",
     "GATEWAY_INTERNAL_LISTEN"
 )]
 #[case::probe_equals_public(
     "127.0.0.1:5000",
     "127.0.0.1:5001",
     "127.0.0.1:5000",
+    "127.0.0.1:5003",
     "GATEWAY_PROBE_LISTEN"
 )]
 #[case::probe_equals_internal(
     "127.0.0.1:5000",
     "127.0.0.1:5001",
     "127.0.0.1:5001",
+    "127.0.0.1:5003",
     "GATEWAY_PROBE_LISTEN"
+)]
+#[case::decision_equals_public(
+    "127.0.0.1:5000",
+    "127.0.0.1:5001",
+    "127.0.0.1:5002",
+    "127.0.0.1:5000",
+    "GATEWAY_DECISION_LISTEN"
+)]
+#[case::decision_equals_internal(
+    "127.0.0.1:5000",
+    "127.0.0.1:5001",
+    "127.0.0.1:5002",
+    "127.0.0.1:5001",
+    "GATEWAY_DECISION_LISTEN"
+)]
+#[case::decision_equals_probe(
+    "127.0.0.1:5000",
+    "127.0.0.1:5001",
+    "127.0.0.1:5002",
+    "127.0.0.1:5002",
+    "GATEWAY_DECISION_LISTEN"
 )]
 fn equal_listener_addresses_are_refused_naming_the_variable(
     #[case] public: &str,
     #[case] internal: &str,
     #[case] probe: &str,
+    #[case] decision: &str,
     #[case] variable: &str,
 ) {
     let mut args = valid_gateway();
     args.listen = some(public);
     args.internal_listen = some(internal);
     args.probe_listen = some(probe);
+    args.decision_listen = some(decision);
 
     assert_eq!(gateway_variables(&args), vec![variable]);
 }
@@ -1723,6 +1755,7 @@ fn port_0_never_clashes() {
     args.listen = some("127.0.0.1:0");
     args.internal_listen = some("127.0.0.1:0");
     args.probe_listen = some("127.0.0.1:0");
+    args.decision_listen = some("127.0.0.1:0");
 
     assert!(GatewayConfig::from_args(&args).is_ok());
 }
@@ -1731,11 +1764,13 @@ fn port_0_never_clashes() {
 #[case::public("GATEWAY_LISTEN")]
 #[case::internal("GATEWAY_INTERNAL_LISTEN")]
 #[case::probe("GATEWAY_PROBE_LISTEN")]
+#[case::decision("GATEWAY_DECISION_LISTEN")]
 fn an_address_without_a_port_is_refused(#[case] variable: &str) {
     let mut args = valid_gateway();
     match variable {
         "GATEWAY_LISTEN" => args.listen = some("0.0.0.0"),
         "GATEWAY_INTERNAL_LISTEN" => args.internal_listen = some("0.0.0.0"),
+        "GATEWAY_DECISION_LISTEN" => args.decision_listen = some("0.0.0.0"),
         _ => args.probe_listen = some("0.0.0.0"),
     }
 
@@ -2412,4 +2447,37 @@ fn a_fetch_wait_that_is_not_a_positive_duration_names_its_variable(#[case] raw: 
     args.kafka_fetch_max_wait = some(raw);
 
     assert_eq!(gateway_variables(&args), vec!["KAFKA_FETCH_MAX_WAIT"]);
+}
+
+#[test]
+fn the_readiness_az_floor_defaults_to_one() {
+    let config = GatewayConfig::from_args(&valid_gateway()).unwrap();
+
+    assert_eq!(config.readiness_az_floor, 1);
+}
+
+#[rstest]
+#[case("1", 1)]
+#[case("3", 3)]
+#[case("8", 8)]
+fn a_readiness_az_floor_in_range_is_taken_as_given(#[case] raw: &str, #[case] expected: usize) {
+    let mut args = valid_gateway();
+    args.readiness_az_floor = some(raw);
+
+    let config = GatewayConfig::from_args(&args).unwrap();
+
+    assert_eq!(config.readiness_az_floor, expected);
+}
+
+#[rstest]
+#[case("0")]
+#[case("9")]
+#[case("-1")]
+#[case("many")]
+#[case("")]
+fn a_readiness_az_floor_out_of_range_names_its_variable(#[case] raw: &str) {
+    let mut args = valid_gateway();
+    args.readiness_az_floor = some(raw);
+
+    assert_eq!(gateway_variables(&args), vec!["READINESS_AZ_FLOOR"]);
 }

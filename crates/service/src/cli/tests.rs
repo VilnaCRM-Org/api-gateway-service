@@ -194,6 +194,8 @@ fn gateway_takes_every_gateway_setting_as_a_flag() {
         "0.0.0.0:2",
         "--gateway-probe-listen",
         "0.0.0.0:3",
+        "--gateway-decision-listen",
+        "0.0.0.0:4",
         "--gateway-tls-cert-file",
         "cert.pem",
         "--gateway-tls-key-file",
@@ -213,6 +215,7 @@ fn gateway_takes_every_gateway_setting_as_a_flag() {
     assert_eq!(args.listen.as_deref(), Some("0.0.0.0:1"));
     assert_eq!(args.internal_listen.as_deref(), Some("0.0.0.0:2"));
     assert_eq!(args.probe_listen.as_deref(), Some("0.0.0.0:3"));
+    assert_eq!(args.decision_listen.as_deref(), Some("0.0.0.0:4"));
     assert_eq!(args.tls_cert_file.as_deref(), Some("cert.pem"));
     assert_eq!(args.tls_key_file.as_deref(), Some("key.pem"));
     assert_eq!(args.pod_name.as_deref(), Some("gateway-0"));
@@ -229,6 +232,7 @@ fn the_gateway_settings_are_bound_to_their_variables_and_hide_their_values() {
         ("listen", "GATEWAY_LISTEN"),
         ("internal_listen", "GATEWAY_INTERNAL_LISTEN"),
         ("probe_listen", "GATEWAY_PROBE_LISTEN"),
+        ("decision_listen", "GATEWAY_DECISION_LISTEN"),
         ("tls_cert_file", "GATEWAY_TLS_CERT_FILE"),
         ("tls_key_file", "GATEWAY_TLS_KEY_FILE"),
         ("pod_name", "POD_NAME"),

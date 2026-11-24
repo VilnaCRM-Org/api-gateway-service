@@ -83,6 +83,48 @@ where
         .merge(security_audit_event_router())
 }
 
+/// The routes of the decision API, to be nested under `/api`.
+///
+/// They are token resolution and the access validation, single and batch: the handlers of
+/// [`router`], so the gateway's decision listener serves the contract of `iam-control` and nothing
+/// else of it.
+#[must_use]
+pub fn decision_router<S>() -> OpenApiRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+    IamState: FromRef<S>,
+{
+    OpenApiRouter::new()
+        .routes(routes!(handler::resolve))
+        .merge(access_validation_router())
+}
+
+/// The access validations of a gateway whose snapshot is not proven fresh, without the
+/// authentication of the caller.
+///
+/// The gateway serves them instead of [`decision_router`] while its snapshot is stale: its decision
+/// handlers answer the deny `unavailable` for every check then, and the caller rule cannot be read,
+/// so it must not stand in the way of that answer.
+pub fn stale_decision_router() -> axum::Router<IamState> {
+    axum::Router::new()
+        .route(
+            STALE_VALIDATION_PATH,
+            axum::routing::post(access_validation::validate_unauthenticated),
+        )
+        .route(
+            STALE_BATCH_VALIDATION_PATH,
+            axum::routing::post(access_validation::validate_batch_unauthenticated).layer(
+                DefaultBodyLimit::max(access_validation::ACCESS_VALIDATION_BATCH_BODY_LIMIT_BYTES),
+            ),
+        )
+}
+
+/// The path of the single access validation under which [`stale_decision_router`] serves it.
+pub const STALE_VALIDATION_PATH: &str = "/api/access-validations";
+
+/// The path of the batch access validation under which [`stale_decision_router`] serves it.
+pub const STALE_BATCH_VALIDATION_PATH: &str = "/api/access-validations/batch";
+
 /// The routes of the access validation, single and batch, merged into [`router`].
 fn access_validation_router<S>() -> OpenApiRouter<S>
 where

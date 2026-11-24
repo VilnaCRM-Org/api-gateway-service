@@ -1096,6 +1096,50 @@ impl IamQuery {
     }
 }
 
+/// Query root of the gateway's decision API: `validateAccess`, `validateAccessBatch` and
+/// `resolveToken`, the same fields as [`IamQuery`] with the same resolvers, and no other.
+///
+/// A document that selects any other field, a management field such as `createRole` included, is
+/// rejected by the schema as an unknown field.
+#[derive(Debug, Default)]
+pub struct DecisionQuery;
+
+#[Object(name = "Query")]
+impl DecisionQuery {
+    /// Decides whether a subject may perform a REST operation or hold permission keys; a valid request always gets a decision.
+    async fn validate_access(
+        &self,
+        ctx: &Context<'_>,
+        input: ValidateAccessInput,
+    ) -> async_graphql::Result<AccessValidationObject> {
+        validate_access_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Decides 1 to 100 checks of the shape of `validateAccess` and returns one decision per input, in the order of the inputs, each with its own `decisionId`; an input that cannot be read is a `deny` with the reason `malformed_operation` and does not fail the others. A batch of no input or of more than 100 fails with `VALIDATION_FAILED`.
+    async fn validate_access_batch(
+        &self,
+        ctx: &Context<'_>,
+        inputs: Vec<ValidateAccessInput>,
+    ) -> async_graphql::Result<Vec<AccessValidationObject>> {
+        validate_access_batch_field(ctx, inputs)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Resolves a User service token into its subject, or says why it is refused.
+    async fn resolve_token(
+        &self,
+        ctx: &Context<'_>,
+        input: ResolveTokenInput,
+    ) -> async_graphql::Result<TokenResolutionObject> {
+        resolve_token(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+}
+
 /// The static complexity of a page: its size, clamped to 1 to 100 as the query clamps it, times
 /// the complexity of one item.
 fn page_complexity(first: Option<i32>, child_complexity: usize) -> usize {

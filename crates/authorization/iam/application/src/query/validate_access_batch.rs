@@ -1,6 +1,6 @@
 //! Decides up to 100 access checks in one call (FR-11).
 
-mod token_memo;
+pub(crate) mod token_memo;
 
 use std::sync::Arc;
 

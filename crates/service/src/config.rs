@@ -284,6 +284,9 @@ pub struct GatewayConfig {
     pub internal_listen: SocketAddr,
     /// `GATEWAY_PROBE_LISTEN`: the probe listener.
     pub probe_listen: SocketAddr,
+    /// `GATEWAY_DECISION_LISTEN`: the decision listener, which serves the decision API from the
+    /// snapshot and nothing else.
+    pub decision_listen: SocketAddr,
     /// The certificate and key of the public listener; `None` serves plain HTTP, which only
     /// `APP_ENV` `dev` and `test` accept.
     pub tls: Option<TlsFiles>,
@@ -311,6 +314,8 @@ pub struct GatewayConfig {
     /// `DERIVED_STATE_CHECK_INTERVAL`: how often a sixteenth of the shards is checked against the
     /// raw records.
     pub derived_state_check_interval: Duration,
+    /// `READINESS_AZ_FLOOR`: how many ready pods of a zone never go unready for staleness.
+    pub readiness_az_floor: usize,
 }
 
 /// How the gateway discovers the endpoints of its upstreams (`UPSTREAM_DISCOVERY`).
@@ -344,13 +349,7 @@ impl GatewayConfig {
         let service = &args.service;
         let app_env = collector.collect("APP_ENV", app_env(service.app_env.as_deref()));
         let log_level = collector.collect("LOG_LEVEL", log_level(service.log_level.as_deref()));
-        let grace = collector.collect(
-            "SHUTDOWN_GRACE_PERIOD",
-            duration(
-                service.shutdown_grace_period.as_deref(),
-                Duration::from_secs(10),
-            ),
-        );
+        let grace = grace_period(&mut collector, service.shutdown_grace_period.as_deref());
         let tokens = tokens(&mut collector, &service.tokens);
         let listeners = listeners(&mut collector, args);
         let tls = tls_files(&mut collector, args, app_env);
@@ -375,6 +374,7 @@ impl GatewayConfig {
                 listen: listeners.public,
                 internal_listen: listeners.internal,
                 probe_listen: listeners.probe,
+                decision_listen: listeners.decision,
                 tls: tls.into_files(),
                 kafka_tail: tail_connection(kafka.tail, pod_name.as_deref()),
                 kafka: kafka.bootstrap,
@@ -383,6 +383,7 @@ impl GatewayConfig {
                 freshness_hard_bound: tail.hard_bound,
                 freshness_probe_interval: tail.probe_interval,
                 derived_state_check_interval: tail.derived_check_interval,
+                readiness_az_floor: tail.az_floor,
                 pod_name,
                 pod_namespace,
                 endpoints,
@@ -454,10 +455,12 @@ struct TailSettings {
     hard_bound: Duration,
     probe_interval: Duration,
     derived_check_interval: Duration,
+    az_floor: usize,
 }
 
 /// `KAFKA_FETCH_MAX_WAIT` (100ms), `FRESHNESS_READY_BOUND` (2s), `FRESHNESS_HARD_BOUND` (15s) and
-/// `FRESHNESS_PROBE_INTERVAL` (500ms) and `DERIVED_STATE_CHECK_INTERVAL` (1s): the hard bound lies from 3s to 30s and above the ready bound.
+/// `FRESHNESS_PROBE_INTERVAL` (500ms), `DERIVED_STATE_CHECK_INTERVAL` (1s) and `READINESS_AZ_FLOOR`
+/// (1, from 1 to 8): the hard bound lies from 3s to 30s and above the ready bound.
 fn tail_settings(collector: &mut Collector, args: &GatewayArgs) -> Option<TailSettings> {
     let fetch_max_wait = collector.collect(
         "KAFKA_FETCH_MAX_WAIT",
@@ -473,16 +476,7 @@ fn tail_settings(collector: &mut Collector, args: &GatewayArgs) -> Option<TailSe
             Duration::from_secs(2),
         ),
     );
-    let hard_bound = collector.collect(
-        "FRESHNESS_HARD_BOUND",
-        hard_bound_value(args.freshness_hard_bound.as_deref()),
-    );
-    collector.longer_than(
-        "FRESHNESS_HARD_BOUND",
-        hard_bound,
-        "FRESHNESS_READY_BOUND",
-        ready_bound,
-    );
+    let hard_bound = hard_bound_over(collector, args, ready_bound);
     let derived_check_interval = collector.collect(
         "DERIVED_STATE_CHECK_INTERVAL",
         positive_duration(
@@ -497,13 +491,52 @@ fn tail_settings(collector: &mut Collector, args: &GatewayArgs) -> Option<TailSe
             Duration::from_millis(500),
         ),
     );
+    let az_floor = collector.collect(
+        "READINESS_AZ_FLOOR",
+        bounded(
+            args.readiness_az_floor.as_deref(),
+            1_usize,
+            1..=MAX_AZ_FLOOR,
+        ),
+    );
     Some(TailSettings {
         fetch_max_wait: fetch_max_wait?,
         ready_bound: ready_bound?,
         hard_bound: hard_bound?,
         probe_interval: probe_interval?,
         derived_check_interval: derived_check_interval?,
+        az_floor: az_floor?,
     })
+}
+
+/// The largest accepted `READINESS_AZ_FLOOR`.
+const MAX_AZ_FLOOR: usize = 8;
+
+/// `SHUTDOWN_GRACE_PERIOD`: how long in-flight requests get to finish (default `10s`).
+fn grace_period(collector: &mut Collector, raw: Option<&str>) -> Option<Duration> {
+    collector.collect(
+        "SHUTDOWN_GRACE_PERIOD",
+        duration(raw, Duration::from_secs(10)),
+    )
+}
+
+/// `FRESHNESS_HARD_BOUND`, which must be longer than `FRESHNESS_READY_BOUND`.
+fn hard_bound_over(
+    collector: &mut Collector,
+    args: &GatewayArgs,
+    ready_bound: Option<Duration>,
+) -> Option<Duration> {
+    let hard_bound = collector.collect(
+        "FRESHNESS_HARD_BOUND",
+        hard_bound_value(args.freshness_hard_bound.as_deref()),
+    );
+    collector.longer_than(
+        "FRESHNESS_HARD_BOUND",
+        hard_bound,
+        "FRESHNESS_READY_BOUND",
+        ready_bound,
+    );
+    hard_bound
 }
 
 /// The shortest accepted `FRESHNESS_HARD_BOUND`.
@@ -609,15 +642,17 @@ fn static_discovery(collector: &mut Collector, file: Option<String>) -> Option<U
     }
 }
 
-/// The three listener addresses of the gateway.
+/// The four listener addresses of the gateway.
 struct Listeners {
     public: SocketAddr,
     internal: SocketAddr,
     probe: SocketAddr,
+    decision: SocketAddr,
 }
 
-/// `GATEWAY_LISTEN`, `GATEWAY_INTERNAL_LISTEN` and `GATEWAY_PROBE_LISTEN`: three addresses that
-/// differ from one another (port 0, which selects any free port, never clashes).
+/// `GATEWAY_LISTEN`, `GATEWAY_INTERNAL_LISTEN`, `GATEWAY_PROBE_LISTEN` and
+/// `GATEWAY_DECISION_LISTEN`: four addresses that differ from one another (port 0, which selects
+/// any free port, never clashes).
 fn listeners(collector: &mut Collector, args: &GatewayArgs) -> Option<Listeners> {
     let public = collector.collect(
         "GATEWAY_LISTEN",
@@ -640,10 +675,27 @@ fn listeners(collector: &mut Collector, args: &GatewayArgs) -> Option<Listeners>
         ("GATEWAY_PROBE_LISTEN", probe),
         ("GATEWAY_INTERNAL_LISTEN", internal),
     );
+    let decision = collector.collect(
+        "GATEWAY_DECISION_LISTEN",
+        listen_address(args.decision_listen.as_deref(), 9091),
+    );
+    collector.distinct(
+        ("GATEWAY_DECISION_LISTEN", decision),
+        ("GATEWAY_LISTEN", public),
+    );
+    collector.distinct(
+        ("GATEWAY_DECISION_LISTEN", decision),
+        ("GATEWAY_INTERNAL_LISTEN", internal),
+    );
+    collector.distinct(
+        ("GATEWAY_DECISION_LISTEN", decision),
+        ("GATEWAY_PROBE_LISTEN", probe),
+    );
     Some(Listeners {
         public: public?,
         internal: internal?,
         probe: probe?,
+        decision: decision?,
     })
 }
 

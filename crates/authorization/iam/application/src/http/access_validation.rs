@@ -134,5 +134,35 @@ pub async fn validate_batch(
     Ok(Json(validate_access_batch(&state, body).await?))
 }
 
+/// Decides a check without authenticating its caller.
+///
+/// The gateway's decision listener routes the access validations here while its snapshot is not
+/// proven fresh: the caller rule cannot be read then, and the decision API always answers with a
+/// decision body, so the decision path itself answers the deny `unavailable`. The handler gives
+/// no decision of its own, so it must never be mounted behind a route that does not check the
+/// freshness first.
+///
+/// # Errors
+///
+/// A problem document: 422 for an invalid request.
+pub async fn validate_unauthenticated(
+    State(state): State<IamState>,
+    ValidatedJson(body): ValidatedJson<ValidateAccessRequest>,
+) -> Result<Json<AccessValidationResponse>, Problem> {
+    Ok(Json(validate_access(&state, body).await?))
+}
+
+/// Decides a batch of checks without authenticating its caller; see [`validate_unauthenticated`].
+///
+/// # Errors
+///
+/// A problem document: 422 for a batch of no check or of more than 100.
+pub async fn validate_batch_unauthenticated(
+    State(state): State<IamState>,
+    ValidatedJson(body): ValidatedJson<ValidateAccessBatchRequest>,
+) -> Result<Json<AccessValidationBatchResponse>, Problem> {
+    Ok(Json(validate_access_batch(&state, body).await?))
+}
+
 #[cfg(test)]
 mod tests;

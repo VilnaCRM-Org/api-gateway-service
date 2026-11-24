@@ -13,14 +13,14 @@ type Resolution = Result<TokenIdentity, TokenRejection>;
 /// batch. A refusal is remembered as well as an identity, so a credential that the repository
 /// could not read is not asked again within the batch either.
 #[derive(Debug)]
-pub(super) struct BatchTokenMemo {
+pub(crate) struct BatchTokenMemo {
     tokens: Arc<dyn TokenRepository>,
     resolved: Mutex<BTreeMap<String, Resolution>>,
 }
 
 impl BatchTokenMemo {
     /// An empty memo over `tokens`.
-    pub(super) fn new(tokens: Arc<dyn TokenRepository>) -> Self {
+    pub(crate) fn new(tokens: Arc<dyn TokenRepository>) -> Self {
         Self {
             tokens,
             resolved: Mutex::new(BTreeMap::new()),

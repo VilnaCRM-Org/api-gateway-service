@@ -333,6 +333,14 @@ pub struct GatewayArgs {
         hide_env_values = true
     )]
     pub probe_listen: Option<String>,
+    /// Address of the decision listener for the microservices that call the decision API (default
+    /// `0.0.0.0:9091`).
+    #[arg(
+        long = "gateway-decision-listen",
+        env = "GATEWAY_DECISION_LISTEN",
+        hide_env_values = true
+    )]
+    pub decision_listen: Option<String>,
     /// PEM file of the certificate chain of the public listener, hot-reloaded; required with
     /// `GATEWAY_TLS_KEY_FILE`, and outside `APP_ENV` `dev` and `test` always.
     #[arg(
@@ -434,6 +442,14 @@ pub struct GatewayArgs {
         hide_env_values = true
     )]
     pub derived_state_check_interval: Option<String>,
+    /// How many ready pods of a zone never go unready for staleness (default `1`, from `1` to
+    /// `8`).
+    #[arg(
+        long = "readiness-az-floor",
+        env = "READINESS_AZ_FLOOR",
+        hide_env_values = true
+    )]
+    pub readiness_az_floor: Option<String>,
 }
 
 /// Arguments of `check-config`: the run mode and the settings of both modes.

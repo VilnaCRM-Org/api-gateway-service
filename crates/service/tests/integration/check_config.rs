@@ -789,6 +789,14 @@ fn the_same_configuration_in_control_mode_names_the_database() {
     ("DERIVED_STATE_CHECK_INTERVAL", "0s"),
     "DERIVED_STATE_CHECK_INTERVAL: must be a positive duration such as 10m or 90d\n"
 )]
+#[case::zero_readiness_az_floor(
+    ("READINESS_AZ_FLOOR", "0"),
+    "READINESS_AZ_FLOOR: must be an integer from 1 to 8\n"
+)]
+#[case::unparsable_readiness_az_floor(
+    ("READINESS_AZ_FLOOR", "some"),
+    "READINESS_AZ_FLOOR: must be an integer from 1 to 8\n"
+)]
 fn a_freshness_or_fetch_setting_out_of_range_exits_2_naming_the_variable(
     #[case] setting: (&str, &str),
     #[case] expected: &str,
@@ -813,6 +821,10 @@ fn a_freshness_or_fetch_setting_out_of_range_exits_2_naming_the_variable(
 #[case::probe_equals_public(
     ("GATEWAY_PROBE_LISTEN", "127.0.0.1:9100"),
     "GATEWAY_PROBE_LISTEN: must differ from GATEWAY_LISTEN\n"
+)]
+#[case::decision_equals_public(
+    ("GATEWAY_DECISION_LISTEN", "127.0.0.1:9100"),
+    "GATEWAY_DECISION_LISTEN: must differ from GATEWAY_LISTEN\n"
 )]
 fn equal_listener_addresses_exit_2_naming_the_variable(
     #[case] other: (&str, &str),

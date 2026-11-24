@@ -305,12 +305,13 @@ fn spawn(scratch: &Scratch, arguments: &[&str], variables: &[(&str, &str)]) -> S
     }
 }
 
-/// The ports of the three listeners of a running gateway.
+/// The ports of the four listeners of a running gateway.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct GatewayPorts {
     pub(crate) public: u16,
     pub(crate) internal: u16,
     pub(crate) probe: u16,
+    pub(crate) decision: u16,
 }
 
 /// The port at the end of the address in a log field.
@@ -325,7 +326,7 @@ fn port_of(entry: &Value, field: &str) -> u16 {
         .unwrap()
 }
 
-/// Starts `service gateway` in `APP_ENV` `test` on three ephemeral loopback ports and waits for its
+/// Starts `service gateway` in `APP_ENV` `test` on four ephemeral loopback ports and waits for its
 /// `listening` entry. `variables` complete or override the configuration. The server's `port` is
 /// the public one.
 pub(crate) fn gateway(scratch: &Scratch, variables: &[(&str, &str)]) -> (Server, GatewayPorts) {
@@ -336,6 +337,7 @@ pub(crate) fn gateway(scratch: &Scratch, variables: &[(&str, &str)]) -> (Server,
         ("GATEWAY_LISTEN", "127.0.0.1:0"),
         ("GATEWAY_INTERNAL_LISTEN", "127.0.0.1:0"),
         ("GATEWAY_PROBE_LISTEN", "127.0.0.1:0"),
+        ("GATEWAY_DECISION_LISTEN", "127.0.0.1:0"),
     ];
     all.extend_from_slice(variables);
     let mut server = spawn(scratch, &["gateway"], &all);
@@ -344,6 +346,7 @@ pub(crate) fn gateway(scratch: &Scratch, variables: &[(&str, &str)]) -> (Server,
         public: port_of(&listening, "public_addr"),
         internal: port_of(&listening, "internal_addr"),
         probe: port_of(&listening, "probe_addr"),
+        decision: port_of(&listening, "decision_addr"),
     };
     server.port = ports.public;
     (server, ports)
