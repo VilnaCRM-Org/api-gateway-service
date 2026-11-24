@@ -1,5 +1,8 @@
 //! The write of one session revocation or cut-off that a change hands to the unit of work.
 
+use std::time::SystemTime;
+
+use crate::revocation::expired_revocation::ExpiredRevocation;
 use crate::revocation::global_token_cutoff::GlobalTokenCutoff;
 use crate::revocation::session_revocation::SessionRevocation;
 use crate::revocation::user_token_cutoff::UserTokenCutoff;
@@ -18,6 +21,15 @@ pub enum RevocationStatement {
     UserCutoff(UserTokenCutoff),
     /// Set the global cut-off; an earlier instant than the stored one changes nothing.
     GlobalCutoff(GlobalTokenCutoff),
+    /// Remove an expired session revocation or user cut-off, so that its state record becomes a
+    /// tombstone (Story 13.6); a record whose `prune_after` is not strictly before `now` any more
+    /// (a cut-off that was moved since it was read) stays.
+    Prune {
+        /// The record to remove.
+        target: ExpiredRevocation,
+        /// The instant the record is compared with, the time of the emitter run.
+        now: SystemTime,
+    },
 }
 
 impl RevocationStatement {
@@ -29,6 +41,7 @@ impl RevocationStatement {
             Self::Session(revocation) => StateKey::SessionRevocation(revocation.session.clone()),
             Self::UserCutoff(cutoff) => StateKey::UserRevocation(cutoff.user),
             Self::GlobalCutoff(_) => StateKey::GlobalRevocation,
+            Self::Prune { target, .. } => target.state_key(),
         }
     }
 }

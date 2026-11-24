@@ -13,8 +13,9 @@ use std::time::Duration;
 
 use iam_application::{
     AntiEntropyChecker, BulkChunkRouter, BulkOperationRunner, BulkRunnerPorts,
-    InvalidSingletonInterval, OutboxRelay, PolicyMaintenance, RejectedAttemptWriter,
-    ResyncChunkCommitter, ResyncPorts, RoleDeletionChunkCommitter, RoleDeletionPorts,
+    EmitRevocationTombstonesCommandHandler, InvalidSingletonInterval, OutboxRelay,
+    PolicyMaintenance, RejectedAttemptWriter, ResyncChunkCommitter, ResyncPorts,
+    RevocationTombstoneEmitter, RoleDeletionChunkCommitter, RoleDeletionPorts,
     RunMaintenanceCommandHandler, SingletonLoop,
 };
 use tokio::sync::watch;
@@ -132,7 +133,7 @@ fn log_failed(error: &tokio::task::JoinError) {
     tracing::error!(error = %error, "task failed");
 }
 
-/// The singleton tasks that `service serve` runs: maintenance, the outbox relay, anti-entropy and
+/// The singleton tasks that `service serve` runs: maintenance, the revocation tombstone emitter, the outbox relay, anti-entropy and
 /// the bulk operation runner.
 ///
 /// There is no `service worker` mode, so the set runs inside `serve`; the stories that add a task
@@ -141,6 +142,7 @@ fn log_failed(error: &tokio::task::JoinError) {
 pub fn singleton_set(adapters: &Adapters) -> Vec<SingletonLoop> {
     let mut set = Vec::new();
     set.extend(maintenance_loop(adapters));
+    set.extend(tombstone_loop(adapters));
     set.extend(
         adapters
             .outbox_relay
@@ -257,6 +259,37 @@ fn maintenance_loop(adapters: &Adapters) -> Option<SingletonLoop> {
             None
         }
     }
+}
+
+/// The loop of the revocation tombstone emitter: every `MAINTENANCE_INTERVAL` it tombstones the
+/// revocation records past their prune-after instant (Story 13.6); none when the interval is zero,
+/// which the configuration refuses.
+fn tombstone_loop(adapters: &Adapters) -> Option<SingletonLoop> {
+    let handler = EmitRevocationTombstonesCommandHandler::new(
+        Arc::clone(&adapters.expired_revocations),
+        Arc::clone(&adapters.unit_of_work),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    let task = RevocationTombstoneEmitter::new(
+        handler,
+        Arc::clone(&adapters.task_states),
+        adapters.maintenance.interval,
+    );
+    match task.into_loop(
+        Arc::clone(&adapters.singleton_leadership),
+        Arc::clone(&adapters.clock),
+    ) {
+        Ok(singleton) => Some(singleton),
+        Err(error) => {
+            log_tombstones_not_started(&error);
+            None
+        }
+    }
+}
+
+fn log_tombstones_not_started(error: &InvalidSingletonInterval) {
+    tracing::error!(error = %error, "the revocation tombstone task is not started");
 }
 
 fn log_not_started(error: &InvalidSingletonInterval) {

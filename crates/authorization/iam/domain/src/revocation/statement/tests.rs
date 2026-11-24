@@ -3,6 +3,7 @@ use std::time::{Duration, SystemTime};
 use shared_domain::Uuid;
 
 use super::RevocationStatement;
+use crate::revocation::expired_revocation::ExpiredRevocation;
 use crate::revocation::global_token_cutoff::GlobalTokenCutoff;
 use crate::revocation::revocation_source::RevocationSource;
 use crate::revocation::session_revocation::SessionRevocation;
@@ -86,4 +87,28 @@ fn a_revocation_statement_becomes_a_save_revocation_change_statement() {
             SessionId::new("sid-1").unwrap()
         )]
     );
+}
+
+#[test]
+fn a_prune_statement_names_the_record_it_removes() {
+    let session = RevocationStatement::Prune {
+        target: ExpiredRevocation::Session {
+            session: SessionId::new("sid-1").unwrap(),
+            prune_after: at(),
+        },
+        now: at(),
+    };
+    let cutoff = RevocationStatement::Prune {
+        target: ExpiredRevocation::UserCutoff {
+            user: user(),
+            prune_after: at(),
+        },
+        now: at(),
+    };
+
+    assert_eq!(
+        session.state_key(),
+        StateKey::SessionRevocation(SessionId::new("sid-1").unwrap())
+    );
+    assert_eq!(cutoff.state_key(), StateKey::UserRevocation(user()));
 }

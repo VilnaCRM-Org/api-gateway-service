@@ -4,7 +4,8 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use iam_domain::{
-    AnchorStamp, MaintenanceStore as _, RepositoryError, RetentionCutoffs, SecurityAuditLog as _,
+    AnchorStamp, ExpiredRevocation, ExpiredRevocationStore as _, MaintenanceStore as _,
+    RepositoryError, RetentionCutoffs, SecurityAuditLog as _,
 };
 use iam_infrastructure::{PgMaintenanceStore, PgSecurityAuditLog};
 use serde_json::Value;
@@ -418,4 +419,82 @@ async fn the_anchoring_row_names_the_events_topic_of_the_store(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(topic, "iam.events.scenario");
+}
+
+/// Inserts a session revocation and a user cut-off that expire at `prune_after`, and returns the
+/// session id and the user id.
+async fn seed_revocations(
+    pool: &PgPool,
+    rng: &mut TestRng,
+    name: &str,
+    prune_after: SystemTime,
+) -> (String, Uuid) {
+    let user = uuid_v7(rng);
+    sqlx::query(
+        "INSERT INTO iam_revoked_sessions (session_id, id, user_id, source, revoked_by, revoked_at,
+            prune_after)
+        VALUES ($1, $2, $3, 'operator', 'system:test', $4, $4)",
+    )
+    .bind(name)
+    .bind(uuid_v7(rng).as_uuid())
+    .bind(user.as_uuid())
+    .bind(timestamp(prune_after))
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO iam_user_token_validity (user_id, tokens_valid_after, source, updated_at,
+            prune_after)
+        VALUES ($1, $2, 'operator', $2, $2)",
+    )
+    .bind(user.as_uuid())
+    .bind(timestamp(prune_after))
+    .execute(pool)
+    .await
+    .unwrap();
+    (name.to_owned(), user)
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn only_revocations_strictly_past_their_prune_after_are_found_and_the_global_cutoff_never(
+    pool: PgPool,
+) {
+    let mut rng = TestRng::from_env();
+    let (old_session, old_user) = seed_revocations(&pool, &mut rng, "old", at(NOW - 10)).await;
+    seed_revocations(&pool, &mut rng, "exact", at(NOW)).await;
+    seed_revocations(&pool, &mut rng, "later", at(NOW + 10)).await;
+    sqlx::query(
+        "INSERT INTO iam_global_token_cutoff (id, tokens_valid_after, set_by, set_at)
+        VALUES (1, $1, 'system:test', $1)",
+    )
+    .bind(timestamp(UNIX_EPOCH))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let store = PgMaintenanceStore::new(pool.clone());
+
+    let expired = store.expired_revocations(at(NOW), 100).await.unwrap();
+
+    assert_eq!(expired.len(), 2);
+    assert!(expired.contains(&ExpiredRevocation::Session {
+        session: iam_domain::SessionId::new(&old_session).unwrap(),
+        prune_after: at(NOW - 10),
+    }));
+    assert!(expired.contains(&ExpiredRevocation::UserCutoff {
+        user: old_user,
+        prune_after: at(NOW - 10),
+    }));
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn the_search_for_expired_revocations_stops_at_the_limit_oldest_first(pool: PgPool) {
+    let mut rng = TestRng::from_env();
+    seed_revocations(&pool, &mut rng, "a", at(NOW - 30)).await;
+    seed_revocations(&pool, &mut rng, "b", at(NOW - 20)).await;
+    let store = PgMaintenanceStore::new(pool.clone());
+
+    let expired = store.expired_revocations(at(NOW), 1).await.unwrap();
+
+    assert_eq!(expired.len(), 1);
+    assert_eq!(expired[0].prune_after(), at(NOW - 30));
 }

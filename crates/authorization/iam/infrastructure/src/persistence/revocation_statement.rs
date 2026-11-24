@@ -5,9 +5,9 @@
 //! them.
 
 use iam_domain::{
-    GlobalRevocationState, GlobalTokenCutoff, InvalidIamValue, PolicyState, RepositoryError,
-    RevocationStatement, SessionId, SessionRevocation, SessionRevocationState, UserRevocationState,
-    UserTokenCutoff,
+    ExpiredRevocation, GlobalRevocationState, GlobalTokenCutoff, InvalidIamValue, PolicyState,
+    RepositoryError, RevocationStatement, SessionId, SessionRevocation, SessionRevocationState,
+    UserRevocationState, UserTokenCutoff,
 };
 use shared_domain::Uuid;
 use sqlx::types::Uuid as SqlUuid;
@@ -34,7 +34,33 @@ pub async fn save_within(
         RevocationStatement::Session(revocation) => insert_session(connection, revocation).await,
         RevocationStatement::UserCutoff(cutoff) => upsert_user_cutoff(connection, cutoff).await,
         RevocationStatement::GlobalCutoff(cutoff) => upsert_global_cutoff(connection, cutoff).await,
+        RevocationStatement::Prune { target, now } => prune(connection, target, *now).await,
     }
+}
+
+/// Removes the record when its prune-after instant is still strictly before `now`; a cut-off that
+/// was moved since it was read stays, and a record that is gone already changes nothing.
+async fn prune(
+    connection: &mut PgConnection,
+    target: &ExpiredRevocation,
+    now: std::time::SystemTime,
+) -> Result<(), RepositoryError> {
+    let query = match target {
+        ExpiredRevocation::Session { session, .. } => sqlx::query(
+            "DELETE FROM iam_revoked_sessions WHERE session_id = $1 AND prune_after < $2",
+        )
+        .bind(session.to_string()),
+        ExpiredRevocation::UserCutoff { user, .. } => sqlx::query(
+            "DELETE FROM iam_user_token_validity WHERE user_id = $1 AND prune_after < $2",
+        )
+        .bind(user.as_uuid()),
+    };
+    query
+        .bind(timestamp(now)?)
+        .execute(&mut *connection)
+        .await
+        .map(|_done| ())
+        .map_err(translate)
 }
 
 async fn insert_session(

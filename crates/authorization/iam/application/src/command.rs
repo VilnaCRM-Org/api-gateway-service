@@ -16,6 +16,7 @@ pub mod delete_rate_policy;
 pub mod delete_role;
 pub mod delete_route;
 pub mod delete_upstream;
+pub mod emit_revocation_tombstones;
 pub(crate) mod gateway_audit;
 pub mod load_graphql_spec;
 pub mod load_openapi_spec;

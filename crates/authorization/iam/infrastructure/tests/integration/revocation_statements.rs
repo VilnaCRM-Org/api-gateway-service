@@ -6,9 +6,10 @@
 use std::time::{Duration, SystemTime};
 
 use iam_domain::{
-    ActorRef, ChangeStatement, DecisionEffect, GlobalTokenCutoff, IamUnitOfWork as _, PolicyState,
-    RevocationRepository as _, RevocationSource, RevocationStatement, SessionId, SessionRevocation,
-    SessionRevocationId, StateKey, StateRecordCodec as _, UserTokenCutoff,
+    ActorRef, ChangeStatement, DecisionEffect, ExpiredRevocation, GlobalTokenCutoff,
+    IamUnitOfWork as _, PolicyState, RevocationRepository as _, RevocationSource,
+    RevocationStatement, SessionId, SessionRevocation, SessionRevocationId, StateKey,
+    StateRecordCodec as _, UserTokenCutoff,
 };
 use iam_infrastructure::{JsonStateRecordCodec, PgIamUnitOfWork, PgRevocationRepository};
 use shared_domain::Uuid;
@@ -236,4 +237,122 @@ async fn a_cutoff_never_moves_back_and_a_later_one_replaces_the_state(pool: PgPo
         at(1_800_000_900)
     );
     assert_eq!(state_rows(&pool).await.len(), 2);
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn pruning_an_expired_session_deletes_its_row_and_writes_a_tombstone(pool: PgPool) {
+    let mut rng = TestRng::from_env();
+    let revocation = session(FIRST, "sid-1", 1_800_000_000);
+    commit(
+        &pool,
+        &mut rng,
+        vec![RevocationStatement::Session(revocation.clone())],
+    )
+    .await;
+
+    commit(
+        &pool,
+        &mut rng,
+        vec![RevocationStatement::Prune {
+            target: ExpiredRevocation::Session {
+                session: revocation.session.clone(),
+                prune_after: revocation.prune_after,
+            },
+            now: at(1_800_001_081),
+        }],
+    )
+    .await;
+
+    let stored = PgRevocationRepository::new(pool.clone())
+        .session_revocation(&revocation.session)
+        .await
+        .unwrap();
+    assert_eq!(stored, None);
+    let rows = state_rows(&pool).await;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows[1],
+        ("revocation/session/sid-1".to_owned(), None),
+        "the second state row is the tombstone"
+    );
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn pruning_a_user_cutoff_whose_instant_moved_since_it_was_read_keeps_it(pool: PgPool) {
+    let mut rng = TestRng::from_env();
+    commit(
+        &pool,
+        &mut rng,
+        vec![RevocationStatement::UserCutoff(user_cutoff(1_800_000_000))],
+    )
+    .await;
+    commit(
+        &pool,
+        &mut rng,
+        vec![RevocationStatement::UserCutoff(user_cutoff(1_800_005_000))],
+    )
+    .await;
+
+    commit(
+        &pool,
+        &mut rng,
+        vec![RevocationStatement::Prune {
+            target: ExpiredRevocation::UserCutoff {
+                user: user(),
+                prune_after: at(1_800_001_080),
+            },
+            now: at(1_800_001_081),
+        }],
+    )
+    .await;
+
+    let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM iam_user_token_validity")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, 1);
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn pruning_an_expired_user_cutoff_writes_a_tombstone_and_never_touches_the_global_one(
+    pool: PgPool,
+) {
+    let mut rng = TestRng::from_env();
+    commit(
+        &pool,
+        &mut rng,
+        vec![
+            RevocationStatement::UserCutoff(user_cutoff(1_800_000_000)),
+            RevocationStatement::GlobalCutoff(global_cutoff(1_700_000_000)),
+        ],
+    )
+    .await;
+
+    commit(
+        &pool,
+        &mut rng,
+        vec![RevocationStatement::Prune {
+            target: ExpiredRevocation::UserCutoff {
+                user: user(),
+                prune_after: at(1_800_001_080),
+            },
+            now: at(1_900_000_000),
+        }],
+    )
+    .await;
+
+    let users: i64 = sqlx::query_scalar("SELECT count(*) FROM iam_user_token_validity")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let global: i64 = sqlx::query_scalar("SELECT count(*) FROM iam_global_token_cutoff")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!((users, global), (0, 1));
+    let rows = state_rows(&pool).await;
+    assert_eq!(
+        rows.last().unwrap(),
+        &(format!("revocation/user/{USER}"), None)
+    );
 }

@@ -7,9 +7,10 @@
 use std::time::SystemTime;
 
 use iam_domain::{
-    AnchorStamp, AuditChainHead, AuditHash, EventEnvelope, ExpiredOrphanedGrant,
-    InvalidEventEnvelope, InvalidIamValue, LogEpoch, MaintenanceStore, PermissionGrant,
-    PolicyVersion, PurgedRecords, RepositoryError, RetentionCutoffs, RoleId, SecurityAuditAnchored,
+    AnchorStamp, AuditChainHead, AuditHash, EventEnvelope, ExpiredOrphanedGrant, ExpiredRevocation,
+    ExpiredRevocationStore, InvalidEventEnvelope, InvalidIamValue, LogEpoch, MaintenanceStore,
+    PermissionGrant, PolicyVersion, PurgedRecords, RepositoryError, RetentionCutoffs, RoleId,
+    SecurityAuditAnchored, SessionId,
 };
 use shared_domain::Uuid;
 use sqlx::types::Uuid as SqlUuid;
@@ -32,6 +33,18 @@ const SELECT_ORPHANS: &str = "SELECT grants.role_id, grants.permission_key, gran
     JOIN iam_roles AS roles ON roles.id = grants.role_id
     WHERE roles.deleted_at IS NULL AND NOT grants.active AND grants.orphaned_at < $1
     ORDER BY grants.orphaned_at, grants.role_id, grants.permission_key
+    LIMIT $2";
+
+/// Session revocations and user cut-offs whose prune-after instant lies before the instant, oldest
+/// first. The global cut-off has no such instant and is not selected.
+const SELECT_EXPIRED_REVOCATIONS: &str = "SELECT kind, target, prune_after FROM (
+        SELECT 'session' AS kind, session_id AS target, prune_after
+            FROM iam_revoked_sessions WHERE prune_after < $1
+        UNION ALL
+        SELECT 'user' AS kind, user_id::text AS target, prune_after
+            FROM iam_user_token_validity WHERE prune_after < $1
+    ) AS expired
+    ORDER BY prune_after, kind, target
     LIMIT $2";
 
 const DELETE_IDEMPOTENCY_KEYS: &str = "DELETE FROM iam_idempotency_keys WHERE created_at < $1";
@@ -85,6 +98,27 @@ impl PgMaintenanceStore {
                 let key: String = row.try_get(1).map_err(unavailable)?;
                 let orphaned_at: OffsetDateTime = row.try_get(2).map_err(unavailable)?;
                 restore_orphan(role_id, &key, orphaned_at)
+            })
+            .collect()
+    }
+
+    async fn select_expired_revocations(
+        &self,
+        now: SystemTime,
+        limit: u32,
+    ) -> Result<Vec<ExpiredRevocation>, RepositoryError> {
+        let rows = sqlx::query(SELECT_EXPIRED_REVOCATIONS)
+            .bind(OffsetDateTime::from(now))
+            .bind(i64::from(limit))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(unavailable)?;
+        rows.iter()
+            .map(|row| {
+                let kind: String = row.try_get(0).map_err(unavailable)?;
+                let target: String = row.try_get(1).map_err(unavailable)?;
+                let prune_after: OffsetDateTime = row.try_get(2).map_err(unavailable)?;
+                restore_expired(&kind, &target, prune_after)
             })
             .collect()
     }
@@ -223,6 +257,27 @@ fn restore_orphan(
     })
 }
 
+/// Rebuilds one expired revocation of a stored row; a target that is no session id or user id is
+/// unusable data.
+fn restore_expired(
+    kind: &str,
+    target: &str,
+    prune_after: OffsetDateTime,
+) -> Result<ExpiredRevocation, RepositoryError> {
+    let prune_after = SystemTime::from(prune_after);
+    if kind == "session" {
+        let session = SessionId::new(target)
+            .map_err(|rejection| RepositoryError::Unavailable(Box::new(rejection)))?;
+        return Ok(ExpiredRevocation::Session {
+            session,
+            prune_after,
+        });
+    }
+    let user =
+        Uuid::parse(target).map_err(|error| RepositoryError::Unavailable(Box::new(error)))?;
+    Ok(ExpiredRevocation::UserCutoff { user, prune_after })
+}
+
 /// Rebuilds the head of the chain of the stored row.
 fn restore_head(seq: i64, hash: &[u8]) -> Result<AuditChainHead, RepositoryError> {
     let hash = AuditHash::new(hash).map_err(unusable)?;
@@ -290,6 +345,17 @@ impl MaintenanceStore for PgMaintenanceStore {
         stamp: AnchorStamp,
     ) -> Result<AuditChainHead, RepositoryError> {
         self.anchor(stamp).await
+    }
+}
+
+#[async_trait::async_trait]
+impl ExpiredRevocationStore for PgMaintenanceStore {
+    async fn expired_revocations(
+        &self,
+        now: SystemTime,
+        limit: u32,
+    ) -> Result<Vec<ExpiredRevocation>, RepositoryError> {
+        self.select_expired_revocations(now, limit).await
     }
 }
 

@@ -52,3 +52,5 @@ fn the_cutoff_is_two_seconds_after_the_commit() {
     assert_eq!(CUTOFF_MARGIN, Duration::from_secs(2));
     assert_eq!(PrunePolicy::cutoff_at(at(10)), Some(at(12)));
 }
+
+mod properties;

@@ -30,6 +30,7 @@ use test_support::bus::RecordingEventBus;
 use test_support::cache::StubCache;
 use test_support::change_receipt::{FakeChangeReceiptRepository, change_receipt};
 use test_support::clock::FixedClock;
+use test_support::expired_revocation_store::FakeExpiredRevocationStore;
 use test_support::graphql_permission::FakeGraphQlPermissionRepository;
 use test_support::graphql_spec::FakeGraphQlSpecRepository;
 use test_support::id::SequenceUuidGenerator;
@@ -129,6 +130,7 @@ fn adapters() -> Adapters {
         startup_lock: Arc::new(FakeStartupLock::new()),
         singleton_leadership: Arc::new(FakeSingletonLeadership::leading()),
         maintenance_store: Arc::new(FakeMaintenanceStore::new()),
+        expired_revocations: Arc::new(FakeExpiredRevocationStore::new()),
         task_states: Arc::new(FakeTaskStateRepository::new()),
         maintenance: MaintenanceSettings::default(),
         outbox_relay: None,
@@ -806,11 +808,12 @@ async fn the_serve_mode_registers_the_singleton_set_with_the_maintenance_task() 
 
     let supervisor = start_tasks(&adapters(), TaskMode::Serve, stopping);
 
-    assert_eq!(supervisor.len(), 3);
+    assert_eq!(supervisor.len(), 4);
     let set = singleton_set(&adapters());
-    assert_eq!(set.len(), 2);
+    assert_eq!(set.len(), 3);
     assert_eq!(set[0].name(), "policy-maintenance");
-    assert_eq!(set[1].name(), "bulk-operation-runner");
+    assert_eq!(set[1].name(), "revocation-tombstone-emitter");
+    assert_eq!(set[2].name(), "bulk-operation-runner");
     stop.send_replace(true);
     assert_eq!(
         supervisor.stop(Duration::from_secs(1)).await,
@@ -844,7 +847,7 @@ async fn the_serve_mode_adds_the_outbox_relay_and_its_listener() {
 
     let supervisor = start_tasks(&adapters, TaskMode::Serve, stopping);
 
-    assert_eq!(supervisor.len(), 5);
+    assert_eq!(supervisor.len(), 6);
     let names: Vec<_> = singleton_set(&adapters)
         .iter()
         .map(SingletonLoop::name)
@@ -853,6 +856,7 @@ async fn the_serve_mode_adds_the_outbox_relay_and_its_listener() {
         names,
         [
             "policy-maintenance",
+            "revocation-tombstone-emitter",
             "outbox-relay",
             "bulk-operation-runner"
         ]
@@ -891,6 +895,7 @@ async fn the_serve_mode_adds_the_anti_entropy_task_after_the_relay_and_shares_it
         names,
         [
             "policy-maintenance",
+            "revocation-tombstone-emitter",
             "outbox-relay",
             "anti-entropy",
             "bulk-operation-runner"

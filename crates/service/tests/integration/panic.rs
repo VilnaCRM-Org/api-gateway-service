@@ -25,6 +25,7 @@ use test_support::anti_entropy::FakePolicyLogTail;
 use test_support::bulk_operation::{FakeBulkOperationRepository, FakeBulkRoleTargetStore};
 use test_support::change_receipt::FakeChangeReceiptRepository;
 use test_support::clock::FixedClock;
+use test_support::expired_revocation_store::FakeExpiredRevocationStore;
 use test_support::graphql_permission::FakeGraphQlPermissionRepository;
 use test_support::graphql_spec::FakeGraphQlSpecRepository;
 use test_support::id::SequenceUuidGenerator;
@@ -104,6 +105,7 @@ async fn a_panic_is_one_json_line_with_the_request_id_and_a_500_problem() {
         startup_lock: Arc::new(FakeStartupLock::new()),
         singleton_leadership: Arc::new(FakeSingletonLeadership::leading()),
         maintenance_store: Arc::new(FakeMaintenanceStore::new()),
+        expired_revocations: Arc::new(FakeExpiredRevocationStore::new()),
         task_states: Arc::new(FakeTaskStateRepository::new()),
         maintenance: MaintenanceSettings::default(),
         outbox_relay: None,
