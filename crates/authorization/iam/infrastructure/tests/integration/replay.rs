@@ -59,7 +59,7 @@ fn dead_pool() -> PgPool {
 async fn the_receipt_of_a_committed_change_is_read_back(pool: PgPool) {
     let change = iam_change(&mut TestRng::from_env(), DecisionEffect::Affected, 1);
     let receipt = PgIamUnitOfWork::new(pool.clone())
-        .commit(change.clone())
+        .commit(change.clone(), iam_domain::WriteMode::Published)
         .await
         .unwrap();
 
@@ -76,7 +76,7 @@ async fn the_receipt_of_a_committed_change_is_read_back(pool: PgPool) {
 async fn the_receipt_of_a_change_that_did_not_affect_decisions_has_no_policy_version(pool: PgPool) {
     let change = iam_change(&mut TestRng::from_env(), DecisionEffect::Unaffected, 1);
     PgIamUnitOfWork::new(pool.clone())
-        .commit(change.clone())
+        .commit(change.clone(), iam_domain::WriteMode::Published)
         .await
         .unwrap();
 
@@ -104,7 +104,7 @@ async fn an_unknown_change_has_no_receipt(pool: PgPool) {
 async fn a_stored_receipt_that_breaks_an_invariant_is_unavailable(pool: PgPool) {
     let change = iam_change(&mut TestRng::from_env(), DecisionEffect::Affected, 0);
     PgIamUnitOfWork::new(pool.clone())
-        .commit(change.clone())
+        .commit(change.clone(), iam_domain::WriteMode::Published)
         .await
         .unwrap();
     sqlx::query("UPDATE iam_change_receipts SET actor = 'robot:1'")
@@ -124,7 +124,7 @@ async fn a_stored_receipt_that_breaks_an_invariant_is_unavailable(pool: PgPool) 
 async fn a_repeat_within_24_hours_finds_the_original_change_and_writes_nothing(pool: PgPool) {
     let change = iam_change(&mut TestRng::from_env(), DecisionEffect::Affected, 2);
     let receipt = PgIamUnitOfWork::new(pool.clone())
-        .commit(change.clone())
+        .commit(change.clone(), iam_domain::WriteMode::Published)
         .await
         .unwrap();
     let record = change.idempotency_record().unwrap();
@@ -159,10 +159,15 @@ async fn a_repeat_of_a_live_key_cannot_commit_a_second_change(pool: PgPool) {
     let first = iam_change(&mut rng, DecisionEffect::Affected, 1);
     let repeat = repeat_after(&mut rng, &first, Duration::from_secs(86_399));
     let unit = PgIamUnitOfWork::new(pool.clone());
-    unit.commit(first).await.unwrap();
+    unit.commit(first, iam_domain::WriteMode::Published)
+        .await
+        .unwrap();
     let before = counts(&pool).await;
 
-    let error = unit.commit(repeat).await.unwrap_err();
+    let error = unit
+        .commit(repeat, iam_domain::WriteMode::Published)
+        .await
+        .unwrap_err();
 
     assert!(matches!(error, RepositoryError::AlreadyExists));
     assert_eq!(counts(&pool).await, before);
@@ -175,7 +180,9 @@ async fn a_record_older_than_24_hours_is_not_found_and_its_key_starts_a_new_chan
     let later = Duration::from_secs(86_401);
     let repeat = repeat_after(&mut rng, &first, later);
     let unit = PgIamUnitOfWork::new(pool.clone());
-    unit.commit(first.clone()).await.unwrap();
+    unit.commit(first.clone(), iam_domain::WriteMode::Published)
+        .await
+        .unwrap();
     let record = first.idempotency_record().unwrap();
     let keys = PgIdempotencyRepository::new(pool.clone());
     let now = occurred_at(&first).checked_add(later).unwrap();
@@ -188,7 +195,10 @@ async fn a_record_older_than_24_hours_is_not_found_and_its_key_starts_a_new_chan
         )
         .await
         .unwrap();
-    let receipt = unit.commit(repeat.clone()).await.unwrap();
+    let receipt = unit
+        .commit(repeat.clone(), iam_domain::WriteMode::Published)
+        .await
+        .unwrap();
     let renewed = keys
         .find_since(
             record.actor(),
@@ -209,7 +219,7 @@ async fn a_record_older_than_24_hours_is_not_found_and_its_key_starts_a_new_chan
 async fn a_record_created_exactly_at_the_window_start_still_replays(pool: PgPool) {
     let change = iam_change(&mut TestRng::from_env(), DecisionEffect::Affected, 0);
     PgIamUnitOfWork::new(pool.clone())
-        .commit(change.clone())
+        .commit(change.clone(), iam_domain::WriteMode::Published)
         .await
         .unwrap();
     let record = change.idempotency_record().unwrap();
@@ -240,7 +250,7 @@ async fn a_key_of_another_actor_or_another_key_is_not_found(pool: PgPool) {
     let change = iam_change(&mut rng, DecisionEffect::Affected, 0);
     let other = iam_change(&mut rng, DecisionEffect::Affected, 0);
     PgIamUnitOfWork::new(pool.clone())
-        .commit(change.clone())
+        .commit(change.clone(), iam_domain::WriteMode::Published)
         .await
         .unwrap();
     let record = change.idempotency_record().unwrap();

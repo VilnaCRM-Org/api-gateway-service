@@ -112,7 +112,9 @@ impl CreateRestPermissionsCommandHandler {
         let epoch = self.reads.policy_epochs.current().await?;
         let plan = self.plan(&spec, &command).await?;
         let change = self.change_of(command, plan, epoch.version(), now)?;
-        self.unit_of_work.commit(change).await?;
+        self.unit_of_work
+            .commit(change, iam_domain::WriteMode::Published)
+            .await?;
         Ok(())
     }
 

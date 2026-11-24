@@ -2,6 +2,8 @@
 //! database.
 
 #[cfg(test)]
+mod anti_entropy_store;
+#[cfg(test)]
 mod catalogue_activation;
 #[cfg(test)]
 mod gateway_configuration;
@@ -26,7 +28,11 @@ mod outbox_store;
 #[cfg(test)]
 mod policy_log_producer;
 #[cfg(test)]
+mod policy_log_tail;
+#[cfg(test)]
 mod policy_read_repository;
+#[cfg(test)]
+mod propagation_store;
 #[cfg(test)]
 mod replay;
 #[cfg(test)]

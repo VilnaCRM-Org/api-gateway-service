@@ -40,7 +40,10 @@ async fn insert(
 ) -> Result<(), RepositoryError> {
     let statement = GraphQlSpecStatement::insert(spec, sdl.to_owned());
     PgIamUnitOfWork::new(pool.clone())
-        .commit(graphql_spec_change(rng, vec![statement]))
+        .commit(
+            graphql_spec_change(rng, vec![statement]),
+            iam_domain::WriteMode::Published,
+        )
         .await
         .map(|_receipt| ())
 }

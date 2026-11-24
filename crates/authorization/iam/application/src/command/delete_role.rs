@@ -105,7 +105,9 @@ impl DeleteRoleCommandHandler {
             .ok_or(IamError::NotFound)?;
         let assignments = self.assignments_of(command.role_id).await?;
         let change = self.change_of(role, assignments, command)?;
-        self.unit_of_work.commit(change).await?;
+        self.unit_of_work
+            .commit(change, iam_domain::WriteMode::Published)
+            .await?;
         Ok(())
     }
 

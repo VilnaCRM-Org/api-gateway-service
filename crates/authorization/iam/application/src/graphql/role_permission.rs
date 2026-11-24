@@ -8,6 +8,7 @@ use iam_domain::RoleGrant;
 use shared_application::http::Problem;
 use validator::Validate as _;
 
+use super::propagation::{WriteOutcomeMapper, write_mode};
 use super::{RoleObject, expected_version, idempotency_key, require_caller, state};
 use crate::error::IamError;
 use crate::http::dto::RoleResponse;
@@ -28,6 +29,8 @@ pub struct SetRolePermissionsInput {
     pub keys: Vec<String>,
     /// Makes the replacement safe to repeat for 24 hours: 1 to 255 visible ASCII characters.
     pub idempotency_key: Option<String>,
+    /// What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions.
+    pub consistency: Option<String>,
 }
 
 /// One grant of a role.
@@ -75,11 +78,15 @@ pub(super) async fn set_role_permissions_field(
     let key = idempotency_key(input.idempotency_key.as_deref())?;
     let request = SetRolePermissionsRequest { keys: input.keys };
     request.validate()?;
+    write_mode(input.consistency.as_deref())?;
     let headers = VersionedWriteHeaders { expected, key };
     let state = state(ctx)?;
-    set_role_permissions(state, caller, id, headers, request).await?;
+    let (_permissions, receipt) = set_role_permissions(state, caller, id, headers, request).await?;
     let role = find_role(state, id).await?.ok_or(IamError::NotFound)?;
-    Ok(RoleObject::from(RoleResponse::from(role)))
+    Ok(RoleObject {
+        propagation: WriteOutcomeMapper::propagation(&receipt),
+        ..RoleObject::from(RoleResponse::from(role))
+    })
 }
 
 /// The grants of the role `id`, as the `permissions` field of a role.

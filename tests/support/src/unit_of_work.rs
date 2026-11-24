@@ -8,6 +8,7 @@ use iam_domain::{
     ActorRef, ChangeId, ChangeReceipt, DecisionEffect, EntityVersion, EventData, EventEnvelope,
     EventEnvelopeParts, EventType, EventValue, IamChange, IamChangeParts, IamUnitOfWork,
     IdempotencyRequest, PolicyVersion, RepositoryError, RequestDigest, SecurityAuditEventParts,
+    WriteMode,
 };
 use rand::RngExt as _;
 use shared_domain::{Uuid, UuidGenerator as _};
@@ -222,7 +223,11 @@ impl Default for FakeIamUnitOfWork {
 
 #[async_trait]
 impl IamUnitOfWork for FakeIamUnitOfWork {
-    async fn commit(&self, change: IamChange) -> Result<ChangeReceipt, RepositoryError> {
+    async fn commit(
+        &self,
+        change: IamChange,
+        _write_mode: WriteMode,
+    ) -> Result<ChangeReceipt, RepositoryError> {
         let committed = self
             .committed
             .as_ref()

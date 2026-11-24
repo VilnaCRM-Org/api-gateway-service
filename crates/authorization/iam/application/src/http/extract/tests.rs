@@ -4,14 +4,16 @@ use axum::extract::FromRequestParts as _;
 use axum::http::request::Parts;
 use axum::http::{HeaderValue, Request};
 use iam_domain::{
-    AccessToken, AccessTokenParts, EntityVersion, IdempotencyKey, SubjectId, TokenId, TokenIdentity,
+    AccessToken, AccessTokenParts, EntityVersion, IdempotencyKey, SubjectId, TokenId,
+    TokenIdentity, WriteMode,
 };
 use rstest::rstest;
 use shared_application::http::{TYPE_BLANK, TYPE_VALIDATION_FAILED, Violation};
 use shared_domain::Uuid;
 
 use super::{
-    CallerPrincipal, IDEMPOTENCY_KEY, IdempotencyKeyHeader, IfMatchHeader, VersionedWriteHeaders,
+    CallerPrincipal, IDEMPOTENCY_KEY, IdempotencyKeyHeader, IfMatchHeader, PREFER,
+    PreferWaitHeader, VersionedWriteHeaders,
 };
 use crate::principal::Principal;
 
@@ -234,4 +236,55 @@ async fn the_update_headers_refuse_an_invalid_key() {
         .unwrap_err();
 
     assert_eq!(problem.status, 422);
+}
+
+#[test]
+fn the_prefer_header_is_named_like_the_specification() {
+    assert_eq!(PREFER.as_str(), "prefer");
+}
+
+#[rstest]
+#[case(&[], WriteMode::Published)]
+#[case(&[("Prefer", "wait=published")], WriteMode::Published)]
+#[case(&[("Prefer", "respond-async, wait=Published")], WriteMode::Published)]
+#[case(&[("Prefer", "return=minimal"), ("Prefer", "wait=\"published\"; x=1")], WriteMode::Published)]
+#[tokio::test]
+async fn a_supported_wait_preference_gives_its_mode(
+    #[case] headers: &[(&str, &str)],
+    #[case] expected: WriteMode,
+) {
+    let headers: Vec<(&str, HeaderValue)> = headers
+        .iter()
+        .map(|(name, value)| (*name, text(value)))
+        .collect();
+    let mut parts = parts(&headers);
+
+    let header = PreferWaitHeader::from_request_parts(&mut parts, &())
+        .await
+        .unwrap();
+
+    assert_eq!(header, PreferWaitHeader(expected));
+}
+
+#[rstest]
+#[case("wait=propagated", "write_mode_unsupported", "propagated")]
+#[case("WAIT=PROPAGATED", "write_mode_unsupported", "propagated")]
+#[case("wait=eventually", "write_mode", "published")]
+#[tokio::test]
+async fn an_unsupported_or_unknown_wait_preference_is_a_validation_problem(
+    #[case] value: &str,
+    #[case] code: &str,
+    #[case] named: &str,
+) {
+    let mut parts = parts(&[("Prefer", text(value))]);
+
+    let problem = PreferWaitHeader::from_request_parts(&mut parts, &())
+        .await
+        .unwrap_err();
+
+    assert_eq!(problem.r#type, TYPE_VALIDATION_FAILED);
+    assert_eq!(problem.violations.len(), 1);
+    assert_eq!(problem.violations[0].property_path, "prefer");
+    assert_eq!(problem.violations[0].code, code);
+    assert!(problem.violations[0].message.contains(named));
 }

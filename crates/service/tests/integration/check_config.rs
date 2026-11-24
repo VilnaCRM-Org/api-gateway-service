@@ -628,6 +628,14 @@ fn a_key_file_of_three_keys_is_accepted() {
     &[("KAFKA_RETRY_DELAY", "soon")],
     "KAFKA_RETRY_DELAY: must be a duration such as 500ms, 2s or 1m\n"
 )]
+#[case::a_publish_wait_timeout_above_the_limit(
+    &[("PUBLISH_WAIT_TIMEOUT", "31s")],
+    "PUBLISH_WAIT_TIMEOUT: must be a duration from 100ms to 30s\n"
+)]
+#[case::a_malformed_publish_wait_timeout(
+    &[("PUBLISH_WAIT_TIMEOUT", "soon")],
+    "PUBLISH_WAIT_TIMEOUT: must be a duration such as 500ms, 2s or 1m\n"
+)]
 #[case::the_same_topic_twice(
     &[("POLICY_TOPIC", "iam.shared"), ("EVENTS_TOPIC", "iam.shared")],
     "EVENTS_TOPIC: must differ from POLICY_TOPIC\n"
@@ -841,4 +849,46 @@ fn a_missing_key_file_of_the_tokens_exits_2_naming_the_variable() {
         "{}",
         stderr(&output)
     );
+}
+
+#[rstest]
+#[case::a_zero_head_interval(
+    &[("ANTI_ENTROPY_HEAD_INTERVAL", "0s")],
+    "ANTI_ENTROPY_HEAD_INTERVAL: must be a positive duration such as 10m or 90d\n"
+)]
+#[case::a_zero_full_interval(
+    &[("ANTI_ENTROPY_FULL_INTERVAL", "0s")],
+    "ANTI_ENTROPY_FULL_INTERVAL: must be a positive duration such as 10m or 90d\n"
+)]
+#[case::a_full_interval_shorter_than_the_head_interval(
+    &[("ANTI_ENTROPY_HEAD_INTERVAL", "30s"), ("ANTI_ENTROPY_FULL_INTERVAL", "10s")],
+    "ANTI_ENTROPY_FULL_INTERVAL: must not be shorter than ANTI_ENTROPY_HEAD_INTERVAL\n"
+)]
+fn an_invalid_anti_entropy_interval_exits_2_naming_the_variable(
+    #[case] extra: &[(&str, &str)],
+    #[case] problems: &str,
+) {
+    let scratch = Scratch::new();
+
+    let output = check_config_with(&scratch, extra);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), problems);
+}
+
+#[test]
+fn anti_entropy_intervals_within_their_rules_are_accepted() {
+    let scratch = Scratch::new();
+
+    let output = check_config_with(
+        &scratch,
+        &[
+            ("ANTI_ENTROPY_HEAD_INTERVAL", "2s"),
+            ("ANTI_ENTROPY_FULL_INTERVAL", "2s"),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout(&output), "configuration OK\n");
 }

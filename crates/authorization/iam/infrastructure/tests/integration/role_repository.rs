@@ -52,7 +52,10 @@ async fn save(
     statements: Vec<RoleStatement>,
 ) -> Result<(), RepositoryError> {
     PgIamUnitOfWork::new(pool.clone())
-        .commit(role_change(rng, statements))
+        .commit(
+            role_change(rng, statements),
+            iam_domain::WriteMode::Published,
+        )
         .await
         .map(|_receipt| ())
 }

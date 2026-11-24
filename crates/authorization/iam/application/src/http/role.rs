@@ -2,7 +2,7 @@
 //!
 //! A handler takes the IAM state and the problem-aware extractors only (`ApiPath`,
 //! `ValidatedQuery`, `ValidatedJson`, the IAM extractors `CallerPrincipal` and
-//! `IdempotencyKeyHeader`); the test of the `handler` module checks every handler against that
+//! `IdempotencyKeyHeader`, `PreferWaitHeader`); the test of the `handler` module checks every handler against that
 //! rule.
 
 use axum::Json;
@@ -19,8 +19,10 @@ use super::dto::{
     CreateRoleRequest, DeleteRoleResponse, ListRolesParams, RolePageResponse, RoleResponse,
     UpdateRoleRequest, delete_role_canonical_form,
 };
-use super::extract::{CallerPrincipal, IdempotencyKeyHeader, VersionedWriteHeaders};
-use super::response::{WriteHeaders, change_headers, created_headers, etag};
+use super::extract::{
+    CallerPrincipal, IdempotencyKeyHeader, PreferWaitHeader, VersionedWriteHeaders,
+};
+use super::response::{WriteHeaders, change_headers, created_headers, etag, write_status};
 use crate::command::create_role::CreateRoleCommand;
 use crate::command::delete_role::DeleteRoleCommand;
 use crate::command::update_role::UpdateRoleCommand;
@@ -243,7 +245,8 @@ pub(crate) async fn list_roles(
     summary = "Creates a role.",
     description = "Creates a custom role without grants at version 1 and records `iam.role.created`. A repeated `Idempotency-Key` with the same body within 24 hours returns the original result.",
     security(("bearerAuth" = [])),
-    params(("Idempotency-Key" = Option<String>, Header, description = "Makes the creation safe to repeat for 24 hours; 1 to 255 visible ASCII characters.")),
+    params(("Idempotency-Key" = Option<String>, Header, description = "Makes the creation safe to repeat for 24 hours; 1 to 255 visible ASCII characters."),
+        ("Prefer" = Option<String>, Header, description = "What the write waits for: `wait=published` (the default) returns once Kafka acknowledged the policy version, `wait=propagated` is refused with 422 until the gateway pods report their versions.")),
     request_body(content = CreateRoleRequest, content_type = "application/json"),
     responses(
         (
@@ -253,6 +256,17 @@ pub(crate) async fn list_roles(
             headers(
                 ("location" = String, description = "Path of the created role."),
                 ("etag" = String, description = "The version of the role in double quotes.")
+            )
+        ),
+        (
+            status = 202,
+            description = "The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.",
+            body = RoleResponse,
+            headers(
+                ("location" = String, description = "Path of the created role."),
+                ("etag" = String, description = "The version of the role in double quotes."),
+                ("iam-policy-version" = String, description = "The policy version that the change produced."),
+                ("iam-propagation-status" = String, description = "`committed_pending_propagation`.")
             )
         ),
         (status = 400, description = "Invalid input.", body = Problem, content_type = "application/problem+json"),
@@ -274,11 +288,16 @@ pub async fn create(
     State(state): State<IamState>,
     CallerPrincipal(caller): CallerPrincipal,
     IdempotencyKeyHeader(key): IdempotencyKeyHeader,
+    PreferWaitHeader(_mode): PreferWaitHeader,
     ValidatedJson(body): ValidatedJson<CreateRoleRequest>,
 ) -> Result<(StatusCode, WriteHeaders, Json<RoleResponse>), Problem> {
     let (role, receipt) = create_role(&state, &caller, key, body).await?;
     let headers = created_headers(&receipt, ROLES_PATH);
-    Ok((StatusCode::CREATED, headers, Json(RoleResponse::from(role))))
+    Ok((
+        write_status(&receipt, StatusCode::CREATED),
+        headers,
+        Json(RoleResponse::from(role)),
+    ))
 }
 
 /// Reads a role.
@@ -346,7 +365,8 @@ pub async fn get_one(
     params(
         ("id" = String, Path, format = Uuid, description = "Role identifier"),
         ("If-Match" = String, Header, description = "The `ETag` of the version the update changes, such as `\"3\"`."),
-        ("Idempotency-Key" = Option<String>, Header, description = "Makes the update safe to repeat for 24 hours; 1 to 255 visible ASCII characters.")
+        ("Idempotency-Key" = Option<String>, Header, description = "Makes the update safe to repeat for 24 hours; 1 to 255 visible ASCII characters."),
+        ("Prefer" = Option<String>, Header, description = "What the write waits for: `wait=published` (the default) returns once Kafka acknowledged the policy version, `wait=propagated` is refused with 422 until the gateway pods report their versions.")
     ),
     request_body(content = UpdateRoleRequest, content_type = "application/json"),
     responses(
@@ -355,6 +375,16 @@ pub async fn get_one(
             description = "The role was updated.",
             body = RoleResponse,
             headers(("etag" = String, description = "The new version of the role in double quotes."))
+        ),
+        (
+            status = 202,
+            description = "The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.",
+            body = RoleResponse,
+            headers(
+                ("etag" = String, description = "The new version of the role in double quotes."),
+                ("iam-policy-version" = String, description = "The policy version that the change produced."),
+                ("iam-propagation-status" = String, description = "`committed_pending_propagation`.")
+            )
         ),
         (status = 400, description = "Invalid input.", body = Problem, content_type = "application/problem+json"),
         (
@@ -381,9 +411,13 @@ pub async fn update(
     ApiPath(id): ApiPath<String>,
     headers: VersionedWriteHeaders,
     ValidatedJson(body): ValidatedJson<UpdateRoleRequest>,
-) -> Result<(WriteHeaders, Json<RoleResponse>), Problem> {
+) -> Result<(StatusCode, WriteHeaders, Json<RoleResponse>), Problem> {
     let (role, receipt) = update_role(&state, &caller, parse_role_id(&id)?, headers, body).await?;
-    Ok((change_headers(&receipt), Json(RoleResponse::from(role))))
+    Ok((
+        write_status(&receipt, StatusCode::OK),
+        change_headers(&receipt),
+        Json(RoleResponse::from(role)),
+    ))
 }
 
 /// Deletes a role.
@@ -405,7 +439,8 @@ pub async fn update(
     params(
         ("id" = String, Path, format = Uuid, description = "Role identifier"),
         ("If-Match" = String, Header, description = "The `ETag` of the version the deletion ends, such as `\"3\"`."),
-        ("Idempotency-Key" = Option<String>, Header, description = "Makes the deletion safe to repeat for 24 hours; 1 to 255 visible ASCII characters.")
+        ("Idempotency-Key" = Option<String>, Header, description = "Makes the deletion safe to repeat for 24 hours; 1 to 255 visible ASCII characters."),
+        ("Prefer" = Option<String>, Header, description = "What the write waits for: `wait=published` (the default) returns once Kafka acknowledged the policy version, `wait=propagated` is refused with 422 until the gateway pods report their versions.")
     ),
     responses(
         (
@@ -414,7 +449,18 @@ pub async fn update(
             body = DeleteRoleResponse,
             headers(
                 ("etag" = String, description = "The final version of the role in double quotes."),
-                ("iam-policy-version" = String, description = "The policy version that the change produced.")
+                ("iam-policy-version" = String, description = "The policy version that the change produced."),
+                ("iam-policy-offset" = String, description = "The offset at which Kafka stored the `__head` record of the policy version; present when the change affected decisions and was acknowledged.")
+            )
+        ),
+        (
+            status = 202,
+            description = "The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.",
+            body = DeleteRoleResponse,
+            headers(
+                ("etag" = String, description = "The final version of the role in double quotes."),
+                ("iam-policy-version" = String, description = "The policy version that the change produced."),
+                ("iam-propagation-status" = String, description = "`committed_pending_propagation`.")
             )
         ),
         (status = 400, description = "Invalid identifier.", body = Problem, content_type = "application/problem+json"),
@@ -439,9 +485,10 @@ pub async fn delete(
     CallerPrincipal(caller): CallerPrincipal,
     ApiPath(id): ApiPath<String>,
     headers: VersionedWriteHeaders,
-) -> Result<(WriteHeaders, Json<DeleteRoleResponse>), Problem> {
+) -> Result<(StatusCode, WriteHeaders, Json<DeleteRoleResponse>), Problem> {
     let receipt = delete_role(&state, &caller, parse_role_id(&id)?, headers).await?;
     Ok((
+        write_status(&receipt, StatusCode::OK),
         change_headers(&receipt),
         Json(DeleteRoleResponse::from(&receipt)),
     ))

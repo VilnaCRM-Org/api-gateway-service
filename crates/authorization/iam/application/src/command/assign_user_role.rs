@@ -85,7 +85,9 @@ impl AssignUserRoleCommandHandler {
             .await?
             .ok_or_else(unknown_role)?;
         let change = self.change_of(command, role.parts())?;
-        self.unit_of_work.commit(change).await?;
+        self.unit_of_work
+            .commit(change, iam_domain::WriteMode::Published)
+            .await?;
         Ok(())
     }
 

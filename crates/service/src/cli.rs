@@ -186,6 +186,30 @@ pub struct ServeArgs {
     /// Settings of the outbox relay.
     #[command(flatten)]
     pub relay: RelayArgs,
+    /// Settings of the anti-entropy task.
+    #[command(flatten)]
+    pub anti_entropy: AntiEntropyArgs,
+}
+
+/// Settings of the anti-entropy task of `serve`.
+#[derive(Debug, Clone, Default, Args)]
+pub struct AntiEntropyArgs {
+    /// How often the anti-entropy task compares the head of the state topic with PostgreSQL, a
+    /// positive duration (default 5s).
+    #[arg(
+        long = "anti-entropy-head-interval",
+        env = "ANTI_ENTROPY_HEAD_INTERVAL",
+        hide_env_values = true
+    )]
+    pub head_interval: Option<String>,
+    /// How often the anti-entropy task rebuilds the state from the whole topic and compares its
+    /// digest with PostgreSQL, a positive duration of at least the head interval (default 10m).
+    #[arg(
+        long = "anti-entropy-full-interval",
+        env = "ANTI_ENTROPY_FULL_INTERVAL",
+        hide_env_values = true
+    )]
+    pub full_interval: Option<String>,
 }
 
 /// Settings of the maintenance task of `serve`.
@@ -227,6 +251,14 @@ pub struct RelayArgs {
         hide_env_values = true
     )]
     pub transaction_timeout: Option<String>,
+    /// How long a write waits for the Kafka acknowledgement of its policy version before it
+    /// answers `202 Accepted`, from 100ms to 30s (default 5s).
+    #[arg(
+        long = "publish-wait-timeout",
+        env = "PUBLISH_WAIT_TIMEOUT",
+        hide_env_values = true
+    )]
+    pub publish_wait_timeout: Option<String>,
 }
 
 /// Settings of `gateway`: the variables it shares with `serve` and its own.

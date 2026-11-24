@@ -2,6 +2,7 @@
 //! tests. This crate is test code: it is excluded from coverage and mutation by path.
 
 pub mod access_token;
+pub mod anti_entropy;
 pub mod boot_clock;
 pub mod bus;
 pub mod cache;
@@ -25,6 +26,7 @@ pub mod policy_log_producer;
 pub mod policy_read;
 pub mod policy_view;
 pub mod probe;
+pub mod propagation_store;
 pub mod rate_limit_store;
 pub mod rate_policy;
 pub mod repository;

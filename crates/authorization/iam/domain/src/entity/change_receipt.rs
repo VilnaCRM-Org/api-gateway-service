@@ -5,6 +5,7 @@ use crate::value_object::audit_target::AuditTarget;
 use crate::value_object::entity_version::EntityVersion;
 use crate::value_object::identifier::ChangeId;
 use crate::value_object::policy_version::PolicyVersion;
+use crate::value_object::propagation_outcome::PropagationOutcome;
 
 /// The result of a committed change: REST and GraphQL read it after a command that returns no
 /// data, and a replay with the same idempotency key returns it again.
@@ -16,6 +17,7 @@ pub struct ChangeReceipt {
     entity_version: EntityVersion,
     policy_version: Option<PolicyVersion>,
     revoked_assignments: Option<u32>,
+    propagation: Option<PropagationOutcome>,
 }
 
 impl ChangeReceipt {
@@ -35,6 +37,7 @@ impl ChangeReceipt {
             entity_version,
             policy_version,
             revoked_assignments: None,
+            propagation: None,
         }
     }
 
@@ -42,6 +45,14 @@ impl ChangeReceipt {
     #[must_use]
     pub const fn with_revoked_assignments(mut self, count: u32) -> Self {
         self.revoked_assignments = Some(count);
+        self
+    }
+
+    /// The same receipt, carrying what the write learned about the publication of its policy
+    /// version.
+    #[must_use]
+    pub const fn with_propagation(mut self, outcome: PropagationOutcome) -> Self {
+        self.propagation = Some(outcome);
         self
     }
 
@@ -80,6 +91,13 @@ impl ChangeReceipt {
     #[must_use]
     pub const fn revoked_assignments(&self) -> Option<u32> {
         self.revoked_assignments
+    }
+
+    /// What the write learned about the publication of its policy version; none when the change
+    /// does not affect decisions, so it waited for nothing.
+    #[must_use]
+    pub const fn propagation(&self) -> Option<PropagationOutcome> {
+        self.propagation
     }
 }
 

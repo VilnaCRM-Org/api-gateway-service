@@ -2,6 +2,7 @@
 //! translation of database errors.
 
 pub mod advisory_lock_leadership;
+pub mod anti_entropy_store;
 pub mod catalogue;
 pub mod change_receipt;
 pub mod event_encoding;
@@ -14,6 +15,7 @@ pub mod openapi_spec;
 pub mod outbox_listener;
 pub mod outbox_store;
 pub mod policy_read;
+pub mod propagation_store;
 pub mod rate_policy;
 pub mod rest_permission;
 pub mod revocation;

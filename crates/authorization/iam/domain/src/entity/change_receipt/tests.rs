@@ -40,3 +40,24 @@ fn a_receipt_reports_no_revoked_assignments_until_it_is_given_a_count() {
         Some(3)
     );
 }
+
+#[test]
+fn a_receipt_carries_the_propagation_outcome_it_is_given() {
+    use crate::value_object::propagation_outcome::PropagationOutcome;
+
+    let receipt = ChangeReceipt::new(
+        ChangeId::parse("0190f2a8-7b3c-7d4e-8f00-000000000001").unwrap(),
+        ActorRef::User(Uuid::parse("0190f2a8-7b3c-7d4e-8f00-123456789abc").unwrap()),
+        AuditTarget::new("role", "r-1").unwrap(),
+        EntityVersion::new(4).unwrap(),
+        PolicyVersion::new(9).ok(),
+    );
+
+    assert_eq!(receipt.propagation(), None);
+    assert_eq!(
+        receipt
+            .with_propagation(PropagationOutcome::Published { offset: 12 })
+            .propagation(),
+        Some(PropagationOutcome::Published { offset: 12 })
+    );
+}

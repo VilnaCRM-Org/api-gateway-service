@@ -113,7 +113,9 @@ impl SetRolePermissionsCommandHandler {
             .ok_or(IamError::NotFound)?;
         let grants = self.checked_grants(&command.keys).await?;
         let change = self.change_of(role, grants, command)?;
-        self.unit_of_work.commit(change).await?;
+        self.unit_of_work
+            .commit(change, iam_domain::WriteMode::Published)
+            .await?;
         Ok(())
     }
 

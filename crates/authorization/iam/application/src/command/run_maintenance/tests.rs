@@ -85,7 +85,11 @@ struct ConflictingUnitOfWork;
 
 #[async_trait::async_trait]
 impl IamUnitOfWork for ConflictingUnitOfWork {
-    async fn commit(&self, _change: IamChange) -> Result<ChangeReceipt, RepositoryError> {
+    async fn commit(
+        &self,
+        _change: IamChange,
+        _write_mode: iam_domain::WriteMode,
+    ) -> Result<ChangeReceipt, RepositoryError> {
         Err(RepositoryError::Conflict)
     }
 }

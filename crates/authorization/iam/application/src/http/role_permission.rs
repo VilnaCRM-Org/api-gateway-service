@@ -8,14 +8,14 @@ pub mod dto;
 
 use axum::Json;
 use axum::extract::State;
-use axum::http::HeaderName;
 use axum::http::header::ETAG;
+use axum::http::{HeaderName, StatusCode};
 use iam_domain::{ChangeId, ChangeReceipt, IdempotencyRequest, RoleId};
 use shared_application::http::{ApiPath, Problem, ValidatedJson};
 
 use super::IamState;
 use super::extract::{CallerPrincipal, VersionedWriteHeaders};
-use super::response::{WriteHeaders, change_headers, etag};
+use super::response::{WriteHeaders, change_headers, etag, write_status};
 use super::role::parse_role_id;
 use super::user_role::find_replay;
 use crate::command::set_role_permissions::SetRolePermissionsCommand;
@@ -158,7 +158,8 @@ pub async fn list(
     params(
         ("id" = String, Path, format = Uuid, description = "Role identifier"),
         ("If-Match" = String, Header, description = "The `ETag` of the version the replacement changes, such as `\"3\"`."),
-        ("Idempotency-Key" = Option<String>, Header, description = "Makes the replacement safe to repeat for 24 hours; 1 to 255 visible ASCII characters.")
+        ("Idempotency-Key" = Option<String>, Header, description = "Makes the replacement safe to repeat for 24 hours; 1 to 255 visible ASCII characters."),
+        ("Prefer" = Option<String>, Header, description = "What the write waits for: `wait=published` (the default) returns once Kafka acknowledged the policy version, `wait=propagated` is refused with 422 until the gateway pods report their versions.")
     ),
     request_body(content = SetRolePermissionsRequest, content_type = "application/json"),
     responses(
@@ -168,7 +169,18 @@ pub async fn list(
             body = RolePermissionsResponse,
             headers(
                 ("etag" = String, description = "The new version of the role in double quotes."),
-                ("iam-policy-version" = String, description = "The policy version that the change produced.")
+                ("iam-policy-version" = String, description = "The policy version that the change produced."),
+                ("iam-policy-offset" = String, description = "The offset at which Kafka stored the `__head` record of the policy version; present when the change affected decisions and was acknowledged.")
+            )
+        ),
+        (
+            status = 202,
+            description = "The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.",
+            body = RolePermissionsResponse,
+            headers(
+                ("etag" = String, description = "The new version of the role in double quotes."),
+                ("iam-policy-version" = String, description = "The policy version that the change produced."),
+                ("iam-propagation-status" = String, description = "`committed_pending_propagation`.")
             )
         ),
         (status = 400, description = "Invalid input.", body = Problem, content_type = "application/problem+json"),
@@ -195,10 +207,11 @@ pub async fn replace(
     ApiPath(id): ApiPath<String>,
     headers: VersionedWriteHeaders,
     ValidatedJson(body): ValidatedJson<SetRolePermissionsRequest>,
-) -> Result<(WriteHeaders, Json<RolePermissionsResponse>), Problem> {
+) -> Result<(StatusCode, WriteHeaders, Json<RolePermissionsResponse>), Problem> {
     let (permissions, receipt) =
         set_role_permissions(&state, &caller, parse_role_id(&id)?, headers, body).await?;
     Ok((
+        write_status(&receipt, StatusCode::OK),
         change_headers(&receipt),
         Json(RolePermissionsResponse::from(&permissions)),
     ))

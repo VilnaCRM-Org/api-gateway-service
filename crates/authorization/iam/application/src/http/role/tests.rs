@@ -4,7 +4,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::header::{CONTENT_TYPE, ETAG, LOCATION};
 use axum::http::{HeaderMap, Method, Request, StatusCode};
-use iam_domain::{ActorRef, RoleId, RoleKind};
+use iam_domain::{ActorRef, PropagationOutcome, RoleId, RoleKind};
 use rstest::rstest;
 use serde_json::{Value, json};
 use shared_domain::Uuid;
@@ -149,6 +149,75 @@ async fn a_policy_version_of_the_receipt_is_a_response_header() {
 
     assert_eq!(status, StatusCode::CREATED);
     assert_eq!(header(&headers, "iam-policy-version"), Some("5".to_owned()));
+}
+
+#[tokio::test]
+async fn a_published_receipt_is_a_response_with_its_offset() {
+    let answers = Answers {
+        receipt: receipt(Some(5)).with_propagation(PropagationOutcome::Published { offset: 31 }),
+        ..Answers::default()
+    };
+    let (app, _commands, _queries, _asked) = app(answers);
+
+    let (status, headers, _body) = answer(app, post(&[], r#"{"name":"Billing"}"#)).await;
+
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(header(&headers, "iam-policy-version"), Some("5".to_owned()));
+    assert_eq!(header(&headers, "iam-policy-offset"), Some("31".to_owned()));
+    assert_eq!(header(&headers, "iam-propagation-status"), None);
+}
+
+#[tokio::test]
+async fn a_receipt_that_was_not_acknowledged_in_time_is_202_with_its_status() {
+    let answers = Answers {
+        receipt: receipt(Some(5)).with_propagation(PropagationOutcome::CommittedPending),
+        ..Answers::default()
+    };
+    let (app, _commands, _queries, _asked) = app(answers);
+
+    let (status, headers, _body) = answer(app, post(&[], r#"{"name":"Billing"}"#)).await;
+
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(header(&headers, "iam-policy-version"), Some("5".to_owned()));
+    assert_eq!(
+        header(&headers, "iam-propagation-status"),
+        Some("committed_pending_propagation".to_owned())
+    );
+    assert_eq!(header(&headers, "iam-policy-offset"), None);
+}
+
+#[tokio::test]
+async fn waiting_for_the_propagated_mode_is_the_422_problem_naming_the_mode() {
+    let (app, commands, _queries, _asked) = app(Answers::default());
+
+    let (status, _headers, body) = answer(
+        app,
+        post(&[("prefer", "wait=propagated")], r#"{"name":"Billing"}"#),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["violations"][0]["propertyPath"], json!("prefer"));
+    assert!(
+        body["violations"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("propagated")
+    );
+    assert_eq!(commands.dispatched(), Vec::<&str>::new());
+}
+
+#[tokio::test]
+async fn the_published_wait_preference_is_accepted() {
+    let (app, _commands, _queries, _asked) = app(Answers::default());
+
+    let (status, _headers, _body) = answer(
+        app,
+        post(&[("prefer", "wait=published")], r#"{"name":"Billing"}"#),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CREATED);
 }
 
 #[tokio::test]

@@ -92,7 +92,7 @@ async fn draft_graphql(pool: &PgPool, rng: &mut TestRng) -> SpecId {
         vec![GraphQlSpecStatement::insert(&spec, SDL_FIXTURE.to_owned())],
     );
     PgIamUnitOfWork::new(pool.clone())
-        .commit(change)
+        .commit(change, iam_domain::WriteMode::Published)
         .await
         .unwrap();
     spec.parts().id
@@ -114,7 +114,7 @@ async fn draft_openapi(pool: &PgPool, rng: &mut TestRng) -> SpecId {
         )],
     );
     PgIamUnitOfWork::new(pool.clone())
-        .commit(change)
+        .commit(change, iam_domain::WriteMode::Published)
         .await
         .unwrap();
     spec.parts().id
@@ -130,7 +130,10 @@ async fn commit(
         .map(|given| CatalogueStatement::new(given).unwrap())
         .collect();
     PgIamUnitOfWork::new(pool.clone())
-        .commit(catalogue_change(rng, DecisionEffect::Affected, statements))
+        .commit(
+            catalogue_change(rng, DecisionEffect::Affected, statements),
+            iam_domain::WriteMode::Published,
+        )
         .await
         .map(|_receipt| ())
 }
@@ -614,7 +617,7 @@ async fn the_created_keys_of_an_activation_are_read_from_its_event(pool: PgPool)
         |change| change.events = vec![EventEnvelope::of(&event).unwrap()],
     );
     PgIamUnitOfWork::new(pool.clone())
-        .commit(change)
+        .commit(change, iam_domain::WriteMode::Published)
         .await
         .unwrap();
     let permissions = PgGraphQlPermissionRepository::new(pool);
@@ -653,7 +656,7 @@ async fn the_created_keys_of_a_rest_activation_are_read_from_its_event(pool: PgP
         |change| change.events = vec![EventEnvelope::of(&event).unwrap()],
     );
     PgIamUnitOfWork::new(pool.clone())
-        .commit(change)
+        .commit(change, iam_domain::WriteMode::Published)
         .await
         .unwrap();
     let permissions = PgRestPermissionRepository::new(pool);

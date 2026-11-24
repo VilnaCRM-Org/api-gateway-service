@@ -1,12 +1,21 @@
-//! The response headers of the IAM writes: `ETag`, `Location` and `Iam-Policy-Version` (FR-2).
+//! The response headers and statuses of the IAM writes: `ETag`, `Location`, `Iam-Policy-Version`,
+//! `Iam-Policy-Offset` and `Iam-Propagation-Status` (FR-2, FR-75).
 
-use axum::http::HeaderName;
 use axum::http::header::{ETAG, LOCATION};
+use axum::http::{HeaderName, StatusCode};
 use axum::response::AppendHeaders;
-use iam_domain::{ChangeReceipt, EntityVersion};
+use iam_domain::{ChangeReceipt, EntityVersion, PropagationOutcome};
 
 /// The response header that carries the policy version a change produced.
 pub const IAM_POLICY_VERSION: HeaderName = HeaderName::from_static("iam-policy-version");
+
+/// The response header that carries the offset at which Kafka stored the `__head` record of the
+/// policy version; only a write whose version was acknowledged has it.
+pub const IAM_POLICY_OFFSET: HeaderName = HeaderName::from_static("iam-policy-offset");
+
+/// The response header that names the propagation status of a write that was committed and not yet
+/// acknowledged by Kafka, next to the status 202.
+pub const IAM_PROPAGATION_STATUS: HeaderName = HeaderName::from_static("iam-propagation-status");
 
 /// The headers of a write response, to return with its status and body.
 pub type WriteHeaders = AppendHeaders<Vec<(HeaderName, String)>>;
@@ -28,7 +37,29 @@ pub fn change_headers(receipt: &ChangeReceipt) -> WriteHeaders {
     if let Some(version) = receipt.policy_version() {
         headers.push((IAM_POLICY_VERSION, version.value().to_string()));
     }
+    match receipt.propagation() {
+        Some(PropagationOutcome::Published { offset }) => {
+            headers.push((IAM_POLICY_OFFSET, offset.to_string()));
+        }
+        Some(pending @ PropagationOutcome::CommittedPending) => {
+            headers.push((IAM_PROPAGATION_STATUS, pending.status().to_owned()));
+        }
+        None => {}
+    }
     AppendHeaders(headers)
+}
+
+/// The status of a write response.
+///
+/// It is `success` when the write needs no further wait or its version reached Kafka, and
+/// `202 Accepted` when the change is committed and its version was not acknowledged within
+/// `PUBLISH_WAIT_TIMEOUT`.
+#[must_use]
+pub const fn write_status(receipt: &ChangeReceipt, success: StatusCode) -> StatusCode {
+    match receipt.propagation() {
+        Some(PropagationOutcome::CommittedPending) => StatusCode::ACCEPTED,
+        Some(PropagationOutcome::Published { .. }) | None => success,
+    }
 }
 
 /// The headers of a create.

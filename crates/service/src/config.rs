@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use axum::http::Uri;
 use axum::http::uri::Authority;
-use iam_application::MaintenanceSettings;
+use iam_application::{AntiEntropySettings, MaintenanceSettings};
 use iam_domain::{CallerTokenRule, ConfigGates, TokenLifetimeRule, Zone};
 use iam_infrastructure::{
     JwtKeySet, JwtSettings, KafkaSecret, KafkaSecurity, KafkaSettings, SaslMechanism,
@@ -28,8 +28,8 @@ use tracing_subscriber::EnvFilter;
 
 use crate::bootstrap::gateway::listener;
 use crate::cli::{
-    DatabaseArgs, GatewayArgs, KafkaArgs, MaintenanceArgs, MigrateArgs, RelayArgs, ServeArgs,
-    TokenArgs,
+    AntiEntropyArgs, DatabaseArgs, GatewayArgs, KafkaArgs, MaintenanceArgs, MigrateArgs, RelayArgs,
+    ServeArgs, TokenArgs,
 };
 
 /// The largest accepted `JWT_CLOCK_SKEW`.
@@ -113,6 +113,8 @@ pub struct Config {
     pub maintenance: MaintenanceSettings,
     /// The connection that wakes the outbox relay and the timeout of its transactions.
     pub relay: RelaySettings,
+    /// How often the anti-entropy task checks the head and rebuilds the state from the topic.
+    pub anti_entropy: AntiEntropySettings,
 }
 
 /// The settings of the outbox relay.
@@ -123,6 +125,9 @@ pub struct RelaySettings {
     pub listen_url: String,
     /// `KAFKA_TRANSACTION_TIMEOUT`: `transaction.timeout.ms` of the relay producer, 1s to 10s.
     pub transaction_timeout: Duration,
+    /// `PUBLISH_WAIT_TIMEOUT`: how long a write waits for the Kafka acknowledgement of its policy
+    /// version, 100ms to 30s.
+    pub publish_wait_timeout: Duration,
 }
 
 /// The settings of the offline validation of User service access tokens.
@@ -180,7 +185,7 @@ impl Config {
                 Some(limits),
                 Some(tokens),
                 Some(kafka),
-                Some((maintenance, relay)),
+                Some((maintenance, relay, anti_entropy)),
             ) if collector.problems.is_empty() => Ok(Self {
                 app_env: server.app_env,
                 host: server.host,
@@ -196,6 +201,7 @@ impl Config {
                 kafka,
                 maintenance,
                 relay,
+                anti_entropy,
             }),
             _ => Err(ConfigErrors(collector.problems)),
         }
@@ -1068,18 +1074,45 @@ fn maintenance_settings(
     })
 }
 
-/// The settings of the background tasks: the maintenance and the outbox relay.
+/// The settings of the background tasks: the maintenance, the outbox relay and the anti-entropy
+/// task.
 fn task_settings(
     collector: &mut Collector,
     args: &ServeArgs,
     database_url_fallback: Option<&str>,
-) -> Option<(MaintenanceSettings, RelaySettings)> {
+) -> Option<(MaintenanceSettings, RelaySettings, AntiEntropySettings)> {
     let maintenance = maintenance_settings(collector, &args.maintenance);
     let relay = relay_settings(collector, &args.relay, database_url_fallback);
-    Some((maintenance?, relay?))
+    let anti_entropy = anti_entropy_settings(collector, &args.anti_entropy);
+    Some((maintenance?, relay?, anti_entropy?))
 }
 
-/// `DATABASE_LISTEN_URL` (`DATABASE_URL` when it is not set) and `KAFKA_TRANSACTION_TIMEOUT`.
+/// `ANTI_ENTROPY_HEAD_INTERVAL` and `ANTI_ENTROPY_FULL_INTERVAL`: two positive durations, the full
+/// interval at least as long as the head interval.
+fn anti_entropy_settings(
+    collector: &mut Collector,
+    args: &AntiEntropyArgs,
+) -> Option<AntiEntropySettings> {
+    let defaults = AntiEntropySettings::default();
+    let head = collector.collect(
+        "ANTI_ENTROPY_HEAD_INTERVAL",
+        positive_duration(args.head_interval.as_deref(), defaults.head_interval()),
+    );
+    let full = collector.collect(
+        "ANTI_ENTROPY_FULL_INTERVAL",
+        positive_duration(args.full_interval.as_deref(), defaults.full_interval()),
+    );
+    collector.at_least(
+        "ANTI_ENTROPY_FULL_INTERVAL",
+        full,
+        "ANTI_ENTROPY_HEAD_INTERVAL",
+        head,
+    );
+    AntiEntropySettings::new(head?, full?).ok()
+}
+
+/// `DATABASE_LISTEN_URL` (`DATABASE_URL` when it is not set), `KAFKA_TRANSACTION_TIMEOUT` and
+/// `PUBLISH_WAIT_TIMEOUT`.
 fn relay_settings(
     collector: &mut Collector,
     args: &RelayArgs,
@@ -1093,10 +1126,31 @@ fn relay_settings(
         "KAFKA_TRANSACTION_TIMEOUT",
         transaction_timeout(args.transaction_timeout.as_deref()),
     );
+    let publish_wait_timeout = collector.collect(
+        "PUBLISH_WAIT_TIMEOUT",
+        publish_wait_timeout(args.publish_wait_timeout.as_deref()),
+    );
     Some(RelaySettings {
         listen_url: listen_url?,
         transaction_timeout: transaction_timeout?,
+        publish_wait_timeout: publish_wait_timeout?,
     })
+}
+
+/// The shortest accepted `PUBLISH_WAIT_TIMEOUT`.
+const MIN_PUBLISH_WAIT_TIMEOUT: Duration = Duration::from_millis(100);
+
+/// The longest accepted `PUBLISH_WAIT_TIMEOUT`.
+const MAX_PUBLISH_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// `PUBLISH_WAIT_TIMEOUT`: from 100 milliseconds to 30 seconds, 5 seconds by default.
+fn publish_wait_timeout(raw: Option<&str>) -> Parsed<Duration> {
+    let value = duration(raw, Duration::from_secs(5))?;
+    if (MIN_PUBLISH_WAIT_TIMEOUT..=MAX_PUBLISH_WAIT_TIMEOUT).contains(&value) {
+        Ok(value)
+    } else {
+        Err("must be a duration from 100ms to 30s".to_owned())
+    }
 }
 
 /// The shortest accepted `KAFKA_TRANSACTION_TIMEOUT`.

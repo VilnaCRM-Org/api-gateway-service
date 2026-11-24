@@ -14,6 +14,7 @@ pub mod graphql_activation;
 pub mod graphql_permission;
 pub mod graphql_spec;
 pub mod openapi_spec;
+pub mod propagation;
 pub mod rest_activation;
 pub mod rest_permission;
 pub mod role_deletion;
@@ -44,6 +45,7 @@ use crate::http::extract::VersionedWriteHeaders;
 use crate::http::handler::resolve_credential;
 use crate::http::role::{create_role, find_role, list_roles, parse_role_id, update_role};
 use crate::principal::Principal;
+use propagation::{PropagationObject, WriteOutcomeMapper, write_mode};
 
 use access_validation::{
     AccessValidationObject, ValidateAccessInput, validate_access_batch_field, validate_access_field,
@@ -156,6 +158,8 @@ pub struct CreateRoleInput {
     pub description: Option<String>,
     /// Makes the creation safe to repeat for 24 hours: 1 to 255 visible ASCII characters.
     pub idempotency_key: Option<String>,
+    /// What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions.
+    pub consistency: Option<String>,
 }
 
 /// Input of the role-update mutation.
@@ -172,6 +176,8 @@ pub struct UpdateRoleInput {
     pub description: MaybeUndefined<String>,
     /// Makes the update safe to repeat for 24 hours: 1 to 255 visible ASCII characters.
     pub idempotency_key: Option<String>,
+    /// What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions.
+    pub consistency: Option<String>,
 }
 
 /// Filters of the role list.
@@ -204,6 +210,8 @@ pub struct RoleObject {
     pub created_at: String,
     /// When the role was last changed, as an RFC 3339 UTC time.
     pub updated_at: String,
+    /// What the write that returned the role learned about the publication of its policy version; null for a read and for a change that does not affect decisions.
+    pub propagation: Option<PropagationObject>,
 }
 
 impl From<RoleResponse> for RoleObject {
@@ -217,6 +225,7 @@ impl From<RoleResponse> for RoleObject {
             version: response.version,
             created_at: response.created_at,
             updated_at: response.updated_at,
+            propagation: None,
         }
     }
 }
@@ -307,8 +316,12 @@ async fn create_role_field(
         description: input.description,
     };
     request.validate()?;
-    let (role, _receipt) = create_role(state(ctx)?, caller, key, request).await?;
-    Ok(RoleObject::from(RoleResponse::from(role)))
+    write_mode(input.consistency.as_deref())?;
+    let (role, receipt) = create_role(state(ctx)?, caller, key, request).await?;
+    Ok(RoleObject {
+        propagation: WriteOutcomeMapper::propagation(&receipt),
+        ..RoleObject::from(RoleResponse::from(role))
+    })
 }
 
 async fn update_role_field(
@@ -329,9 +342,13 @@ async fn update_role_field(
         description: DescriptionPatch(description),
     };
     request.validate()?;
+    write_mode(input.consistency.as_deref())?;
     let headers = VersionedWriteHeaders { expected, key };
-    let (role, _receipt) = update_role(state(ctx)?, caller, id, headers, request).await?;
-    Ok(RoleObject::from(RoleResponse::from(role)))
+    let (role, receipt) = update_role(state(ctx)?, caller, id, headers, request).await?;
+    Ok(RoleObject {
+        propagation: WriteOutcomeMapper::propagation(&receipt),
+        ..RoleObject::from(RoleResponse::from(role))
+    })
 }
 
 async fn role_field(ctx: &Context<'_>, id: &ID) -> Result<Option<RoleObject>, Problem> {

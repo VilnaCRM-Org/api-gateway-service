@@ -36,7 +36,10 @@ async fn a_committed_change_notifies_the_listener(pool: PgPool) {
     let mut rng = TestRng::from_env();
 
     PgIamUnitOfWork::new(pool)
-        .commit(iam_change(&mut rng, DecisionEffect::Affected, 1))
+        .commit(
+            iam_change(&mut rng, DecisionEffect::Affected, 1),
+            iam_domain::WriteMode::Published,
+        )
         .await
         .unwrap();
 

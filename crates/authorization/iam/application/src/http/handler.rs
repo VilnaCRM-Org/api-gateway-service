@@ -2,7 +2,7 @@
 //!
 //! A handler takes the IAM state and the problem-aware extractors only (`ApiPath`,
 //! `ValidatedQuery`, `ValidatedJson` and `ApiJson`, and the IAM header extractors
-//! `IdempotencyKeyHeader` and `IfMatchHeader`); the test of this module checks every handler
+//! `IdempotencyKeyHeader`, `IfMatchHeader` and `PreferWaitHeader`); the test of this module checks every handler
 //! against that rule.
 
 use axum::Json;

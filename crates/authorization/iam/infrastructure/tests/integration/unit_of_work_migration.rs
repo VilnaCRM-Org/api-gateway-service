@@ -156,6 +156,8 @@ async fn the_idempotency_and_receipt_tables_have_their_columns(pool: PgPool) {
         ["policy_version", "bigint", "YES", ""],
         ["created_at", "timestamp with time zone", "NO", ""],
         ["revoked_assignments", "integer", "YES", ""],
+        ["propagation_status", "text", "YES", ""],
+        ["propagation_offset", "bigint", "YES", ""],
     ];
     assert_eq!(
         keys,
@@ -231,6 +233,14 @@ async fn the_migrations_name_every_constraint_and_index(pool: PgPool) {
             strings(&[
                 "iam_change_receipts_policy_version_check",
                 "CHECK ((policy_version >= 0))"
+            ]),
+            strings(&[
+                "iam_change_receipts_propagation_offset_check",
+                "CHECK ((propagation_offset >= 0))"
+            ]),
+            strings(&[
+                "iam_change_receipts_propagation_status_check",
+                "CHECK ((propagation_status = ANY (ARRAY['published'::text, 'committed_pending_propagation'::text])))"
             ]),
             strings(&[
                 "iam_change_receipts_revoked_assignments_check",

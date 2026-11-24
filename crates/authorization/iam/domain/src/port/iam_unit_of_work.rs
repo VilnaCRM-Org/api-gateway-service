@@ -3,6 +3,7 @@
 use crate::entity::change_receipt::ChangeReceipt;
 use crate::entity::iam_change::IamChange;
 use crate::port::RepositoryError;
+use crate::value_object::write_mode::WriteMode;
 
 /// Commits an administrative change in one transaction.
 ///
@@ -11,7 +12,8 @@ use crate::port::RepositoryError;
 /// idempotency record (FR-2, FR-46, FR-47, FR-49). Either all of them become visible or none.
 #[async_trait::async_trait]
 pub trait IamUnitOfWork: std::fmt::Debug + Send + Sync {
-    /// Commits the change and returns its receipt. An idempotency record of the actor's key that
+    /// Commits the change and returns its receipt; `write_mode` is what the caller waits for
+    /// after the commit (an implementation that waits stores the outcome on the receipt). An idempotency record of the actor's key that
     /// is older than [`IdempotencyRecord::WINDOW`](crate::IdempotencyRecord::WINDOW) at the time of
     /// the change is expired: the change replaces it.
     ///
@@ -22,5 +24,9 @@ pub trait IamUnitOfWork: std::fmt::Debug + Send + Sync {
     /// an idempotency key of the actor that has not expired is already stored, and [`RepositoryError::Unavailable`]
     /// when the storage fails, holds unusable data or an event cannot be encoded; nothing is
     /// written then.
-    async fn commit(&self, change: IamChange) -> Result<ChangeReceipt, RepositoryError>;
+    async fn commit(
+        &self,
+        change: IamChange,
+        write_mode: WriteMode,
+    ) -> Result<ChangeReceipt, RepositoryError>;
 }

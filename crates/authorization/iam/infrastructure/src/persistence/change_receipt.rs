@@ -3,8 +3,11 @@
 
 use iam_domain::{
     ActorRef, AuditTarget, ChangeId, ChangeReceipt, ChangeReceiptRepository, EntityVersion,
-    InvalidIamValue, PolicyVersion, RepositoryError,
+    InvalidIamValue, PolicyVersion, PropagationOutcome, RepositoryError,
 };
+use sqlx::Row as _;
+
+use crate::persistence::propagation_store::SELECT_PROPAGATION;
 
 /// Reads the change receipts from the `iam_change_receipts` table.
 #[derive(Debug)]
@@ -41,7 +44,26 @@ impl PgChangeReceiptRepository {
         .fetch_one(&self.pool)
         .await
         .map_err(translate)?;
-        restore(change_id, &row)
+        let receipt = restore(change_id, &row)?;
+        Ok(match self.propagation(change_id).await? {
+            Some(outcome) => receipt.with_propagation(outcome),
+            None => receipt,
+        })
+    }
+
+    /// The propagation outcome that the receipt stores, none while it stores none.
+    async fn propagation(
+        &self,
+        change_id: ChangeId,
+    ) -> Result<Option<PropagationOutcome>, RepositoryError> {
+        let row = sqlx::query(SELECT_PROPAGATION)
+            .bind(change_id.as_uuid().as_uuid())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(translate)?;
+        let status: Option<String> = row.try_get("propagation_status").map_err(translate)?;
+        let offset: Option<i64> = row.try_get("propagation_offset").map_err(translate)?;
+        Ok(status.and_then(|status| PropagationOutcome::restore(&status, offset)))
     }
 }
 

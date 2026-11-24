@@ -5,7 +5,7 @@ use axum::extract::FromRequestParts;
 use axum::http::header::IF_MATCH;
 use axum::http::request::Parts;
 use axum::http::{HeaderName, HeaderValue};
-use iam_domain::{EntityVersion, IdempotencyKey, InvalidIamValue};
+use iam_domain::{EntityVersion, IdempotencyKey, InvalidIamValue, WriteMode};
 use shared_application::http::{Problem, Violation};
 
 use crate::error::IamError;
@@ -136,7 +136,8 @@ impl IfMatchHeader {
 /// The headers of an update: the `If-Match` version and the optional `Idempotency-Key`.
 ///
 /// A missing or unmatched `If-Match` is rejected first, as [`IfMatchHeader`] does; an invalid key
-/// next, as [`IdempotencyKeyHeader`] does.
+/// next, as [`IdempotencyKeyHeader`] does, and a `Prefer` wait mode that is not delivered last, as
+/// [`PreferWaitHeader`] does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VersionedWriteHeaders {
     /// The version the client read.
@@ -164,7 +165,94 @@ impl VersionedWriteHeaders {
     fn extract(parts: &Parts) -> Result<Self, Problem> {
         let IfMatchHeader(expected) = IfMatchHeader::extract(parts)?;
         let IdempotencyKeyHeader(key) = IdempotencyKeyHeader::extract(parts)?;
+        PreferWaitHeader::extract(parts)?;
         Ok(Self { expected, key })
+    }
+}
+
+/// The request header with which a write names what it waits for.
+pub const PREFER: HeaderName = HeaderName::from_static("prefer");
+
+/// The write mode of the `Prefer: wait=published|propagated` header of a write (FR-75).
+///
+/// A request without the preference waits for the Kafka acknowledgement (`published`). The mode
+/// `propagated` is refused with the 422 problem that names it until the gateway pods report their
+/// versions (Story 13.4); any other value is refused with the 422 problem too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreferWaitHeader(pub WriteMode);
+
+impl<S> FromRequestParts<S> for PreferWaitHeader
+where
+    S: Send + Sync,
+{
+    type Rejection = Problem;
+
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
+        std::future::ready(Self::extract(parts))
+    }
+}
+
+impl PreferWaitHeader {
+    /// Reads the header of the request.
+    fn extract(parts: &Parts) -> Result<Self, Problem> {
+        let requested = parts
+            .headers
+            .get_all(PREFER)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| value.split(','))
+            .filter_map(wait_preference)
+            .next_back();
+        let mode = match requested {
+            None => WriteMode::Published,
+            Some(text) => WriteMode::parse(&text.to_ascii_lowercase()).ok_or_else(|| {
+                Problem::from(IamError::invalid_property(
+                    "prefer",
+                    "The wait preference must be `published` or `propagated`.",
+                    "write_mode",
+                ))
+            })?,
+        };
+        supported_write_mode(mode, "prefer")
+            .map(Self)
+            .map_err(Problem::from)
+    }
+}
+
+/// The value of a `wait=<value>` preference, none for any other preference.
+fn wait_preference(preference: &str) -> Option<&str> {
+    let (name, value) = preference.split_once('=')?;
+    name.trim().eq_ignore_ascii_case("wait").then(|| {
+        value
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .trim_matches('"')
+    })
+}
+
+/// The mode itself when the service delivers it.
+///
+/// # Errors
+///
+/// [`IamError::Invalid`] with a violation of `property` that names the mode, for a mode that is not
+/// delivered yet; REST (`prefer`) and GraphQL (`consistency`) share the refusal.
+pub fn supported_write_mode(mode: WriteMode, property: &str) -> Result<WriteMode, IamError> {
+    if mode.is_supported() {
+        Ok(mode)
+    } else {
+        Err(IamError::invalid_property(
+            property,
+            &format!(
+                "The write mode `{}` is not supported yet; use `published`.",
+                mode.as_str()
+            ),
+            "write_mode_unsupported",
+        ))
     }
 }
 

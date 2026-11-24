@@ -29,7 +29,7 @@ use test_support::upstream::{upstream, upstream_change};
 
 async fn commit(pool: &PgPool, change: IamChange) -> Result<(), RepositoryError> {
     PgIamUnitOfWork::new(pool.clone())
-        .commit(change)
+        .commit(change, iam_domain::WriteMode::Published)
         .await
         .map(|_receipt| ())
 }

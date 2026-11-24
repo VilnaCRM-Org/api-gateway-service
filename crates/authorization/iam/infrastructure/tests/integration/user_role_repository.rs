@@ -58,10 +58,10 @@ async fn stored_role(pool: &PgPool, rng: &mut TestRng, name: &str) -> RoleId {
     let created = role(rng, name, RoleKind::Custom);
     let writer = role_writer(rng);
     PgIamUnitOfWork::new(pool.clone())
-        .commit(role_change(
-            rng,
-            vec![RoleStatement::insert(&created, writer)],
-        ))
+        .commit(
+            role_change(rng, vec![RoleStatement::insert(&created, writer)]),
+            iam_domain::WriteMode::Published,
+        )
         .await
         .unwrap();
     created.parts().id
@@ -74,7 +74,10 @@ async fn save(
     statements: Vec<UserRoleStatement>,
 ) -> Result<(), RepositoryError> {
     PgIamUnitOfWork::new(pool.clone())
-        .commit(user_role_change(rng, statements))
+        .commit(
+            user_role_change(rng, statements),
+            iam_domain::WriteMode::Published,
+        )
         .await
         .map(|_receipt| ())
 }

@@ -47,7 +47,10 @@ async fn insert(
 ) -> Result<(), RepositoryError> {
     let statement = OpenApiSpecStatement::insert(spec, document.to_owned());
     PgIamUnitOfWork::new(pool.clone())
-        .commit(openapi_spec_change(rng, vec![statement]))
+        .commit(
+            openapi_spec_change(rng, vec![statement]),
+            iam_domain::WriteMode::Published,
+        )
         .await
         .map(|_receipt| ())
 }

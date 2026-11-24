@@ -7,6 +7,7 @@ use async_graphql::{Context, ID, InputObject, SimpleObject};
 use iam_domain::{ChangeReceipt, PolicyVersion};
 use shared_application::http::Problem;
 
+use super::propagation::{PropagationObject, WriteOutcomeMapper, write_mode};
 use super::{expected_version, idempotency_key, require_caller, state};
 use crate::http::extract::VersionedWriteHeaders;
 use crate::http::role::{delete_role, parse_role_id};
@@ -21,6 +22,8 @@ pub struct DeleteRoleInput {
     pub expected_version: Option<i64>,
     /// Makes the deletion safe to repeat for 24 hours: 1 to 255 visible ASCII characters.
     pub idempotency_key: Option<String>,
+    /// What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions.
+    pub consistency: Option<String>,
 }
 
 /// The result of a role deletion.
@@ -35,6 +38,8 @@ pub struct DeleteRolePayload {
     pub policy_version: Option<i64>,
     /// The number of assignments that the deletion revoked.
     pub revoked_assignments: i32,
+    /// What the deletion learned about the publication of its policy version.
+    pub propagation: Option<PropagationObject>,
 }
 
 impl From<&ChangeReceipt> for DeleteRolePayload {
@@ -45,6 +50,7 @@ impl From<&ChangeReceipt> for DeleteRolePayload {
             policy_version: receipt.policy_version().map(PolicyVersion::value),
             revoked_assignments: i32::try_from(receipt.revoked_assignments().unwrap_or_default())
                 .unwrap_or(i32::MAX),
+            propagation: WriteOutcomeMapper::propagation(receipt),
         }
     }
 }
@@ -58,6 +64,7 @@ pub(super) async fn delete_role_field(
     let expected = expected_version(input.expected_version)?;
     let id = parse_role_id(input.id.as_str())?;
     let key = idempotency_key(input.idempotency_key.as_deref())?;
+    write_mode(input.consistency.as_deref())?;
     let headers = VersionedWriteHeaders { expected, key };
     let receipt = delete_role(state(ctx)?, caller, id, headers).await?;
     Ok(DeleteRolePayload::from(&receipt))

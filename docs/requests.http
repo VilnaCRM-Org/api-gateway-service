@@ -226,6 +226,27 @@ Content-Type: application/json
   "variables": { "input": { "name": "Billing administrator", "description": "Manages invoices and refunds.", "idempotencyKey": "create-billing-administrator" } }
 }
 
+### Wait for the Kafka acknowledgement of a write: 200, 201 or 204 with Iam-Policy-Version and Iam-Policy-Offset once the version is published, or 202 with Iam-Propagation-Status committed_pending_propagation when PUBLISH_WAIT_TIMEOUT passes first; wait=propagated is refused with 422 until Story 13.4
+PUT {{baseUrl}}/api/roles/01a1c6b5-cb86-7134-868a-7608036facfe/permissions
+Authorization: Bearer <caller token>
+If-Match: "1"
+Prefer: wait=published
+Content-Type: application/json
+
+{
+  "keys": []
+}
+
+### The same wait over GraphQL: the consistency input (PUBLISHED, the default, or PROPAGATED) and the propagation field of the payload; the status is PUBLISHED or COMMITTED_PENDING
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: SetRolePermissionsInput!) { setRolePermissions(input: $input) { id version propagation { status policyVersion podsAcknowledged podsTimedOut } } }",
+  "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe", "expectedVersion": 1, "keys": [], "consistency": "PUBLISHED" } }
+}
+
 ### Get a role over REST: 200 with its ETag, 404 for an unknown id, 422 for an id that is not a UUID
 GET {{baseUrl}}/api/roles/01a1c6b5-cb86-7134-868a-7608036facfe
 Authorization: Bearer <caller token>

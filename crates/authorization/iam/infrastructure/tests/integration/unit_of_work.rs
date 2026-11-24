@@ -112,7 +112,10 @@ async fn a_change_that_affects_decisions_commits_every_record_under_the_next_ver
     let change = iam_change(&mut TestRng::from_env(), DecisionEffect::Affected, 2);
     let unit = PgIamUnitOfWork::new(pool.clone());
 
-    let receipt = unit.commit(change.clone()).await.unwrap();
+    let receipt = unit
+        .commit(change.clone(), iam_domain::WriteMode::Published)
+        .await
+        .unwrap();
 
     let audit = change.parts().audit.parts();
     let record = change.idempotency_record().unwrap();
@@ -173,7 +176,8 @@ async fn a_commit_waits_for_the_policy_version_lock_and_then_shows_everything_at
         .await
         .unwrap();
 
-    let pending = tokio::spawn(async move { unit.commit(change).await });
+    let pending =
+        tokio::spawn(async move { unit.commit(change, iam_domain::WriteMode::Published).await });
     tokio::time::sleep(Duration::from_millis(300)).await;
     let while_locked = counts(&pool).await;
     let finished_while_locked = pending.is_finished();
@@ -208,7 +212,10 @@ async fn a_statement_that_fails_leaves_nothing_visible(pool: PgPool) {
     );
     let unit = PgIamUnitOfWork::new(pool.clone());
 
-    let error = unit.commit(change).await.unwrap_err();
+    let error = unit
+        .commit(change, iam_domain::WriteMode::Published)
+        .await
+        .unwrap_err();
 
     assert!(matches!(error, RepositoryError::Conflict));
     assert_eq!(counts(&pool).await, EMPTY);
@@ -227,7 +234,10 @@ async fn a_statement_that_holds_lets_the_change_commit(pool: PgPool) {
     );
     let unit = PgIamUnitOfWork::new(pool.clone());
 
-    let receipt = unit.commit(change).await.unwrap();
+    let receipt = unit
+        .commit(change, iam_domain::WriteMode::Published)
+        .await
+        .unwrap();
 
     assert_eq!(receipt.policy_version(), policy(1));
 }
@@ -248,14 +258,19 @@ async fn a_failing_last_write_rolls_back_the_version_the_outbox_the_audit_and_th
         },
     );
     let unit = PgIamUnitOfWork::new(pool.clone());
-    unit.commit(first.clone()).await.unwrap();
+    unit.commit(first.clone(), iam_domain::WriteMode::Published)
+        .await
+        .unwrap();
     let before = counts(&pool).await;
     let head = PgSecurityAuditLog::new(pool.clone())
         .chain_head()
         .await
         .unwrap();
 
-    let error = unit.commit(replay.clone()).await.unwrap_err();
+    let error = unit
+        .commit(replay.clone(), iam_domain::WriteMode::Published)
+        .await
+        .unwrap_err();
 
     assert!(matches!(error, RepositoryError::AlreadyExists));
     assert_eq!(
@@ -309,11 +324,19 @@ async fn a_reused_change_id_or_event_id_is_a_duplicate_and_commits_nothing(pool:
         },
     );
     let unit = PgIamUnitOfWork::new(pool.clone());
-    unit.commit(first).await.unwrap();
+    unit.commit(first, iam_domain::WriteMode::Published)
+        .await
+        .unwrap();
     let before = counts(&pool).await;
 
-    let by_change = unit.commit(same_change).await.unwrap_err();
-    let by_event = unit.commit(same_event).await.unwrap_err();
+    let by_change = unit
+        .commit(same_change, iam_domain::WriteMode::Published)
+        .await
+        .unwrap_err();
+    let by_event = unit
+        .commit(same_event, iam_domain::WriteMode::Published)
+        .await
+        .unwrap_err();
 
     assert!(matches!(by_change, RepositoryError::AlreadyExists));
     assert!(matches!(by_event, RepositoryError::AlreadyExists));
@@ -340,7 +363,10 @@ async fn an_event_larger_than_64_kib_is_unavailable_and_commits_nothing(pool: Pg
     );
     let unit = PgIamUnitOfWork::new(pool.clone());
 
-    let error = unit.commit(change).await.unwrap_err();
+    let error = unit
+        .commit(change, iam_domain::WriteMode::Published)
+        .await
+        .unwrap_err();
 
     assert!(matches!(error, RepositoryError::Unavailable(_)));
     assert_eq!(
@@ -370,7 +396,11 @@ async fn a_hundred_changes_from_four_connections_take_consecutive_versions(pool:
         tasks.push(tokio::spawn(async move {
             let mut receipts = Vec::new();
             for change in batch {
-                receipts.push(unit.commit(change).await.unwrap());
+                receipts.push(
+                    unit.commit(change, iam_domain::WriteMode::Published)
+                        .await
+                        .unwrap(),
+                );
             }
             receipts
         }));
@@ -434,9 +464,14 @@ async fn a_change_that_does_not_affect_decisions_keeps_the_version_and_has_no_po
     let affecting = iam_change(&mut rng, DecisionEffect::Affected, 0);
     let neutral = iam_change(&mut rng, DecisionEffect::Unaffected, 1);
     let unit = PgIamUnitOfWork::new(pool.clone());
-    unit.commit(affecting).await.unwrap();
+    unit.commit(affecting, iam_domain::WriteMode::Published)
+        .await
+        .unwrap();
 
-    let receipt = unit.commit(neutral.clone()).await.unwrap();
+    let receipt = unit
+        .commit(neutral.clone(), iam_domain::WriteMode::Published)
+        .await
+        .unwrap();
 
     assert_eq!(receipt.policy_version(), None);
     assert_eq!(counts(&pool).await.version, 1);
@@ -453,7 +488,9 @@ async fn a_change_without_an_idempotency_key_writes_no_idempotency_record(pool: 
     );
     let unit = PgIamUnitOfWork::new(pool.clone());
 
-    unit.commit(change).await.unwrap();
+    unit.commit(change, iam_domain::WriteMode::Published)
+        .await
+        .unwrap();
 
     let after = counts(&pool).await;
     assert_eq!((after.receipts, after.keys), (1, 0));
@@ -465,7 +502,9 @@ async fn a_committed_event_row_is_an_unpublished_envelope_keyed_by_its_aggregate
     let envelope = change.parts().events[0].clone();
     let unit = PgIamUnitOfWork::new(pool.clone());
 
-    unit.commit(change).await.unwrap();
+    unit.commit(change, iam_domain::WriteMode::Published)
+        .await
+        .unwrap();
 
     let row = sqlx::query(
         "SELECT kind, topic, record_key, payload, policy_version, seq, count, digest_after, \
@@ -523,7 +562,9 @@ async fn the_partial_index_covers_unpublished_event_rows_only(pool: PgPool) {
     let change = iam_change(&mut TestRng::from_env(), DecisionEffect::Affected, 2);
     let published = change.parts().events[1].parts().id.as_uuid();
     let unit = PgIamUnitOfWork::new(pool.clone());
-    unit.commit(change.clone()).await.unwrap();
+    unit.commit(change.clone(), iam_domain::WriteMode::Published)
+        .await
+        .unwrap();
     sqlx::query(
         "UPDATE iam_outbox SET published_at = now(), published_offset = 7, relay_epoch = 0 \
          WHERE id = $1",
@@ -581,17 +622,26 @@ async fn a_missing_or_unusable_policy_epoch_row_is_unavailable(pool: PgPool) {
     .await;
     execute(&pool, "UPDATE iam_policy_epoch SET version = -1").await;
     let unusable = unit
-        .commit(iam_change(&mut rng, DecisionEffect::Unaffected, 0))
+        .commit(
+            iam_change(&mut rng, DecisionEffect::Unaffected, 0),
+            iam_domain::WriteMode::Published,
+        )
         .await
         .unwrap_err();
     execute(&pool, "UPDATE iam_policy_epoch SET version = -2").await;
     let incremented = unit
-        .commit(iam_change(&mut rng, DecisionEffect::Affected, 0))
+        .commit(
+            iam_change(&mut rng, DecisionEffect::Affected, 0),
+            iam_domain::WriteMode::Published,
+        )
         .await
         .unwrap_err();
     execute(&pool, "DELETE FROM iam_policy_epoch").await;
     let missing = unit
-        .commit(iam_change(&mut rng, DecisionEffect::Affected, 0))
+        .commit(
+            iam_change(&mut rng, DecisionEffect::Affected, 0),
+            iam_domain::WriteMode::Published,
+        )
         .await
         .unwrap_err();
 
@@ -628,7 +678,10 @@ async fn an_unreachable_database_is_unavailable() {
     .unwrap();
     let unit = PgIamUnitOfWork::new(pool);
 
-    let error = unit.commit(change).await.unwrap_err();
+    let error = unit
+        .commit(change, iam_domain::WriteMode::Published)
+        .await
+        .unwrap_err();
 
     assert!(matches!(error, RepositoryError::Unavailable(_)));
 }
@@ -647,7 +700,10 @@ async fn a_change_that_revokes_assignments_stores_their_number_and_every_audit_r
         .unwrap();
     let unit = PgIamUnitOfWork::new(pool.clone());
 
-    let receipt = unit.commit(change.clone()).await.unwrap();
+    let receipt = unit
+        .commit(change.clone(), iam_domain::WriteMode::Published)
+        .await
+        .unwrap();
 
     assert_eq!(receipt.revoked_assignments(), Some(2));
     assert_eq!(counts(&pool).await.audit, 3);
@@ -671,7 +727,9 @@ async fn a_change_that_revokes_no_assignments_stores_no_number(pool: PgPool) {
     let change = iam_change(&mut TestRng::from_env(), DecisionEffect::Affected, 1);
     let unit = PgIamUnitOfWork::new(pool.clone());
 
-    unit.commit(change.clone()).await.unwrap();
+    unit.commit(change.clone(), iam_domain::WriteMode::Published)
+        .await
+        .unwrap();
 
     let stored: Option<i32> = sqlx::query_scalar(
         "SELECT revoked_assignments FROM iam_change_receipts WHERE change_id = $1",

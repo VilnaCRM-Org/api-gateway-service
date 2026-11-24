@@ -7,6 +7,7 @@ use async_graphql::{Context, ID, InputObject, MaybeUndefined, SimpleObject};
 use shared_application::http::{Problem, Violation};
 use validator::Validate as _;
 
+use super::propagation::{PropagationObject, WriteOutcomeMapper, write_mode};
 use super::{expected_version, idempotency_key, require_caller, state};
 use crate::error::IamError;
 use crate::http::dto::DEFAULT_PAGE_SIZE;
@@ -54,6 +55,8 @@ pub struct AssignUserRoleInput {
     pub expires_at: Option<String>,
     /// Makes the assignment safe to repeat for 24 hours: 1 to 255 visible ASCII characters.
     pub idempotency_key: Option<String>,
+    /// What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions.
+    pub consistency: Option<String>,
 }
 
 /// Input of the assignment-update mutation.
@@ -68,6 +71,8 @@ pub struct UpdateUserRoleInput {
     pub expires_at: MaybeUndefined<String>,
     /// Makes the update safe to repeat for 24 hours: 1 to 255 visible ASCII characters.
     pub idempotency_key: Option<String>,
+    /// What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions.
+    pub consistency: Option<String>,
 }
 
 /// Input of the assignment-revocation mutation.
@@ -80,6 +85,8 @@ pub struct RevokeUserRoleInput {
     pub expected_version: Option<i64>,
     /// Makes the revocation safe to repeat for 24 hours: 1 to 255 visible ASCII characters.
     pub idempotency_key: Option<String>,
+    /// What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions.
+    pub consistency: Option<String>,
 }
 
 /// The result of a revocation.
@@ -92,6 +99,8 @@ pub struct RevokeUserRolePayload {
     pub version: i64,
     /// The policy version that the revocation produced.
     pub policy_version: Option<i64>,
+    /// What the revocation learned about the publication of its policy version.
+    pub propagation: Option<PropagationObject>,
 }
 
 /// Filters of the assignment list.
@@ -170,6 +179,8 @@ pub struct UserRoleObject {
     pub created_at: String,
     /// When the assignment was last changed, as an RFC 3339 UTC time.
     pub updated_at: String,
+    /// What the write that returned the assignment learned about the publication of its policy version; null for a read.
+    pub propagation: Option<PropagationObject>,
 }
 
 impl From<UserRoleResponse> for UserRoleObject {
@@ -184,6 +195,7 @@ impl From<UserRoleResponse> for UserRoleObject {
             version: response.version,
             created_at: response.created_at,
             updated_at: response.updated_at,
+            propagation: None,
         }
     }
 }
@@ -227,8 +239,12 @@ pub(super) async fn assign_user_role_field(
         expires_at: input.expires_at,
     };
     request.validate()?;
-    let (user_role, _receipt) = assign_user_role(state(ctx)?, caller, key, request).await?;
-    Ok(UserRoleObject::from(UserRoleResponse::from(user_role)))
+    write_mode(input.consistency.as_deref())?;
+    let (user_role, receipt) = assign_user_role(state(ctx)?, caller, key, request).await?;
+    Ok(UserRoleObject {
+        propagation: WriteOutcomeMapper::propagation(&receipt),
+        ..UserRoleObject::from(UserRoleResponse::from(user_role))
+    })
 }
 
 /// Reads one assignment; none when it is unknown or revoked.
@@ -290,9 +306,13 @@ pub(super) async fn update_user_role_field(
         expires_at: required_expiry(input.expires_at)?,
     };
     request.validate()?;
+    write_mode(input.consistency.as_deref())?;
     let headers = VersionedWriteHeaders { expected, key };
-    let (user_role, _receipt) = update_user_role(state(ctx)?, caller, id, headers, request).await?;
-    Ok(UserRoleObject::from(UserRoleResponse::from(user_role)))
+    let (user_role, receipt) = update_user_role(state(ctx)?, caller, id, headers, request).await?;
+    Ok(UserRoleObject {
+        propagation: WriteOutcomeMapper::propagation(&receipt),
+        ..UserRoleObject::from(UserRoleResponse::from(user_role))
+    })
 }
 
 /// Revokes an assignment as the caller of the request.
@@ -304,6 +324,7 @@ pub(super) async fn revoke_user_role_field(
     let expected = expected_version(input.expected_version)?;
     let id = parse_user_role_id(input.id.as_str())?;
     let key = idempotency_key(input.idempotency_key.as_deref())?;
+    write_mode(input.consistency.as_deref())?;
     let headers = VersionedWriteHeaders { expected, key };
     let receipt = revoke_user_role(state(ctx)?, caller, id, headers).await?;
     Ok(RevokeUserRolePayload {
@@ -312,5 +333,6 @@ pub(super) async fn revoke_user_role_field(
         policy_version: receipt
             .policy_version()
             .map(iam_domain::PolicyVersion::value),
+        propagation: WriteOutcomeMapper::propagation(&receipt),
     })
 }

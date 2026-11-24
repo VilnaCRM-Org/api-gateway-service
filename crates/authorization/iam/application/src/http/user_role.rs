@@ -3,7 +3,7 @@
 //!
 //! A handler takes the IAM state and the problem-aware extractors only (`ApiPath`,
 //! `ValidatedQuery`, `ValidatedJson`, the IAM extractors `CallerPrincipal` and
-//! `IdempotencyKeyHeader`); the test of the `handler` module checks every handler against that
+//! `IdempotencyKeyHeader`, `PreferWaitHeader`); the test of the `handler` module checks every handler against that
 //! rule.
 
 pub mod dto;
@@ -18,8 +18,10 @@ use iam_domain::{
 use shared_application::http::{ApiPath, Problem, ValidatedJson, ValidatedQuery, Violation};
 
 use super::IamState;
-use super::extract::{CallerPrincipal, IdempotencyKeyHeader, VersionedWriteHeaders};
-use super::response::{WriteHeaders, change_headers, created_headers, etag};
+use super::extract::{
+    CallerPrincipal, IdempotencyKeyHeader, PreferWaitHeader, VersionedWriteHeaders,
+};
+use super::response::{WriteHeaders, change_headers, created_headers, etag, write_status};
 use crate::command::assign_user_role::AssignUserRoleCommand;
 use crate::command::revoke_user_role::RevokeUserRoleCommand;
 use crate::command::update_user_role::UpdateUserRoleCommand;
@@ -251,7 +253,8 @@ pub(crate) async fn list_user_roles(
     summary = "Assigns a role to a subject.",
     description = "Assigns an existing role to a user or a service principal at global or project scope, takes the next policy version and records `iam.user_role.assigned`, and `iam.privileged_role.assigned` as well when the role grants a wildcard or a reserved `iam:` key. The triple of subject, role and scope is unique among assignments that are not revoked. A repeated `Idempotency-Key` with the same body within 24 hours returns the original result.",
     security(("bearerAuth" = [])),
-    params(("Idempotency-Key" = Option<String>, Header, description = "Makes the assignment safe to repeat for 24 hours; 1 to 255 visible ASCII characters.")),
+    params(("Idempotency-Key" = Option<String>, Header, description = "Makes the assignment safe to repeat for 24 hours; 1 to 255 visible ASCII characters."),
+        ("Prefer" = Option<String>, Header, description = "What the write waits for: `wait=published` (the default) returns once Kafka acknowledged the policy version, `wait=propagated` is refused with 422 until the gateway pods report their versions.")),
     request_body(content = AssignUserRoleRequest, content_type = "application/json"),
     responses(
         (
@@ -261,7 +264,19 @@ pub(crate) async fn list_user_roles(
             headers(
                 ("location" = String, description = "Path of the created assignment."),
                 ("etag" = String, description = "The version of the assignment in double quotes."),
-                ("iam-policy-version" = String, description = "The policy version that the change produced.")
+                ("iam-policy-version" = String, description = "The policy version that the change produced."),
+                ("iam-policy-offset" = String, description = "The offset at which Kafka stored the `__head` record of the policy version; present when the change affected decisions and was acknowledged.")
+            )
+        ),
+        (
+            status = 202,
+            description = "The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.",
+            body = UserRoleResponse,
+            headers(
+                ("location" = String, description = "Path of the created assignment."),
+                ("etag" = String, description = "The version of the assignment in double quotes."),
+                ("iam-policy-version" = String, description = "The policy version that the change produced."),
+                ("iam-propagation-status" = String, description = "`committed_pending_propagation`.")
             )
         ),
         (status = 400, description = "Invalid input.", body = Problem, content_type = "application/problem+json"),
@@ -283,12 +298,13 @@ pub async fn assign(
     State(state): State<IamState>,
     CallerPrincipal(caller): CallerPrincipal,
     IdempotencyKeyHeader(key): IdempotencyKeyHeader,
+    PreferWaitHeader(_mode): PreferWaitHeader,
     ValidatedJson(body): ValidatedJson<AssignUserRoleRequest>,
 ) -> Result<(StatusCode, WriteHeaders, Json<UserRoleResponse>), Problem> {
     let (user_role, receipt) = assign_user_role(&state, &caller, key, body).await?;
     let headers = created_headers(&receipt, USER_ROLES_PATH);
     Ok((
-        StatusCode::CREATED,
+        write_status(&receipt, StatusCode::CREATED),
         headers,
         Json(UserRoleResponse::from(user_role)),
     ))
@@ -359,7 +375,8 @@ pub async fn get_one(
     params(
         ("id" = String, Path, format = Uuid, description = "Assignment identifier"),
         ("If-Match" = String, Header, description = "The `ETag` of the version the update changes, such as `\"3\"`."),
-        ("Idempotency-Key" = Option<String>, Header, description = "Makes the update safe to repeat for 24 hours; 1 to 255 visible ASCII characters.")
+        ("Idempotency-Key" = Option<String>, Header, description = "Makes the update safe to repeat for 24 hours; 1 to 255 visible ASCII characters."),
+        ("Prefer" = Option<String>, Header, description = "What the write waits for: `wait=published` (the default) returns once Kafka acknowledged the policy version, `wait=propagated` is refused with 422 until the gateway pods report their versions.")
     ),
     request_body(content = UpdateUserRoleRequest, content_type = "application/json"),
     responses(
@@ -369,7 +386,18 @@ pub async fn get_one(
             body = UserRoleResponse,
             headers(
                 ("etag" = String, description = "The new version of the assignment in double quotes."),
-                ("iam-policy-version" = String, description = "The policy version that the change produced.")
+                ("iam-policy-version" = String, description = "The policy version that the change produced."),
+                ("iam-policy-offset" = String, description = "The offset at which Kafka stored the `__head` record of the policy version; present when the change affected decisions and was acknowledged.")
+            )
+        ),
+        (
+            status = 202,
+            description = "The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.",
+            body = UserRoleResponse,
+            headers(
+                ("etag" = String, description = "The new version of the assignment in double quotes."),
+                ("iam-policy-version" = String, description = "The policy version that the change produced."),
+                ("iam-propagation-status" = String, description = "`committed_pending_propagation`.")
             )
         ),
         (status = 400, description = "Invalid input.", body = Problem, content_type = "application/problem+json"),
@@ -395,10 +423,11 @@ pub async fn update(
     ApiPath(id): ApiPath<String>,
     headers: VersionedWriteHeaders,
     ValidatedJson(body): ValidatedJson<UpdateUserRoleRequest>,
-) -> Result<(WriteHeaders, Json<UserRoleResponse>), Problem> {
+) -> Result<(StatusCode, WriteHeaders, Json<UserRoleResponse>), Problem> {
     let (user_role, receipt) =
         update_user_role(&state, &caller, parse_user_role_id(&id)?, headers, body).await?;
     Ok((
+        write_status(&receipt, StatusCode::OK),
         change_headers(&receipt),
         Json(UserRoleResponse::from(user_role)),
     ))
@@ -422,7 +451,8 @@ pub async fn update(
     params(
         ("id" = String, Path, format = Uuid, description = "Assignment identifier"),
         ("If-Match" = String, Header, description = "The `ETag` of the version the revocation ends, such as `\"3\"`."),
-        ("Idempotency-Key" = Option<String>, Header, description = "Makes the revocation safe to repeat for 24 hours; 1 to 255 visible ASCII characters.")
+        ("Idempotency-Key" = Option<String>, Header, description = "Makes the revocation safe to repeat for 24 hours; 1 to 255 visible ASCII characters."),
+        ("Prefer" = Option<String>, Header, description = "What the write waits for: `wait=published` (the default) returns once Kafka acknowledged the policy version, `wait=propagated` is refused with 422 until the gateway pods report their versions.")
     ),
     responses(
         (
@@ -430,7 +460,17 @@ pub async fn update(
             description = "The assignment was revoked.",
             headers(
                 ("etag" = String, description = "The final version of the assignment in double quotes."),
-                ("iam-policy-version" = String, description = "The policy version that the change produced.")
+                ("iam-policy-version" = String, description = "The policy version that the change produced."),
+                ("iam-policy-offset" = String, description = "The offset at which Kafka stored the `__head` record of the policy version; present when the change affected decisions and was acknowledged.")
+            )
+        ),
+        (
+            status = 202,
+            description = "The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.",
+            headers(
+                ("etag" = String, description = "The final version of the assignment in double quotes."),
+                ("iam-policy-version" = String, description = "The policy version that the change produced."),
+                ("iam-propagation-status" = String, description = "`committed_pending_propagation`.")
             )
         ),
         (status = 400, description = "Invalid identifier.", body = Problem, content_type = "application/problem+json"),
@@ -455,7 +495,10 @@ pub async fn revoke(
     headers: VersionedWriteHeaders,
 ) -> Result<(StatusCode, WriteHeaders), Problem> {
     let receipt = revoke_user_role(&state, &caller, parse_user_role_id(&id)?, headers).await?;
-    Ok((StatusCode::NO_CONTENT, change_headers(&receipt)))
+    Ok((
+        write_status(&receipt, StatusCode::NO_CONTENT),
+        change_headers(&receipt),
+    ))
 }
 
 /// Lists assignments.

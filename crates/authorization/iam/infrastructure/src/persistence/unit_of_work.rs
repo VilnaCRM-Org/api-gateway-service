@@ -9,7 +9,7 @@ use std::time::SystemTime;
 use iam_domain::{
     ChangeReceipt, ChangeStatement, EventEnvelope, IamChange, IamUnitOfWork, IdempotencyRecord,
     InvalidEventEnvelope, InvalidIamValue, LogEpoch, PolicyVersion, RepositoryError,
-    StoredSecurityAuditEvent,
+    StoredSecurityAuditEvent, WriteMode,
 };
 use sqlx::PgConnection;
 use sqlx::types::Uuid as SqlUuid;
@@ -475,7 +475,11 @@ fn unencodable(error: InvalidEventEnvelope) -> RepositoryError {
 
 #[async_trait::async_trait]
 impl IamUnitOfWork for PgIamUnitOfWork {
-    async fn commit(&self, change: IamChange) -> Result<ChangeReceipt, RepositoryError> {
+    async fn commit(
+        &self,
+        change: IamChange,
+        _write_mode: WriteMode,
+    ) -> Result<ChangeReceipt, RepositoryError> {
         self.commit_change(&change).await
     }
 }

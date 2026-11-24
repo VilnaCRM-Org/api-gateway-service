@@ -104,7 +104,9 @@ impl RevokeUserRoleCommandHandler {
         let actor = command.actor.clone();
         let change = self.change_of(user_role, role.parts().name.clone(), command)?;
         let _admission = self.safeguard.admit_revocation(&before, &actor).await?;
-        self.unit_of_work.commit(change).await?;
+        self.unit_of_work
+            .commit(change, iam_domain::WriteMode::Published)
+            .await?;
         Ok(())
     }
 

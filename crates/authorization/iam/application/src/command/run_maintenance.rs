@@ -129,7 +129,11 @@ impl RunMaintenanceCommandHandler {
             return Ok(0);
         };
         let change = self.change_of(&mut role, (first, rest), now)?;
-        match self.unit_of_work.commit(change).await {
+        match self
+            .unit_of_work
+            .commit(change, iam_domain::WriteMode::Published)
+            .await
+        {
             Ok(_receipt) => Ok(held.len()),
             Err(RepositoryError::Conflict) => {
                 log_deferred(role_id);

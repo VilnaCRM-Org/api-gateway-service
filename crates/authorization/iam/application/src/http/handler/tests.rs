@@ -23,7 +23,7 @@ use crate::principal::Principal;
 use crate::query::resolve_subject_token::{ResolveSubjectTokenQuery, TokenResolution};
 
 /// The extractor types a handler of this module may take.
-const ALLOWED_EXTRACTORS: [&str; 9] = [
+const ALLOWED_EXTRACTORS: [&str; 10] = [
     "State<IamState>",
     "CallerPrincipal",
     "ApiPath<",
@@ -33,6 +33,7 @@ const ALLOWED_EXTRACTORS: [&str; 9] = [
     "IdempotencyKeyHeader",
     "IfMatchHeader",
     "VersionedWriteHeaders",
+    "PreferWaitHeader",
 ];
 
 /// Splits `text` at every `separator` that is not nested in brackets.

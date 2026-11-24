@@ -46,8 +46,8 @@ fn a_change_that_affects_decisions_takes_the_next_version_and_one_that_does_not_
     let neutral = iam_change(&mut rng, DecisionEffect::Unaffected, 1);
     let unit = FakeIamUnitOfWork::new();
 
-    let first = block_on(unit.commit(affecting.clone())).unwrap();
-    let second = block_on(unit.commit(neutral.clone())).unwrap();
+    let first = block_on(unit.commit(affecting.clone(), iam_domain::WriteMode::Published)).unwrap();
+    let second = block_on(unit.commit(neutral.clone(), iam_domain::WriteMode::Published)).unwrap();
 
     assert_eq!(first.policy_version(), PolicyVersion::new(1).ok());
     assert_eq!(second.policy_version(), None);
@@ -82,11 +82,13 @@ fn a_failing_statement_a_reused_key_and_a_reused_change_id_commit_nothing() {
         },
     );
     let unit = FakeIamUnitOfWork::new();
-    block_on(unit.commit(stored.clone())).unwrap();
+    block_on(unit.commit(stored.clone(), iam_domain::WriteMode::Published)).unwrap();
 
-    let conflict = block_on(unit.commit(stale)).unwrap_err();
-    let duplicate_key = block_on(unit.commit(same_key)).unwrap_err();
-    let duplicate_id = block_on(unit.commit(same_id)).unwrap_err();
+    let conflict = block_on(unit.commit(stale, iam_domain::WriteMode::Published)).unwrap_err();
+    let duplicate_key =
+        block_on(unit.commit(same_key, iam_domain::WriteMode::Published)).unwrap_err();
+    let duplicate_id =
+        block_on(unit.commit(same_id, iam_domain::WriteMode::Published)).unwrap_err();
 
     assert!(matches!(conflict, RepositoryError::Conflict));
     assert!(matches!(duplicate_key, RepositoryError::AlreadyExists));
@@ -100,7 +102,7 @@ fn the_failing_unit_of_work_is_unavailable_and_holds_nothing() {
     let change = iam_change(&mut TestRng::from_seed(13), DecisionEffect::Affected, 0);
     let unit = FakeIamUnitOfWork::failing();
 
-    let error = block_on(unit.commit(change)).unwrap_err();
+    let error = block_on(unit.commit(change, iam_domain::WriteMode::Published)).unwrap_err();
 
     assert!(matches!(error, RepositoryError::Unavailable(_)));
     assert_eq!(unit.committed(), Vec::<IamChange>::new());

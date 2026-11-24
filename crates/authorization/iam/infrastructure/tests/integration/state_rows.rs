@@ -148,13 +148,23 @@ async fn seeded(pool: &PgPool, rng: &mut TestRng) -> World {
     let second_doomed = user_role(rng, doomed.parts().id, second.clone(), global);
     let first_kept = user_role(rng, kept.parts().id, first.clone(), global);
     let inserts = vec![insert_role(&doomed, rng), insert_role(&kept, rng)];
-    unit.commit(with_statements(rng, inserts)).await.unwrap();
+    unit.commit(
+        with_statements(rng, inserts),
+        iam_domain::WriteMode::Published,
+    )
+    .await
+    .unwrap();
     let assigned = vec![
         insert_assignment(&first_doomed),
         insert_assignment(&second_doomed),
         insert_assignment(&first_kept),
     ];
-    unit.commit(with_statements(rng, assigned)).await.unwrap();
+    unit.commit(
+        with_statements(rng, assigned),
+        iam_domain::WriteMode::Published,
+    )
+    .await
+    .unwrap();
     World {
         doomed,
         kept,
@@ -172,7 +182,7 @@ async fn a_role_created_through_the_unit_of_work_writes_its_state_and_the_head(p
     let change = role_change(&mut rng, vec![RoleStatement::insert(&created, writer)]);
 
     PgIamUnitOfWork::new(pool.clone())
-        .commit(change)
+        .commit(change, iam_domain::WriteMode::Published)
         .await
         .unwrap();
 
@@ -240,7 +250,7 @@ async fn a_deleted_role_is_a_tombstone_and_each_affected_subject_gets_its_remain
     let change = with_statements(&mut rng, statements);
 
     PgIamUnitOfWork::new(pool.clone())
-        .commit(change)
+        .commit(change, iam_domain::WriteMode::Published)
         .await
         .unwrap();
 
@@ -299,7 +309,7 @@ async fn the_digest_after_the_last_record_of_every_version_is_the_stored_digest(
     let change = with_statements(&mut rng, statements);
 
     PgIamUnitOfWork::new(pool.clone())
-        .commit(change)
+        .commit(change, iam_domain::WriteMode::Published)
         .await
         .unwrap();
 
@@ -319,9 +329,12 @@ async fn replaying_the_state_rows_into_an_empty_map_gives_the_digest_of_postgres
         epoch_digest(&pool).await
     );
     let first_revocation = vec![revoke(world.on_doomed[0].parts())];
-    unit.commit(with_statements(&mut rng, first_revocation))
-        .await
-        .unwrap();
+    unit.commit(
+        with_statements(&mut rng, first_revocation),
+        iam_domain::WriteMode::Published,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         replayed_digest(&rows(&pool).await),
         epoch_digest(&pool).await
@@ -330,7 +343,12 @@ async fn replaying_the_state_rows_into_an_empty_map_gives_the_digest_of_postgres
         delete(&world.doomed, &mut rng),
         revoke(world.on_doomed[1].parts()),
     ];
-    unit.commit(with_statements(&mut rng, last)).await.unwrap();
+    unit.commit(
+        with_statements(&mut rng, last),
+        iam_domain::WriteMode::Published,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(
         replayed_digest(&rows(&pool).await),
@@ -350,7 +368,7 @@ async fn a_change_that_does_not_affect_decisions_writes_no_state_row_and_keeps_t
     );
 
     PgIamUnitOfWork::new(pool.clone())
-        .commit(change)
+        .commit(change, iam_domain::WriteMode::Published)
         .await
         .unwrap();
 
@@ -369,7 +387,7 @@ async fn a_statement_that_fails_leaves_no_state_row_and_no_head(pool: PgPool) {
     let change = with_statements(&mut rng, statements);
 
     let error = PgIamUnitOfWork::new(pool.clone())
-        .commit(change)
+        .commit(change, iam_domain::WriteMode::Published)
         .await
         .unwrap_err();
 
@@ -384,7 +402,7 @@ async fn a_change_that_changes_no_entity_writes_only_the_head(pool: PgPool) {
     let change = with_statements(&mut rng, Vec::new());
 
     PgIamUnitOfWork::new(pool.clone())
-        .commit(change)
+        .commit(change, iam_domain::WriteMode::Published)
         .await
         .unwrap();
 
