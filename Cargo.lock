@@ -3626,6 +3626,8 @@ dependencies = [
  "health-check-infrastructure",
  "http-body-util",
  "humantime",
+ "hyper",
+ "hyper-util",
  "iam-application",
  "iam-domain",
  "iam-infrastructure",

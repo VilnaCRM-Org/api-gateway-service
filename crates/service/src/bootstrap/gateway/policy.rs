@@ -20,12 +20,12 @@ use std::time::Duration;
 
 use iam_application::{
     BootstrapMachine, BootstrapOutcome, BootstrapPorts, BootstrapSnapshot, DerivedStateChecker,
-    FenceCause, FreshnessProber, PodStatus, ProofSink, TailApplier, TailEnd, TailMachine,
-    TailPorts, TailProgress, rebootstrap_delay, run_bootstrap, run_tail,
+    FenceCause, FreshnessProber, PeerReadinessChecker, PeerSet, PodStatus, ProofSink, TailApplier,
+    TailEnd, TailMachine, TailPorts, TailProgress, rebootstrap_delay, run_bootstrap, run_tail,
 };
 use iam_domain::{
-    BootClock, KafkaTopicInspector, PolicyBootstrapLog, PolicyDigest, PolicyTailLog, Rng,
-    StateRecordCodec,
+    BootClock, KafkaTopicInspector, PeerFreshnessClient, PolicyBootstrapLog, PolicyDigest,
+    PolicyTailLog, Rng, StateRecordCodec,
 };
 use iam_infrastructure::{
     ArcSwapPolicySnapshot, JsonStateRecordCodec, KrafkaPolicyLogTail, KrafkaTopicInspector,
@@ -38,6 +38,7 @@ use tokio::sync::{oneshot, watch};
 
 use super::apply_thread::{ApplyError, ApplyThread};
 use super::freshness::FreshnessAdapters;
+use super::readiness::ReadinessAdapters;
 use crate::bootstrap::TaskSupervisor;
 use crate::config::GatewayConfig;
 
@@ -95,6 +96,9 @@ pub struct PolicyAdapters {
     pub freshness: Option<FreshnessAdapters>,
     /// What the probes read about the start of the pod (Story 9.7).
     pub status: Arc<PodStatus>,
+    /// The peer-relative readiness; `None` leaves the readiness probe on the proof age of the pod
+    /// (Story 15.1).
+    pub readiness: Option<ReadinessAdapters>,
 }
 
 impl PolicyAdapters {
@@ -135,6 +139,18 @@ impl PolicyAdapters {
         self
     }
 
+    /// The same wiring with the peer-relative readiness; the peers also serve the cross-check of
+    /// the freshness proof.
+    #[must_use]
+    pub fn comparing(mut self, readiness: ReadinessAdapters) -> Self {
+        if let Some(freshness) = self.freshness.as_mut() {
+            let peers: Arc<dyn PeerFreshnessClient> = Arc::<PeerSet>::clone(&readiness.peers);
+            freshness.peers = peers;
+        }
+        self.readiness = Some(readiness);
+        self
+    }
+
     /// The same wiring with the tail and the topic verdict.
     #[must_use]
     pub fn following(mut self, tail: TailAdapters) -> Self {
@@ -165,6 +181,7 @@ impl PolicyAdapters {
             tail: None,
             freshness: None,
             status: Arc::new(PodStatus::new()),
+            readiness: None,
         }
     }
 }
@@ -218,10 +235,24 @@ pub fn start_policy_with_thread(
             prober.run(stopping)
         });
     }
+    spawn_peer_readiness(&policy, tasks);
     tasks.spawn(BOOTSTRAP_TASK, move |stopping| {
         policy_task(policy, thread, stopping, tail_dead)
     });
     Ok((death, handle))
+}
+
+/// Starts the task that compares the pod with its peers, when the readiness adapters and the
+/// freshness state are wired.
+fn spawn_peer_readiness(policy: &PolicyAdapters, tasks: &mut TaskSupervisor) {
+    if let (Some(freshness), Some(readiness)) =
+        (policy.freshness.as_ref(), policy.readiness.as_ref())
+    {
+        let checker = readiness.checker(Arc::clone(&freshness.state));
+        tasks.spawn(PeerReadinessChecker::name(), move |stopping| {
+            checker.run(stopping)
+        });
+    }
 }
 
 /// Sends the one death notice when either side dies; two clean endings send none.

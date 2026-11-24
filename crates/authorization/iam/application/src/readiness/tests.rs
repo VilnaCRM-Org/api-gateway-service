@@ -248,3 +248,55 @@ fn the_status_records_each_fact_on_its_own() {
     status.end_rebootstrap();
     assert!(!status.is_rebootstrapping());
 }
+
+#[test]
+fn with_peer_readiness_a_stale_pod_stays_ready_until_the_gate_fails_it() {
+    use crate::peer_readiness::ReadinessGate;
+
+    let pod = bootstrapped();
+    prove(&pod);
+    let gate = Arc::new(ReadinessGate::new());
+    let probes = pod.probes.clone().with_peer_readiness(Arc::clone(&gate));
+    pod.clock.advance(Duration::from_secs(3));
+
+    assert_eq!(pod.probes.ready(), Err(NotReady::ProofAged));
+    assert_eq!(probes.ready(), Ok(()));
+
+    gate.set_ready(false);
+    assert_eq!(probes.ready(), Err(NotReady::StaleAgainstPeers));
+    assert_eq!(probes.startup(), Ok(()));
+
+    gate.set_ready(true);
+    assert_eq!(probes.ready(), Ok(()));
+}
+
+#[test]
+fn with_peer_readiness_the_conditions_of_the_start_still_apply() {
+    use crate::peer_readiness::ReadinessGate;
+
+    let pod = pod_with(published());
+    let probes = pod
+        .probes
+        .with_peer_readiness(Arc::new(ReadinessGate::new()));
+    assert_eq!(
+        probes.ready(),
+        Err(NotReady::NotStarted(NotStarted::KeysNotParsed))
+    );
+
+    let pod = bootstrapped();
+    prove(&pod);
+    let probes = pod
+        .probes
+        .clone()
+        .with_peer_readiness(Arc::new(ReadinessGate::new()));
+    pod.status.begin_rebootstrap();
+    assert_eq!(probes.ready(), Err(NotReady::Rebootstrapping));
+}
+
+#[test]
+fn the_pod_that_left_the_load_balancer_for_its_peers_says_so() {
+    assert_eq!(
+        NotReady::StaleAgainstPeers.to_string(),
+        "the pod is stale while its peers are fresh"
+    );
+}

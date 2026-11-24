@@ -163,7 +163,7 @@ fn futures_free_block_on<F: Future>(future: F) -> F::Output {
 }
 
 #[test]
-fn kubernetes_discovery_watches_the_peers_only_when_the_zone_must_come_from_them() {
+fn kubernetes_discovery_watches_the_peers_of_an_identified_pod_whatever_the_source_of_its_zone() {
     let identified = |edit: fn(&mut GatewayArgs)| {
         let config = config(|args| {
             args.pod_name = Some("gateway-0".to_owned());
@@ -180,7 +180,7 @@ fn kubernetes_discovery_watches_the_peers_only_when_the_zone_must_come_from_them
     let peers = derived.first().unwrap();
     assert_eq!(peers.namespace, "iam");
     assert_eq!(peers.service, PEERS_SERVICE);
-    assert_eq!(explicit.len(), 0);
+    assert_eq!(explicit, derived);
 }
 
 #[test]

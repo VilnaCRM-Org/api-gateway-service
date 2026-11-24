@@ -8,8 +8,9 @@
 //! - startup passes once every condition of the start held, and then stays passed for the life of
 //!   the pod, so a pod that fences later is never restarted for it;
 //! - ready passes while the pod is started, not rebootstrapping, holds a published snapshot, the
-//!   freshness rule finds it fresh and its proof is no older than `FRESHNESS_READY_BOUND`; Story
-//!   15.1 replaces that age check with the peer-relative verdict;
+//!   freshness rule finds it fresh and its proof is no older than `FRESHNESS_READY_BOUND`; with a
+//!   [`ReadinessGate`] (Story 15.1) that age check is replaced by the peer-relative verdict: the pod
+//!   is ready until the [`PeerReadinessChecker`](crate::PeerReadinessChecker) fails it;
 //! - live passes while the watchdog of the freshness state ticked less than [`LIVENESS_LIMIT`]
 //!   ago, and reads no dependency at all.
 
@@ -20,6 +21,7 @@ use std::time::Duration;
 use iam_domain::PolicyView;
 
 use crate::freshness::FreshnessState;
+use crate::peer_readiness::ReadinessGate;
 
 /// The longest silence of the watchdog under which `/ping` still answers 200.
 pub const LIVENESS_LIMIT: Duration = Duration::from_secs(10);
@@ -59,6 +61,9 @@ pub enum NotReady {
     /// The proof is older than `FRESHNESS_READY_BOUND`.
     #[error("the freshness proof is older than the ready bound")]
     ProofAged,
+    /// The pod is stale while its peers are fresh: it left the load balancer.
+    #[error("the pod is stale while its peers are fresh")]
+    StaleAgainstPeers,
 }
 
 /// The facts of the start of a pod, written by the composition root and read by the probes.
@@ -146,6 +151,7 @@ pub struct PodProbes {
     status: Arc<PodStatus>,
     freshness: Arc<FreshnessState>,
     view: Arc<dyn PolicyView>,
+    peer_readiness: Option<Arc<ReadinessGate>>,
 }
 
 impl PodProbes {
@@ -160,7 +166,16 @@ impl PodProbes {
             status,
             freshness,
             view,
+            peer_readiness: None,
         }
+    }
+
+    /// The same probes with the peer-relative readiness: the pod is ready until `gate` says it is
+    /// not, and its own proof age no longer decides.
+    #[must_use]
+    pub fn with_peer_readiness(mut self, gate: Arc<ReadinessGate>) -> Self {
+        self.peer_readiness = Some(gate);
+        self
     }
 
     /// The startup probe.
@@ -203,6 +218,13 @@ impl PodProbes {
         }
         if self.view.current().is_none() {
             return Err(NotReady::NoSnapshot);
+        }
+        if let Some(gate) = &self.peer_readiness {
+            return if gate.is_ready() {
+                Ok(())
+            } else {
+                Err(NotReady::StaleAgainstPeers)
+            };
         }
         let reading = self.freshness.reading();
         if !reading.verdict.is_fresh() {

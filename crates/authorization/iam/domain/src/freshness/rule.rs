@@ -2,7 +2,10 @@
 
 use std::time::Duration;
 
+use super::peer_report::PeerReport;
 use super::proof::FreshnessProof;
+use super::readiness::{self, ReadinessVerdict};
+use crate::endpoint::zone::Zone;
 use crate::value_object::boot_instant::BootInstant;
 
 /// Why a pod is not fresh.
@@ -67,6 +70,24 @@ impl FreshnessRule {
     #[must_use]
     pub fn gap_breaks_proof(&self, gap: Duration) -> bool {
         gap > self.ready_bound
+    }
+
+    /// Whether a pod with the verdict `fresh` and a proof of age `proof_age` counts as current for
+    /// the peer comparison: fresh, and a proof no older than `FRESHNESS_READY_BOUND`.
+    #[must_use]
+    pub fn is_current(&self, fresh: bool, proof_age: Option<Duration>) -> bool {
+        fresh && proof_age.is_some_and(|age| age <= self.ready_bound)
+    }
+
+    /// The readiness verdict of a pod that is `own_current` or not, in `own_zone`, after it asked
+    /// the `peers` (FR-85): local, zone-shaped or fleet-wide.
+    #[must_use]
+    pub fn readiness_verdict(
+        own_current: bool,
+        own_zone: Option<&Zone>,
+        peers: &[PeerReport],
+    ) -> ReadinessVerdict {
+        readiness::judge(own_current, own_zone, peers)
     }
 
     /// The verdict at `now` for `proof`, given the largest gap the watchdog saw since it.

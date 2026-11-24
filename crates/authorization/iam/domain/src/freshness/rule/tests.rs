@@ -70,3 +70,32 @@ fn the_gap_rule_compares_with_the_ready_bound() {
     assert!(rule().gap_breaks_proof(Duration::from_millis(2_001)));
     assert!(!rule().gap_breaks_proof(READY));
 }
+
+#[test]
+fn a_fresh_pod_counts_as_current_up_to_the_ready_bound_only() {
+    let rule = rule();
+
+    assert!(rule.is_current(true, Some(READY)));
+    assert!(!rule.is_current(true, Some(Duration::from_millis(2_001))));
+    assert!(!rule.is_current(true, None));
+    assert!(!rule.is_current(false, Some(Duration::ZERO)));
+}
+
+#[test]
+fn the_rule_hands_the_readiness_verdict_to_the_peer_comparison() {
+    use crate::freshness::peer_report::{PeerObservation, PeerReport};
+    use crate::freshness::readiness::ReadinessVerdict;
+
+    let observation = PeerObservation {
+        version: None,
+        fresh: true,
+        proof_age: Some(Duration::from_millis(100)),
+    };
+    let peers = [PeerReport::judged(None, observation, &rule())];
+
+    assert!(peers.iter().all(|peer| peer.current));
+    assert_eq!(
+        FreshnessRule::readiness_verdict(false, None, &peers),
+        ReadinessVerdict::Local
+    );
+}

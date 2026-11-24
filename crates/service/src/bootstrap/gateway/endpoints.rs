@@ -109,7 +109,8 @@ fn kubernetes_source(
 }
 
 /// The peers Service of the namespace of this pod.
-fn peers_target(config: &GatewayConfig) -> WatchTarget {
+#[must_use]
+pub fn peers_target(config: &GatewayConfig) -> WatchTarget {
     WatchTarget {
         namespace: config
             .pod_namespace
@@ -119,12 +120,13 @@ fn peers_target(config: &GatewayConfig) -> WatchTarget {
     }
 }
 
-/// The Services to watch under Kubernetes discovery: the peers Service, but only when the zone of
-/// the pod must come from it (no `GATEWAY_ZONE`) and the pod knows its own name and namespace.
-/// The upstream Services are added with the snapshot of the routes.
+/// The Services to watch under Kubernetes discovery: the peers Service, whenever the pod knows its
+/// own name and namespace. Its slices give the pod its zone (unless `GATEWAY_ZONE` sets it) and
+/// the peers it compares itself with (Story 15.1). The upstream Services are added with the
+/// snapshot of the routes.
 fn kubernetes_targets(config: &GatewayConfig, peers: &WatchTarget) -> Vec<WatchTarget> {
     let identified = config.pod_name.is_some() && config.pod_namespace.is_some();
-    if identified && config.endpoints.zone.is_none() {
+    if identified {
         vec![peers.clone()]
     } else {
         Vec::new()

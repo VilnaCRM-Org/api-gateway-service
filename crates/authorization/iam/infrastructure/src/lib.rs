@@ -29,7 +29,7 @@ pub use kubernetes::{
     KubernetesEndpointWatch, KubernetesSettings, KubernetesSetupError, StaticEndpointWatch,
     StaticEndpointsError,
 };
-pub use peer_freshness::EmptyPeerFreshnessClient;
+pub use peer_freshness::{EmptyPeerFreshnessClient, HyperPeerFreshnessClient};
 pub use persistence::PgPolicyEpochRepository;
 pub use persistence::advisory_lock_leadership::AdvisoryLockLeadership;
 pub use persistence::anti_entropy_store::PgAntiEntropyStore;

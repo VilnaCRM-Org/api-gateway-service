@@ -1,9 +1,15 @@
-//! The adapters of the peer freshness port.
+//! The adapters of the peer freshness ports.
 //!
-//! Until Story 15.1 wires the HTTP client that asks the peer pods, the composition root passes an
-//! empty peer set, so the cross-check of the freshness proof is inactive.
+//! [`HyperPeerFreshnessClient`] reads `GET /internal/freshness` of one gateway pod over plain
+//! HTTP (FR-85). [`EmptyPeerFreshnessClient`] is a peer set with no peer, for the pods and tests
+//! that run without the endpoint discovery of their peers: the cross-check of the freshness proof
+//! is inactive there.
+
+pub mod hyper_client;
 
 use iam_domain::{PeerFreshnessClient, PolicyVersion};
+
+pub use hyper_client::HyperPeerFreshnessClient;
 
 /// A peer set with no peer: it reports no applied version.
 #[derive(Debug, Clone, Copy, Default)]

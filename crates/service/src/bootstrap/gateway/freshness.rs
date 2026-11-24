@@ -31,7 +31,8 @@ pub struct FreshnessAdapters {
 
 impl FreshnessAdapters {
     /// The production wiring: the probe reads the state topic under the principal `iam-gateway`,
-    /// and the peer set is empty until Story 15.1.
+    /// and the peer set is empty until `PolicyAdapters::comparing` replaces it with the sampled
+    /// peers of the pod (Story 15.1).
     #[must_use]
     pub fn from_config(config: &GatewayConfig, clock: Arc<dyn BootClock>) -> Self {
         let rule = FreshnessRule::new(config.freshness_hard_bound, config.freshness_ready_bound);

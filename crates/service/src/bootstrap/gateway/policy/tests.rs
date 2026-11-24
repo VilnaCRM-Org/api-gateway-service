@@ -573,3 +573,101 @@ async fn a_completed_rebootstrap_lifts_the_flag() {
     assert_eq!(tasks.stop(BOUND).await, crate::bootstrap::TaskStop::Drained);
     drop(death);
 }
+
+fn readiness_config() -> crate::config::GatewayConfig {
+    use test_support::access_token::DEVELOPMENT_PUBLIC_KEYS_FILE;
+
+    let mut args = crate::cli::GatewayArgs::default();
+    args.service.app_env = Some("test".to_owned());
+    args.service.tokens.public_keys_file = Some(DEVELOPMENT_PUBLIC_KEYS_FILE.to_owned());
+    args.service.kafka.bootstrap_servers = Some("localhost:9092".to_owned());
+    args.service.kafka.security_protocol = Some("PLAINTEXT".to_owned());
+    args.pod_name = Some("gateway-0".to_owned());
+    crate::config::GatewayConfig::from_args(&args).unwrap()
+}
+
+#[tokio::test]
+async fn the_peer_readiness_checker_runs_beside_the_prober_when_the_readiness_is_wired() {
+    use iam_application::{EndpointDirectory, FreshnessState, ZoneSource};
+    use iam_domain::{FreshnessRule, WatchTarget};
+    use test_support::peer_freshness_client::FakePeerFreshnessClient;
+    use test_support::peer_freshness_reader::FakePeerFreshnessReader;
+    use test_support::policy_log_probe::FakePolicyLogProbe;
+
+    use crate::bootstrap::gateway::freshness::FreshnessAdapters;
+    use crate::bootstrap::gateway::readiness::ReadinessAdapters;
+
+    let clock = Arc::new(FakeBootClock::new());
+    let freshness = FreshnessAdapters {
+        state: Arc::new(FreshnessState::new(
+            FreshnessRule::new(Duration::from_secs(15), Duration::from_secs(2)),
+            Arc::<FakeBootClock>::clone(&clock),
+        )),
+        probe: Arc::new(FakePolicyLogProbe::scripted(Vec::new())),
+        peers: Arc::new(FakePeerFreshnessClient::new()),
+        clock: Arc::<FakeBootClock>::clone(&clock),
+        probe_interval: Duration::from_secs(1),
+    };
+    let peers = WatchTarget {
+        namespace: "iam".to_owned(),
+        service: "iam-gateway-peers".to_owned(),
+    };
+    let directory = EndpointDirectory::new(ZoneSource {
+        peers: peers.clone(),
+        pod: Some("gateway-0".to_owned()),
+        explicit: None,
+    });
+    let readiness = ReadinessAdapters::with(
+        &readiness_config(),
+        &directory,
+        peers,
+        Arc::new(FakePeerFreshnessReader::new()),
+        Arc::new(FakeRng::seeded(1)),
+    );
+    let adapters = adapters(FakePolicyBootstrapLog::with(Vec::new()))
+        .proving(freshness)
+        .comparing(readiness);
+    let (stop, mut tasks) = supervisor();
+
+    let death = start_policy(&adapters, &mut tasks).unwrap();
+
+    assert_eq!(
+        tasks.len(),
+        3,
+        "the prober, the peer checker and the bootstrap run"
+    );
+    stop.send_replace(true);
+    assert_eq!(tasks.stop(BOUND).await, crate::bootstrap::TaskStop::Drained);
+    assert!(tokio::time::timeout(BOUND, death).await.unwrap().is_err());
+}
+
+#[test]
+fn readiness_without_a_freshness_state_changes_no_cross_check() {
+    use iam_application::{EndpointDirectory, ZoneSource};
+    use iam_domain::WatchTarget;
+    use test_support::peer_freshness_reader::FakePeerFreshnessReader;
+
+    use crate::bootstrap::gateway::readiness::ReadinessAdapters;
+
+    let peers = WatchTarget {
+        namespace: "iam".to_owned(),
+        service: "iam-gateway-peers".to_owned(),
+    };
+    let directory = EndpointDirectory::new(ZoneSource {
+        peers: peers.clone(),
+        pod: None,
+        explicit: None,
+    });
+    let readiness = ReadinessAdapters::with(
+        &readiness_config(),
+        &directory,
+        peers,
+        Arc::new(FakePeerFreshnessReader::new()),
+        Arc::new(FakeRng::seeded(1)),
+    );
+
+    let wired = adapters(FakePolicyBootstrapLog::with(Vec::new())).comparing(readiness);
+
+    assert!(wired.freshness.is_none());
+    assert!(wired.readiness.is_some());
+}
