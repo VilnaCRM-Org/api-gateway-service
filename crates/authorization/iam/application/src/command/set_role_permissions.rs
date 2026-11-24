@@ -8,8 +8,8 @@ use iam_domain::{
     DecisionEffect, EntityVersion, GraphQlPermission, GraphQlPermissionRepository, GuardCheck,
     IamChange, IamChangeParts, IamUnitOfWork, IdempotencyRequest, PermissionGrant,
     PermissionGrantSet, PermissionKey, PermissionKeyKind, RestPermission, RestPermissionRepository,
-    Role, RoleId, RoleParts, RoleRepository, RoleStamp, RoleStatement, SecurityAuditEvent,
-    SecurityAuditEventId, SecurityAuditEventParts, ServiceName,
+    Role, RoleId, RoleKind, RoleParts, RoleRepository, RoleStamp, RoleStatement,
+    SecurityAuditEvent, SecurityAuditEventId, SecurityAuditEventParts, ServiceName,
 };
 use shared_application::http::Violation;
 use shared_domain::{Clock, Command, CommandHandler, UuidGenerator};
@@ -69,7 +69,8 @@ pub struct SetRolePermissionsReads {
 
 /// Handles [`SetRolePermissionsCommand`].
 ///
-/// It reads the role, checks every key against the active catalogue of its service (a wildcard
+/// It reads the role, refuses a system role (the grants of `iam-platform-admin` and every other
+/// system role are fixed by the bootstrap, FR-22), checks every key against the active catalogue of its service (a wildcard
 /// needs a service that has a catalogue), replaces the grant set through the aggregate (which checks
 /// the version) and commits the role statement, `iam.role_permissions.changed` and the audit record
 /// through the unit of work in one transaction. The change affects decisions, so it takes the next
@@ -111,6 +112,9 @@ impl SetRolePermissionsCommandHandler {
             .find_by_id(command.role_id)
             .await?
             .ok_or(IamError::NotFound)?;
+        if role.parts().kind == RoleKind::System {
+            return Err(IamError::Forbidden);
+        }
         let grants = self.checked_grants(&command.keys).await?;
         let change = self.change_of(role, grants, command)?;
         self.unit_of_work

@@ -195,6 +195,9 @@ pub struct ServeArgs {
     /// Settings of the declarative route configuration.
     #[command(flatten)]
     pub route_configuration: RouteConfigurationArgs,
+    /// Namespace IAM runs in; an upstream that targets it is refused (default: none).
+    #[arg(long = "iam-namespace", env = "IAM_NAMESPACE", hide_env_values = true)]
+    pub iam_namespace: Option<String>,
 }
 
 /// Settings of the declarative route configuration of `serve`.
@@ -467,6 +470,22 @@ pub struct KafkaArgs {
         hide_env_values = true
     )]
     pub sasl_password: Option<String>,
+    /// SASL user name of the negative probe's principal, which holds no ACL (optional, set
+    /// together with the password).
+    #[arg(
+        long = "kafka-probe-sasl-username",
+        env = "KAFKA_PROBE_SASL_USERNAME",
+        hide_env_values = true
+    )]
+    pub probe_sasl_username: Option<String>,
+    /// SASL password of the negative probe's principal (optional, set together with the user
+    /// name).
+    #[arg(
+        long = "kafka-probe-sasl-password",
+        env = "KAFKA_PROBE_SASL_PASSWORD",
+        hide_env_values = true
+    )]
+    pub probe_sasl_password: Option<String>,
     /// PEM file of the certificate authority to trust instead of the system roots.
     #[arg(long = "kafka-ca-file", env = "KAFKA_CA_FILE", hide_env_values = true)]
     pub ca_file: Option<String>,

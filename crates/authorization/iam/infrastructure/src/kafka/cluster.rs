@@ -27,6 +27,17 @@ pub struct TopicLayout {
     pub replication_factor: usize,
 }
 
+/// What the negative probe found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// An authenticated principal without an ACL was refused by the broker.
+    Refused,
+    /// A principal without an ACL was answered.
+    Answered,
+    /// The probe could not be run, as no probe principal is configured; it is no evidence.
+    NotChecked,
+}
+
 /// The cluster did not give an answer the inspector needs.
 #[derive(Debug, thiserror::Error)]
 pub enum ClusterReadError {
@@ -50,11 +61,14 @@ pub trait ClusterReader: std::fmt::Debug + Send + Sync {
     /// The principals that hold an allowing ACL that lets them write `topic`.
     async fn topic_writers(&self, topic: &str) -> Result<Vec<String>, BoxError>;
 
-    /// `allow.everyone.if.no.acl.found` of a broker; `None` when the broker does not return it.
+    /// `allow.everyone.if.no.acl.found` of the cluster, read from every broker: `Some("true")` (or
+    /// another value other than `false`) when any broker reports it, `Some("false")` when every
+    /// broker reports `false`, and `None` when a broker does not report it.
     async fn allow_everyone(&self) -> Result<Option<String>, BoxError>;
 
-    /// The negative probe: whether a principal that holds no ACL on `topic` is refused.
-    async fn refuses_principal_without_acl(&self, topic: &str) -> Result<bool, BoxError>;
+    /// The negative probe: whether an authenticated principal that holds no ACL on `topic` is
+    /// refused. A network error is an error, never a refusal.
+    async fn probe_principal_without_acl(&self, topic: &str) -> Result<ProbeOutcome, BoxError>;
 }
 
 /// Opens a [`ClusterReader`].

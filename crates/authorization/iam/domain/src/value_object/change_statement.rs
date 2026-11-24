@@ -2,7 +2,7 @@
 
 use crate::bulk_operation::statement::BulkProgressStatement;
 use crate::catalogue_statement::CatalogueStatement;
-use crate::gateway_statement::GatewayStatement;
+use crate::gateway_statement::{GatewayPrecondition, GatewayStatement};
 use crate::graphql_spec::statement::GraphQlSpecStatement;
 use crate::openapi_spec::statement::OpenApiSpecStatement;
 use crate::resync::{EpochChange, Republication, ResyncStart};
@@ -49,6 +49,9 @@ pub enum ChangeStatement {
     /// a duplicate id or name refuses the change as a duplicate, and a stale or deleted stored
     /// record or a missing upstream or rate policy of a route as a conflict.
     SaveGateway(Box<GatewayStatement>),
+    /// Refuse the change when a condition of the gateway configuration does not hold under the
+    /// lock of the policy epoch; the storage evaluates it before the writes of the change.
+    ExpectGateway(Box<GatewayPrecondition>),
     /// Store the progress of a bulk operation after a committed chunk; stored progress that differs
     /// from the expected applied records refuses the change as a conflict.
     SaveBulkProgress(Box<BulkProgressStatement>),
@@ -78,6 +81,7 @@ impl ChangeStatement {
             | Self::SaveOpenApiSpec(_)
             | Self::ApplyCatalogue(_)
             | Self::SaveGateway(_)
+            | Self::ExpectGateway(_)
             | Self::SaveBulkProgress(_)
             | Self::StartResync(_)
             | Self::RepublishState(_)
@@ -92,6 +96,7 @@ impl ChangeStatement {
     pub fn state_keys(&self) -> Vec<StateKey> {
         match self {
             Self::ExpectPolicyVersion(_)
+            | Self::ExpectGateway(_)
             | Self::SaveGraphQlSpec(_)
             | Self::SaveOpenApiSpec(_)
             | Self::SaveBulkProgress(_)
@@ -133,6 +138,7 @@ impl ChangeStatement {
             | Self::SaveGraphQlSpec(_)
             | Self::SaveOpenApiSpec(_)
             | Self::SaveGateway(_)
+            | Self::ExpectGateway(_)
             | Self::SaveBulkProgress(_)
             | Self::StartResync(_)
             | Self::RepublishState(_)
@@ -152,6 +158,7 @@ impl ChangeStatement {
             | Self::SaveOpenApiSpec(_)
             | Self::ApplyCatalogue(_)
             | Self::SaveGateway(_)
+            | Self::ExpectGateway(_)
             | Self::SaveBulkProgress(_)
             | Self::StartResync(_)
             | Self::SaveRevocation(_) => &[],
@@ -170,6 +177,7 @@ impl ChangeStatement {
             | Self::SaveOpenApiSpec(_)
             | Self::ApplyCatalogue(_)
             | Self::SaveGateway(_)
+            | Self::ExpectGateway(_)
             | Self::SaveBulkProgress(_)
             | Self::RepublishState(_)
             | Self::SaveRevocation(_) => None,

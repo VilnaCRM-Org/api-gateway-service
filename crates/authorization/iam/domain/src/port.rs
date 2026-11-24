@@ -55,6 +55,8 @@ pub mod user_role_repository;
 
 use shared_domain::BoxError;
 
+use crate::error::{ReferencedByRoute, RouteConflict};
+
 /// A repository operation failed.
 #[derive(Debug, thiserror::Error)]
 pub enum RepositoryError {
@@ -71,6 +73,15 @@ pub enum RepositoryError {
     /// needs (the application answers 403).
     #[error("the actor lacks the administrative rights of the change")]
     Forbidden,
+    /// A route still references the upstream or the rate policy that the change deletes: the
+    /// transaction found the reference under the lock of the policy epoch (the application
+    /// answers 409).
+    #[error("a route still references the entry")]
+    ReferencedByRoute(#[source] ReferencedByRoute),
+    /// The route table of the host, rebuilt under the lock of the policy epoch with the route of
+    /// the change in it, has a conflict or cannot be compiled (the application answers 409).
+    #[error("the route table of the host has a conflict")]
+    RouteTable(#[source] RouteConflict),
     /// The storage cannot be reached, answered with a failure or holds unusable data.
     #[error("the repository is unavailable")]
     Unavailable(#[source] BoxError),

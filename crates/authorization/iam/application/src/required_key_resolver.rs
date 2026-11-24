@@ -1,13 +1,12 @@
 //! Turns an access check into the keys it requires, against the catalogue of its service (FR-6,
 //! FR-7, FR-9).
 
-use std::borrow::Cow;
-
 use iam_domain::{
-    AccessCheck, AccessTarget, CoordinateSet, DecisionReason, DecisionVerdict, DocumentLimits,
-    GqlCoordinate, GraphQlDocumentAnalyzer as _, GraphQlTarget, GraphQlTypeGraph, PathNormalizer,
-    PermissionCatalogue, PermissionFlags, PermissionKey, PermissionsTarget, RequiredKey,
-    RestOperationMatcher, RestOperationSet, RestTarget, ServiceCatalog, ServiceName,
+    AccessCheck, AccessTarget, AnalyzedDocument, CoordinateSet, DecisionReason, DecisionVerdict,
+    DocumentLimits, DocumentRefusal, GqlCoordinate, GraphQlDocumentAnalyzer as _, GraphQlTarget,
+    GraphQlTypeGraph, PathNormalizer, PermissionCatalogue, PermissionFlags, PermissionKey,
+    PermissionsTarget, RequiredKey, RestOperationMatcher, RestOperationSet, RestTarget,
+    ServiceCatalog, ServiceName,
 };
 
 use crate::graphql::document_analyzer::AsyncGraphQlDocumentAnalyzer;
@@ -17,9 +16,9 @@ use crate::graphql::document_analyzer::AsyncGraphQlDocumentAnalyzer;
 /// A REST target is normalised and matched against the templates of the active `OpenAPI` versions
 /// of the service. Permission keys are parsed and looked up in the catalogue of the service;
 /// reserved `iam:` keys are accepted without a catalogue entry. A GraphQL document is analysed
-/// against the union of the active GraphQL versions of the service, under the limits of the
-/// decision API, and requires the key of every coordinate it selects, plus `__introspection` when
-/// it reads the schema.
+/// against each active GraphQL version of the service on its own, under the limits of the decision
+/// API, and requires the union of the keys of the versions that resolve it: the key of every
+/// coordinate it selects, plus `__introspection` when it reads the schema.
 ///
 /// A check that cannot be resolved is a verdict, never an error: the `Err` side holds the deny.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -34,8 +33,8 @@ impl RequiredKeyResolver {
     /// breaks the path rules, `unknown_operation` for a path no template matches or for permission
     /// keys that are unknown or belong to another service (the verdict lists them in `denied`); for a
     /// GraphQL document the reason of its refusal: `limits_exceeded` for a document over a limit,
-    /// `malformed_operation` for one that cannot be read and `unknown_operation` for a field no
-    /// active version has, or for a service without a GraphQL version.
+    /// `malformed_operation` for one that cannot be read and `unknown_operation` when no active
+    /// version resolves it, or for a service without a GraphQL version.
     pub fn resolve(
         check: &AccessCheck,
         catalog: &ServiceCatalog,
@@ -56,22 +55,21 @@ impl RequiredKeyResolver {
         target: &GraphQlTarget,
         catalog: &ServiceCatalog,
     ) -> Result<Vec<RequiredKey>, DecisionVerdict> {
-        let graph = active_graph(catalog.type_graphs())
-            .ok_or_else(|| deny(DecisionReason::UnknownOperation, Vec::new()))?;
-        let analyzed = AsyncGraphQlDocumentAnalyzer
-            .analyze(
-                target.document(),
-                target.operation_name(),
-                &graph,
-                &DocumentLimits::decision_api(),
-            )
-            .map_err(|refusal| deny(refusal.reason(), Vec::new()))?;
-        let mut required: Vec<RequiredKey> = analyzed
-            .coordinates()
+        let (resolved, refusals) = analyze_versions(target, catalog.type_graphs());
+        if resolved.is_empty() {
+            return Err(deny(refusal_reason(&refusals), Vec::new()));
+        }
+        let mut coordinates = CoordinateSet::new();
+        for analyzed in &resolved {
+            for (coordinate, flags) in analyzed.coordinates().iter() {
+                coordinates.insert(coordinate.clone(), flags);
+            }
+        }
+        let mut required: Vec<RequiredKey> = coordinates
             .iter()
             .map(|(coordinate, flags)| RequiredKey::new(coordinate.permission_key(service), flags))
             .collect();
-        if analyzed.introspection() {
+        if resolved.iter().any(AnalyzedDocument::introspection) {
             let key = PermissionKey::Gql {
                 service: service.clone(),
                 coordinate: GqlCoordinate::Introspection,
@@ -128,14 +126,46 @@ impl RequiredKeyResolver {
     }
 }
 
-/// The graph a document is read against: the only active version, or the union of several;
-/// `None` for a service without a GraphQL version.
-fn active_graph(graphs: &[GraphQlTypeGraph]) -> Option<Cow<'_, GraphQlTypeGraph>> {
-    let mut versions = graphs.iter();
-    let first = versions.next()?;
-    Some(versions.fold(Cow::Borrowed(first), |merged, version| {
-        Cow::Owned(merged.union(version))
-    }))
+/// Analyses the document against each active version on its own: the versions that resolve it
+/// and the refusals of the versions that do not. A field one version declares never lends its
+/// return type to another version.
+fn analyze_versions(
+    target: &GraphQlTarget,
+    graphs: &[GraphQlTypeGraph],
+) -> (Vec<AnalyzedDocument>, Vec<DocumentRefusal>) {
+    let limits = DocumentLimits::decision_api();
+    let mut resolved = Vec::new();
+    let mut refusals = Vec::new();
+    for graph in graphs {
+        match AsyncGraphQlDocumentAnalyzer.analyze(
+            target.document(),
+            target.operation_name(),
+            graph,
+            &limits,
+        ) {
+            Ok(analyzed) => resolved.push(analyzed),
+            Err(refusal) => refusals.push(refusal),
+        }
+    }
+    (resolved, refusals)
+}
+
+/// The reason of the deny when no version resolves the document: a limit first, then a field no
+/// version has (`unknown_operation`, which also covers a service without a GraphQL version), and
+/// `malformed_operation` only when every version finds the document unreadable.
+fn refusal_reason(refusals: &[DocumentRefusal]) -> DecisionReason {
+    let limits = refusals
+        .iter()
+        .find(|refusal| matches!(refusal, DocumentRefusal::LimitsExceeded(_)));
+    let malformed = !refusals.is_empty()
+        && refusals
+            .iter()
+            .all(|refusal| matches!(refusal, DocumentRefusal::MalformedOperation));
+    match limits {
+        Some(refusal) => refusal.reason(),
+        None if malformed => DecisionReason::MalformedOperation,
+        None => DecisionReason::UnknownOperation,
+    }
 }
 
 /// The key `raw` names with its flags; `None` when it is not a key, or not one of the catalogues.

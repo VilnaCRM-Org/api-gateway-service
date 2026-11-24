@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime};
 
 use iam_domain::{
     LeaderBatch, PolicyDigestValue, PolicyVersion, PublishedRecord, RepositoryError, TaskState,
-    WrittenKey,
+    TopicAheadState, WrittenKey,
 };
 use shared_domain::Uuid;
 use test_support::anti_entropy::{
@@ -21,13 +21,31 @@ use crate::singleton_loop::SingletonWork as _;
 const ROLE: &str = "role/0192f6a0-0000-7000-8000-000000000001";
 const OTHER: &str = "role/0192f6a0-0000-7000-8000-000000000002";
 
-#[derive(Debug)]
-struct NullBatch;
+#[derive(Debug, Default)]
+struct NullBatch {
+    written: Option<bool>,
+}
 
 #[async_trait::async_trait]
 impl LeaderBatch for NullBatch {
     async fn record_run(&mut self, _at: SystemTime) -> Result<(), RepositoryError> {
         Ok(())
+    }
+
+    async fn write_topic_ahead(
+        &mut self,
+        held: bool,
+        _at: SystemTime,
+    ) -> Result<(), RepositoryError> {
+        self.written = Some(held);
+        Ok(())
+    }
+
+    async fn read_topic_ahead(
+        &mut self,
+        _checker: &str,
+    ) -> Result<TopicAheadState, RepositoryError> {
+        Ok(TopicAheadState::default())
     }
 
     async fn commit(self: Box<Self>) -> Result<(), RepositoryError> {
@@ -151,7 +169,14 @@ fn in_step_over(topic: impl FnOnce(FakePolicyLogTail) -> FakePolicyLogTail) -> R
 }
 
 async fn run(rig: &Rig) -> Result<(), shared_domain::BoxError> {
-    rig.checker.run(&mut NullBatch).await
+    rig.checker.run(&mut NullBatch::default()).await
+}
+
+/// The hold that the batch of one check wrote to the shared state.
+async fn written_hold(rig: &Rig) -> Option<bool> {
+    let mut batch = NullBatch::default();
+    rig.checker.run(&mut batch).await.unwrap();
+    batch.written
 }
 
 #[tokio::test]
@@ -188,6 +213,80 @@ async fn a_recent_record_with_another_version_at_its_offset_is_published_again()
     let digest = digest_of(&[(ROLE, "a")]);
     let rig = rig(
         FakeAntiEntropyStore::at(1, digest).with_published(vec![published(1, ROLE, 2, 0)]),
+        FakePolicyLogTail::with(vec![
+            tail_record(0, ROLE, Some("a"), 1, 1),
+            head_record(1, 1, digest, 1),
+        ]),
+    );
+
+    run(&rig).await.unwrap();
+
+    assert_eq!(rig.store.republished(), vec![uuid(1)]);
+}
+
+#[tokio::test]
+async fn a_lost_superseded_recent_row_is_not_published_again_when_the_newest_row_holds() {
+    let digest = digest_of(&[(ROLE, "a")]);
+    let rig = rig(
+        FakeAntiEntropyStore::at(1, digest)
+            .with_published(vec![published(1, OTHER, 1, 0)])
+            .with_newest(vec![written(2, OTHER, 2, Some(1))]),
+        FakePolicyLogTail::with(vec![
+            tail_record(0, ROLE, Some("a"), 1, 1),
+            tail_record(1, OTHER, Some("b"), 2, 1),
+            head_record(2, 1, digest, 1),
+        ]),
+    );
+
+    run(&rig).await.unwrap();
+
+    assert_eq!(rig.store.republished(), Vec::<Uuid>::new());
+}
+
+#[tokio::test]
+async fn a_lost_superseded_recent_row_repairs_the_newest_row_of_its_key_when_that_is_lost() {
+    let digest = digest_of(&[(ROLE, "a")]);
+    let rig = rig(
+        FakeAntiEntropyStore::at(1, digest)
+            .with_published(vec![published(1, OTHER, 1, 0)])
+            .with_newest(vec![written(2, OTHER, 2, Some(1))]),
+        FakePolicyLogTail::with(vec![
+            tail_record(0, ROLE, Some("a"), 1, 1),
+            tail_record(1, ROLE, Some("a"), 1, 1),
+            head_record(2, 1, digest, 1),
+        ]),
+    );
+
+    run(&rig).await.unwrap();
+
+    assert_eq!(rig.store.republished(), vec![uuid(2)]);
+}
+
+#[tokio::test]
+async fn a_lost_superseded_recent_row_leaves_an_unpublished_newest_row_to_the_relay() {
+    let digest = digest_of(&[(ROLE, "a")]);
+    let rig = rig(
+        FakeAntiEntropyStore::at(1, digest)
+            .with_published(vec![published(1, OTHER, 1, 0)])
+            .with_newest(vec![written(2, OTHER, 2, None)]),
+        FakePolicyLogTail::with(vec![
+            tail_record(0, ROLE, Some("a"), 1, 1),
+            head_record(1, 1, digest, 1),
+        ]),
+    );
+
+    run(&rig).await.unwrap();
+
+    assert_eq!(rig.store.republished(), Vec::<Uuid>::new());
+}
+
+#[tokio::test]
+async fn a_lost_recent_row_that_is_the_newest_of_its_key_is_published_again() {
+    let digest = digest_of(&[(ROLE, "a")]);
+    let rig = rig(
+        FakeAntiEntropyStore::at(1, digest)
+            .with_published(vec![published(1, OTHER, 1, 0)])
+            .with_newest(vec![written(1, OTHER, 1, Some(0))]),
         FakePolicyLogTail::with(vec![
             tail_record(0, ROLE, Some("a"), 1, 1),
             head_record(1, 1, digest, 1),
@@ -736,4 +835,36 @@ async fn a_watermark_lost_between_the_checks_fails_the_batch_without_a_repair() 
 
     assert!(run(&rig).await.is_err());
     assert_eq!(rig.store.republished().len(), 0);
+}
+
+#[tokio::test]
+async fn a_check_writes_a_topic_that_is_ahead_to_the_shared_state() {
+    let rig = rig(
+        FakeAntiEntropyStore::at(3, PolicyDigestValue::ZERO),
+        FakePolicyLogTail::with(vec![head_record(0, 5, PolicyDigestValue::ZERO, 1)]),
+    );
+
+    assert_eq!(written_hold(&rig).await, Some(true));
+}
+
+#[tokio::test]
+async fn a_check_that_finds_the_topic_in_step_writes_the_hold_released() {
+    let rig = in_step();
+    rig.hold.set(true);
+
+    assert_eq!(written_hold(&rig).await, Some(false));
+}
+
+#[tokio::test]
+async fn a_check_that_fails_writes_no_hold() {
+    let rig = rig(
+        FakeAntiEntropyStore::at(1, PolicyDigestValue::ZERO),
+        FakePolicyLogTail::with(Vec::new()).unavailable(),
+    );
+    let mut batch = NullBatch::default();
+
+    let outcome = rig.checker.run(&mut batch).await;
+
+    assert!(outcome.is_err());
+    assert_eq!(batch.written, None);
 }

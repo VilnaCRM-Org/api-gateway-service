@@ -101,14 +101,11 @@ impl PgRouteRepository {
     }
 
     async fn select_by_host(&self, host: &RouteHost) -> Result<Vec<Route>, RepositoryError> {
-        let rows = sqlx::query_as::<_, RouteRow>(select!(
-            "WHERE host = $1 AND deleted_at IS NULL ORDER BY id"
-        ))
-        .bind(host.as_str())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(translate)?;
-        restore_all(rows)
+        Ok(select_parts_by_host(&self.pool, host)
+            .await?
+            .into_iter()
+            .map(Route::restore)
+            .collect())
     }
 
     async fn count_upstream(&self, upstream: UpstreamId) -> Result<u64, RepositoryError> {
@@ -148,6 +145,25 @@ pub(crate) async fn select_by_id<'executor, E: PgExecutor<'executor>>(
         .map_err(translate)?
         .map(restore)
         .transpose()
+}
+
+/// The routes of the host that are not deleted, by identifier, read through `executor`: the
+/// connection of a transaction reads the routes that the transaction sees, which the checks under
+/// the lock of the policy epoch need.
+pub(crate) async fn select_parts_by_host<'executor, E: PgExecutor<'executor>>(
+    executor: E,
+    host: &RouteHost,
+) -> Result<Vec<RouteParts>, RepositoryError> {
+    sqlx::query_as::<_, RouteRow>(select!(
+        "WHERE host = $1 AND deleted_at IS NULL ORDER BY id"
+    ))
+    .bind(host.as_str())
+    .fetch_all(executor)
+    .await
+    .map_err(translate)?
+    .into_iter()
+    .map(restore)
+    .collect()
 }
 
 /// Runs one route statement inside the caller's transaction: the route row first, then its rate
@@ -223,8 +239,9 @@ async fn insert(connection: &mut PgConnection, route: &RouteParts) -> Result<(),
     .map_err(translate_reference)
 }
 
-/// Updates the configuration, the version and the times of the route that is not deleted and
-/// holds the expected version; the `system` flag never changes.
+/// Updates the configuration, the version, the times and the `system` flag of the route that is
+/// not deleted and holds the expected version. Only the repair of the IAM seed changes the flag:
+/// every other change keeps the stored value in the route it hands over.
 async fn update(
     connection: &mut PgConnection,
     route: &RouteParts,
@@ -236,7 +253,8 @@ async fn update(
         "UPDATE iam_routes SET host = $2, methods = $3, path_pattern = $4, service = $5,
             upstream_id = $6, graphql = $7, streaming = $8, anonymous = $9, enforcement = $10,
             body_limit = $11, request_timeout_ms = $12, idle_timeout_ms = $13, retry = $14,
-            cors = $15::text::jsonb, version = $16, updated_at = $17, deleted_at = $18
+            cors = $15::text::jsonb, version = $16, updated_at = $17, deleted_at = $18,
+            system = $20
         WHERE id = $1 AND version = $19 AND deleted_at IS NULL",
     )
     .bind(route.id.as_uuid().as_uuid())
@@ -258,6 +276,7 @@ async fn update(
     .bind(OffsetDateTime::from(route.updated_at))
     .bind(route.deleted_at.map(OffsetDateTime::from))
     .bind(expected.value())
+    .bind(route.system)
     .execute(&mut *connection)
     .await
     .map_err(translate_reference)?;

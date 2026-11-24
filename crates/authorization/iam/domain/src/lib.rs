@@ -71,7 +71,7 @@ pub use error::{
 pub use error::{InvalidCatalogueEntry, InvalidStateRecord, RenameRefused};
 pub use error::{InvalidSpec, SpecPosition, SpecTransitionRefused};
 pub use gateway_seed::IamGatewaySeed;
-pub use gateway_statement::GatewayStatement;
+pub use gateway_statement::{GatewayPrecondition, GatewayStatement};
 pub use graphql_permission::{GraphQlPermission, GraphQlPermissionParts};
 pub use graphql_spec::event::{GraphQlSpecLoaded, GraphQlSpecRetired};
 pub use graphql_spec::statement::GraphQlSpecStatement;
@@ -172,7 +172,9 @@ pub use port::role_repository::{RoleGrant, RolePageQuery, RoleRepository};
 pub use port::route_repository::{RoutePageQuery, RouteRepository};
 pub use port::route_table_compiler::{RouteMatcher, RouteTableCompiler};
 pub use port::security_audit_log::SecurityAuditLog;
-pub use port::singleton_leadership::{LeaderBatch, Leadership, SingletonLeadership, SingletonTask};
+pub use port::singleton_leadership::{
+    LeaderBatch, Leadership, SingletonLeadership, SingletonTask, TOPIC_AHEAD_STATE, TopicAheadState,
+};
 pub use port::startup_lock::{
     ADMINISTRATORS_LOCK, BOOTSTRAP_LOCK, LockGuard, OWN_SPECIFICATIONS_LOCK, StartupLock,
 };

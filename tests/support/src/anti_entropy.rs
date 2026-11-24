@@ -46,6 +46,7 @@ struct StoreBook {
     head: StoredHead,
     published: Vec<PublishedRecord>,
     written: Vec<WrittenKey>,
+    newest: Vec<WrittenKey>,
     unpublished: u64,
     existing: Vec<Uuid>,
     republished: Vec<Uuid>,
@@ -74,6 +75,7 @@ impl FakeAntiEntropyStore {
                 },
                 published: Vec::new(),
                 written: Vec::new(),
+                newest: Vec::new(),
                 unpublished: 0,
                 existing: Vec::new(),
                 republished: Vec::new(),
@@ -103,6 +105,18 @@ impl FakeAntiEntropyStore {
                 book.existing.extend(keys.iter().map(|key| key.id));
             }
             book.written = keys;
+        }
+        self
+    }
+
+    /// The same store whose newest rows of keys, whenever they were written, are `rows`; each can
+    /// be republished.
+    #[must_use]
+    pub fn with_newest(self, rows: Vec<WrittenKey>) -> Self {
+        {
+            let mut book = locked(&self.book);
+            book.existing.extend(rows.iter().map(|row| row.id));
+            book.newest = rows;
         }
         self
     }
@@ -158,6 +172,16 @@ impl AntiEntropyStore for FakeAntiEntropyStore {
         _since: SystemTime,
     ) -> Result<Vec<WrittenKey>, RepositoryError> {
         Ok(self.check()?.written.clone())
+    }
+
+    async fn newest_rows(&self, keys: &[String]) -> Result<Vec<WrittenKey>, RepositoryError> {
+        let book = self.check()?;
+        Ok(book
+            .newest
+            .iter()
+            .filter(|row| keys.contains(&row.key))
+            .cloned()
+            .collect())
     }
 
     async fn unpublished_count(&self) -> Result<u64, RepositoryError> {

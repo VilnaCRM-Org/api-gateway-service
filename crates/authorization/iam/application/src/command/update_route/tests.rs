@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use iam_domain::{
-    AuditSummary, ChangeStatement, CorsDraft, EnforcementMode, EntityVersion, GatewayStatement,
-    GuardCheck, HttpMethod, IamChange, RouteConflict, ServiceName,
+    AuditSummary, ChangeStatement, CorsDraft, EnforcementMode, EntityVersion, GatewayPrecondition,
+    GatewayStatement, GuardCheck, HttpMethod, IamChange, RouteConflict, ServiceName,
 };
 use shared_domain::{Command as _, CommandHandler as _};
 use test_support::clock::FixedClock;
@@ -51,9 +51,19 @@ fn only(committed: &[IamChange]) -> &IamChange {
 }
 
 fn updated_route(change: &IamChange) -> iam_domain::RouteParts {
-    let [ChangeStatement::SaveGateway(statement)] = change.parts().statements.as_slice() else {
-        panic!("one gateway statement expected");
+    let [
+        ChangeStatement::ExpectGateway(targets),
+        ChangeStatement::ExpectGateway(table),
+        ChangeStatement::SaveGateway(statement),
+    ] = change.parts().statements.as_slice()
+    else {
+        panic!("two preconditions and one gateway statement expected");
     };
+    assert!(matches!(
+        targets.as_ref(),
+        GatewayPrecondition::RouteTargets { .. }
+    ));
+    assert!(matches!(table.as_ref(), GatewayPrecondition::RouteTable(_)));
     let GatewayStatement::Route(statement) = statement.as_ref() else {
         panic!("a route statement expected");
     };
@@ -363,4 +373,53 @@ async fn a_failing_unit_of_work_is_the_error_of_the_command() {
         .unwrap_err();
 
     assert!(matches!(error, IamError::Storage(_)));
+}
+
+#[tokio::test]
+async fn a_route_on_the_host_of_the_seeded_iam_routes_cannot_be_changed() {
+    let mut system = route_at(numbered_id(9), "/api/{rest:*}", &[HttpMethod::Post], 1);
+    system.system = true;
+    let world = route_world(Stores {
+        routes: vec![route(3), system],
+        policy: Some(policy_holding(&["iam:route:core"])),
+        ..Stores::default()
+    });
+
+    let error = handler(&world)
+        .handle(command(3, RoutePatch::default()))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, IamError::SystemEntry), "{error:?}");
+    let offered = world.attempts.offered();
+    assert_eq!(offered[0].action.as_str(), "route.update");
+    assert_eq!(offered[0].reason.as_str(), "system_entry");
+    assert_eq!(world.unit_of_work.committed(), Vec::new());
+}
+
+#[tokio::test]
+async fn a_route_cannot_be_moved_onto_the_host_of_the_seeded_iam_routes() {
+    let mut system = route_at(numbered_id(9), "/api/{rest:*}", &[HttpMethod::Post], 1);
+    system.system = true;
+    system.fields = iam_domain::RouteFields::new(&test_support::route::route_draft(
+        "iam.example.test",
+        "/api/{rest:*}",
+        &[HttpMethod::Post],
+        "iam",
+        upstream_id(),
+    ))
+    .unwrap();
+    let world = route_world(Stores {
+        routes: vec![route(3), system],
+        ..Stores::default()
+    });
+    let patch = RoutePatch {
+        host: Some("iam.example.test".to_owned()),
+        ..RoutePatch::default()
+    };
+
+    let error = handler(&world).handle(command(3, patch)).await.unwrap_err();
+
+    assert!(matches!(error, IamError::SystemEntry), "{error:?}");
+    assert_eq!(world.unit_of_work.committed(), Vec::new());
 }

@@ -143,6 +143,32 @@ async fn the_written_keys_carry_their_newest_row_and_its_offset(pool: PgPool) {
 }
 
 #[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn the_newest_row_of_a_key_is_found_whenever_it_was_written(pool: PgPool) {
+    state_row(&pool, 1, "role/a", 1, 1).await;
+    state_row(&pool, 2, "role/a", 2, 1).await;
+    state_row(&pool, 3, "role/b", 1, 2).await;
+    event_row(&pool, 4).await;
+    publish(&pool, 1, 11, NOW).await;
+    publish(&pool, 2, 21, NOW).await;
+    let store = PgAntiEntropyStore::new(pool);
+
+    let mut newest = store
+        .newest_rows(&[
+            "role/a".to_owned(),
+            "role/c".to_owned(),
+            "aggregate".to_owned(),
+        ])
+        .await
+        .unwrap();
+
+    newest.sort_by(|left, right| left.key.cmp(&right.key));
+    assert_eq!(newest.len(), 1);
+    assert_eq!(newest[0].id, Uuid::from_uuid(id(2)));
+    assert_eq!(newest[0].version.value(), 2);
+    assert_eq!(newest[0].published_offset, Some(21));
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
 async fn the_waiting_state_rows_are_counted(pool: PgPool) {
     state_row(&pool, 1, "role/a", 1, 1).await;
     state_row(&pool, 2, "role/b", 1, 2).await;

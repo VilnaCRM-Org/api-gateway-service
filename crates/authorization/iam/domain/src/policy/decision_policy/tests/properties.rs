@@ -21,7 +21,7 @@ use crate::value_object::permission_key::PermissionKey;
 use crate::value_object::scope_set::ScopeSet;
 
 /// The keys of the random catalogue with their sensitive flag.
-const KEYS: [(&str, bool); 7] = [
+const KEYS: [(&str, bool); 9] = [
     ("rest:orders:GET /api/orders", false),
     ("rest:orders:POST /api/orders", true),
     ("gql:orders:Query.order", false),
@@ -29,10 +29,12 @@ const KEYS: [(&str, bool); 7] = [
     ("gql:orders:__introspection", false),
     ("rest:billing:GET /api/invoices", false),
     ("iam:audit:read", false),
+    ("rest:iam:POST /api/roles", false),
+    ("gql:iam:Mutation.createRole", false),
 ];
 
-/// Every grant a random role may hold: each key and five wildcard patterns.
-const GRANTS: [&str; 12] = [
+/// Every grant a random role may hold: each key and wildcard patterns.
+const GRANTS: [&str; 16] = [
     "rest:orders:GET /api/orders",
     "rest:orders:POST /api/orders",
     "gql:orders:Query.order",
@@ -40,6 +42,10 @@ const GRANTS: [&str; 12] = [
     "gql:orders:__introspection",
     "rest:billing:GET /api/invoices",
     "iam:audit:read",
+    "rest:iam:POST /api/roles",
+    "gql:iam:Mutation.createRole",
+    "rest:iam:*",
+    "gql:iam:*",
     "rest:orders:*",
     "rest:orders:GET *",
     "gql:orders:Query.*",
@@ -180,11 +186,16 @@ fn reference_covers(grant: &str, key: &str, is_sensitive: bool) -> bool {
         .is_some_and(|prefix| key.starts_with(prefix))
 }
 
+/// Whether the key belongs to the service `iam`: a reserved key or a catalogue key of `iam`.
+fn is_iam_key(key: &str) -> bool {
+    key.starts_with("iam:") || key.starts_with("rest:iam:") || key.starts_with("gql:iam:")
+}
+
 /// Whether the reference holds the key through an active assignment whose scope is `scope`; a
-/// reserved `iam:` key is held only through a global assignment.
+/// key of the service `iam` is held only through a global assignment.
 fn reference_holds(policy: &Policy, key_index: usize, scope: u8) -> bool {
     let (key, is_sensitive) = key_entry(key_index);
-    if scope != 0 && key.starts_with("iam:") {
+    if scope != 0 && is_iam_key(key) {
         return false;
     }
     policy

@@ -12,7 +12,7 @@ use shared_domain::{Clock, Command, CommandHandler, UuidGenerator};
 
 use super::create_graphql_permissions::ActivationReads;
 use super::spec_retirement::{
-    Retirement, RetirementChange, StoredEntry, plan_retirement, retirement_change,
+    Retirement, RetirementChange, StoredEntry, ensure_retirable, plan_retirement, retirement_change,
 };
 use crate::error::IamError;
 
@@ -49,7 +49,8 @@ impl Command for RetireGraphQlSpecCommand {
 /// confirmed the grants it orphans, commits the status change, the deactivated entries, the
 /// orphaned grants, the events and the audit record through the unit of work in one transaction.
 /// The change affects decisions, so it takes the next policy version; it is guarded by the policy
-/// version it was decided against. A version that is not active is refused.
+/// version it was decided against. A version of the reserved service `iam` is refused unless
+/// `system:startup` retires it, and a version that is not active is refused.
 #[derive(Debug)]
 pub struct RetireGraphQlSpecCommandHandler {
     reads: ActivationReads,
@@ -83,6 +84,7 @@ impl RetireGraphQlSpecCommandHandler {
             .find_by_id(command.spec_id)
             .await?
             .ok_or(IamError::NotFound)?;
+        ensure_retirable(&spec.parts().content.service, &command.actor)?;
         let now = self.clock.now();
         spec.retire(SpecStamp {
             event_id: self.uuid_generator.generate(),

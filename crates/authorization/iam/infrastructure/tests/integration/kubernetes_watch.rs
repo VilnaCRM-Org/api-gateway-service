@@ -295,7 +295,11 @@ async fn a_watch_line_split_over_frames_is_read_whole() {
     let line = serde_json::json!({
         "type": "ADDED",
         "object": {
-            "metadata": {"name": "user-service-a", "resourceVersion": "9"},
+            "metadata": {
+                "name": "user-service-a",
+                "resourceVersion": "9",
+                "labels": {"endpointslice.kubernetes.io/managed-by": "endpointslice-controller.k8s.io"}
+            },
             "addressType": "IPv4",
             "endpoints": [],
             "ports": [{"name": "http", "port": 8081, "protocol": "TCP"}]
@@ -375,8 +379,11 @@ async fn the_adapter_sends_only_get_requests_that_list_or_watch_endpointslices()
         assert!(
             request
                 .query
-                .contains("labelSelector=kubernetes.io%2Fservice-name%3Duser-service")
+                .contains("labelSelector=kubernetes.io%2Fservice-name%3Duser-service%2C")
         );
+        assert!(request.query.contains(
+            "endpointslice.kubernetes.io%2Fmanaged-by%3Dendpointslice-controller.k8s.io"
+        ));
     }
     assert!(!requests.first().unwrap().query.contains("watch=true"));
     assert!(requests[1].query.contains("watch=true"));

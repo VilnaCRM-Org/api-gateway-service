@@ -994,7 +994,12 @@ impl AppWorld {
         let mut config = base_config();
         config.database.url = url_with_database(database);
         config.kafka.events_topic = self.events_topic_name();
-        let adapters = Adapters::connect(&config).await.expect("production wiring");
+        let mut adapters = Adapters::connect(&config).await.expect("production wiring");
+        // The anti-entropy task does not run for a scenario, so the relay is not gated on its
+        // checks: a relay with a hold publishes only after a completed check (FR-77).
+        if let Some(relay) = adapters.outbox_relay.as_mut() {
+            relay.anti_entropy = None;
+        }
         register_iam_specs(&adapters)
             .await
             .expect("register IAM's own specifications");

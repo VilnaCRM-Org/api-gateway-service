@@ -5,9 +5,9 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use iam_domain::{
-    ApplyRules, CatalogueEntryState, LogEpoch, PolicyDigest, PolicyDigestValue, PolicyHead,
-    PolicyState, PolicyVersion, RoleId, RouteHost, RouteId, RouteParts, RouteState,
-    RouteTableCompiler, ServiceName, StateKey, StateRecordCodec, SubjectRef,
+    ApplyRules, CatalogueEntryState, HttpMethod, LogEpoch, PolicyDigest, PolicyDigestValue,
+    PolicyHead, PolicyState, PolicyVersion, RoleId, RouteHost, RouteId, RouteMatcher, RouteParts,
+    RouteState, RouteTableCompiler, ServiceName, StateKey, StateRecordCodec, SubjectRef,
 };
 
 use super::{HostRoutes, Working};
@@ -126,7 +126,7 @@ impl Applier {
                 computed: digest,
             });
         }
-        let hosts = self.stage_hosts(working, &changes)?;
+        let hosts = self.stage_hosts(working, &changes);
         self.commit(working, changes, hosts);
         working.digest = digest;
         working.version = target.0;
@@ -135,11 +135,11 @@ impl Applier {
     }
 
     /// The routers of the hosts that the changes touch, compiled before anything is written.
-    fn stage_hosts(
-        &self,
-        working: &Working,
-        changes: &[Change],
-    ) -> Result<StagedHosts, SnapshotBuildError> {
+    ///
+    /// A host whose routes cannot be compiled is isolated: its routes fail closed, so the host
+    /// denies every request until a later version gives it a table that compiles, and neither the
+    /// other hosts nor the later versions are held back.
+    fn stage_hosts(&self, working: &Working, changes: &[Change]) -> StagedHosts {
         let route_changes: BTreeMap<RouteId, &Change> = changes
             .iter()
             .filter_map(|change| {
@@ -154,21 +154,31 @@ impl Applier {
             .into_iter()
             .map(|(host, ids)| {
                 if ids.is_empty() {
-                    return Ok((host, None));
+                    return (host, None);
                 }
                 let parts: Vec<RouteParts> = ids
                     .iter()
                     .filter_map(|id| route_after(working, &route_changes, *id))
                     .map(parts_of)
                     .collect();
-                let matcher = self.compiler.compile(&host, &parts)?;
-                Ok((
+                let matcher = self
+                    .compiler
+                    .compile(&host, &parts)
+                    .unwrap_or_else(|conflict| {
+                        tracing::error!(
+                            host = %host,
+                            %conflict,
+                            "the routes of a host do not compile; the host is isolated and denies"
+                        );
+                        Box::new(IsolatedHost)
+                    });
+                (
                     host,
                     Some(HostRoutes {
                         ids,
                         matcher: Arc::from(matcher),
                     }),
-                ))
+                )
             })
             .collect()
     }
@@ -315,6 +325,17 @@ fn parts_of(route: &RouteState) -> RouteParts {
         created_at: SystemTime::UNIX_EPOCH,
         updated_at: SystemTime::UNIX_EPOCH,
         deleted_at: None,
+    }
+}
+
+/// The matcher of a host whose routes do not compile: it finds no route, so every request of the
+/// host is denied.
+#[derive(Debug)]
+struct IsolatedHost;
+
+impl RouteMatcher for IsolatedHost {
+    fn find(&self, _method: HttpMethod, _path: &str) -> Option<RouteId> {
+        None
     }
 }
 

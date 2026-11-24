@@ -13,6 +13,10 @@
 //! repair (a digest mismatch, a loss older than the outbox retention, a topic ahead of PostgreSQL)
 //! is an alert: an error log, the `anti_entropy_repairs_total` counter, and the call for the
 //! runbook (the resync of Story 7.10, or the topic-ahead runbook).
+//!
+//! The hold on the relay is shared state, not memory of one replica: every committed batch writes
+//! whether the topic is ahead to `iam_task_state`, in the transaction of the batch, and the relay
+//! of any replica reads it in its own leader batch (see [`crate::OutboxRelay`]).
 
 mod alert;
 mod full;
@@ -172,8 +176,10 @@ impl AntiEntropyChecker {
         })
     }
 
-    /// One batch: the head check, and the full check when it is due.
-    async fn check(&self) -> Result<(), BoxError> {
+    /// One batch: the head check, and the full check when it is due. The hold that the checks leave
+    /// is written to the shared state in the batch, so that the relay of any replica reads it, and
+    /// the batch counts as a completed check only when it commits.
+    async fn check(&self, batch: &mut dyn LeaderBatch) -> Result<(), BoxError> {
         let now = self.clock.now();
         let previous = self.last_check().await?;
         let since = previous
@@ -185,6 +191,7 @@ impl AntiEntropyChecker {
             FullCheck(self).check_full().await?;
             self.remember_full(now);
         }
+        batch.write_topic_ahead(self.hold.is_set(), now).await?;
         Ok(())
     }
 
@@ -212,8 +219,8 @@ impl AntiEntropyChecker {
 
 #[async_trait::async_trait]
 impl SingletonWork for AntiEntropyChecker {
-    async fn run(&self, _batch: &mut dyn LeaderBatch) -> Result<(), BoxError> {
-        self.check().await
+    async fn run(&self, batch: &mut dyn LeaderBatch) -> Result<(), BoxError> {
+        self.check(batch).await
     }
 
     async fn is_due(&self, now: SystemTime) -> Result<bool, BoxError> {

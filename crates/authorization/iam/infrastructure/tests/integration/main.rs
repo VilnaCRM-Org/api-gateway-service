@@ -10,6 +10,8 @@ mod catalogue_activation;
 #[cfg(test)]
 mod gateway_configuration;
 #[cfg(test)]
+mod gateway_preconditions;
+#[cfg(test)]
 mod graphql_spec_repository;
 #[cfg(test)]
 mod jwt_access_token_verifier;

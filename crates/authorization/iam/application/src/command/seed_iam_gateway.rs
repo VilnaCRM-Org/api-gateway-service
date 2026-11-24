@@ -6,9 +6,10 @@ use std::time::SystemTime;
 
 use iam_domain::{
     ActorRef, ChangeId, DecisionEffect, EntityVersion, IamChange, IamChangeParts, IamGatewaySeed,
-    IamUnitOfWork, Route, RouteConflictGuard, RouteFields, RouteHost, RouteId, RouteParts,
-    RouteRepository, RouteStamp, RouteStatement, SystemComponent, Upstream, UpstreamFields,
-    UpstreamId, UpstreamRepository, UpstreamStamp, UpstreamStatement, WriteMode,
+    IamUnitOfWork, Route, RouteConflictGuard, RouteFields, RouteHost, RouteId, RoutePageQuery,
+    RouteParts, RouteRepository, RouteStamp, RouteStatement, SystemComponent, Upstream,
+    UpstreamFields, UpstreamId, UpstreamParts, UpstreamRepository, UpstreamStamp,
+    UpstreamStatement, WriteMode,
 };
 use shared_domain::{Clock, Command, CommandHandler, UuidGenerator};
 
@@ -28,13 +29,25 @@ const ROUTE_CREATE: &str = "route.create";
 /// The audited action of a restored route.
 const ROUTE_UPDATE: &str = "route.update";
 
+/// The audited action of a route that a repair retires.
+const ROUTE_DELETE: &str = "route.delete";
+
+/// The number of routes that one page of the routes of an upstream holds.
+const PAGE_SIZE: u32 = 100;
+
+/// [`PAGE_SIZE`] as a length.
+const PAGE_LEN: usize = 100;
+
 /// What the command does with the entries that exist already.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SeedMode {
-    /// Inserts what is absent and never changes an existing entry.
+    /// Inserts what is absent and never changes an existing entry; an entry that occupies the
+    /// place of a seeded one without being a system entry refuses the command with
+    /// [`IamError::SeedConflict`] before anything is written.
     Seed,
-    /// Inserts what is absent and restores an existing entry that differs from its seeded state,
-    /// as a revocation-class change.
+    /// Inserts what is absent and restores an existing entry that is not the seeded one (not a
+    /// system entry, or a different configuration) to the system entry, as a revocation-class
+    /// change.
     Repair,
 }
 
@@ -58,9 +71,19 @@ impl Command for SeedIamGatewayCommand {
 /// It inserts the upstream `iam-control` when no upstream of that name exists, then each seeded
 /// route that is absent from the host, as system entries of the catalogue service `iam`. Each
 /// entry is one change of its own: the write, its event, the state record that the unit of work
-/// adds in the same transaction, and one audit record with the actor `system:bootstrap`. In
-/// [`SeedMode::Seed`] an entry that exists is left as it is; in [`SeedMode::Repair`] an entry
-/// whose configuration differs from the seeded one is updated to it as a revocation-class change.
+/// adds in the same transaction, and one audit record with the actor `system:bootstrap`.
+///
+/// An entry is the seeded one only when it is a system entry, forwards to the seeded upstream
+/// and holds the seeded configuration. In [`SeedMode::Seed`] a system entry that exists is left as
+/// it is, and an entry that is not a system entry (an upstream named `iam-control` or a route of
+/// the seeded host, host, pattern and methods that a caller created first) refuses the command with
+/// [`IamError::SeedConflict`] before anything is written. In [`SeedMode::Repair`] such an entry
+/// is replaced by the system entry, and a system entry whose configuration differs is updated to
+/// the seeded one, each as a revocation-class change; the update writes `system = true` itself.
+/// A non-system upstream that a repair turns into the system upstream keeps its identifier, so
+/// every non-system route on any host that forwards to it is deleted first (a revocation-class
+/// change each) and is never left pointing at IAM's management API; in [`SeedMode::Seed`] such
+/// routes are named in the [`IamError::SeedConflict`] with the upstream.
 /// The caller serializes concurrent runs with the bootstrap lock.
 #[derive(Debug)]
 pub struct SeedIamGatewayCommandHandler {
@@ -82,6 +105,16 @@ const fn effect_of(mode: SeedMode) -> DecisionEffect {
         SeedMode::Seed => DecisionEffect::Affected,
         SeedMode::Repair => DecisionEffect::RevocationClass,
     }
+}
+
+/// How the conflict of the seed names a route.
+fn describe(route: &RouteParts) -> String {
+    format!(
+        "route {} ({} {})",
+        route.id,
+        route.fields.host(),
+        route.fields.path_pattern()
+    )
 }
 
 /// Whether `stored` is the seeded route that `fields` describes: the same host, path pattern and
@@ -114,8 +147,127 @@ impl SeedIamGatewayCommandHandler {
 
     async fn seed(&self, command: SeedIamGatewayCommand) -> Result<(), IamError> {
         let seed = IamGatewaySeed::new(command.host);
+        if command.mode == SeedMode::Seed {
+            self.refuse_occupants(&seed).await?;
+        }
         let upstream_id = self.ensure_upstream(command.mode).await?;
         self.ensure_routes(&seed, upstream_id, command.mode).await
+    }
+
+    /// Refuses the seed when an entry that is not a system entry occupies the place of the seeded
+    /// upstream or of a seeded route, naming every such entry; nothing is written.
+    async fn refuse_occupants(&self, seed: &IamGatewaySeed) -> Result<(), IamError> {
+        let draft = IamGatewaySeed::upstream_draft();
+        let fields = UpstreamFields::new(IamGatewaySeed::UPSTREAM_NAME, &draft)?;
+        let stored = self.upstreams.find_by_name(fields.name()).await?;
+        let mut occupants: Vec<String> = stored
+            .iter()
+            .map(Upstream::parts)
+            .filter(|upstream| !upstream.system)
+            .map(|upstream| format!("upstream {} ({})", upstream.name, upstream.id))
+            .collect();
+        if let Some(squatter) = stored.as_ref().filter(|upstream| !upstream.parts().system) {
+            occupants.extend(self.callers_routes_to(squatter.parts().id).await?);
+        }
+        let upstream_id = stored.map_or_else(
+            || UpstreamId::from_uuid(self.uuid_generator.generate()),
+            |upstream| upstream.parts().id,
+        );
+        let table = self.routes.find_by_host(seed.host()).await?;
+        for draft in seed.route_drafts(upstream_id) {
+            let fields = RouteFields::new(&draft)?;
+            occupants.extend(
+                table
+                    .iter()
+                    .map(Route::parts)
+                    .filter(|route| !route.system && is_same_target(&route.fields, &fields))
+                    .map(describe),
+            );
+        }
+        occupants.sort();
+        occupants.dedup();
+        if occupants.is_empty() {
+            Ok(())
+        } else {
+            Err(IamError::SeedConflict(occupants.join(", ")))
+        }
+    }
+
+    /// Every route that is not deleted and forwards to `upstream`, on any host.
+    async fn referencing(&self, upstream: UpstreamId) -> Result<Vec<RouteParts>, IamError> {
+        let mut found = Vec::new();
+        let mut after = None;
+        loop {
+            let page = self
+                .routes
+                .find_page(&RoutePageQuery {
+                    limit: PAGE_SIZE,
+                    after,
+                    host: None,
+                    upstream: Some(upstream),
+                    service: None,
+                })
+                .await?;
+            let Some(last) = page.last() else { break };
+            after = Some(last.parts().id);
+            let full = page.len() >= PAGE_LEN;
+            found.extend(page.iter().map(|route| route.parts().clone()));
+            if !full {
+                break;
+            }
+        }
+        Ok(found)
+    }
+
+    /// How the conflict names each non-system route that forwards to `upstream`.
+    async fn callers_routes_to(&self, upstream: UpstreamId) -> Result<Vec<String>, IamError> {
+        Ok(self
+            .referencing(upstream)
+            .await?
+            .iter()
+            .filter(|route| !route.system)
+            .map(describe)
+            .collect())
+    }
+
+    /// Deletes every non-system route that forwards to `upstream`, as a revocation-class change
+    /// each: the upstream is about to become the system upstream, and a route of a caller must
+    /// not forward to it.
+    async fn retire_referencing(&self, upstream: UpstreamId) -> Result<(), IamError> {
+        for before in self.referencing(upstream).await? {
+            if !before.system {
+                self.retire_route(before).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn retire_route(&self, before: RouteParts) -> Result<(), IamError> {
+        let now = self.clock.now();
+        let mut route = Route::restore(before.clone());
+        route.delete(Some(before.version), self.route_stamp(now))?;
+        let events = route.pull_envelopes()?;
+        let record = ChangeRecord {
+            action: ROUTE_DELETE,
+            kind: "route",
+            target_id: before.id.to_string(),
+            actor: &actor(),
+            occurred_at: now,
+            before: Some(summary_of(&before, &format!(" system={}", before.system))),
+            after: summary_of(route.parts(), " deleted=true"),
+            idempotency: None,
+        };
+        let audit = committed(self.uuid_generator.as_ref(), record)?;
+        let change = IamChange::new(IamChangeParts {
+            change_id: self.change_id(),
+            effect: effect_of(SeedMode::Repair),
+            statements: vec![RouteStatement::update(&route, before.version).into()],
+            events,
+            audit,
+            entity_version: route.parts().version,
+            idempotency: None,
+        })?;
+        self.commit(change).await
     }
 
     async fn commit(&self, change: IamChange) -> Result<(), IamError> {
@@ -138,7 +290,11 @@ impl SeedIamGatewayCommandHandler {
             None => self.insert_upstream(fields, mode).await,
             Some(stored) => {
                 let id = stored.parts().id;
-                if mode == SeedMode::Repair && stored.parts().settings != *fields.settings() {
+                let seeded = stored.parts().system && stored.parts().settings == *fields.settings();
+                if mode == SeedMode::Repair && !seeded {
+                    if !stored.parts().system {
+                        self.retire_referencing(id).await?;
+                    }
                     self.update_upstream(stored, fields).await?;
                 }
                 Ok(id)
@@ -181,13 +337,19 @@ impl SeedIamGatewayCommandHandler {
         Ok(id)
     }
 
+    /// Updates the stored upstream to the seeded settings and sets `system` explicitly, so that a
+    /// non-system occupant becomes the system entry.
     async fn update_upstream(
         &self,
-        mut upstream: Upstream,
+        upstream: Upstream,
         fields: UpstreamFields,
     ) -> Result<(), IamError> {
         let now = self.clock.now();
         let before = upstream.parts().clone();
+        let mut upstream = Upstream::restore(UpstreamParts {
+            system: true,
+            ..before.clone()
+        });
         upstream.update(Some(before.version), fields, self.upstream_stamp(now))?;
         let events = upstream.pull_envelopes()?;
         let record = ChangeRecord {
@@ -197,12 +359,13 @@ impl SeedIamGatewayCommandHandler {
             actor: &actor(),
             occurred_at: now,
             before: Some(format!(
-                "catalogService={} version={}",
+                "catalogService={} version={} system={}",
                 before.settings.catalog_service(),
-                before.version.value()
+                before.version.value(),
+                before.system
             )),
             after: format!(
-                "catalogService={} version={}",
+                "catalogService={} version={} system=true",
                 upstream.parts().settings.catalog_service(),
                 upstream.parts().version.value()
             ),
@@ -306,19 +469,26 @@ impl SeedIamGatewayCommandHandler {
         Ok(route.parts().clone())
     }
 
-    /// Updates the stored route at `index` of the table to `fields` when it differs.
+    /// Updates the stored route at `index` of the table to `fields` and sets `system` explicitly
+    /// when it is not the seeded route: not a system route, or a different configuration.
     async fn restore_route(
         &self,
         table: &mut [RouteParts],
         index: usize,
         fields: RouteFields,
     ) -> Result<(), IamError> {
-        let Some(before) = table.get(index).filter(|stored| stored.fields != fields) else {
+        let Some(before) = table
+            .get(index)
+            .filter(|stored| !stored.system || stored.fields != fields)
+        else {
             return Ok(());
         };
         let before = before.clone();
         let now = self.clock.now();
-        let mut route = Route::restore(before.clone());
+        let mut route = Route::restore(RouteParts {
+            system: true,
+            ..before.clone()
+        });
         route.update(Some(before.version), fields, self.route_stamp(now))?;
         RouteConflictGuard::check_candidate(route.parts(), table)?;
         let events = route.pull_envelopes()?;
@@ -328,7 +498,7 @@ impl SeedIamGatewayCommandHandler {
             target_id: before.id.to_string(),
             actor: &actor(),
             occurred_at: now,
-            before: Some(summary_of(&before, " system=true")),
+            before: Some(summary_of(&before, &format!(" system={}", before.system))),
             after: summary_of(route.parts(), " system=true"),
             idempotency: None,
         };

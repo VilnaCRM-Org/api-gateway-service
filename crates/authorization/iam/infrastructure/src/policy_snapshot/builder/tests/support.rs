@@ -132,10 +132,15 @@ pub(super) fn route_id(number: u32) -> RouteId {
 
 /// A route of `host` for `/r<number>/{id}`.
 pub(super) fn route(number: u32, host: &str) -> Edit {
+    route_with_pattern(number, host, &format!("/r{number}/{{id}}"))
+}
+
+/// A route of `host` for `pattern`.
+pub(super) fn route_with_pattern(number: u32, host: &str, pattern: &str) -> Edit {
     let draft = RouteDraft {
         host: host.to_owned(),
         methods: vec![HttpMethod::Get, HttpMethod::Post],
-        path_pattern: format!("/r{number}/{{id}}"),
+        path_pattern: pattern.to_owned(),
         service: "cat-0".to_owned(),
         upstream_id: upstream_id(0),
         flags: RouteFlags::default(),

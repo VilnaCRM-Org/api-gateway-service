@@ -41,6 +41,13 @@ const WRITTEN_SINCE: &str = "SELECT DISTINCT ON (record_key) id, record_key, pol
     )
     ORDER BY record_key, policy_version DESC, seq DESC";
 
+/// The newest state row of each of the given keys, whenever it was written.
+const NEWEST_OF_KEYS: &str = "SELECT DISTINCT ON (record_key) id, record_key, policy_version,
+        published_offset
+    FROM iam_outbox
+    WHERE kind = 'state' AND record_key = ANY($1)
+    ORDER BY record_key, policy_version DESC, seq DESC";
+
 const COUNT_UNPUBLISHED: &str =
     "SELECT count(*) FROM iam_outbox WHERE kind = 'state' AND published_at IS NULL";
 
@@ -90,6 +97,15 @@ impl PgAntiEntropyStore {
     async fn select_written(&self, since: SystemTime) -> Result<Vec<WrittenKey>, RepositoryError> {
         let rows = sqlx::query(WRITTEN_SINCE)
             .bind(timestamp(since)?)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(unavailable)?;
+        rows.iter().map(written_of).collect()
+    }
+
+    async fn select_newest(&self, keys: &[String]) -> Result<Vec<WrittenKey>, RepositoryError> {
+        let rows = sqlx::query(NEWEST_OF_KEYS)
+            .bind(keys)
             .fetch_all(&self.pool)
             .await
             .map_err(unavailable)?;
@@ -185,6 +201,10 @@ impl AntiEntropyStore for PgAntiEntropyStore {
         since: SystemTime,
     ) -> Result<Vec<WrittenKey>, RepositoryError> {
         self.select_written(since).await
+    }
+
+    async fn newest_rows(&self, keys: &[String]) -> Result<Vec<WrittenKey>, RepositoryError> {
+        self.select_newest(keys).await
     }
 
     async fn unpublished_count(&self) -> Result<u64, RepositoryError> {

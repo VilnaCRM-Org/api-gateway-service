@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use iam_domain::{
-    EntityVersion, HttpMethod, RouteChangeClass, RouteDraft, RouteParts, RouteSetVersion,
+    ActorRef, EntityVersion, HttpMethod, RouteChangeClass, RouteDraft, RouteFlag, RouteFlags,
+    RouteParts, RouteSetVersion, ServiceName, SystemComponent,
 };
 use shared_domain::{Query as _, QueryHandler as _};
 use test_support::clock::FixedClock;
@@ -11,7 +12,8 @@ use test_support::route::route_draft;
 use super::{PreviewRouteConfigurationQuery, PreviewRouteConfigurationQueryHandler};
 use crate::error::IamError;
 use crate::route_fixtures::{
-    HOST, RouteWorld, Stores, actor, at, numbered_id, route_at, route_world, upstream_id,
+    HOST, RouteWorld, Stores, actor, at, numbered_id, policy_holding, route_at, route_world,
+    upstream_id,
 };
 
 const GET: &[HttpMethod] = &[HttpMethod::Get];
@@ -58,6 +60,7 @@ async fn a_dry_run_lists_the_diff_and_writes_nothing() {
     let routes = stored();
     let world = route_world(Stores {
         routes: routes.clone(),
+        policy: Some(policy_holding(&["iam:route:*"])),
         ..Stores::default()
     });
     let mut slower = draft("/b");
@@ -86,6 +89,7 @@ async fn a_dry_run_is_refused_exactly_when_the_application_would_be() {
     let routes = stored();
     let world = route_world(Stores {
         routes: routes.clone(),
+        policy: Some(policy_holding(&["iam:route:*"])),
         ..Stores::default()
     });
 
@@ -111,4 +115,105 @@ async fn a_dry_run_is_refused_exactly_when_the_application_would_be() {
     assert!(matches!(stale, IamError::PreconditionFailed));
     assert!(matches!(too_many, IamError::Invalid(_)));
     assert!(matches!(conflicting, IamError::RouteTableConflict { .. }));
+}
+
+fn anonymous(path: &str) -> RouteDraft {
+    let mut route = draft(path);
+    route.flags = RouteFlags::default().with(RouteFlag::Anonymous, true);
+    route
+}
+
+fn world_holding(grants: &[&str]) -> RouteWorld {
+    route_world(Stores {
+        policy: Some(policy_holding(grants)),
+        ..Stores::default()
+    })
+}
+
+async fn refused_reason(world: &RouteWorld, routes: Vec<RouteDraft>) -> Option<String> {
+    let result = handler(world, 1_000)
+        .handle(query(routes, RouteSetVersion::of(&[])))
+        .await;
+    match result {
+        Ok(_) => None,
+        Err(error) => {
+            assert!(matches!(error, IamError::Forbidden), "{error:?}");
+            let offered = world.attempts.offered();
+            let [attempt] = offered.as_slice() else {
+                panic!("one attempt expected: {offered:?}");
+            };
+            assert_eq!(attempt.action.as_str(), "route_configuration.apply");
+            assert_eq!(world.unit_of_work.committed(), Vec::new());
+            Some(attempt.reason.as_str().to_owned())
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_dry_run_without_the_route_key_of_a_service_is_forbidden_and_audited() {
+    let world = world_holding(&["iam:route:other"]);
+
+    let reason = refused_reason(&world, vec![draft("/a")]).await;
+
+    assert_eq!(reason.as_deref(), Some("route_scope.denied"));
+}
+
+#[tokio::test]
+async fn a_dry_run_with_no_policy_at_all_is_forbidden() {
+    let world = route_world(Stores::default());
+
+    let reason = refused_reason(&world, vec![draft("/a")]).await;
+
+    assert_eq!(reason.as_deref(), Some("route_scope.denied"));
+}
+
+#[rstest::rstest]
+#[case::service_key(&["iam:route:core"])]
+#[case::global_key(&["iam:route:*"])]
+#[tokio::test]
+async fn a_dry_run_with_the_route_key_of_the_service_is_let_through(#[case] grants: &[&str]) {
+    let world = world_holding(grants);
+
+    assert_eq!(refused_reason(&world, vec![draft("/a")]).await, None);
+    assert_eq!(world.attempts.offered(), Vec::new());
+}
+
+#[tokio::test]
+async fn a_dry_run_of_an_anonymous_route_needs_the_anonymous_key() {
+    let world = world_holding(&["iam:route:core"]);
+
+    let reason = refused_reason(&world, vec![anonymous("/a")]).await;
+
+    assert_eq!(reason.as_deref(), Some("anonymous_route_forbidden"));
+}
+
+#[tokio::test]
+async fn a_dry_run_of_an_anonymous_route_is_let_through_for_a_holder_of_the_anonymous_key() {
+    let world = world_holding(&["iam:route:core", "iam:route:anonymous"]);
+
+    assert_eq!(refused_reason(&world, vec![anonymous("/a")]).await, None);
+}
+
+#[tokio::test]
+async fn a_dry_run_of_an_iam_component_is_let_through_without_a_policy() {
+    let world = route_world(Stores::default());
+    let mut system = query(vec![draft("/a")], RouteSetVersion::of(&[]));
+    system.actor = ActorRef::System(SystemComponent::Startup);
+
+    let preview = handler(&world, 1_000).handle(system).await.unwrap();
+
+    assert_eq!(preview.host.to_string(), HOST);
+    assert_eq!(world.attempts.offered(), Vec::new());
+}
+
+#[tokio::test]
+async fn a_dry_run_of_a_service_without_the_route_key_is_forbidden_and_audited() {
+    let world = route_world(Stores::default());
+    let mut service = query(vec![draft("/a")], RouteSetVersion::of(&[]));
+    service.actor = ActorRef::Service(ServiceName::new("billing").unwrap());
+
+    let error = handler(&world, 1_000).handle(service).await.unwrap_err();
+
+    assert!(matches!(error, IamError::Forbidden), "{error:?}");
+    assert_eq!(world.attempts.offered().len(), 1);
 }

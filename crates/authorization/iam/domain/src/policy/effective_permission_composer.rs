@@ -215,9 +215,9 @@ impl EffectivePermissionComposer {
     }
 }
 
-/// Whether an assignment in `scope` makes the subject hold `grant`: a reserved key only through a
-/// global assignment.
-const fn holds_in(grant: &PermissionGrant, scope: AssignmentScope) -> bool {
+/// Whether an assignment in `scope` makes the subject hold `grant`: a key of the service `iam`
+/// only through a global assignment.
+fn holds_in(grant: &PermissionGrant, scope: AssignmentScope) -> bool {
     match grant {
         PermissionGrant::Key(key) => counts_for(key, scope),
         PermissionGrant::Wildcard(_) => true,

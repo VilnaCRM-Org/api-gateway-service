@@ -29,6 +29,16 @@ impl fmt::Debug for KafkaSecret {
     }
 }
 
+/// The credentials of the negative probe's principal: an authenticated principal that holds no ACL
+/// (`KAFKA_PROBE_SASL_USERNAME`, `KAFKA_PROBE_SASL_PASSWORD`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeCredentials {
+    /// The principal name.
+    pub username: String,
+    /// The password.
+    pub password: KafkaSecret,
+}
+
 /// The SASL mechanism of the connection (`KAFKA_SASL_MECHANISM`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SaslMechanism {
@@ -65,6 +75,8 @@ pub enum KafkaSecurity {
         /// The PEM file of the certificate authority to trust instead of the system roots
         /// (`KAFKA_CA_FILE`).
         ca_file: Option<String>,
+        /// The principal of the negative probe; without it the probe is not checked.
+        probe: Option<ProbeCredentials>,
     },
 }
 
@@ -109,6 +121,7 @@ impl KafkaSettings {
                 username,
                 password,
                 ca_file: ca_file.clone(),
+                probe: None,
             },
         };
         Self {

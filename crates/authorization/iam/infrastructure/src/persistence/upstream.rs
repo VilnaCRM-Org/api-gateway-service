@@ -184,7 +184,9 @@ async fn insert(
 }
 
 /// Updates the settings, the version and the times of the upstream that is not deleted and holds
-/// the expected version; the name and the `system` flag never change.
+/// the expected version; the name never changes. The `system` flag is written too: only the repair
+/// of the IAM seed changes it, every other change keeps the stored value in the upstream it hands
+/// over.
 async fn update(
     connection: &mut PgConnection,
     upstream: &UpstreamParts,
@@ -195,7 +197,8 @@ async fn update(
         "UPDATE iam_upstreams SET namespace = $2, service_name = $3, catalog_service = $4,
             port = $5, protocol = $6, forward_credentials = $7, connect_timeout_ms = $8,
             response_timeout_ms = $9, concurrency_limit = $10, retry_budget_percent = $11,
-            outlier_threshold = $12, version = $13, updated_at = $14, deleted_at = $15
+            outlier_threshold = $12, version = $13, updated_at = $14, deleted_at = $15,
+            system = $17
         WHERE id = $1 AND version = $16 AND deleted_at IS NULL",
     )
     .bind(upstream.id.as_uuid().as_uuid())
@@ -214,6 +217,7 @@ async fn update(
     .bind(OffsetDateTime::from(upstream.updated_at))
     .bind(upstream.deleted_at.map(OffsetDateTime::from))
     .bind(expected.value())
+    .bind(upstream.system)
     .execute(&mut *connection)
     .await
     .map_err(translate)?;

@@ -88,33 +88,6 @@ impl GraphQlTypeGraph {
         Ok(())
     }
 
-    /// The union of both graphs: every field of either, with the flags of a field both declare
-    /// combined most restrictively (the return type of the receiver wins), and every possible type
-    /// of either.
-    ///
-    /// The decision path reads one document against the union of the active versions of a
-    /// service, so that a field of any active version resolves. The size limits apply to each
-    /// version, not to the union.
-    #[must_use]
-    pub fn union(&self, other: &Self) -> Self {
-        let mut union = self.clone();
-        for (coordinate, field) in &other.fields {
-            union
-                .fields
-                .entry(coordinate.clone())
-                .and_modify(|stored| stored.flags = stored.flags.most_restrictive(field.flags))
-                .or_insert_with(|| field.clone());
-        }
-        for (abstract_type, members) in &other.possible_types {
-            union
-                .possible_types
-                .entry(abstract_type.clone())
-                .or_default()
-                .extend(members.iter().cloned());
-        }
-        union
-    }
-
     /// The number of distinct types that declare a field, are abstract or are a possible type.
     #[must_use]
     pub fn type_count(&self) -> usize {

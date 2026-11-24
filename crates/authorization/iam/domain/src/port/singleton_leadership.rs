@@ -33,6 +33,19 @@ impl SingletonTask {
     }
 }
 
+/// The row of `iam_task_state` that exists exactly while the state topic is ahead of PostgreSQL:
+/// the anti-entropy task writes it in its batch, and the relay reads it in its own.
+pub const TOPIC_AHEAD_STATE: &str = "anti-entropy.topic-ahead";
+
+/// What the anti-entropy task left in the shared state for the relay.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TopicAheadState {
+    /// Whether the last completed check found the topic ahead of PostgreSQL.
+    pub held: bool,
+    /// How many checks of the anti-entropy task completed (committed) so far.
+    pub checks: u64,
+}
+
 /// One batch of a singleton task that this replica leads. Everything the batch writes belongs to
 /// one transaction: dropping the batch, or a lost connection, rolls it back.
 #[async_trait::async_trait]
@@ -43,6 +56,27 @@ pub trait LeaderBatch: std::fmt::Debug + Send {
     ///
     /// [`RepositoryError::Unavailable`] when the storage fails.
     async fn record_run(&mut self, at: SystemTime) -> Result<(), RepositoryError>;
+
+    /// Records, inside the batch transaction, that the check of the anti-entropy task found the
+    /// state topic ahead of PostgreSQL (`held`) or not, at `at`.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when the storage fails.
+    async fn write_topic_ahead(
+        &mut self,
+        held: bool,
+        at: SystemTime,
+    ) -> Result<(), RepositoryError>;
+
+    /// Reads, inside the batch transaction, what the anti-entropy task left: whether it holds the
+    /// relay back and how many checks of the task named `checker` completed.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when the storage fails or holds unusable data.
+    async fn read_topic_ahead(&mut self, checker: &str)
+    -> Result<TopicAheadState, RepositoryError>;
 
     /// Commits the batch and releases the leadership.
     ///

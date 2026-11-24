@@ -5,6 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use iam_domain::{
     Leadership, RepositoryError, SingletonLeadership as _, SingletonTask, TaskStateRepository as _,
+    TopicAheadState,
 };
 use iam_infrastructure::{AdvisoryLockLeadership, PgTaskStateRepository};
 use shared_infrastructure::persistence::MIGRATOR;
@@ -180,4 +181,95 @@ async fn the_down_migration_drops_the_table_and_up_creates_it_again(pool: PgPool
 
     assert!(!after_down);
     assert!(after_up);
+}
+
+const CHECKER: SingletonTask = SingletonTask::new("anti-entropy", 7_103);
+const RELAY: SingletonTask = SingletonTask::new("outbox-relay", 7_104);
+
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn a_hold_written_by_the_checker_is_read_by_the_relay_of_another_instance(pool: PgPool) {
+    let checker_instance = AdvisoryLockLeadership::new(pool.clone());
+    let relay_instance = AdvisoryLockLeadership::new(pool);
+    let mut relay = led(&relay_instance, &RELAY).await;
+    let before = relay.read_topic_ahead(CHECKER.name()).await.unwrap();
+
+    let mut checker = led(&checker_instance, &CHECKER).await;
+    checker
+        .write_topic_ahead(true, recorded_at())
+        .await
+        .unwrap();
+    checker.record_run(recorded_at()).await.unwrap();
+    // The check is not completed until its batch commits.
+    let during = relay.read_topic_ahead(CHECKER.name()).await.unwrap();
+    checker.commit().await.unwrap();
+    let after = relay.read_topic_ahead(CHECKER.name()).await.unwrap();
+
+    assert_eq!(before, TopicAheadState::default());
+    assert_eq!(during, TopicAheadState::default());
+    assert_eq!(
+        after,
+        TopicAheadState {
+            held: true,
+            checks: 1
+        }
+    );
+    relay.rollback().await.unwrap();
+}
+
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn a_later_check_releases_the_hold_and_counts_again(pool: PgPool) {
+    let leadership = AdvisoryLockLeadership::new(pool);
+    for held in [true, false] {
+        let mut checker = led(&leadership, &CHECKER).await;
+        checker
+            .write_topic_ahead(held, recorded_at())
+            .await
+            .unwrap();
+        checker.record_run(recorded_at()).await.unwrap();
+        checker.commit().await.unwrap();
+    }
+
+    let mut relay = led(&leadership, &RELAY).await;
+    let state = relay.read_topic_ahead(CHECKER.name()).await.unwrap();
+
+    assert_eq!(
+        state,
+        TopicAheadState {
+            held: false,
+            checks: 2
+        }
+    );
+    relay.rollback().await.unwrap();
+}
+
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn a_rolled_back_check_leaves_neither_a_hold_nor_a_count(pool: PgPool) {
+    let leadership = AdvisoryLockLeadership::new(pool);
+    let mut checker = led(&leadership, &CHECKER).await;
+    checker
+        .write_topic_ahead(true, recorded_at())
+        .await
+        .unwrap();
+    checker.record_run(recorded_at()).await.unwrap();
+    checker.rollback().await.unwrap();
+
+    let mut relay = led(&leadership, &RELAY).await;
+    let state = relay.read_topic_ahead(CHECKER.name()).await.unwrap();
+
+    assert_eq!(state, TopicAheadState::default());
+    relay.rollback().await.unwrap();
+}
+
+#[sqlx::test(migrator = "MIGRATOR")]
+async fn an_unusable_database_fails_the_hold_read_and_write(pool: PgPool) {
+    sqlx::query("DROP TABLE iam_task_state")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let leadership = AdvisoryLockLeadership::new(pool);
+    let mut batch = led(&leadership, &RELAY).await;
+
+    let read = batch.read_topic_ahead(CHECKER.name()).await;
+
+    assert!(matches!(read, Err(RepositoryError::Unavailable(_))));
 }

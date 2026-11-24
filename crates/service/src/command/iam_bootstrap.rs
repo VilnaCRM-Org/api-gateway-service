@@ -10,6 +10,7 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
 
+use iam_application::IamError;
 use iam_domain::{RouteHost, SubjectKind, SubjectRef};
 
 use crate::bootstrap::{
@@ -27,8 +28,10 @@ use crate::config::Config;
 ///
 /// Returns 0 on success, 1 when an active administrator assignment exists already or the database
 /// or a migration is not ready (the error is printed as `error: <message>`), and 2 for an invalid
-/// subject or host option, a `--repair-routes` without `--iam-host` or with a subject option, or
-/// an invalid configuration, reported as one line per problem.
+/// subject or host option, a `--repair-routes` without `--iam-host` or with a subject option, an
+/// invalid configuration, reported as one line per problem, or a seed that finds an upstream
+/// `iam-control` or a route of the seeded host that is not a system entry (the message names the
+/// entries; `--repair-routes` replaces them).
 pub fn run(args: IamBootstrapArgs, stdout: &mut dyn Write, stderr: &mut dyn Write) -> ExitCode {
     match execute(args, stdout, stderr) {
         Ok(status) => status,
@@ -62,8 +65,28 @@ fn execute(
             report(&plan, stdout)?;
             Ok(ExitCode::SUCCESS)
         }
-        Err(failure) => Ok(command::failure(&failure, stderr)),
+        Err(failure) => Ok(failure_status(&failure, stderr)),
     }
+}
+
+/// Reports the failure of the plan and returns its exit status: 2 when the seed finds entries
+/// that are not system entries in the place of IAM's own (the message names them and the repair
+/// that replaces them), 1 for every other failure.
+fn failure_status(failure: &CreateError, stderr: &mut dyn Write) -> ExitCode {
+    let conflict = matches!(
+        failure,
+        CreateError::Administrator(AdministratorError::GatewaySeed(IamError::SeedConflict(_)))
+    );
+    if !conflict {
+        return command::failure(failure, stderr);
+    }
+    let _written = writeln!(stderr, "error: {failure}").and_then(|()| {
+        writeln!(
+            stderr,
+            "run `service iam-bootstrap --repair-routes --iam-host <host>` to replace them with the system entries"
+        )
+    });
+    ExitCode::from(REJECTED)
 }
 
 /// What the command does.

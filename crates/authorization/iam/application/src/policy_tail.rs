@@ -4,7 +4,7 @@
 //! `(state, input) -> (state, actions)` that a driver feeds with the answers of the topic
 //! (`architecture.md` section 5.6).
 //!
-//! Story 9.3 adds the bootstrap part; Story 9.4 adds the [tail](tail) and the fence of an
+//! Story 9.3 adds the bootstrap part; Story 9.4 adds the [tail] and the fence of an
 //! inconsistency.
 
 pub mod bootstrap;

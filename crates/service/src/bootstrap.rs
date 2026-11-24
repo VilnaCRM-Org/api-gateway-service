@@ -591,20 +591,23 @@ fn register_upstream_commands(
     bus: InMemoryCommandBus,
     adapters: &Adapters,
     unit_of_work: &Arc<dyn IamUnitOfWork>,
+    own_namespace: Option<&str>,
 ) -> Result<InMemoryCommandBus, BootstrapError> {
     let create = CreateUpstreamCommandHandler::new(
         Arc::clone(unit_of_work),
         Arc::clone(&adapters.rejected_attempts),
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
-    );
+    )
+    .with_own_namespace(own_namespace.map(str::to_owned));
     let update = UpdateUpstreamCommandHandler::new(
         Arc::clone(&adapters.upstreams),
         Arc::clone(unit_of_work),
         Arc::clone(&adapters.rejected_attempts),
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
-    );
+    )
+    .with_own_namespace(own_namespace.map(str::to_owned));
     let delete = DeleteUpstreamCommandHandler::new(
         DeleteUpstreamPorts {
             upstreams: Arc::clone(&adapters.upstreams),
@@ -1086,7 +1089,8 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
     let commands = register_commands(InMemoryCommandBus::new(), create)?;
     let guarded = guarded_unit_of_work(adapters);
     let commands = register_role_commands(commands, adapters, &guarded)?;
-    let commands = register_upstream_commands(commands, adapters, &guarded)?;
+    let namespace = config.iam_namespace.as_deref();
+    let commands = register_upstream_commands(commands, adapters, &guarded, namespace)?;
     let max_routes = config.route_configuration_max_routes;
     let commands = register_route_commands(commands, adapters, &guarded, max_routes)?;
     let commands = register_rate_policy_commands(commands, adapters, &guarded)?;

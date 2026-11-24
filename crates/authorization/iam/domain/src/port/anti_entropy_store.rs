@@ -77,6 +77,14 @@ pub trait AntiEntropyStore: std::fmt::Debug + Send + Sync {
         since: SystemTime,
     ) -> Result<Vec<WrittenKey>, RepositoryError>;
 
+    /// The newest state row, whenever it was written, of every key of `keys` that has a row; a key
+    /// without a row is left out.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when the storage fails or holds unusable data.
+    async fn newest_rows(&self, keys: &[String]) -> Result<Vec<WrittenKey>, RepositoryError>;
+
     /// The number of state rows the relay has not published yet.
     ///
     /// # Errors

@@ -10,5 +10,7 @@ pub mod topic_inspector;
 
 pub use policy_log_producer::{KrafkaPolicyLogProducer, RelayMode};
 pub use policy_log_tail::KrafkaPolicyLogTail;
-pub use settings::{BOOTSTRAP_PRINCIPAL, KafkaSecret, KafkaSecurity, KafkaSettings, SaslMechanism};
+pub use settings::{
+    BOOTSTRAP_PRINCIPAL, KafkaSecret, KafkaSecurity, KafkaSettings, ProbeCredentials, SaslMechanism,
+};
 pub use topic_inspector::KrafkaTopicInspector;

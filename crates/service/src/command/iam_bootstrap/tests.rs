@@ -1,8 +1,10 @@
 use std::io::{self, Write};
 
+use iam_application::IamError;
 use iam_domain::SubjectKind;
 
-use super::{Plan, host_of, plan_of, report, run, subject_of};
+use super::{CreateError, Plan, failure_status, host_of, plan_of, report, run, subject_of};
+use crate::bootstrap::AdministratorError;
 use crate::cli::IamBootstrapArgs;
 
 const USER: &str = "0190f2a8-7b3c-7d4e-8f10-1234567890ab";
@@ -225,4 +227,31 @@ fn the_report_says_whether_the_routes_were_seeded_or_repaired() {
         render(&Plan::Repair { iam_host: host }),
         "repaired the IAM upstream and routes of iam.example.test\n"
     );
+}
+
+#[test]
+fn a_seed_conflict_exits_with_2_and_names_the_entries_and_the_repair() {
+    let mut stderr = Vec::new();
+    let failure = CreateError::Administrator(AdministratorError::GatewaySeed(
+        IamError::SeedConflict("upstream iam-control (u1)".to_owned()),
+    ));
+
+    let status = failure_status(&failure, &mut stderr);
+
+    assert_eq!(status, std::process::ExitCode::from(2));
+    let text = String::from_utf8(stderr).unwrap();
+    assert!(text.starts_with("error: "), "{text}");
+    assert!(text.contains("upstream iam-control (u1)"), "{text}");
+    assert!(text.contains("--repair-routes"), "{text}");
+}
+
+#[test]
+fn any_other_seed_failure_exits_with_1() {
+    let mut stderr = Vec::new();
+    let failure = CreateError::Administrator(AdministratorError::GatewaySeed(IamError::Conflict));
+
+    let status = failure_status(&failure, &mut stderr);
+
+    assert_eq!(status, std::process::ExitCode::from(1));
+    assert!(String::from_utf8(stderr).unwrap().starts_with("error: "));
 }

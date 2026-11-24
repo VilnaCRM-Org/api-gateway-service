@@ -6,8 +6,11 @@ use std::sync::Arc;
 use iam_domain::{ActorRef, EntityVersion, RouteDraft, RouteHost, RouteSetDiff};
 use shared_domain::{Clock, Query, QueryHandler, UuidGenerator};
 
+use crate::command::gateway_audit::SystemEntryRefusal;
 use crate::command::route_checks::RoutePorts;
-use crate::command::route_configuration_plan::{RouteConfigurationPlanner, RouteSetRequest};
+use crate::command::route_configuration_plan::{
+    AUDIT_ACTION, AUDIT_KIND, RouteConfigurationPlanner, RouteSetRequest,
+};
 use crate::error::IamError;
 
 /// Asks what `routes` would change on the host `host`, when the stored set has the version
@@ -45,8 +48,11 @@ impl Query for PreviewRouteConfigurationQuery {
 
 /// Handles [`PreviewRouteConfigurationQuery`].
 ///
-/// It runs every check that the application of the set runs, so that a dry run is refused exactly
-/// when the application would be, and commits nothing.
+/// It runs every check that the application of the set runs, including the route keys the guarded
+/// unit of work checks at the commit (`iam:route:{service}` or `iam:route:*` for every service of
+/// the set, `iam:route:anonymous` when the set needs it), so that a dry run is refused exactly
+/// when the application would be (403, offered to the buffer of the audit log), and commits
+/// nothing.
 #[derive(Debug)]
 pub struct PreviewRouteConfigurationQueryHandler {
     ports: RoutePorts,
@@ -77,6 +83,7 @@ impl PreviewRouteConfigurationQueryHandler {
         &self,
         query: PreviewRouteConfigurationQuery,
     ) -> Result<RouteConfigurationPreview, IamError> {
+        let now = self.clock.now();
         let planner = RouteConfigurationPlanner::new(
             &self.ports,
             self.max_routes,
@@ -88,8 +95,21 @@ impl PreviewRouteConfigurationQueryHandler {
                 routes: query.routes,
                 expected: query.expected,
                 actor: &query.actor,
-                occurred_at: self.clock.now(),
+                occurred_at: now,
             })
+            .await?;
+        self.ports
+            .admit_set(
+                &plan.services,
+                plan.anonymous_key,
+                SystemEntryRefusal {
+                    action: AUDIT_ACTION,
+                    kind: AUDIT_KIND,
+                    target_id: plan.host.to_string(),
+                    actor: &query.actor,
+                    occurred_at: now,
+                },
+            )
             .await?;
         Ok(RouteConfigurationPreview {
             host: plan.host,

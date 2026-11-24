@@ -363,3 +363,58 @@ async fn a_body_that_names_no_service_needs_the_wildcard() {
     assert_eq!(answer.status, StatusCode::FORBIDDEN);
     assert_eq!(refusals(&recorded)[0].action.as_str(), "access.validate");
 }
+
+#[rstest::rstest]
+#[case::missing_service(r#"{"checks":[{"service":"core"},{"request_id":"r-2"}]}"#)]
+#[case::service_that_is_not_text(r#"{"checks":[{"service":"core"},{"service":5}]}"#)]
+#[case::item_that_is_not_an_object(r#"{"checks":[{"service":"core"},"payment"]}"#)]
+#[tokio::test]
+async fn an_item_that_names_no_service_refuses_the_whole_batch_for_a_caller_without_the_wildcard(
+    #[case] body: &str,
+) {
+    let (guard, recorded) = guard_over(repository(&["iam:validate:core"]));
+
+    let answer = post_body(
+        app(guard, true),
+        "/api/access-validations/batch",
+        body.to_owned(),
+    )
+    .await;
+
+    assert_eq!(answer.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        refusals(&recorded)[0].action.as_str(),
+        "access.validate_batch"
+    );
+}
+
+#[tokio::test]
+async fn the_wildcard_admits_a_batch_whose_item_names_no_service() {
+    let (guard, recorded) = guard_over(repository(&["iam:validate:*"]));
+    let body = r#"{"checks":[{"service":"core"},{"request_id":"r-2"}]}"#;
+
+    let answer = post_body(
+        app(guard, true),
+        "/api/access-validations/batch",
+        body.to_owned(),
+    )
+    .await;
+
+    assert_eq!(answer.status, StatusCode::OK);
+    assert!(refusals(&recorded).is_empty());
+}
+
+#[tokio::test]
+async fn a_single_check_without_a_text_service_needs_the_wildcard() {
+    let (guard, recorded) = guard_over(repository(&["iam:validate:core"]));
+
+    let answer = post_body(
+        app(guard, true),
+        "/api/access-validations",
+        r#"{"service":5,"request_id":"r-1"}"#.to_owned(),
+    )
+    .await;
+
+    assert_eq!(answer.status, StatusCode::FORBIDDEN);
+    assert_eq!(refusals(&recorded)[0].action.as_str(), "access.validate");
+}

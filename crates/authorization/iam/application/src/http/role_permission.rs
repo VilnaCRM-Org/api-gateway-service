@@ -144,9 +144,9 @@ pub async fn list(
 ///
 /// # Errors
 ///
-/// A problem document: 401 without a valid token, 404 for an unknown role, 409 for a concurrent
-/// change, 412 for a stale `If-Match`, 422 for unknown keys, more than 5,000 keys or a reused
-/// idempotency key, 428 without `If-Match`, 500 when the storage fails.
+/// A problem document: 401 without a valid token, 403 for a system role, 404 for an unknown role,
+/// 409 for a concurrent change, 412 for a stale `If-Match`, 422 for unknown keys, more than 5,000
+/// keys or a reused idempotency key, 428 without `If-Match`, 500 when the storage fails.
 #[utoipa::path(
     put,
     path = "/roles/{id}/permissions",
@@ -191,6 +191,7 @@ pub async fn list(
             content_type = "application/problem+json",
             headers(("www-authenticate" = String, description = "The `Bearer` challenge."))
         ),
+        (status = 403, description = "A system role cannot be changed.", body = Problem, content_type = "application/problem+json"),
         (status = 404, description = "Role not found.", body = Problem, content_type = "application/problem+json"),
         (status = 409, description = "The role changed concurrently.", body = Problem, content_type = "application/problem+json"),
         (status = 412, description = "`If-Match` is not the current version.", body = Problem, content_type = "application/problem+json"),

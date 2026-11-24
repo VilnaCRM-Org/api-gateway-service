@@ -4,10 +4,10 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use iam_domain::{
-    ActorRef, ChangeId, DecisionEffect, EntityVersion, GuardCheck, IamChange, IamChangeParts,
-    IamUnitOfWork, IdempotencyRequest, ReferencedByRoute, RejectedAttemptLog, RouteRepository,
-    RouteScopeGuard, Upstream, UpstreamId, UpstreamParts, UpstreamRepository, UpstreamStamp,
-    UpstreamStatement,
+    ActorRef, ChangeId, DecisionEffect, EntityVersion, GatewayPrecondition, GuardCheck, IamChange,
+    IamChangeParts, IamUnitOfWork, IdempotencyRequest, ReferencedByRoute, RejectedAttemptLog,
+    RouteRepository, RouteScopeGuard, Upstream, UpstreamId, UpstreamParts, UpstreamRepository,
+    UpstreamStamp, UpstreamStatement,
 };
 use shared_domain::{Clock, Command, CommandHandler, UuidGenerator};
 
@@ -50,6 +50,11 @@ impl Command for DeleteUpstreamCommand {
 /// tombstone state record), its `iam.upstream.deleted` event and its audit record through the unit
 /// of work in one transaction. The change asks the unit of work to check `RouteScopeGuard` for the
 /// catalogue service of the upstream.
+///
+/// The count of the references before the commit only answers early. The change carries the same
+/// check as a precondition that the unit of work evaluates inside its transaction, after it locked
+/// the policy epoch: a route that a concurrent change created after the count refuses the deletion
+/// with the same 409.
 #[derive(Debug)]
 pub struct DeleteUpstreamCommandHandler {
     upstreams: Arc<dyn UpstreamRepository>,
@@ -148,7 +153,10 @@ impl DeleteUpstreamCommandHandler {
         let change = IamChange::new(IamChangeParts {
             change_id,
             effect: DecisionEffect::Affected,
-            statements: vec![statement.into()],
+            statements: vec![
+                GatewayPrecondition::UpstreamUnreferenced(upstream_id).into(),
+                statement.into(),
+            ],
             events,
             audit,
             entity_version: upstream.parts().version,

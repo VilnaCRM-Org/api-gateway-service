@@ -1,6 +1,7 @@
 //! The validated configuration of an upstream.
 
 use crate::error::{InvalidIamValue, InvalidUpstream};
+use crate::gateway_seed::IamGatewaySeed;
 use crate::value_object::dns::is_label;
 use crate::value_object::service_name::ServiceName;
 use crate::value_object::upstream_name::UpstreamName;
@@ -81,6 +82,28 @@ pub struct UpstreamSettings {
 impl UpstreamSettings {
     /// The largest retry budget, in percent.
     pub const MAX_RETRY_BUDGET_PERCENT: u8 = 100;
+
+    /// The namespaces an upstream never targets, whatever the configuration: forwarding there
+    /// would let a route operator reach the cluster's own services (SSRF).
+    pub const RESERVED_NAMESPACES: [&'static str; 2] = ["kube-system", "kube-public"];
+
+    /// Refuses a namespace that is a system namespace, the namespace of the seeded IAM upstream
+    /// (so the refusal holds when nothing is configured) or `own`, the configured namespace IAM
+    /// runs in.
+    ///
+    /// # Errors
+    ///
+    /// [`InvalidUpstream::NamespaceReserved`] for a reserved namespace.
+    pub fn check_namespace(&self, own: Option<&str>) -> Result<(), InvalidUpstream> {
+        let reserved = Self::RESERVED_NAMESPACES.contains(&self.namespace.as_str())
+            || self.namespace == IamGatewaySeed::NAMESPACE
+            || own.is_some_and(|own| own == self.namespace);
+        if reserved {
+            Err(InvalidUpstream::NamespaceReserved)
+        } else {
+            Ok(())
+        }
+    }
 
     /// Validates the draft.
     ///

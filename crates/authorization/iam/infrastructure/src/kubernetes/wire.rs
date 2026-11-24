@@ -1,5 +1,8 @@
 //! The JSON of the Kubernetes `EndpointSlice` API and its mapping to the domain types.
 
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
 use iam_domain::{
     EndpointConditions, EndpointListing, EndpointParts, EndpointSlice, SliceChange,
     UpstreamEndpoint, WatchBatch, Zone,
@@ -9,12 +12,20 @@ use serde::Deserialize;
 /// The HTTP status the API answers when the resource version is too old.
 pub(super) const GONE: i64 = 410;
 
+/// The label that names the controller which manages a slice.
+pub(super) const MANAGED_BY_LABEL: &str = "endpointslice.kubernetes.io/managed-by";
+
+/// The only controller whose slices are trusted: the one of the cluster, not a tenant's.
+pub(super) const MANAGED_BY_VALUE: &str = "endpointslice-controller.k8s.io";
+
 #[derive(Debug, Default, Deserialize)]
 struct Metadata {
     #[serde(default)]
     name: String,
     #[serde(default, rename = "resourceVersion")]
     resource_version: String,
+    #[serde(default)]
+    labels: HashMap<String, String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -52,6 +63,8 @@ struct WirePort {
 struct WireSlice {
     #[serde(default)]
     metadata: Metadata,
+    #[serde(default, rename = "addressType")]
+    address_type: String,
     #[serde(default)]
     endpoints: Vec<WireEndpoint>,
     #[serde(default)]
@@ -159,25 +172,80 @@ fn keep_version(current: &mut String, version: String) {
     }
 }
 
+/// Whether the cluster's own controller manages `slice`.
+fn is_managed(slice: &WireSlice) -> bool {
+    slice
+        .metadata
+        .labels
+        .get(MANAGED_BY_LABEL)
+        .is_some_and(|value| value == MANAGED_BY_VALUE)
+}
+
+/// The family of an `addressType` the gateway accepts; `FQDN` and anything else is refused.
+fn address_family(address_type: &str) -> Option<AddressFamily> {
+    match address_type {
+        "IPv4" => Some(AddressFamily::V4),
+        "IPv6" => Some(AddressFamily::V6),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AddressFamily {
+    V4,
+    V6,
+}
+
+/// Whether `address` is a unicast address of `family` that an upstream may have: it parses as an
+/// IP address (a host name never does), and is not loopback, link-local, unspecified or multicast.
+fn is_routable(address: &str, family: AddressFamily) -> bool {
+    match (address.parse::<IpAddr>(), family) {
+        (Ok(IpAddr::V4(ip)), AddressFamily::V4) => is_routable_v4(ip),
+        (Ok(IpAddr::V6(ip)), AddressFamily::V6) => is_routable_v6(ip),
+        _ => false,
+    }
+}
+
+const fn is_routable_v4(ip: Ipv4Addr) -> bool {
+    !(ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() || ip.is_multicast())
+}
+
+fn is_routable_v6(ip: Ipv6Addr) -> bool {
+    let link_local = ip
+        .segments()
+        .first()
+        .is_some_and(|first| first & 0xffc0 == 0xfe80);
+    // An IPv4-mapped address could hide a loopback or link-local IPv4 address, so it is refused.
+    ip.to_ipv4_mapped().is_none()
+        && !(ip.is_loopback() || link_local || ip.is_unspecified() || ip.is_multicast())
+}
+
 fn map_slice(slice: WireSlice) -> EndpointSlice {
+    let family = address_family(&slice.address_type);
     let port = slice
         .ports
         .iter()
         .find_map(|port| port.port.and_then(|value| u16::try_from(value).ok()));
-    let endpoints = port.map_or_else(Vec::new, |port| {
-        slice
+    let trusted = family.filter(|_| is_managed(&slice));
+    let endpoints = match (port, trusted) {
+        (Some(port), Some(family)) => slice
             .endpoints
             .iter()
-            .flat_map(|endpoint| map_endpoint(endpoint, port))
-            .collect()
-    });
+            .flat_map(|endpoint| map_endpoint(endpoint, port, family))
+            .collect(),
+        _ => Vec::new(),
+    };
     EndpointSlice {
         name: slice.metadata.name,
         endpoints,
     }
 }
 
-fn map_endpoint(endpoint: &WireEndpoint, port: u16) -> Vec<UpstreamEndpoint> {
+fn map_endpoint(
+    endpoint: &WireEndpoint,
+    port: u16,
+    family: AddressFamily,
+) -> Vec<UpstreamEndpoint> {
     let ready = endpoint.conditions.ready.unwrap_or(true);
     let conditions = EndpointConditions::default()
         .with(iam_domain::Condition::Ready, ready)
@@ -200,7 +268,7 @@ fn map_endpoint(endpoint: &WireEndpoint, port: u16) -> Vec<UpstreamEndpoint> {
     endpoint
         .addresses
         .iter()
-        .filter(|address| !address.is_empty())
+        .filter(|address| is_routable(address, family))
         .map(|address| {
             UpstreamEndpoint::new(EndpointParts {
                 address: address.clone(),

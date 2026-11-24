@@ -807,7 +807,7 @@ fn the_retirements_document_their_responses_headers_and_schemas(
     assert_eq!(
         documented,
         [
-            "200", "400", "401", "404", "409", "413", "415", "422", "default"
+            "200", "400", "401", "403", "404", "409", "413", "415", "422", "default"
         ]
     );
     assert_eq!(
@@ -1661,7 +1661,8 @@ fn the_role_permissions_document_their_responses_headers_and_schemas() {
     assert_eq!(
         statuses,
         [
-            "200", "202", "400", "401", "404", "409", "412", "413", "415", "422", "428", "default"
+            "200", "202", "400", "401", "403", "404", "409", "412", "413", "415", "422", "428",
+            "default"
         ]
     );
     let headers = &replace["responses"]["200"]["headers"];

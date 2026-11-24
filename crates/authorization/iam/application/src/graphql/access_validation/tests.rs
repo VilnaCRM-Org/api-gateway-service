@@ -2,12 +2,14 @@ use async_graphql::{EmptySubscription, Request, Schema, Value, Variables};
 use iam_domain::{AccessTarget, DecisionReason, HttpMethod};
 use serde_json::json;
 
+use crate::access_guard_fixtures::{caller_check, refused_actions};
 use crate::access_validation_fixtures::{
     DECISION, PROJECT, SUBJECT, allowed, allowed_in_project, batch_scenario, denied, recorded,
     recorded_batches, scenario, token_refused,
 };
 use crate::error::IamError;
 use crate::fixtures::principal;
+use crate::graphql::authorization::CallerRuleCheck;
 use crate::graphql::{IamMutation, IamQuery};
 use crate::http::IamState;
 use crate::principal::Principal;
@@ -33,16 +35,34 @@ enum Caller {
     Data(Option<Principal>),
 }
 
+/// The caller rule that the authorization extension hands to the execution: a caller who holds
+/// the wildcard.
+fn wildcard_check() -> CallerRuleCheck {
+    caller_check(&["iam:validate:*"]).0
+}
+
 async fn validate(
     schema: &IamSchema,
     caller: Caller,
     input: serde_json::Value,
+) -> async_graphql::Response {
+    validate_checked(schema, caller, input, Some(wildcard_check())).await
+}
+
+async fn validate_checked(
+    schema: &IamSchema,
+    caller: Caller,
+    input: serde_json::Value,
+    check: Option<CallerRuleCheck>,
 ) -> async_graphql::Response {
     let mut request = Request::new(VALIDATE).variables(Variables::from_json(json!({
         "input": input
     })));
     if let Caller::Data(caller) = caller {
         request = request.data(caller);
+    }
+    if let Some(check) = check {
+        request = request.data(check);
     }
     schema.execute(request).await
 }
@@ -55,10 +75,22 @@ async fn validate_batch(
     caller: Caller,
     inputs: Vec<serde_json::Value>,
 ) -> async_graphql::Response {
+    validate_batch_checked(schema, caller, inputs, Some(wildcard_check())).await
+}
+
+async fn validate_batch_checked(
+    schema: &IamSchema,
+    caller: Caller,
+    inputs: Vec<serde_json::Value>,
+    check: Option<CallerRuleCheck>,
+) -> async_graphql::Response {
     let mut request =
         Request::new(VALIDATE_BATCH).variables(Variables::from_json(json!({ "inputs": inputs })));
     if let Caller::Data(caller) = caller {
         request = request.data(caller);
+    }
+    if let Some(check) = check {
+        request = request.data(check);
     }
     schema.execute(request).await
 }
@@ -320,6 +352,115 @@ async fn a_request_without_an_authenticated_caller_is_unauthenticated() {
         assert_eq!(error_code(&response), Some(code_of("UNAUTHENTICATED")));
         assert_eq!(recorded(&asked).len(), 0);
     }
+}
+
+/// A check of `service` that names a REST target.
+fn rest_input_of(service: &str) -> serde_json::Value {
+    let mut input = rest_input();
+    input["service"] = json!(service);
+    input
+}
+
+#[tokio::test]
+async fn the_resolver_repeats_the_caller_rule_on_the_coerced_service() {
+    let (check, refusals) = caller_check(&["iam:validate:orders"]);
+    let (state, asked) = scenario(Ok(allowed()));
+
+    let response = validate_checked(
+        &schema(Some(state)),
+        Caller::Data(Some(principal())),
+        rest_input_of("billing"),
+        Some(check),
+    )
+    .await;
+
+    assert_eq!(error_code(&response), Some(code_of("FORBIDDEN")));
+    assert_eq!(recorded(&asked).len(), 0);
+    assert_eq!(refused_actions(&refusals), ["access.validate"]);
+}
+
+#[tokio::test]
+async fn the_resolver_decides_a_check_of_the_service_the_caller_holds_the_key_of() {
+    let (check, _recorded) = caller_check(&["iam:validate:orders"]);
+    let (state, asked) = scenario(Ok(allowed()));
+
+    let response = validate_checked(
+        &schema(Some(state)),
+        Caller::Data(Some(principal())),
+        rest_input_of("orders"),
+        Some(check),
+    )
+    .await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    assert_eq!(recorded(&asked).len(), 1);
+}
+
+#[tokio::test]
+async fn a_resolver_executed_without_the_extension_refuses_the_check() {
+    let (state, asked) = scenario(Ok(allowed()));
+
+    let response = validate_checked(
+        &schema(Some(state)),
+        Caller::Data(Some(principal())),
+        rest_input(),
+        None,
+    )
+    .await;
+
+    assert_eq!(error_code(&response), Some(code_of("FORBIDDEN")));
+    assert_eq!(recorded(&asked).len(), 0);
+}
+
+#[tokio::test]
+async fn one_input_of_a_service_the_caller_holds_no_key_of_refuses_the_whole_batch() {
+    let (check, refusals) = caller_check(&["iam:validate:orders"]);
+    let (state, asked) = batch_scenario(Ok(vec![allowed(), allowed()]));
+
+    let response = validate_batch_checked(
+        &schema(Some(state)),
+        Caller::Data(Some(principal())),
+        vec![rest_input_of("orders"), rest_input_of("billing")],
+        Some(check),
+    )
+    .await;
+
+    assert_eq!(error_code(&response), Some(code_of("FORBIDDEN")));
+    assert_eq!(recorded_batches(&asked).len(), 0);
+    assert_eq!(refused_actions(&refusals), ["access.validate_batch"]);
+}
+
+#[tokio::test]
+async fn a_batch_of_services_the_caller_holds_keys_of_is_decided() {
+    let (check, _recorded) = caller_check(&["iam:validate:orders", "iam:validate:billing"]);
+    let (state, asked) = batch_scenario(Ok(vec![allowed(), allowed()]));
+
+    let response = validate_batch_checked(
+        &schema(Some(state)),
+        Caller::Data(Some(principal())),
+        vec![rest_input_of("orders"), rest_input_of("billing")],
+        Some(check),
+    )
+    .await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    assert_eq!(recorded_batches(&asked).len(), 1);
+}
+
+#[tokio::test]
+async fn a_batch_without_the_extension_refuses_every_input() {
+    let (state, asked) = batch_scenario(Ok(vec![allowed()]));
+
+    let response = validate_batch_checked(
+        &schema(Some(state)),
+        Caller::Data(Some(principal())),
+        vec![rest_input()],
+        None,
+    )
+    .await;
+
+    assert_eq!(error_code(&response), Some(code_of("FORBIDDEN")));
+    assert_eq!(recorded_batches(&asked).len(), 0);
 }
 
 #[tokio::test]

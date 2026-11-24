@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use iam_domain::{
-    ActorRef, ChangeId, ChangeStatement, DecisionEffect, EntityVersion, EventEnvelope, GuardCheck,
-    IamChange, IamChangeParts, RouteChangeClass, RouteConfigurationApplied, RouteDraft,
-    RouteStatement, WriteMode,
+    ActorRef, ChangeId, ChangeStatement, DecisionEffect, EntityVersion, EventEnvelope,
+    GatewayPrecondition, GuardCheck, IamChange, IamChangeParts, RouteChangeClass,
+    RouteConfigurationApplied, RouteDraft, RouteStatement, WriteMode,
 };
 use shared_domain::{Clock, Command, CommandHandler, UuidGenerator};
 
@@ -165,7 +165,7 @@ impl ApplyRouteConfigurationCommandHandler {
 fn writes_of(
     plan: &mut RouteSetPlan,
 ) -> Result<(Vec<ChangeStatement>, Vec<EventEnvelope>), IamError> {
-    let mut statements: Vec<ChangeStatement> = Vec::new();
+    let mut statements = preconditions_of(plan);
     let mut events = Vec::new();
     for planned in &mut plan.routes {
         events.extend(planned.route.pull_envelopes()?);
@@ -180,6 +180,39 @@ fn writes_of(
         );
     }
     Ok((statements, events))
+}
+
+/// The statements that make the unit of work check, under the lock of the policy epoch, what the
+/// plan read before it: the stored set of the host still has the version the plan was made
+/// against (a route created, changed or deleted since then, by any command, refuses the set as a
+/// conflict), and the upstream and the rate policies of every route the set writes are still
+/// stored and serve it (a concurrent deletion refuses the set instead of leaving a dangling
+/// route).
+fn preconditions_of(plan: &RouteSetPlan) -> Vec<ChangeStatement> {
+    let mut statements: Vec<ChangeStatement> = vec![
+        GatewayPrecondition::RouteSetVersion {
+            host: plan.host.clone(),
+            version: plan.version,
+        }
+        .into(),
+    ];
+    let mut seen: Vec<GatewayPrecondition> = Vec::new();
+    for planned in &plan.routes {
+        let parts = planned.route.parts();
+        if parts.deleted_at.is_some() {
+            continue;
+        }
+        let targets = GatewayPrecondition::RouteTargets {
+            upstream_id: parts.fields.upstream_id(),
+            service: parts.fields.service().clone(),
+            rate_policies: parts.fields.rate_policies().to_vec(),
+        };
+        if !seen.contains(&targets) {
+            statements.push(targets.clone().into());
+            seen.push(targets);
+        }
+    }
+    statements
 }
 
 /// The audit record of the application: the host, and the routes and the version before and

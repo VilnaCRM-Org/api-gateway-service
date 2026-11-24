@@ -14,9 +14,9 @@ use krafka::{Kafka, KafkaBuilder, KrafkaError};
 use shared_domain::BoxError;
 
 use super::cluster::{
-    ClusterConnector, ClusterReadError, ClusterReader, TopicLayout, TopicSettings,
+    ClusterConnector, ClusterReadError, ClusterReader, ProbeOutcome, TopicLayout, TopicSettings,
 };
-use super::settings::{KafkaSecurity, KafkaSettings, SaslMechanism};
+use super::settings::{KafkaSecurity, KafkaSettings, ProbeCredentials, SaslMechanism};
 
 /// The setting of the broker that decides whether a topic without an ACL is open to everyone.
 const ALLOW_EVERYONE: &str = "allow.everyone.if.no.acl.found";
@@ -123,56 +123,49 @@ impl ClusterReader for KrafkaCluster {
             .admin()
             .describe_cluster(DescribeClusterOptions::default())
             .await?;
-        let broker = cluster
-            .brokers
-            .first()
-            .map(|broker| broker.id)
-            .ok_or(ClusterReadError::NoBroker)?;
-        let entries = self
-            .config_entries(ConfigResource::broker(broker), "the broker")
-            .await?;
-        Ok(value_of(&entries, ALLOW_EVERYONE))
+        if cluster.brokers.is_empty() {
+            return Err(ClusterReadError::NoBroker.into());
+        }
+        let mut reported = Vec::with_capacity(cluster.brokers.len());
+        for broker in &cluster.brokers {
+            let entries = self
+                .config_entries(ConfigResource::broker(broker.id), "the broker")
+                .await?;
+            reported.push(value_of(&entries, ALLOW_EVERYONE));
+        }
+        Ok(combined_allow_everyone(&reported))
     }
 
-    async fn refuses_principal_without_acl(&self, topic: &str) -> Result<bool, BoxError> {
-        let requires_credentials = matches!(self.settings.security, KafkaSecurity::SaslSsl { .. });
-        let Some(kafka) = connect_without_credentials(&self.settings, requires_credentials).await?
-        else {
-            return Ok(true);
+    async fn probe_principal_without_acl(&self, topic: &str) -> Result<ProbeOutcome, BoxError> {
+        let security = match probe_security(&self.settings) {
+            ProbeLink::Impossible => return Ok(ProbeOutcome::NotChecked),
+            ProbeLink::Anonymous => None,
+            ProbeLink::Authenticated(security) => Some(*security),
         };
+        let kafka = builder(&self.settings, security).connect().await?;
         let described = admin_of(&kafka, &self.settings)
             .describe_topics([topic], DescribeTopicsOptions::default())
-            .await;
-        match described {
-            Ok(topics) => answer_of(topics.get(topic), requires_credentials),
-            Err(error) if refused(&error, requires_credentials) => Ok(true),
-            Err(error) => Err(error.into()),
-        }
+            .await?;
+        answer_of(described.get(topic))
     }
 }
 
-/// Connects as the probe principal that holds no ACL; `None` when the cluster refuses the
-/// connection itself.
-async fn connect_without_credentials(
-    settings: &KafkaSettings,
-    requires_credentials: bool,
-) -> Result<Option<Kafka>, BoxError> {
-    let connected = builder(settings, unauthenticated(settings)).connect().await;
-    probe_connection(connected, requires_credentials)
-}
-
-/// The probe principal's connection: `None` when the cluster refuses it.
-fn probe_connection(
-    connected: Result<Kafka, KrafkaError>,
-    requires_credentials: bool,
-) -> Result<Option<Kafka>, BoxError> {
-    connected.map(Some).or_else(|error| {
-        if refused(&error, requires_credentials) {
-            Ok(None)
-        } else {
-            Err(error.into())
-        }
-    })
+/// The value of `allow.everyone.if.no.acl.found` that every broker answers with: a value other
+/// than `false` as soon as one broker reports it (`true` first), `false` when every broker
+/// reports `false`, and `None` when a broker does not report it, so that the probe decides.
+fn combined_allow_everyone(reported: &[Option<String>]) -> Option<String> {
+    let open = reported
+        .iter()
+        .flatten()
+        .filter(|value| value.as_str() != "false")
+        .min_by_key(|value| value.as_str() != "true");
+    if let Some(value) = open {
+        return Some(value.clone());
+    }
+    reported
+        .iter()
+        .all(Option::is_some)
+        .then(|| "false".to_owned())
 }
 
 /// The answer of a describe call for the resource `label`: its value, `None` when the topic does
@@ -197,46 +190,39 @@ fn missing_or_error<T>(error: &KrafkaError) -> Result<Option<T>, BoxError> {
     }
 }
 
-/// The negative probe's answer to `DescribeTopics`: refused when the broker denies the principal,
-/// answered when it returns the topic.
-fn answer_of(
-    answer: Option<&Result<TopicDescription, KrafkaError>>,
-    requires_credentials: bool,
-) -> Result<bool, BoxError> {
+/// The negative probe's answer to `DescribeTopics` on an authenticated connection: refused when
+/// the broker denies the principal, answered when it returns the topic, and an error otherwise.
+fn answer_of<T>(answer: Option<&Result<T, KrafkaError>>) -> Result<ProbeOutcome, BoxError> {
     let answer =
         answer.ok_or_else(|| ClusterReadError::NoAnswer("the negative probe".to_owned()))?;
     answer
         .as_ref()
-        .map(|_description| false)
-        .or_else(|error| refusal_of(error, requires_credentials))
+        .map(|_description| ProbeOutcome::Answered)
+        .or_else(refusal_of)
 }
 
 /// A failed answer of the negative probe: refused when the broker denies the principal, the
 /// error otherwise.
-fn refusal_of(error: &KrafkaError, requires_credentials: bool) -> Result<bool, BoxError> {
-    if refused(error, requires_credentials) {
-        Ok(true)
+fn refusal_of(error: &KrafkaError) -> Result<ProbeOutcome, BoxError> {
+    if refused(error) {
+        Ok(ProbeOutcome::Refused)
     } else {
         Err(error.clone().into())
     }
 }
 
-/// Whether `error` is the cluster refusing a principal that holds no ACL.
+/// Whether `error` is the broker denying an authenticated principal that holds no ACL.
 ///
-/// A listener that requires credentials closes or fails a connection that offers none, so a
-/// network error while connecting without credentials counts as a refusal there.
-const fn refused(error: &KrafkaError, requires_credentials: bool) -> bool {
-    matches!(error, KrafkaError::Auth { .. })
-        || (requires_credentials && matches!(error, KrafkaError::Network(_)))
-        || matches!(
-            error,
-            KrafkaError::Broker {
-                code: ErrorCode::TopicAuthorizationFailed
-                    | ErrorCode::ClusterAuthorizationFailed
-                    | ErrorCode::SaslAuthenticationFailed,
-                ..
-            }
-        )
+/// Only `TOPIC_AUTHORIZATION_FAILED` and `CLUSTER_AUTHORIZATION_FAILED` count: a network error, a
+/// failed login or any other failure says nothing about the ACLs.
+const fn refused(error: &KrafkaError) -> bool {
+    matches!(
+        error,
+        KrafkaError::Broker {
+            code: ErrorCode::TopicAuthorizationFailed | ErrorCode::ClusterAuthorizationFailed,
+            ..
+        }
+    )
 }
 
 const fn is_unknown_topic(error: &KrafkaError) -> bool {
@@ -302,25 +288,61 @@ pub(super) fn authenticated(settings: &KafkaSettings) -> Option<AuthConfig> {
             username,
             password,
             ca_file,
-        } => {
-            let credentials = match mechanism {
-                SaslMechanism::ScramSha256 => {
-                    AuthConfig::sasl_scram_sha256(username.clone(), password.expose())
-                }
-                SaslMechanism::ScramSha512 => {
-                    AuthConfig::sasl_scram_sha512(username.clone(), password.expose())
-                }
-            };
-            Some(credentials.with_tls(tls(ca_file.as_deref())))
-        }
+            ..
+        } => Some(
+            scram(*mechanism, username.clone(), password.expose())
+                .with_tls(tls(ca_file.as_deref())),
+        ),
     }
 }
 
-/// The security of the probe principal that holds no ACL: TLS without credentials, or none.
-fn unauthenticated(settings: &KafkaSettings) -> Option<AuthConfig> {
+/// How the negative probe connects.
+enum ProbeLink {
+    /// A plaintext listener: the anonymous principal is the probe.
+    Anonymous,
+    /// A `SASL_SSL` listener: the probe principal with its credentials.
+    Authenticated(Box<AuthConfig>),
+    /// A `SASL_SSL` listener without probe credentials: the probe cannot run.
+    Impossible,
+}
+
+/// The security of the probe principal that holds no ACL. A plaintext listener needs none; a
+/// `SASL_SSL` listener needs the configured probe credentials.
+fn probe_security(settings: &KafkaSettings) -> ProbeLink {
     match &settings.security {
-        KafkaSecurity::Plaintext => None,
-        KafkaSecurity::SaslSsl { ca_file, .. } => Some(AuthConfig::ssl(tls(ca_file.as_deref()))),
+        KafkaSecurity::Plaintext => ProbeLink::Anonymous,
+        KafkaSecurity::SaslSsl {
+            mechanism,
+            ca_file,
+            probe,
+            ..
+        } => probe.as_ref().map_or(ProbeLink::Impossible, |credentials| {
+            ProbeLink::Authenticated(Box::new(credentials_of(
+                *mechanism,
+                credentials,
+                ca_file.as_deref(),
+            )))
+        }),
+    }
+}
+
+fn credentials_of(
+    mechanism: SaslMechanism,
+    credentials: &ProbeCredentials,
+    ca_file: Option<&str>,
+) -> AuthConfig {
+    scram(
+        mechanism,
+        credentials.username.clone(),
+        credentials.password.expose(),
+    )
+    .with_tls(tls(ca_file))
+}
+
+fn scram(mechanism: SaslMechanism, username: String, password: &str) -> AuthConfig {
+    match mechanism {
+        SaslMechanism::ScramSha256 => AuthConfig::sasl_scram_sha256(username, password),
+        SaslMechanism::ScramSha512 => AuthConfig::sasl_scram_sha512(username, password),
     }
 }
 

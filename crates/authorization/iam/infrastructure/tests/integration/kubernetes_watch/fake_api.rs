@@ -229,7 +229,11 @@ impl FakeKubernetesApi {
 
 fn slice_json(name: &str, version: u64, endpoints: &[FakeEndpoint]) -> Value {
     json!({
-        "metadata": {"name": name, "resourceVersion": version.to_string()},
+        "metadata": {
+            "name": name,
+            "resourceVersion": version.to_string(),
+            "labels": {"endpointslice.kubernetes.io/managed-by": "endpointslice-controller.k8s.io"}
+        },
         "addressType": "IPv4",
         "endpoints": endpoints.iter().map(FakeEndpoint::json).collect::<Vec<_>>(),
         "ports": [{"name": "http", "port": 8081, "protocol": "TCP"}]

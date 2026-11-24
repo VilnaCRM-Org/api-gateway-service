@@ -8,6 +8,8 @@
 
 pub mod access_decision_service;
 #[cfg(test)]
+mod access_guard_fixtures;
+#[cfg(test)]
 mod access_validation_fixtures;
 pub mod administrator_safeguard;
 pub mod anti_entropy;

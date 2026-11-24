@@ -27,21 +27,41 @@ impl RouteMatcher for MatchitRouteMatcher {
 }
 
 /// The `matchit` spelling of a route pattern.
+///
+/// `matchit` refuses two routes that name the parameter of one position differently, such as
+/// `/a/{x}` and `/a/{y}/b`, although they are no conflict of the gateway. A parameter is therefore
+/// named by its position in its own route (`p0`, `p1`, ...), never by the name the route gave it;
+/// the route's own names stay in its pattern, and the matcher returns only the route.
 fn pattern_of(route: &RouteParts) -> String {
     let segments = route.fields.path_pattern().segments();
     if segments.is_empty() {
         return "/".to_owned();
     }
-    segments
-        .iter()
-        .map(|segment| match segment {
+    let mut position = 0_usize;
+    let mut pattern = String::new();
+    for segment in segments {
+        pattern.push('/');
+        match segment {
             PathSegment::Literal(text) => {
-                format!("/{}", text.replace('{', "{{").replace('}', "}}"))
+                pattern.push_str(&text.replace('{', "{{").replace('}', "}}"));
             }
-            PathSegment::Parameter(name) => format!("/{{{name}}}"),
-            PathSegment::CatchAll(name) => format!("/{{*{name}}}"),
-        })
-        .collect()
+            PathSegment::Parameter(_) => {
+                pattern.push_str(&parameter(false, position));
+                position = position.saturating_add(1);
+            }
+            PathSegment::CatchAll(_) => {
+                pattern.push_str(&parameter(true, position));
+                position = position.saturating_add(1);
+            }
+        }
+    }
+    pattern
+}
+
+/// The positional `matchit` parameter: `{p<position>}`, or `{*p<position>}` for a catch-all.
+fn parameter(catch_all: bool, position: usize) -> String {
+    let star = if catch_all { "*" } else { "" };
+    format!("{{{star}p{position}}}")
 }
 
 impl RouteTableCompiler for MatchitRouteTableCompiler {

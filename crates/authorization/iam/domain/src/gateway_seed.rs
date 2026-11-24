@@ -82,6 +82,17 @@ impl IamGatewaySeed {
     /// The name of the seeded upstream.
     pub const UPSTREAM_NAME: &'static str = "iam-control";
 
+    /// The Kubernetes namespace IAM itself runs in: the seeded upstream lives there, and the API
+    /// never lets an upstream target it, whatever the configuration says.
+    pub const NAMESPACE: &'static str = "iam";
+
+    /// Whether `name` is the upstream name that the API reserves for the seeded system upstream:
+    /// a create or an update that names it is refused as a system entry.
+    #[must_use]
+    pub fn reserves_upstream_name(name: &str) -> bool {
+        name == Self::UPSTREAM_NAME
+    }
+
     /// The seed for the routes of `host`.
     #[must_use]
     pub const fn new(host: RouteHost) -> Self {
@@ -99,7 +110,7 @@ impl IamGatewaySeed {
     #[must_use]
     pub fn upstream_draft() -> UpstreamSettingsDraft {
         UpstreamSettingsDraft {
-            namespace: "iam".to_owned(),
+            namespace: Self::NAMESPACE.to_owned(),
             service_name: Self::UPSTREAM_NAME.to_owned(),
             catalog_service: "iam".to_owned(),
             port: 80,

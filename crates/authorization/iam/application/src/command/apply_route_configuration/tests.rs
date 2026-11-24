@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use iam_domain::{
-    ChangeStatement, EntityVersion, EventValue, GatewayStatement, GuardCheck, HttpMethod,
-    IamChange, RouteConflict, RouteDraft, RouteFlag, RouteFlags, RouteParts, RouteSetVersion,
-    ServiceName,
+    ChangeStatement, EntityVersion, EventValue, GatewayPrecondition, GatewayStatement, GuardCheck,
+    HttpMethod, IamChange, RouteConflict, RouteDraft, RouteFlag, RouteFlags, RouteParts,
+    RouteSetVersion, ServiceName,
 };
 use shared_domain::{Command as _, CommandHandler as _};
 use test_support::clock::FixedClock;
@@ -82,6 +82,7 @@ fn written(change: &IamChange) -> Vec<(Option<EntityVersion>, RouteParts)> {
         .parts()
         .statements
         .iter()
+        .filter(|statement| !matches!(statement, ChangeStatement::ExpectGateway(_)))
         .map(|statement| {
             let ChangeStatement::SaveGateway(statement) = statement else {
                 panic!("a gateway statement expected");
@@ -432,18 +433,127 @@ async fn changing_a_system_route_is_a_system_entry() {
 }
 
 #[tokio::test]
-async fn keeping_a_system_route_as_it_is_is_allowed() {
+async fn dropping_a_caller_route_from_a_host_with_a_system_route_is_allowed() {
+    let mut system = route_at(numbered_id(1), "/a", GET, 3);
+    system.system = true;
+    let stored = vec![system, route_at(numbered_id(2), "/b", GET, 3)];
+    let world = world_with(stored.clone());
+
+    handler(&world, 1_000)
+        .handle(command(vec![draft("/a")], current(&stored)))
+        .await
+        .unwrap();
+
+    assert_eq!(world.unit_of_work.committed().len(), 1);
+}
+
+#[tokio::test]
+async fn adding_a_route_to_a_host_with_a_system_route_is_a_system_entry_and_audited() {
     let mut system = route_at(numbered_id(1), "/a", GET, 3);
     system.system = true;
     let stored = vec![system];
     let world = world_with(stored.clone());
 
+    let error = handler(&world, 1_000)
+        .handle(command(vec![draft("/a"), draft("/x")], current(&stored)))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, IamError::SystemEntry));
+    let offered = world.attempts.offered();
+    let [attempt] = offered.as_slice() else {
+        panic!("one attempt expected: {offered:?}");
+    };
+    assert_eq!(attempt.action.as_str(), "route_configuration.apply");
+    assert_eq!(attempt.reason.as_str(), "system_entry");
+    assert_eq!(attempt.target.target_id(), HOST);
+    assert_eq!(world.unit_of_work.committed(), Vec::new());
+}
+
+#[tokio::test]
+async fn changing_a_caller_route_on_a_host_with_a_system_route_is_a_system_entry() {
+    let mut system = route_at(numbered_id(1), "/a", GET, 3);
+    system.system = true;
+    let stored = vec![system, route_at(numbered_id(2), "/b", GET, 3)];
+    let world = world_with(stored.clone());
+    let mut slower = draft("/b");
+    slower.request_timeout_ms = 5_000;
+
+    let error = handler(&world, 1_000)
+        .handle(command(vec![draft("/a"), slower], current(&stored)))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, IamError::SystemEntry));
+    assert_eq!(world.unit_of_work.committed(), Vec::new());
+}
+
+#[tokio::test]
+async fn the_change_checks_the_set_version_and_the_targets_of_the_routes_it_writes_in_the_transaction()
+ {
+    let stored = stored_pair();
+    let world = world_with(stored.clone());
+    let version = current(&stored);
+
     handler(&world, 1_000)
-        .handle(command(vec![draft("/a"), draft("/b")], current(&stored)))
+        .handle(command(
+            vec![draft("/a"), draft("/b"), draft("/c"), draft("/d")],
+            version,
+        ))
         .await
         .unwrap();
 
-    assert_eq!(world.unit_of_work.committed().len(), 1);
+    let committed = world.unit_of_work.committed();
+    let statements = &only(&committed).parts().statements;
+    let preconditions: Vec<&GatewayPrecondition> = statements
+        .iter()
+        .filter_map(|statement| {
+            let ChangeStatement::ExpectGateway(precondition) = statement else {
+                return None;
+            };
+            Some(precondition.as_ref())
+        })
+        .collect();
+    let [set_version, targets] = preconditions.as_slice() else {
+        panic!("a set version and one targets check expected: {preconditions:?}");
+    };
+    assert!(matches!(
+        set_version,
+        GatewayPrecondition::RouteSetVersion { host, version: expected }
+            if host.as_str() == HOST && *expected == version
+    ));
+    assert!(matches!(
+        targets,
+        GatewayPrecondition::RouteTargets { upstream_id: id, .. } if *id == upstream_id()
+    ));
+    assert!(matches!(
+        statements.first(),
+        Some(ChangeStatement::ExpectGateway(_))
+    ));
+    assert!(matches!(
+        statements.last(),
+        Some(ChangeStatement::SaveGateway(_))
+    ));
+}
+
+#[tokio::test]
+async fn a_set_that_only_deletes_checks_the_set_version_and_no_targets() {
+    let stored = stored_pair();
+    let world = world_with(stored.clone());
+
+    handler(&world, 1_000)
+        .handle(command(vec![draft("/a")], current(&stored)))
+        .await
+        .unwrap();
+
+    let committed = world.unit_of_work.committed();
+    let expectations = only(&committed)
+        .parts()
+        .statements
+        .iter()
+        .filter(|statement| matches!(statement, ChangeStatement::ExpectGateway(_)))
+        .count();
+    assert_eq!(expectations, 1);
 }
 
 #[tokio::test]

@@ -8,7 +8,9 @@ use test_support::log::LogRecorder;
 use tracing::Level;
 
 use super::KrafkaTopicInspector;
-use crate::kafka::cluster::{ClusterConnector, ClusterReader, TopicLayout, TopicSettings};
+use crate::kafka::cluster::{
+    ClusterConnector, ClusterReader, ProbeOutcome, TopicLayout, TopicSettings,
+};
 
 const TOPIC: &str = "iam.policy.state.v1";
 
@@ -23,7 +25,7 @@ struct Cluster {
     layout: TopicLayout,
     writers: Vec<String>,
     allow_everyone: Option<String>,
-    refuses_probe: bool,
+    probe: ProbeOutcome,
 }
 
 impl Cluster {
@@ -41,7 +43,7 @@ impl Cluster {
             },
             writers: vec![CONTROL_PRINCIPAL.to_owned()],
             allow_everyone: Some("false".to_owned()),
-            refuses_probe: true,
+            probe: ProbeOutcome::Refused,
         }
     }
 }
@@ -64,8 +66,8 @@ impl ClusterReader for Cluster {
         Ok(self.allow_everyone.clone())
     }
 
-    async fn refuses_principal_without_acl(&self, _topic: &str) -> Result<bool, BoxError> {
-        Ok(self.refuses_probe)
+    async fn probe_principal_without_acl(&self, _topic: &str) -> Result<ProbeOutcome, BoxError> {
+        Ok(self.probe)
     }
 }
 
@@ -109,7 +111,7 @@ impl ClusterReader for Failing {
         Err(broken("describe broker failed"))
     }
 
-    async fn refuses_principal_without_acl(&self, _topic: &str) -> Result<bool, BoxError> {
+    async fn probe_principal_without_acl(&self, _topic: &str) -> Result<ProbeOutcome, BoxError> {
         Err(broken("probe failed"))
     }
 }
@@ -201,11 +203,45 @@ async fn an_allow_everyone_answer_of_the_broker_fails_the_verdict() {
 }
 
 #[tokio::test]
+async fn a_probe_that_was_not_checked_fails_the_verdict_closed() {
+    let mut unchecked = Cluster::compliant();
+    unchecked.allow_everyone = None;
+    unchecked.probe = ProbeOutcome::NotChecked;
+
+    let verdict = inspector(unchecked, ConfigGates::Enforce)
+        .inspect()
+        .await
+        .unwrap();
+
+    assert!(!verdict.passed());
+    assert_eq!(verdict.allow_everyone_source(), None);
+    assert!(
+        verdict.describe().contains("not checked"),
+        "{}",
+        verdict.describe()
+    );
+}
+
+#[tokio::test]
+async fn a_value_read_from_the_brokers_passes_without_the_probe() {
+    let mut read = Cluster::compliant();
+    read.probe = ProbeOutcome::NotChecked;
+
+    let verdict = inspector(read, ConfigGates::Enforce)
+        .inspect()
+        .await
+        .unwrap();
+
+    assert!(verdict.passed());
+    assert_eq!(verdict.allow_everyone_source(), Some(CheckSource::Broker));
+}
+
+#[tokio::test]
 async fn a_broker_that_omits_the_setting_is_checked_through_the_fallback_probe() {
     let mut refused = Cluster::compliant();
     refused.allow_everyone = None;
     let mut answered = refused.clone();
-    answered.refuses_probe = false;
+    answered.probe = ProbeOutcome::Answered;
 
     let passed = inspector(refused, ConfigGates::Enforce)
         .inspect()

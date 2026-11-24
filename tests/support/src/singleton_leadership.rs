@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use iam_domain::{LeaderBatch, Leadership, RepositoryError, SingletonLeadership, SingletonTask};
+use iam_domain::{
+    LeaderBatch, Leadership, RepositoryError, SingletonLeadership, SingletonTask, TopicAheadState,
+};
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -45,13 +47,16 @@ pub struct FakeSingletonLeadership {
     script: Mutex<VecDeque<Step>>,
     default: Step,
     events: Arc<Mutex<Vec<Event>>>,
+    topic_ahead: Arc<Mutex<TopicAheadState>>,
 }
 
 /// A led batch of the double.
 #[derive(Debug)]
 struct FakeBatch {
     step: Step,
+    task: String,
     events: Arc<Mutex<Vec<Event>>>,
+    topic_ahead: Arc<Mutex<TopicAheadState>>,
 }
 
 fn down() -> RepositoryError {
@@ -66,7 +71,15 @@ impl FakeSingletonLeadership {
             script: Mutex::new(script.iter().copied().collect()),
             default,
             events: Arc::new(Mutex::new(Vec::new())),
+            topic_ahead: Arc::new(Mutex::new(TopicAheadState::default())),
         }
+    }
+
+    /// The shared state that the anti-entropy task left for the relay: what `write_topic_ahead`
+    /// wrote and how many runs of any task named by the reads were recorded.
+    #[must_use]
+    pub fn topic_ahead(&self) -> TopicAheadState {
+        *locked(&self.topic_ahead)
     }
 
     /// A leadership that leads every batch.
@@ -100,7 +113,9 @@ impl SingletonLeadership for FakeSingletonLeadership {
             step @ (Step::Lead | Step::LeadFailingRecord | Step::LeadFailingCommit) => {
                 Ok(Leadership::Leader(Box::new(FakeBatch {
                     step,
+                    task: task.name().to_owned(),
                     events: Arc::clone(&self.events),
+                    topic_ahead: Arc::clone(&self.topic_ahead),
                 })))
             }
         }
@@ -114,7 +129,27 @@ impl LeaderBatch for FakeBatch {
             return Err(down());
         }
         locked(&self.events).push(Event::Recorded(at));
+        if self.task == "anti-entropy" {
+            let mut state = locked(&self.topic_ahead);
+            state.checks = state.checks.saturating_add(1);
+        }
         Ok(())
+    }
+
+    async fn write_topic_ahead(
+        &mut self,
+        held: bool,
+        _at: SystemTime,
+    ) -> Result<(), RepositoryError> {
+        locked(&self.topic_ahead).held = held;
+        Ok(())
+    }
+
+    async fn read_topic_ahead(
+        &mut self,
+        _checker: &str,
+    ) -> Result<TopicAheadState, RepositoryError> {
+        Ok(*locked(&self.topic_ahead))
     }
 
     async fn commit(self: Box<Self>) -> Result<(), RepositoryError> {

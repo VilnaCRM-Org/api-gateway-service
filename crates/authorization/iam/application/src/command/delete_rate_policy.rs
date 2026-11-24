@@ -3,9 +3,9 @@
 use std::sync::Arc;
 
 use iam_domain::{
-    ActorRef, ChangeId, ChangeStatement, DecisionEffect, EntityVersion, IamChange, IamChangeParts,
-    IamUnitOfWork, IdempotencyRequest, RatePolicy, RatePolicyId, RatePolicyRepository,
-    RatePolicyStamp, RatePolicyStatement, ReferencedByRoute, RouteRepository,
+    ActorRef, ChangeId, ChangeStatement, DecisionEffect, EntityVersion, GatewayPrecondition,
+    IamChange, IamChangeParts, IamUnitOfWork, IdempotencyRequest, RatePolicy, RatePolicyId,
+    RatePolicyRepository, RatePolicyStamp, RatePolicyStatement, ReferencedByRoute, RouteRepository,
 };
 use shared_domain::{Clock, Command, CommandHandler, UuidGenerator};
 
@@ -49,6 +49,11 @@ impl Command for DeleteRatePolicyCommand {
 /// `iam.rate_policy.deleted`, refuses the deletion as a conflict while a route references the
 /// policy, and commits the tombstone, the event and the audit record through the unit of work in
 /// one transaction. The change takes the next policy version.
+///
+/// The read of the references before the commit only answers early. The change carries the same
+/// check as a precondition that the unit of work evaluates inside its transaction, after it locked
+/// the policy epoch: a route that a concurrent change created after the read refuses the deletion
+/// with the same 409.
 #[derive(Debug)]
 pub struct DeleteRatePolicyCommandHandler {
     rate_policies: Arc<dyn RatePolicyRepository>,
@@ -134,7 +139,10 @@ impl DeleteRatePolicyCommandHandler {
         Ok(IamChange::new(IamChangeParts {
             change_id,
             effect: DecisionEffect::Affected,
-            statements: vec![ChangeStatement::from(statement)],
+            statements: vec![
+                GatewayPrecondition::RatePolicyUnreferenced(rate_policy_id).into(),
+                ChangeStatement::from(statement),
+            ],
             events,
             audit,
             entity_version: policy.parts().version,

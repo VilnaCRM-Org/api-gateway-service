@@ -220,3 +220,50 @@ async fn a_refusal_of_the_unit_of_work_is_the_error_of_the_command() {
 
     assert!(matches!(error, IamError::Storage(_)));
 }
+
+#[rstest::rstest]
+#[case::kube_system("kube-system", None)]
+#[case::kube_public("kube-public", None)]
+#[case::own_namespace("iam", Some("iam"))]
+#[case::seed_namespace_when_none_is_configured("iam", None)]
+#[case::seed_namespace_when_another_is_configured("iam", Some("platform"))]
+#[tokio::test]
+async fn a_reserved_namespace_is_a_violation_and_commits_nothing(
+    #[case] namespace: &str,
+    #[case] own: Option<&str>,
+) {
+    let mut world = world(FakeIamUnitOfWork::new());
+    world.handler = world.handler.with_own_namespace(own.map(str::to_owned));
+    let mut command = command("core", "core");
+    command.settings.namespace = namespace.to_owned();
+
+    let error = world.handler.handle(command).await.unwrap_err();
+
+    let IamError::Invalid(violations) = error else {
+        panic!("a violation expected: {error:?}");
+    };
+    assert_eq!(violations.len(), 1);
+    assert_eq!(violations[0].property_path, "namespace");
+    assert_eq!(violations[0].code, "reserved");
+    assert_eq!(world.unit_of_work.committed(), Vec::new());
+}
+
+#[tokio::test]
+async fn the_seeded_upstream_name_is_reserved_for_every_catalogue_service() {
+    let world = world(FakeIamUnitOfWork::new());
+
+    let error = world
+        .handler
+        .handle(command("iam-control", "core"))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, IamError::SystemEntry));
+    assert_eq!(world.unit_of_work.committed(), Vec::new());
+    let offered = world.attempts.offered();
+    let [attempt] = offered.as_slice() else {
+        panic!("one attempt expected: {offered:?}");
+    };
+    assert_eq!(attempt.action.as_str(), "upstream.create");
+    assert_eq!(attempt.reason.as_str(), "system_entry");
+}

@@ -136,7 +136,35 @@ fn a_rejection_does_not_push_the_bucket_further_away() {
 }
 
 #[test]
-fn a_full_map_admits_new_keys_without_a_bucket_until_a_sweep_frees_room() {
+fn a_full_pool_decides_new_keys_against_one_shared_overflow_bucket() {
+    let rule = RateDecisionRule::new(1, Duration::from_secs(60), 0);
+    let (_clock, limiter) = limiter(1, rule);
+    let first = ip_key("203.0.113.1");
+    assert!(limiter.check_guard(&first).is_admitted());
+
+    // The pool is full: the second key is not skipped but limited by the overflow bucket.
+    assert!(limiter.check_guard(&ip_key("203.0.113.2")).is_admitted());
+    assert!(!limiter.check_guard(&ip_key("203.0.113.3")).is_admitted());
+    assert!(!limiter.check_guard(&ip_key("203.0.113.2")).is_admitted());
+    // The key that owns a bucket is still decided by its own bucket.
+    assert!(!limiter.check_guard(&first).is_admitted());
+}
+
+#[test]
+fn the_overflow_bucket_admits_again_when_the_clock_passes_the_wait() {
+    let rule = RateDecisionRule::new(1, Duration::from_secs(10), 0);
+    let (clock, limiter) = limiter(1, rule);
+    assert!(limiter.check_guard(&ip_key("203.0.113.1")).is_admitted());
+    assert!(limiter.check_guard(&ip_key("203.0.113.2")).is_admitted());
+    assert!(!limiter.check_guard(&ip_key("203.0.113.3")).is_admitted());
+
+    clock.advance(Duration::from_secs(10));
+
+    assert!(limiter.check_guard(&ip_key("203.0.113.3")).is_admitted());
+}
+
+#[test]
+fn a_sweep_frees_room_in_a_full_pool_for_a_new_key() {
     let rule = RateDecisionRule::new(1, Duration::from_millis(500), 0);
     let (clock, limiter) = limiter(1, rule);
     let first = ip_key("203.0.113.1");
@@ -145,12 +173,86 @@ fn a_full_map_admits_new_keys_without_a_bucket_until_a_sweep_frees_room() {
 
     clock.advance(Duration::from_millis(600));
     assert!(limiter.check_guard(&second).is_admitted());
-    assert!(limiter.check_guard(&second).is_admitted());
-
-    clock.advance(Duration::from_millis(500));
-    assert!(limiter.check_guard(&second).is_admitted());
+    // The sweep dropped the idle bucket of the first key, so the second key owns a bucket now.
     assert!(!limiter.check_guard(&second).is_admitted());
-    assert!(limiter.check_guard(&first).is_admitted());
+}
+
+#[test]
+fn the_policy_pool_is_full_independently_of_the_guard_pool() {
+    let rule = RateDecisionRule::new(1, Duration::from_secs(60), 0);
+    let (_clock, limiter) = limiter(1, rule);
+    for number in 0..4 {
+        assert!(
+            limiter
+                .check_guard(&ip_key(&format!("203.0.113.{number}")))
+                .is_admitted()
+                || number > 0
+        );
+    }
+
+    // The flooded guard pool leaves the policy pool empty: the first policy key owns a bucket.
+    assert!(
+        limiter
+            .check_fallback(&policy(1), &route_key("login"), &rule)
+            .is_admitted()
+    );
+    assert!(
+        !limiter
+            .check_fallback(&policy(1), &route_key("login"), &rule)
+            .is_admitted()
+    );
+}
+
+#[test]
+fn a_full_policy_pool_does_not_limit_the_guard() {
+    let rule = RateDecisionRule::new(1, Duration::from_secs(60), 0);
+    let (_clock, limiter) = limiter(1, guard_rule());
+    assert!(
+        limiter
+            .check_fallback(&policy(1), &route_key("a"), &rule)
+            .is_admitted()
+    );
+    assert!(
+        limiter
+            .check_fallback(&policy(1), &route_key("b"), &rule)
+            .is_admitted()
+    );
+    assert!(
+        !limiter
+            .check_fallback(&policy(1), &route_key("c"), &rule)
+            .is_admitted()
+    );
+
+    assert!(limiter.check_guard(&ip_key("203.0.113.1")).is_admitted());
+    assert!(limiter.check_guard(&ip_key("203.0.113.1")).is_admitted());
+}
+
+#[test]
+fn every_policy_has_its_own_overflow_bucket() {
+    let rule = RateDecisionRule::new(1, Duration::from_secs(60), 0);
+    let (_clock, limiter) = limiter(1, guard_rule());
+    // Fill the shared policy pool with a key of policy 1.
+    assert!(
+        limiter
+            .check_fallback(&policy(1), &route_key("owner"), &rule)
+            .is_admitted()
+    );
+
+    assert!(
+        limiter
+            .check_fallback(&policy(1), &route_key("a"), &rule)
+            .is_admitted()
+    );
+    assert!(
+        !limiter
+            .check_fallback(&policy(1), &route_key("b"), &rule)
+            .is_admitted()
+    );
+    assert!(
+        limiter
+            .check_fallback(&policy(2), &route_key("a"), &rule)
+            .is_admitted()
+    );
 }
 
 #[test]

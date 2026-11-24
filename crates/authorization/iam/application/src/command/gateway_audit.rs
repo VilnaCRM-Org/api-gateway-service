@@ -4,8 +4,8 @@
 use std::time::SystemTime;
 
 use iam_domain::{
-    ActorRef, AuditAction, AuditOutcome, AuditReason, AuditSummary, AuditTarget,
-    IdempotencyRequest, RejectedAttempt, RejectedAttemptLog, SecurityAuditEvent,
+    ActorRef, AnonymousRouteRefused, AuditAction, AuditOutcome, AuditReason, AuditSummary,
+    AuditTarget, IdempotencyRequest, RejectedAttempt, RejectedAttemptLog, SecurityAuditEvent,
     SecurityAuditEventId, SecurityAuditEventParts,
 };
 use shared_domain::UuidGenerator;
@@ -119,6 +119,25 @@ pub(crate) fn refuse_route_scope(
     refusal: SystemEntryRefusal<'_>,
 ) -> IamError {
     offer(log, refusal, ROUTE_SCOPE_REASON, IamError::Forbidden)
+}
+
+/// Offers the refusal of an actor without `iam:route:anonymous` to the buffer of the audit log
+/// and returns the error that answers the caller: [`IamError::Forbidden`].
+///
+/// # Errors
+///
+/// [`IamError::Internal`] when a value of the record breaks an invariant of the domain; the
+/// refusal is not recorded then.
+pub(crate) fn refuse_anonymous_route(
+    log: &dyn RejectedAttemptLog,
+    refusal: SystemEntryRefusal<'_>,
+) -> IamError {
+    offer(
+        log,
+        refusal,
+        AnonymousRouteRefused::CODE,
+        IamError::Forbidden,
+    )
 }
 
 /// Records the refusal with its reason and answers with `error`.

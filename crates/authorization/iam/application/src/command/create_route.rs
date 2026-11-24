@@ -11,7 +11,7 @@ use iam_domain::{
 use shared_domain::{Clock, Command, CommandHandler, UuidGenerator};
 
 use super::gateway_audit::{ChangeRecord, SystemEntryRefusal, committed};
-use super::route_checks::{RoutePorts, summary_of};
+use super::route_checks::{RoutePorts, summary_of, with_preconditions};
 use crate::error::IamError;
 
 /// The audited action of a created route.
@@ -98,6 +98,14 @@ impl CreateRouteCommandHandler {
             occurred_at: now,
         };
         self.ports.admit_service(&service, refusal).await?;
+        let reserved = SystemEntryRefusal {
+            action: AUDIT_ACTION,
+            kind: AUDIT_KIND,
+            target_id: command.route_id.to_string(),
+            actor: &command.actor,
+            occurred_at: now,
+        };
+        self.ports.admit_hosts(&[fields.host()], reserved).await?;
         self.ports.admit_references(&fields).await?;
         let anonymous_key = AnonymousRouteGuard::needs_key_on_create(&fields);
         let stamp = RouteStamp {
@@ -136,7 +144,7 @@ impl CreateRouteCommandHandler {
         Ok(IamChange::new(IamChangeParts {
             change_id: command.change_id,
             effect: DecisionEffect::Affected,
-            statements: vec![RouteStatement::insert(&route).into()],
+            statements: with_preconditions(&route, RouteStatement::insert(&route).into()),
             events,
             audit,
             entity_version: EntityVersion::INITIAL,

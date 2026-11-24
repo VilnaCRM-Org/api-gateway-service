@@ -13,7 +13,7 @@ use shared_domain::{Clock, Command, CommandHandler, UuidGenerator};
 
 use super::create_route::AUDIT_KIND;
 use super::gateway_audit::{ChangeRecord, SystemEntryRefusal, committed, refuse_system_entry};
-use super::route_checks::{RoutePorts, services_of, summary_of};
+use super::route_checks::{RoutePorts, hosts_of, services_of, summary_of, with_preconditions};
 use crate::error::IamError;
 
 /// The audited action of an updated route.
@@ -224,6 +224,15 @@ impl UpdateRouteCommandHandler {
             occurred_at: now,
         };
         self.ports.admit_service(&after_service, refusal).await?;
+        let reserved = SystemEntryRefusal {
+            action: AUDIT_ACTION,
+            kind: AUDIT_KIND,
+            target_id: command.route_id.to_string(),
+            actor: &command.actor,
+            occurred_at: now,
+        };
+        let hosts = hosts_of(before.fields.host(), route.parts().fields.host());
+        self.ports.admit_hosts(&hosts, reserved).await?;
         self.ports.admit_references(&route.parts().fields).await?;
         self.ports.admit_table(route.parts()).await?;
         let services = services_of(before.fields.service(), &after_service);
@@ -257,7 +266,10 @@ impl UpdateRouteCommandHandler {
         Ok(IamChange::new(IamChangeParts {
             change_id: command.change_id,
             effect: DecisionEffect::Affected,
-            statements: vec![RouteStatement::update(&route, command.expected).into()],
+            statements: with_preconditions(
+                &route,
+                RouteStatement::update(&route, command.expected).into(),
+            ),
             events,
             audit,
             entity_version: route.parts().version,

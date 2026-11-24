@@ -21,7 +21,7 @@ pub use buffered_rejected_attempt_log::BufferedRejectedAttemptLog;
 pub use clock::LinuxBootClock;
 pub use kafka::{
     BOOTSTRAP_PRINCIPAL, KafkaSecret, KafkaSecurity, KafkaSettings, KrafkaPolicyLogProducer,
-    KrafkaPolicyLogTail, KrafkaTopicInspector, RelayMode, SaslMechanism,
+    KrafkaPolicyLogTail, KrafkaTopicInspector, ProbeCredentials, RelayMode, SaslMechanism,
 };
 pub use kubernetes::{
     KubernetesEndpointWatch, KubernetesSettings, KubernetesSetupError, StaticEndpointWatch,

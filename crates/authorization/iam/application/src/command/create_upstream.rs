@@ -5,8 +5,8 @@ use std::time::SystemTime;
 
 use iam_domain::{
     ActorRef, ChangeId, DecisionEffect, EntityVersion, GuardCheck, IamChange, IamChangeParts,
-    IamUnitOfWork, IdempotencyRequest, RejectedAttemptLog, RouteScopeGuard, Upstream,
-    UpstreamFields, UpstreamId, UpstreamSettingsDraft, UpstreamStamp, UpstreamStatement,
+    IamGatewaySeed, IamUnitOfWork, IdempotencyRequest, RejectedAttemptLog, RouteScopeGuard,
+    Upstream, UpstreamFields, UpstreamId, UpstreamSettingsDraft, UpstreamStamp, UpstreamStatement,
 };
 use shared_domain::{Clock, Command, CommandHandler, UuidGenerator};
 
@@ -57,9 +57,18 @@ pub struct CreateUpstreamCommandHandler {
     rejected_attempts: Arc<dyn RejectedAttemptLog>,
     clock: Arc<dyn Clock>,
     uuid_generator: Arc<dyn UuidGenerator>,
+    own_namespace: Option<String>,
 }
 
 impl CreateUpstreamCommandHandler {
+    /// The namespace IAM itself runs in; an upstream that targets it is refused (422), like one
+    /// that targets `kube-system` or `kube-public`.
+    #[must_use]
+    pub fn with_own_namespace(mut self, namespace: Option<String>) -> Self {
+        self.own_namespace = namespace;
+        self
+    }
+
     /// A handler over the unit of work, the buffer of refused attempts, the clock and the
     /// identifier source.
     #[must_use]
@@ -74,6 +83,7 @@ impl CreateUpstreamCommandHandler {
             rejected_attempts,
             clock,
             uuid_generator,
+            own_namespace: None,
         }
     }
 
@@ -97,15 +107,17 @@ impl CreateUpstreamCommandHandler {
         } = command;
         let now = self.clock.now();
         let fields = UpstreamFields::new(&name, &settings)?;
+        fields
+            .settings()
+            .check_namespace(self.own_namespace.as_deref())
+            .map_err(|violation| IamError::from(vec![violation]))?;
         let service = fields.settings().catalog_service().clone();
-        if RouteScopeGuard::check_changeable(&service, false).is_err() {
+        if RouteScopeGuard::check_changeable(&service, false).is_err()
+            || IamGatewaySeed::reserves_upstream_name(fields.name().as_str())
+        {
             return Err(self.refuse(upstream_id, &actor, now));
         }
-        let stamp = UpstreamStamp {
-            event_id: self.uuid_generator.generate(),
-            actor: actor.clone(),
-            occurred_at: now,
-        };
+        let stamp = self.stamp(&actor, now);
         let mut upstream = Upstream::create(upstream_id, fields, false, stamp);
         let events = upstream.pull_envelopes()?;
         let record = ChangeRecord {
@@ -132,6 +144,15 @@ impl CreateUpstreamCommandHandler {
         Ok(change.with_guard(GuardCheck::RouteScope {
             services: vec![service],
         }))
+    }
+
+    /// The stamp of the change: a fresh event id, the actor and the time.
+    fn stamp(&self, actor: &ActorRef, now: SystemTime) -> UpstreamStamp {
+        UpstreamStamp {
+            event_id: self.uuid_generator.generate(),
+            actor: actor.clone(),
+            occurred_at: now,
+        }
     }
 
     /// The refusal of an upstream of the `iam` service, offered to the buffer of the audit log.

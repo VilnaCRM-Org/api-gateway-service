@@ -1165,6 +1165,12 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '403':
+          description: A version of the service `iam` is retired by IAM's own startup registration only.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
         '404':
           description: Version not found.
           content:
@@ -1684,6 +1690,12 @@ paths:
               schema:
                 type: string
               description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: A version of the service `iam` is retired by IAM's own startup registration only.
           content:
             application/problem+json:
               schema:
@@ -3206,6 +3218,12 @@ paths:
               schema:
                 type: string
               description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: A system role cannot be changed.
           content:
             application/problem+json:
               schema:

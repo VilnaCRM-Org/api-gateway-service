@@ -6,7 +6,7 @@ use iam_domain::{
     GrantRecord, GrantStatus, HttpMethod, IdempotencyKey, IdempotencyRequest, OpenApiSpec,
     OpenApiSpecContent, OpenApiSpecParts, OpenApiSpecStatement, PathTemplate, PermissionFlags,
     PermissionId, PermissionKey, PermissionKeyKind, PolicyVersion, RequestDigest, RestOperation,
-    RestOperationSet, RestPermission, RoleId, ServiceName, SpecId, SpecStatus,
+    RestOperationSet, RestPermission, RoleId, ServiceName, SpecId, SpecStatus, SystemComponent,
 };
 use shared_domain::{Command as _, CommandHandler as _, Uuid};
 use test_support::clock::FixedClock;
@@ -71,10 +71,19 @@ fn spec(
     status: SpecStatus,
     items: &[(HttpMethod, &str, PermissionFlags)],
 ) -> OpenApiSpecStatement {
+    spec_of(service(), number, status, items)
+}
+
+fn spec_of(
+    service: ServiceName,
+    number: u8,
+    status: SpecStatus,
+    items: &[(HttpMethod, &str, PermissionFlags)],
+) -> OpenApiSpecStatement {
     let spec = OpenApiSpec::restore(OpenApiSpecParts {
         id: spec_id(number),
         content: OpenApiSpecContent {
-            service: service(),
+            service,
             content_hash: ContentHash::new(&[number; 32]).unwrap(),
             operations: operations(items),
         },
@@ -364,6 +373,53 @@ async fn an_unknown_version_is_not_found() {
 
     assert!(matches!(error, IamError::NotFound));
     assert_eq!(unit_of_work.committed().len(), 0);
+}
+
+#[tokio::test]
+async fn an_iam_version_is_forbidden_to_any_actor_but_the_startup_registration() {
+    let iam = || {
+        spec_of(
+            ServiceName::iam().clone(),
+            1,
+            SpecStatus::Active,
+            &[(HttpMethod::Get, "/me", PLAIN)],
+        )
+    };
+
+    let (handler, unit_of_work) = World::new(&[iam()]).handler();
+    let error = handler.handle(command(1)).await.unwrap_err();
+
+    assert!(matches!(error, IamError::Forbidden), "{error:?}");
+    assert_eq!(unit_of_work.committed().len(), 0);
+
+    let (handler, unit_of_work) = World::new(&[iam()]).handler();
+    let operator = RetireOpenApiSpecCommand {
+        actor: ActorRef::System(SystemComponent::Bootstrap),
+        ..command(1)
+    };
+    let error = handler.handle(operator).await.unwrap_err();
+
+    assert!(matches!(error, IamError::Forbidden), "{error:?}");
+    assert_eq!(unit_of_work.committed().len(), 0);
+}
+
+#[tokio::test]
+async fn the_startup_registration_may_retire_an_iam_version() {
+    let (handler, unit_of_work) = World::new(&[spec_of(
+        ServiceName::iam().clone(),
+        1,
+        SpecStatus::Active,
+        &[(HttpMethod::Get, "/me", PLAIN)],
+    )])
+    .handler();
+    let startup = RetireOpenApiSpecCommand {
+        actor: ActorRef::System(SystemComponent::Startup),
+        ..command(1)
+    };
+
+    handler.handle(startup).await.unwrap();
+
+    assert_eq!(unit_of_work.committed().len(), 1);
 }
 
 #[tokio::test]

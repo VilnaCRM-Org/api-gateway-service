@@ -52,6 +52,11 @@ impl Query {
         "validated"
     }
 
+    async fn resolve_token(&self, input: Option<Check>) -> &str {
+        drop(input);
+        "resolved"
+    }
+
     async fn example(&self) -> &str {
         "example"
     }
@@ -380,7 +385,27 @@ async fn the_wildcard_validates_for_any_service_over_graphql() {
     serde_json::json!({"c": {"service": "payment"}}),
     &["payment"]
 )]
-#[case::missing_variable("query($c: Check) { validateAccess(input: $c) }", serde_json::json!({}), &[])]
+#[case::missing_variable("query($c: Check) { validateAccess(input: $c) }", serde_json::json!({}), &[""])]
+#[case::default_variable(
+    r#"query($c: Check = {service: "payment"}) { validateAccess(input: $c) }"#,
+    serde_json::json!({}),
+    &["payment"]
+)]
+#[case::default_variable_overridden(
+    r#"query($c: Check = {service: "payment"}) { validateAccess(input: $c) }"#,
+    serde_json::json!({"c": {"service": "core"}}),
+    &["core"]
+)]
+#[case::default_inside_a_literal(
+    r#"query($s: String = "payment") { validateAccess(input: {service: $s}) }"#,
+    serde_json::json!({}),
+    &["payment"]
+)]
+#[case::a_check_without_a_service(r#"{ validateAccess(input: {other: "core"}) }"#, serde_json::json!({}), &[""])]
+#[case::a_check_with_a_service_that_is_not_text("{ validateAccess(input: {service: 5}) }", serde_json::json!({}), &[""])]
+#[case::token_resolution_names_no_service(r#"{ resolveToken(input: {credential: "t"}) }"#, serde_json::json!({}), &[])]
+#[case::token_resolution_with_a_missing_variable("query($c: Check) { resolveToken(input: $c) }", serde_json::json!({}), &[""])]
+#[case::token_resolution_with_a_default(r#"query($c: Check = {service: "x"}) { resolveToken(input: $c) }"#, serde_json::json!({}), &[])]
 #[case::no_arguments("{ validateAccess }", serde_json::json!({}), &[])]
 #[case::a_field_that_is_not_a_decision_field(r#"mutation { createRole(input: {service: "core"}) }"#, serde_json::json!({}), &[])]
 fn the_services_of_the_decision_fields_are_read_from_their_arguments(
@@ -389,4 +414,79 @@ fn the_services_of_the_decision_fields_are_read_from_their_arguments(
     #[case] expected: &[&str],
 ) {
     assert_eq!(services_of(query, variables), expected);
+}
+
+#[tokio::test]
+async fn a_default_variable_is_resolved_like_an_inline_value() {
+    let query = r#"query($c: Check = {service: "payment"}) { validateAccess(input: $c) }"#;
+    let (holding_payment, recorded) = schema(&["iam:validate:payment"]);
+    let (holding_core, _recorded) = schema(&["iam:validate:core"]);
+
+    let allowed = holding_payment
+        .execute(request(query, Some(principal())))
+        .await;
+    let refused = holding_core
+        .execute(request(query, Some(principal())))
+        .await;
+
+    assert!(allowed.errors.is_empty(), "{:?}", allowed.errors);
+    assert_eq!(code(&refused).as_deref(), Some("FORBIDDEN"));
+    assert_eq!(recorded_actions(&recorded), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn a_variable_that_resolves_nowhere_is_forbidden_unless_the_caller_holds_the_wildcard() {
+    let query = "query($c: Check) { validateAccess(input: $c) }";
+    let (holding_core, recorded) = schema(&["iam:validate:core"]);
+
+    let refused = holding_core
+        .execute(request(query, Some(principal())))
+        .await;
+
+    assert_eq!(code(&refused).as_deref(), Some("FORBIDDEN"));
+    assert_eq!(recorded_actions(&recorded), ["access.validate"]);
+}
+
+#[tokio::test]
+async fn a_check_that_names_no_service_is_forbidden_unless_the_caller_holds_the_wildcard() {
+    let query = r#"{ validateAccess(input: {other: "core"}) }"#;
+    let (holding_core, recorded) = schema(&["iam:validate:core"]);
+    let (wildcard, _recorded) = schema(&["iam:validate:*"]);
+
+    let refused = holding_core
+        .execute(request(query, Some(principal())))
+        .await;
+    let admitted = wildcard.execute(request(query, Some(principal()))).await;
+
+    assert_eq!(code(&refused).as_deref(), Some("FORBIDDEN"));
+    assert_eq!(recorded_actions(&recorded), ["access.validate"]);
+    assert_eq!(code(&admitted), None);
+}
+
+#[tokio::test]
+async fn an_inline_list_of_the_services_the_caller_holds_keys_of_passes_the_extension() {
+    let (schema, _recorded) = schema(&["iam:validate:core", "iam:validate:payment"]);
+
+    let response = schema
+        .execute(request(
+            r#"{ validateAccess(input: [{service: "core"}, {service: "payment"}]) }"#,
+            Some(principal()),
+        ))
+        .await;
+
+    // The test schema takes one check, so execution refuses the list; the extension let it through.
+    assert_ne!(code(&response).as_deref(), Some("FORBIDDEN"));
+}
+
+#[tokio::test]
+async fn token_resolution_with_an_unresolved_variable_needs_the_wildcard() {
+    let query = "query($c: Check) { resolveToken(input: $c) }";
+    let (holding_core, recorded) = schema(&["iam:validate:core"]);
+
+    let refused = holding_core
+        .execute(request(query, Some(principal())))
+        .await;
+
+    assert_eq!(code(&refused).as_deref(), Some("FORBIDDEN"));
+    assert_eq!(recorded_actions(&recorded), ["token.resolve"]);
 }

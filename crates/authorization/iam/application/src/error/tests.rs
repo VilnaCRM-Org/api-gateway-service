@@ -633,3 +633,36 @@ fn route_violations_name_the_properties_of_the_request() {
     );
     assert_eq!(violations[0].code, "format");
 }
+
+#[test]
+fn a_seed_conflict_is_the_409_problem_of_the_system_entry_type_and_names_the_entries() {
+    let problem = Problem::from(IamError::SeedConflict("upstream iam-control".to_owned()));
+
+    assert_eq!(problem.status, 409);
+    assert_eq!(problem.r#type, TYPE_SYSTEM_ENTRY);
+    assert!(
+        problem
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("upstream iam-control"))
+    );
+}
+
+#[test]
+fn the_refusals_of_the_unit_of_work_keep_their_problem_type() {
+    let referenced = IamError::from(RepositoryError::ReferencedByRoute(ReferencedByRoute {
+        count: 1,
+    }));
+    let table = IamError::from(RepositoryError::RouteTable(RouteConflict::SamePattern {
+        first: RouteId::parse("0190f2a8-7b3c-7d4e-8f10-1234567890e0").unwrap(),
+        second: RouteId::parse("0190f2a8-7b3c-7d4e-8f10-1234567890e1").unwrap(),
+    }));
+
+    assert!(matches!(referenced, IamError::ReferencedByRoute));
+    assert!(matches!(
+        table,
+        IamError::RouteTableConflict {
+            code: "same_pattern"
+        }
+    ));
+}

@@ -181,7 +181,10 @@ async fn an_upstream_is_found_with_its_settings_and_is_updated_at_its_expected_v
     let found = stored_upstream(&pool, "core").await.unwrap();
     assert_eq!(found.settings, changed.parts().settings);
     assert_eq!(found.version, version(2));
-    assert!(!found.system, "the system flag never changes");
+    assert!(
+        found.system,
+        "an update writes the system flag that it carries: the repair of the IAM seed sets it"
+    );
     let by_id = PgUpstreamRepository::new(pool.clone())
         .find_by_id(found.id)
         .await

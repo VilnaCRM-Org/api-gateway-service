@@ -4,7 +4,10 @@
 use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 
-use iam_domain::{PolicyHead, PolicyState, PolicyVersion, StateKey, StoredHead, TailRecord};
+use iam_domain::{
+    PolicyHead, PolicyState, PolicyVersion, PublishedRecord, StateKey, StoredHead, TailRecord,
+    WrittenKey,
+};
 use shared_domain::{BoxError, Uuid};
 
 use super::{AntiEntropyAlert, AntiEntropyChecker, RECENT_WINDOW};
@@ -105,6 +108,10 @@ impl HeadCheck<'_> {
     }
 
     /// Checks that the recent rows are stored at the offsets that were recorded for them.
+    ///
+    /// A recent row that is no longer the newest of its key is never repaired: publishing it again
+    /// would put a superseded state back at the end of the topic. The newest PostgreSQL row of the
+    /// key is checked instead, as [`Self::verify_written`] does, and repaired when it is lost.
     async fn verify_recent(
         &self,
         now: SystemTime,
@@ -117,21 +124,63 @@ impl HeadCheck<'_> {
             .store
             .recently_published(since, RECENT_LIMIT)
             .await?;
+        let mut lost = Vec::new();
         for record in recent {
-            let stored = self
-                .0
-                .ports
-                .tail
-                .read_at(record.offset)
-                .await
-                .map_err(|error| self.0.tail_failure(error))?;
-            let holds = stored
-                .is_some_and(|found| found.key == record.key && found.version == record.version);
-            if !holds {
-                self.repair(record.id, &record.key, repaired).await?;
+            if !self
+                .holds_at(record.offset, &record.key, record.version)
+                .await?
+            {
+                lost.push(record);
             }
         }
+        if lost.is_empty() {
+            return Ok(());
+        }
+        let keys: Vec<String> = lost.iter().map(|record| record.key.clone()).collect();
+        let newest = self.0.ports.store.newest_rows(&keys).await?;
+        for record in lost {
+            let row = newest.iter().find(|row| row.key == record.key);
+            self.repair_newest(&record, row, repaired).await?;
+        }
         Ok(())
+    }
+
+    /// Whether the topic holds the record `key` at `version` at `offset`.
+    async fn holds_at(
+        &self,
+        offset: i64,
+        key: &str,
+        version: PolicyVersion,
+    ) -> Result<bool, BoxError> {
+        let stored = self
+            .0
+            .ports
+            .tail
+            .read_at(offset)
+            .await
+            .map_err(|error| self.0.tail_failure(error))?;
+        Ok(stored.is_some_and(|found| found.key == key && found.version == version))
+    }
+
+    /// Repairs the lost `record` through the newest row of its key: the record itself when it is
+    /// the newest; a newer row only when that one is lost too (a row that is not published yet is
+    /// the relay's to send); the record when the store knows no newer row of the key.
+    async fn repair_newest(
+        &self,
+        record: &PublishedRecord,
+        newest: Option<&WrittenKey>,
+        repaired: &mut HashSet<Uuid>,
+    ) -> Result<(), BoxError> {
+        let Some(newest) = newest.filter(|row| row.id != record.id) else {
+            return self.repair(record.id, &record.key, repaired).await;
+        };
+        let Some(offset) = newest.published_offset else {
+            return Ok(());
+        };
+        if self.holds_at(offset, &newest.key, newest.version).await? {
+            return Ok(());
+        }
+        self.repair(newest.id, &newest.key, repaired).await
     }
 
     /// Compares the last record by offset of every key written since `since` with the newest

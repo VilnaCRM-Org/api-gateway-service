@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use iam_domain::{
-    AuditSummary, ChangeStatement, DecisionEffect, EntityVersion, GatewayStatement, GuardCheck,
-    IamUnitOfWork, IdempotencyKey, IdempotencyRequest, RejectedAttemptLog, RequestDigest,
-    RouteParts, RouteRepository, ServiceName, UpstreamParts, UpstreamRepository,
+    AuditSummary, ChangeStatement, DecisionEffect, EntityVersion, GatewayPrecondition,
+    GatewayStatement, GuardCheck, IamUnitOfWork, IdempotencyKey, IdempotencyRequest,
+    RejectedAttemptLog, RequestDigest, RouteParts, RouteRepository, ServiceName, UpstreamParts,
+    UpstreamRepository,
 };
 use shared_domain::{Command as _, CommandHandler as _};
 use test_support::clock::FixedClock;
@@ -101,9 +102,20 @@ async fn an_unreferenced_upstream_is_deleted_with_its_event_and_audit_record() {
     let parts = change.parts();
     assert_eq!(parts.effect, DecisionEffect::Affected);
     assert_eq!(parts.entity_version, EntityVersion::new(2).unwrap());
-    let [ChangeStatement::SaveGateway(statement)] = parts.statements.as_slice() else {
-        panic!("one gateway statement expected: {:?}", parts.statements);
+    let [
+        ChangeStatement::ExpectGateway(precondition),
+        ChangeStatement::SaveGateway(statement),
+    ] = parts.statements.as_slice()
+    else {
+        panic!(
+            "a reference check and one gateway statement expected: {:?}",
+            parts.statements
+        );
     };
+    assert_eq!(
+        precondition.as_ref(),
+        &GatewayPrecondition::UpstreamUnreferenced(upstream_id())
+    );
     let GatewayStatement::Upstream(statement) = statement.as_ref() else {
         panic!("an upstream statement expected: {statement:?}");
     };

@@ -48,6 +48,8 @@ const LIST: &str = "rest:orders:GET /api/orders";
 const CREATE: &str = "rest:orders:POST /api/orders";
 const INTROSPECT: &str = "gql:orders:__introspection";
 const INVOICE: &str = "rest:billing:GET /api/invoices";
+const IAM_ROLES: &str = "rest:iam:POST /api/roles";
+const IAM_CREATE_ROLE: &str = "gql:iam:Mutation.createRole";
 
 const CORPUS: &[Case] = &[
     Case {
@@ -343,6 +345,41 @@ const CORPUS: &[Case] = &[
         keys: &[("iam:grant:orders", true)],
         project: None,
         expect: Expect::Deny(DecisionReason::PermissionMissing, &["iam:grant:orders"]),
+    },
+    Case {
+        name: "a project assignment never holds an iam catalogue key",
+        roles: &[(1, &[IAM_ROLES], &[])],
+        assignments: &[Assign(1, Some(1), Expiry::Never)],
+        keys: &[(IAM_ROLES, false)],
+        project: Some(1),
+        expect: Expect::Deny(DecisionReason::PermissionMissing, &[IAM_ROLES]),
+    },
+    Case {
+        name: "a project assignment never holds an iam catalogue key without a project",
+        roles: &[(1, &["rest:iam:*"], &[])],
+        assignments: &[Assign(1, Some(1), Expiry::Never)],
+        keys: &[(IAM_ROLES, false)],
+        project: None,
+        expect: Expect::Deny(DecisionReason::PermissionMissing, &[IAM_ROLES]),
+    },
+    Case {
+        name: "a global assignment holds an iam catalogue key",
+        roles: &[(1, &[IAM_ROLES], &[])],
+        assignments: &[Assign(1, None, Expiry::Never)],
+        keys: &[(IAM_ROLES, false)],
+        project: Some(1),
+        expect: Expect::AllowAll,
+    },
+    Case {
+        name: "a global assignment holds an iam graphql key beside a project one",
+        roles: &[(1, &["gql:iam:*"], &[])],
+        assignments: &[
+            Assign(1, Some(1), Expiry::Never),
+            Assign(1, None, Expiry::Never),
+        ],
+        keys: &[(IAM_CREATE_ROLE, false)],
+        project: Some(2),
+        expect: Expect::AllowAll,
     },
     Case {
         name: "no wildcard covers a reserved key",

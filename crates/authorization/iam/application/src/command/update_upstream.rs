@@ -5,9 +5,9 @@ use std::time::SystemTime;
 
 use iam_domain::{
     ActorRef, ChangeId, DecisionEffect, EntityVersion, GuardCheck, IamChange, IamChangeParts,
-    IamUnitOfWork, IdempotencyRequest, RejectedAttemptLog, RouteScopeGuard, ServiceName, Upstream,
-    UpstreamFields, UpstreamId, UpstreamParts, UpstreamProtocol, UpstreamRepository,
-    UpstreamSettingsDraft, UpstreamStamp, UpstreamStatement,
+    IamGatewaySeed, IamUnitOfWork, IdempotencyRequest, RejectedAttemptLog, RouteScopeGuard,
+    ServiceName, Upstream, UpstreamFields, UpstreamId, UpstreamParts, UpstreamProtocol,
+    UpstreamRepository, UpstreamSettingsDraft, UpstreamStamp, UpstreamStatement,
 };
 use shared_domain::{Clock, Command, CommandHandler, UuidGenerator};
 
@@ -129,9 +129,18 @@ pub struct UpdateUpstreamCommandHandler {
     rejected_attempts: Arc<dyn RejectedAttemptLog>,
     clock: Arc<dyn Clock>,
     uuid_generator: Arc<dyn UuidGenerator>,
+    own_namespace: Option<String>,
 }
 
 impl UpdateUpstreamCommandHandler {
+    /// The namespace IAM itself runs in; an upstream that targets it is refused (422), like one
+    /// that targets `kube-system` or `kube-public`.
+    #[must_use]
+    pub fn with_own_namespace(mut self, namespace: Option<String>) -> Self {
+        self.own_namespace = namespace;
+        self
+    }
+
     /// A handler over the upstream repository, the unit of work, the buffer of refused attempts,
     /// the clock and the identifier source.
     #[must_use]
@@ -148,6 +157,7 @@ impl UpdateUpstreamCommandHandler {
             rejected_attempts,
             clock,
             uuid_generator,
+            own_namespace: None,
         }
     }
 
@@ -183,15 +193,15 @@ impl UpdateUpstreamCommandHandler {
         self.check_changeable(&before, &actor, now)?;
         let (name, draft) = patch.applied(&before);
         let fields = UpstreamFields::new(&name, &draft)?;
+        fields
+            .settings()
+            .check_namespace(self.own_namespace.as_deref())
+            .map_err(|violation| IamError::from(vec![violation]))?;
         let after_service = fields.settings().catalog_service().clone();
         if RouteScopeGuard::check_changeable(&after_service, false).is_err() {
             return Err(self.refuse(upstream_id, &actor, now));
         }
-        let stamp = UpstreamStamp {
-            event_id: self.uuid_generator.generate(),
-            actor: actor.clone(),
-            occurred_at: now,
-        };
+        let stamp = self.stamp(&actor, now);
         upstream.update(Some(expected), fields, stamp)?;
         let events = upstream.pull_envelopes()?;
         let after = upstream.parts();
@@ -220,6 +230,15 @@ impl UpdateUpstreamCommandHandler {
         Ok(change.with_guard(GuardCheck::RouteScope { services }))
     }
 
+    /// The stamp of the change: a fresh event id, the actor and the time.
+    fn stamp(&self, actor: &ActorRef, now: SystemTime) -> UpstreamStamp {
+        UpstreamStamp {
+            event_id: self.uuid_generator.generate(),
+            actor: actor.clone(),
+            occurred_at: now,
+        }
+    }
+
     /// Refuses a system upstream and one of the `iam` service.
     fn check_changeable(
         &self,
@@ -228,7 +247,9 @@ impl UpdateUpstreamCommandHandler {
         now: SystemTime,
     ) -> Result<(), IamError> {
         let service = stored.settings.catalog_service();
-        if RouteScopeGuard::check_changeable(service, stored.system).is_err() {
+        if RouteScopeGuard::check_changeable(service, stored.system).is_err()
+            || IamGatewaySeed::reserves_upstream_name(stored.name.as_str())
+        {
             return Err(self.refuse(stored.id, actor, now));
         }
         Ok(())

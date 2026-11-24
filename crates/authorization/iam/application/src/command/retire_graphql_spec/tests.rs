@@ -7,6 +7,7 @@ use iam_domain::{
     GraphQlSpec, GraphQlSpecContent, GraphQlSpecParts, GraphQlSpecStatement, GraphQlTypeGraph,
     IdempotencyKey, IdempotencyRequest, PermissionFlags, PermissionId, PermissionKey,
     PermissionKeyKind, PolicyVersion, RequestDigest, RoleId, ServiceName, SpecId, SpecStatus,
+    SystemComponent,
 };
 use shared_domain::{Command as _, CommandHandler as _, Uuid};
 use test_support::clock::FixedClock;
@@ -73,10 +74,19 @@ fn spec(
     status: SpecStatus,
     fields: &[(&str, PermissionFlags)],
 ) -> GraphQlSpecStatement {
+    spec_of(service(), number, status, fields)
+}
+
+fn spec_of(
+    service: ServiceName,
+    number: u8,
+    status: SpecStatus,
+    fields: &[(&str, PermissionFlags)],
+) -> GraphQlSpecStatement {
     let spec = GraphQlSpec::restore(GraphQlSpecParts {
         id: spec_id(number),
         content: GraphQlSpecContent {
-            service: service(),
+            service,
             content_hash: ContentHash::new(&[number; 32]).unwrap(),
             type_graph: type_graph(fields),
         },
@@ -432,6 +442,53 @@ async fn an_unknown_version_is_not_found() {
 
     assert!(matches!(error, IamError::NotFound));
     assert_eq!(unit_of_work.committed().len(), 0);
+}
+
+#[tokio::test]
+async fn an_iam_version_is_forbidden_to_any_actor_but_the_startup_registration() {
+    let iam = || {
+        spec_of(
+            ServiceName::iam().clone(),
+            1,
+            SpecStatus::Active,
+            &[("Query.me", PLAIN)],
+        )
+    };
+
+    let (handler, unit_of_work) = World::new(&[iam()]).handler();
+    let error = handler.handle(command(1)).await.unwrap_err();
+
+    assert!(matches!(error, IamError::Forbidden), "{error:?}");
+    assert_eq!(unit_of_work.committed().len(), 0);
+
+    let (handler, unit_of_work) = World::new(&[iam()]).handler();
+    let operator = RetireGraphQlSpecCommand {
+        actor: ActorRef::System(SystemComponent::Bootstrap),
+        ..command(1)
+    };
+    let error = handler.handle(operator).await.unwrap_err();
+
+    assert!(matches!(error, IamError::Forbidden), "{error:?}");
+    assert_eq!(unit_of_work.committed().len(), 0);
+}
+
+#[tokio::test]
+async fn the_startup_registration_may_retire_an_iam_version() {
+    let (handler, unit_of_work) = World::new(&[spec_of(
+        ServiceName::iam().clone(),
+        1,
+        SpecStatus::Active,
+        &[("Query.me", PLAIN)],
+    )])
+    .handler();
+    let startup = RetireGraphQlSpecCommand {
+        actor: ActorRef::System(SystemComponent::Startup),
+        ..command(1)
+    };
+
+    handler.handle(startup).await.unwrap();
+
+    assert_eq!(unit_of_work.committed().len(), 1);
 }
 
 #[tokio::test]

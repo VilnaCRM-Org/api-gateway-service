@@ -17,8 +17,8 @@ use iam_application::{AntiEntropySettings, MaintenanceSettings};
 use iam_domain::{BulkChunker, BulkPacing};
 use iam_domain::{CallerTokenRule, ConfigGates, TokenLifetimeRule, Zone};
 use iam_infrastructure::{
-    JwtKeySet, JwtSettings, KafkaSecret, KafkaSecurity, KafkaSettings, SaslMechanism,
-    StaticEndpointWatch, TokenMemoSettings,
+    JwtKeySet, JwtSettings, KafkaSecret, KafkaSecurity, KafkaSettings, ProbeCredentials,
+    SaslMechanism, StaticEndpointWatch, TokenMemoSettings,
 };
 use shared_infrastructure::messaging::SqsSettings;
 use shared_infrastructure::persistence::{
@@ -121,6 +121,9 @@ pub struct Config {
     /// `ROUTE_CONFIGURATION_MAX_ROUTES`: the most routes one route configuration of a host may
     /// hold, 1 to 1,000.
     pub route_configuration_max_routes: usize,
+    /// `IAM_NAMESPACE`: the namespace IAM runs in; an upstream that targets
+    /// it is refused with 422. None refuses only the system namespaces.
+    pub iam_namespace: Option<String>,
 }
 
 /// The settings of the bulk operation runner.
@@ -175,6 +178,7 @@ impl Config {
         let database = database(&mut collector, &args.database);
         let sqs = sqs(&mut collector, &args);
         let limits = limits(&mut collector, &args);
+        let iam_namespace = iam_namespace(&mut collector, &args);
         let tokens = tokens(&mut collector, &args.tokens);
         let kafka = kafka(
             &mut collector,
@@ -214,6 +218,7 @@ impl Config {
                 anti_entropy,
                 bulk,
                 route_configuration_max_routes: limits.route_configuration_max_routes,
+                iam_namespace,
             }),
             _ => Err(ConfigErrors(collector.problems)),
         }
@@ -757,6 +762,32 @@ impl Collector {
         }
     }
 
+    /// `KAFKA_PROBE_SASL_USERNAME` and `KAFKA_PROBE_SASL_PASSWORD`: both or neither. `None` when
+    /// neither is set, and when a problem was reported (the configuration is refused then).
+    fn probe_credentials(
+        &mut self,
+        username: Option<&str>,
+        password: Option<&str>,
+    ) -> Option<ProbeCredentials> {
+        let username = self.collect("KAFKA_PROBE_SASL_USERNAME", optional(username));
+        let password = self.collect("KAFKA_PROBE_SASL_PASSWORD", optional(password));
+        match (username?, password?) {
+            (Some(username), Some(password)) => Some(ProbeCredentials {
+                username,
+                password: KafkaSecret::new(password),
+            }),
+            (None, None) => None,
+            (Some(_), None) => self.reject(
+                "KAFKA_PROBE_SASL_PASSWORD",
+                "is required when KAFKA_PROBE_SASL_USERNAME is set",
+            ),
+            (None, Some(_)) => self.reject(
+                "KAFKA_PROBE_SASL_USERNAME",
+                "is required when KAFKA_PROBE_SASL_PASSWORD is set",
+            ),
+        }
+    }
+
     /// `KAFKA_SECURITY_PROTOCOL=PLAINTEXT` and `KAFKA_CONFIG_GATES=relaxed` exist for the compose
     /// broker, so only `dev` and `test` may use them.
     fn kafka_environment_rules(
@@ -1164,8 +1195,9 @@ fn kafka(
     })
 }
 
-/// `KAFKA_SASL_MECHANISM`, `KAFKA_SASL_USERNAME`, `KAFKA_SASL_PASSWORD` and `KAFKA_CA_FILE`, which
-/// only `SASL_SSL` reads: a `PLAINTEXT` connection ignores them.
+/// `KAFKA_SASL_MECHANISM`, `KAFKA_SASL_USERNAME`, `KAFKA_SASL_PASSWORD`, `KAFKA_CA_FILE` and the
+/// optional `KAFKA_PROBE_SASL_USERNAME` and `KAFKA_PROBE_SASL_PASSWORD`, which only `SASL_SSL`
+/// reads: a `PLAINTEXT` connection ignores them.
 fn kafka_security(
     collector: &mut Collector,
     args: &KafkaArgs,
@@ -1187,11 +1219,16 @@ fn kafka_security(
                 required(args.sasl_password.as_deref()),
             );
             let ca_file = collector.collect("KAFKA_CA_FILE", optional(args.ca_file.as_deref()));
+            let probe = collector.probe_credentials(
+                args.probe_sasl_username.as_deref(),
+                args.probe_sasl_password.as_deref(),
+            );
             Some(KafkaSecurity::SaslSsl {
                 mechanism: mechanism?,
                 username: username?,
                 password: KafkaSecret::new(password?),
                 ca_file: ca_file?,
+                probe,
             })
         }
     }
@@ -1465,6 +1502,13 @@ fn topic_name(raw: Option<&str>, default: &str) -> Parsed<String> {
                 .to_owned(),
         )
     }
+}
+
+/// `IAM_NAMESPACE`, absent when it is not set.
+fn iam_namespace(collector: &mut Collector, args: &ServeArgs) -> Option<String> {
+    collector
+        .collect("IAM_NAMESPACE", optional(args.iam_namespace.as_deref()))
+        .flatten()
 }
 
 /// An optional text setting that must not be empty when it is set.

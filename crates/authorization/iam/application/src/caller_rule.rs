@@ -46,18 +46,28 @@ impl CallerRule {
                 services.dedup();
                 Some(services)
             }
+            (Self::ResolveToken, _) if named.iter().any(String::is_empty) => None,
             (Self::ResolveToken, SubjectId::Service(name)) => Some(vec![name.to_string()]),
             (Self::ResolveToken, SubjectId::User(_)) => None,
         }
     }
 }
 
-/// The target services that a value names.
+/// The name that stands for a check whose target service cannot be read.
+///
+/// It stands for an argument that does not resolve and for a check without a service as text. It
+/// is no service name, so no key `iam:validate:{service}` covers it and only `iam:validate:*`
+/// admits the request (fail closed).
+pub const UNREADABLE_SERVICE: &str = "";
+
+/// The target services that a value names, with [`UNREADABLE_SERVICE`] for each check that names
+/// none.
 ///
 /// An object that carries `service` as text names it, and so do the items of its `checks` and the
 /// items of a list. A body of a decision request names its services this way, and so do the
-/// arguments of the GraphQL decision fields. An item that names no service as text names none: the
-/// use case refuses or denies it without deciding anything.
+/// arguments of the GraphQL decision fields. A check that names no service as text, and any value
+/// that is neither an object nor a list, stands for [`UNREADABLE_SERVICE`], so that the guard
+/// refuses it unless the caller holds `iam:validate:*`.
 #[must_use]
 pub fn target_services(value: &Value) -> Vec<String> {
     let mut services = Vec::new();
@@ -73,11 +83,17 @@ fn collect(value: &Value, services: &mut Vec<String>) {
             }
         }
         Value::Object(members) => {
-            if let Some(Value::String(service)) = members.get(SERVICE_FIELD) {
-                services.push(service.clone());
-            }
-            if let Some(checks) = members.get(CHECKS_FIELD) {
-                collect(checks, services);
+            let named = match members.get(SERVICE_FIELD) {
+                Some(Value::String(service)) => {
+                    services.push(service.clone());
+                    true
+                }
+                _ => false,
+            };
+            match members.get(CHECKS_FIELD) {
+                Some(checks) => collect(checks, services),
+                None if !named => services.push(UNREADABLE_SERVICE.to_owned()),
+                None => {}
             }
         }
         Value::Null
@@ -85,7 +101,7 @@ fn collect(value: &Value, services: &mut Vec<String>) {
         | Value::String(_)
         | Value::Boolean(_)
         | Value::Binary(_)
-        | Value::Enum(_) => {}
+        | Value::Enum(_) => services.push(UNREADABLE_SERVICE.to_owned()),
     }
 }
 

@@ -15,6 +15,10 @@ pub enum InvalidUpstream {
     /// The Kubernetes namespace is not a DNS label.
     #[error("This value must be a lower-case DNS label of at most 63 characters.")]
     NamespaceFormat,
+    /// The Kubernetes namespace is one the gateway never forwards to: a system namespace or the
+    /// namespace of IAM itself.
+    #[error("This namespace is reserved and cannot be the target of an upstream.")]
+    NamespaceReserved,
     /// The Kubernetes Service name is not a DNS label.
     #[error("This value must be a lower-case DNS label of at most 63 characters.")]
     ServiceFormat,
@@ -50,7 +54,7 @@ impl InvalidUpstream {
     pub const fn property_path(self) -> &'static str {
         match self {
             Self::NameLength | Self::NamePattern => "name",
-            Self::NamespaceFormat => "namespace",
+            Self::NamespaceFormat | Self::NamespaceReserved => "namespace",
             Self::ServiceFormat => "serviceName",
             Self::CatalogServiceLength | Self::CatalogServicePattern => "catalogService",
             Self::PortRange => "port",
@@ -69,6 +73,7 @@ impl InvalidUpstream {
             Self::NameLength | Self::CatalogServiceLength => "length",
             Self::NamePattern | Self::CatalogServicePattern => "pattern",
             Self::NamespaceFormat | Self::ServiceFormat => "format",
+            Self::NamespaceReserved => "reserved",
             Self::PortRange
             | Self::ConnectTimeoutRange
             | Self::ResponseTimeoutRange

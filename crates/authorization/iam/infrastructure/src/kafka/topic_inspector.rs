@@ -8,7 +8,7 @@ use iam_domain::{
 };
 use shared_domain::{BoxError, error_chain};
 
-use super::cluster::{ClusterConnector, ClusterReader};
+use super::cluster::{ClusterConnector, ClusterReader, ProbeOutcome};
 use super::krafka_cluster::KrafkaConnector;
 use super::settings::KafkaSettings;
 
@@ -71,7 +71,7 @@ impl KrafkaTopicInspector {
         let (writers, allow_everyone) = match (self.gates, self.acl_checks) {
             (ConfigGates::Enforce, true) => (
                 cluster.topic_writers(&self.topic).await?,
-                Some(self.allow_everyone(cluster).await?),
+                self.allow_everyone(cluster).await?,
             ),
             (ConfigGates::Enforce, false) | (ConfigGates::Relaxed, _) => (Vec::new(), None),
         };
@@ -92,16 +92,18 @@ impl KrafkaTopicInspector {
     async fn allow_everyone(
         &self,
         cluster: &dyn ClusterReader,
-    ) -> Result<AllowEveryoneEvidence, BoxError> {
+    ) -> Result<Option<AllowEveryoneEvidence>, BoxError> {
         if let Some(value) = cluster.allow_everyone().await? {
-            return Ok(AllowEveryoneEvidence::Read(value));
+            return Ok(Some(AllowEveryoneEvidence::Read(value)));
         }
-        let refused = cluster.refuses_principal_without_acl(&self.topic).await?;
-        Ok(if refused {
-            AllowEveryoneEvidence::ProbeRefused
-        } else {
-            AllowEveryoneEvidence::ProbeAnswered
-        })
+        // Without evidence the gate fails closed: the rules judge `None` as not checked.
+        Ok(
+            match cluster.probe_principal_without_acl(&self.topic).await? {
+                ProbeOutcome::Refused => Some(AllowEveryoneEvidence::ProbeRefused),
+                ProbeOutcome::Answered => Some(AllowEveryoneEvidence::ProbeAnswered),
+                ProbeOutcome::NotChecked => None,
+            },
+        )
     }
 
     async fn verdict(&self) -> Result<ConfigurationVerdict, BoxError> {

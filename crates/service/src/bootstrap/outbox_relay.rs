@@ -69,7 +69,7 @@ impl OutboxRelayAdapters {
 
 /// Forwards the notifications of `iam_outbox` to `wake` while this replica leads the relay.
 ///
-/// It ends when `shutdown` is set. A lost connection is opened again after [`RECONNECT_DELAY`]; a
+/// It ends when `shutdown` is set. A lost connection is opened again after `RECONNECT_DELAY`; a
 /// notification that is lost meanwhile costs one poll of the relay.
 pub async fn forward_notifications(
     adapters: OutboxRelayAdapters,

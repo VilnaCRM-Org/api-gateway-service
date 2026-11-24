@@ -333,6 +333,7 @@ async fn the_sasl_password_never_appears_in_a_log_line_or_an_error(
         username: "nobody".to_owned(),
         password: KafkaSecret::new(password.clone()),
         ca_file: Some(format!("{}/ca.pem", stack_variable("KAFKA_TLS_DIR"))),
+        probe: None,
     };
 
     let error = KrafkaTopicInspector::new(&secured)

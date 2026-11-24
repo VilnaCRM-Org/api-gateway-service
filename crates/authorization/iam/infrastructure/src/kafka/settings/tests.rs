@@ -39,6 +39,7 @@ fn the_bootstrap_connection_takes_the_bootstrap_principal_over_sasl() {
         username: "iam-control".to_owned(),
         password: KafkaSecret::new("control".to_owned()),
         ca_file: Some("/ca.pem".to_owned()),
+        probe: None,
     });
 
     let bootstrap = control.bootstrap_principal(
@@ -53,6 +54,7 @@ fn the_bootstrap_connection_takes_the_bootstrap_principal_over_sasl() {
         username,
         password,
         ca_file,
+        ..
     } = bootstrap.security
     else {
         panic!("the bootstrap connection stays on SASL");

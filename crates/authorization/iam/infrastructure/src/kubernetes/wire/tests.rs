@@ -3,9 +3,16 @@ use serde_json::json;
 
 use super::{WatchEvent, batch, parse_event, parse_list};
 
+const MANAGED_BY: &str = "endpointslice.kubernetes.io/managed-by";
+const MANAGER: &str = "endpointslice-controller.k8s.io";
+
 fn slice_json(name: &str, version: &str, ready: bool, zone: &str) -> serde_json::Value {
     json!({
-        "metadata": {"name": name, "resourceVersion": version},
+        "metadata": {
+            "name": name,
+            "resourceVersion": version,
+            "labels": {"endpointslice.kubernetes.io/managed-by": "endpointslice-controller.k8s.io"}
+        },
         "addressType": "IPv4",
         "endpoints": [{
             "addresses": ["10.0.0.7"],
@@ -52,7 +59,10 @@ fn missing_conditions_mean_ready_and_serving_and_not_terminating() {
     let body = json!({
         "metadata": {"resourceVersion": "1"},
         "items": [{
-            "metadata": {"name": "s"},
+            "metadata": {"name": "s", "labels": {
+                "endpointslice.kubernetes.io/managed-by": "endpointslice-controller.k8s.io"
+            }},
+            "addressType": "IPv4",
             "endpoints": [{"addresses": ["10.0.0.1", "10.0.0.2"]}],
             "ports": [{"port": 80}]
         }]
@@ -74,9 +84,10 @@ fn a_slice_without_a_usable_port_has_no_endpoints() {
     let body = json!({
         "metadata": {"resourceVersion": "1"},
         "items": [
-            {"metadata": {"name": "no-port"}, "endpoints": [{"addresses": ["10.0.0.1"]}]},
-            {"metadata": {"name": "bad-port"}, "endpoints": [{"addresses": ["10.0.0.1"]}],
-             "ports": [{"port": 70000}]}
+            {"metadata": {"name": "no-port", "labels": {MANAGED_BY: MANAGER}}, "addressType": "IPv4",
+             "endpoints": [{"addresses": ["10.0.0.1"]}]},
+            {"metadata": {"name": "bad-port", "labels": {MANAGED_BY: MANAGER}}, "addressType": "IPv4",
+             "endpoints": [{"addresses": ["10.0.0.1"]}], "ports": [{"port": 70000}]}
         ]
     })
     .to_string();
@@ -207,4 +218,96 @@ fn a_batch_stops_at_a_gone_or_failed_event() {
         batch("7", vec![failed]),
         Err(WatchEvent::Failed("x".to_owned()))
     );
+}
+
+/// The endpoints a one-slice list yields for a slice with `labels`, `address_type` and `addresses`.
+fn mapped(
+    labels: &serde_json::Value,
+    address_type: &str,
+    addresses: &[&str],
+) -> Vec<iam_domain::UpstreamEndpoint> {
+    let body = json!({
+        "metadata": {"resourceVersion": "1"},
+        "items": [{
+            "metadata": {"name": "s", "labels": labels},
+            "addressType": address_type,
+            "endpoints": [{"addresses": addresses}],
+            "ports": [{"port": 80}]
+        }]
+    })
+    .to_string();
+    parse_list(body.as_bytes())
+        .unwrap()
+        .slices
+        .into_iter()
+        .next()
+        .unwrap()
+        .endpoints
+}
+
+fn managed() -> serde_json::Value {
+    json!({MANAGED_BY: MANAGER})
+}
+
+#[test]
+fn a_slice_of_the_cluster_controller_is_mapped() {
+    assert_eq!(mapped(&managed(), "IPv4", &["10.0.0.7"]).len(), 1);
+    assert_eq!(mapped(&managed(), "IPv6", &["2001:db8::7"]).len(), 1);
+}
+
+#[test]
+fn a_slice_without_the_managed_by_label_has_no_endpoints() {
+    assert_eq!(mapped(&json!({}), "IPv4", &["10.0.0.7"]).len(), 0);
+}
+
+#[test]
+fn a_slice_of_another_controller_has_no_endpoints() {
+    let labels = json!({MANAGED_BY: "tenant-controller.example.com"});
+
+    assert_eq!(mapped(&labels, "IPv4", &["10.0.0.7"]).len(), 0);
+}
+
+#[test]
+fn a_slice_whose_address_type_is_not_ip_has_no_endpoints() {
+    assert_eq!(mapped(&managed(), "FQDN", &["evil.example.com"]).len(), 0);
+    assert_eq!(mapped(&managed(), "", &["10.0.0.7"]).len(), 0);
+    assert_eq!(mapped(&managed(), "ipv4", &["10.0.0.7"]).len(), 0);
+}
+
+#[test]
+fn an_address_that_is_a_host_name_is_refused() {
+    assert_eq!(mapped(&managed(), "IPv4", &["evil.example.com"]).len(), 0);
+    assert_eq!(mapped(&managed(), "IPv6", &["localhost"]).len(), 0);
+}
+
+#[test]
+fn an_address_of_the_other_family_is_refused() {
+    assert_eq!(mapped(&managed(), "IPv4", &["2001:db8::7"]).len(), 0);
+    assert_eq!(mapped(&managed(), "IPv6", &["10.0.0.7"]).len(), 0);
+}
+
+#[rstest::rstest]
+#[case::v4_loopback("IPv4", "127.0.0.1")]
+#[case::v4_loopback_range("IPv4", "127.9.9.9")]
+#[case::v4_link_local("IPv4", "169.254.169.254")]
+#[case::v4_unspecified("IPv4", "0.0.0.0")]
+#[case::v4_multicast("IPv4", "224.0.0.1")]
+#[case::v6_loopback("IPv6", "::1")]
+#[case::v6_link_local("IPv6", "fe80::1")]
+#[case::v6_unspecified("IPv6", "::")]
+#[case::v6_multicast("IPv6", "ff02::1")]
+#[case::v6_mapped_loopback("IPv6", "::ffff:127.0.0.1")]
+fn an_address_that_is_not_a_unicast_upstream_is_refused(
+    #[case] address_type: &str,
+    #[case] address: &str,
+) {
+    assert_eq!(mapped(&managed(), address_type, &[address]).len(), 0);
+}
+
+#[test]
+fn a_refused_address_leaves_the_other_addresses_of_the_endpoint() {
+    let endpoints = mapped(&managed(), "IPv4", &["127.0.0.1", "10.0.0.8", ""]);
+
+    assert_eq!(endpoints.len(), 1);
+    assert_eq!(endpoints.first().unwrap().address(), "10.0.0.8");
 }

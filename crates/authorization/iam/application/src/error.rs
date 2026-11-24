@@ -89,6 +89,10 @@ pub enum IamError {
     /// entry of the `iam` service or a `system` entry.
     #[error("Entries of the iam service and system entries cannot be changed through the API.")]
     SystemEntry,
+    /// The seed of the gateway configuration finds a non-system entry where IAM's own entry
+    /// belongs; the command reports the entries and writes nothing for a seed.
+    #[error("The IAM gateway seed conflicts with entries that are not system entries: {0}.")]
+    SeedConflict(String),
     /// The upstream is still referenced by a route.
     #[error("The upstream is still referenced by a route.")]
     ReferencedByRoute,
@@ -218,6 +222,8 @@ impl From<RepositoryError> for IamError {
             RepositoryError::NotFound => Self::NotFound,
             RepositoryError::Forbidden => Self::Forbidden,
             RepositoryError::AlreadyExists | RepositoryError::Conflict => Self::Conflict,
+            RepositoryError::ReferencedByRoute(refusal) => Self::from(refusal),
+            RepositoryError::RouteTable(conflict) => Self::from(conflict),
             unavailable @ RepositoryError::Unavailable(_) => Self::Storage(Box::new(unavailable)),
         }
     }
@@ -384,7 +390,7 @@ impl From<IamError> for Problem {
                     ..Self::new(StatusCode::CONFLICT).with_detail(error.to_string())
                 };
             }
-            IamError::SystemEntry => {
+            IamError::SystemEntry | IamError::SeedConflict(_) => {
                 return Self {
                     r#type: TYPE_SYSTEM_ENTRY,
                     ..Self::new(StatusCode::CONFLICT).with_detail(error.to_string())

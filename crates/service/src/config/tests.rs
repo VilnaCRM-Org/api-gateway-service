@@ -438,6 +438,7 @@ fn every_variable_accepts_a_valid_value() {
         anti_entropy: valid().anti_entropy,
         bulk: valid().bulk,
         route_configuration: valid().route_configuration,
+        iam_namespace: some("iam"),
     };
 
     let config = Config::from_args(args).unwrap();
@@ -1073,7 +1074,7 @@ type Mutator = fn(&mut ServeArgs);
 
 /// One row per variable of `ServeArgs`: the variable, a way to make it the only problem, and the
 /// variable that the problem names.
-const FIELDS: [(&str, Mutator, &str); 51] = [
+const FIELDS: [(&str, Mutator, &str); 54] = [
     ("APP_ENV", |a| a.app_env = some("x"), "APP_ENV"),
     ("APP_HOST", |a| a.app_host = some("x"), "APP_HOST"),
     ("APP_PORT", |a| a.app_port = some("x"), "APP_PORT"),
@@ -1287,9 +1288,24 @@ const FIELDS: [(&str, Mutator, &str); 51] = [
         "ROUTE_CONFIGURATION_MAX_ROUTES",
     ),
     (
+        "IAM_NAMESPACE",
+        |a| a.iam_namespace = some(""),
+        "IAM_NAMESPACE",
+    ),
+    (
         "KAFKA_CONFIG_GATES",
         |a| a.kafka.config_gates = some("x"),
         "KAFKA_CONFIG_GATES",
+    ),
+    (
+        "KAFKA_PROBE_SASL_USERNAME",
+        |a| a.kafka.probe_sasl_username = some(""),
+        "KAFKA_PROBE_SASL_USERNAME",
+    ),
+    (
+        "KAFKA_PROBE_SASL_PASSWORD",
+        |a| a.kafka.probe_sasl_password = some(""),
+        "KAFKA_PROBE_SASL_PASSWORD",
     ),
     (
         "POLICY_TOPIC",
@@ -1337,6 +1353,7 @@ fn the_kafka_defaults_are_the_documented_ones() {
             username: "iam-control".to_owned(),
             password: KafkaSecret::new("secret-password".to_owned()),
             ca_file: None,
+            probe: None,
         }
     );
     assert_eq!(kafka.client_id, "iam-control");
@@ -1359,6 +1376,8 @@ fn every_kafka_setting_accepts_a_valid_value() {
         sasl_username: some("user"),
         sasl_password: some("password"),
         ca_file: some("/etc/kafka/ca.pem"),
+        probe_sasl_username: some("probe"),
+        probe_sasl_password: some("probe-password"),
         client_id: some("client"),
         connect_timeout: some("500ms"),
         request_timeout: some("1s"),
@@ -1377,6 +1396,10 @@ fn every_kafka_setting_accepts_a_valid_value() {
             username: "user".to_owned(),
             password: KafkaSecret::new("password".to_owned()),
             ca_file: Some("/etc/kafka/ca.pem".to_owned()),
+            probe: Some(ProbeCredentials {
+                username: "probe".to_owned(),
+                password: KafkaSecret::new("probe-password".to_owned()),
+            }),
         }
     );
     assert_eq!(kafka.gates, ConfigGates::Relaxed);
@@ -1409,6 +1432,17 @@ fn plaintext_needs_no_credentials_and_relaxed_gates_pass_in_dev_and_test(
 
     assert_eq!(kafka.security, KafkaSecurity::Plaintext);
     assert_eq!(kafka.gates, ConfigGates::Relaxed);
+}
+
+#[test]
+fn the_probe_credentials_are_both_set_or_both_unset() {
+    let mut username_only = valid();
+    username_only.kafka.probe_sasl_username = some("probe");
+    let mut password_only = valid();
+    password_only.kafka.probe_sasl_password = some("probe-password");
+
+    assert_eq!(variables(username_only), ["KAFKA_PROBE_SASL_PASSWORD"]);
+    assert_eq!(variables(password_only), ["KAFKA_PROBE_SASL_USERNAME"]);
 }
 
 #[test]
@@ -2178,6 +2212,23 @@ fn a_route_configuration_limit_outside_one_to_one_thousand_names_its_variable(#[
     };
 
     assert_eq!(variables(args), vec!["ROUTE_CONFIGURATION_MAX_ROUTES"]);
+}
+
+#[rstest]
+#[case::unset(None, None)]
+#[case::set(Some("platform"), Some("platform"))]
+fn the_namespace_of_iam_is_the_configured_one(
+    #[case] explicit: Option<&str>,
+    #[case] expected: Option<&str>,
+) {
+    let args = ServeArgs {
+        iam_namespace: explicit.map(str::to_owned),
+        ..valid()
+    };
+
+    let config = Config::from_args(args).unwrap();
+
+    assert_eq!(config.iam_namespace.as_deref(), expected);
 }
 
 #[test]

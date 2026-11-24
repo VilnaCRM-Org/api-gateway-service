@@ -20,7 +20,7 @@ use iam_domain::{
 use shared_domain::{BoxError, Clock};
 use tokio::sync::{Notify, watch};
 
-use crate::anti_entropy::TopicAheadHold;
+use crate::anti_entropy::{AntiEntropyChecker, TopicAheadHold};
 use crate::singleton_loop::{SingletonInterval, SingletonLoop, SingletonWork};
 
 /// How long a published row stays in the outbox.
@@ -94,6 +94,9 @@ pub struct OutboxRelay {
     cleaned: Mutex<Option<SystemTime>>,
     leading: Arc<watch::Sender<bool>>,
     hold: Option<Arc<TopicAheadHold>>,
+    /// The number of completed anti-entropy checks when this replica first led after it took
+    /// leadership; a check has completed since then once the count is above it.
+    checks_at_leadership: Mutex<Option<u64>>,
 }
 
 fn log_misconfiguration(violations: &str) {
@@ -104,7 +107,10 @@ fn log_misconfiguration(violations: &str) {
 }
 
 fn log_held_back() {
-    tracing::warn!("the state topic is ahead of PostgreSQL: nothing is published");
+    tracing::warn!(
+        "the state topic is ahead of PostgreSQL, or no anti-entropy check has completed since this \
+         replica took leadership: nothing is published"
+    );
 }
 
 fn log_takeover(epoch: RelayEpoch) {
@@ -142,20 +148,39 @@ impl OutboxRelay {
             cleaned: Mutex::new(None),
             leading,
             hold: None,
+            checks_at_leadership: Mutex::new(None),
         }
     }
 
-    /// The same relay, which publishes nothing while `hold` is set: the anti-entropy task sets it
-    /// when the state topic holds a version above PostgreSQL's (FR-77).
+    /// The same relay, which is held back by the anti-entropy task (FR-77): it publishes nothing
+    /// while the state topic holds a version above PostgreSQL's, and a leader that took over
+    /// publishes nothing until a check of the task has completed since. The task's verdict is read
+    /// from the shared state in every leader batch, so the task and the relay need not run on the
+    /// same replica; `hold` is the in-process copy of the verdict of the replica that runs the task.
     #[must_use]
     pub fn with_hold(mut self, hold: Arc<TopicAheadHold>) -> Self {
         self.hold = Some(hold);
         self
     }
 
-    /// Whether the topic is ahead of PostgreSQL, so that nothing may be appended to it.
-    fn held_back(&self) -> bool {
-        self.hold.as_ref().is_some_and(|hold| hold.is_set())
+    /// Whether nothing may be appended to the topic now: it is ahead of PostgreSQL, or no check of
+    /// the anti-entropy task has completed since this replica took leadership.
+    async fn held_back(&self, batch: &mut dyn LeaderBatch) -> Result<bool, BoxError> {
+        let Some(hold) = &self.hold else {
+            return Ok(false);
+        };
+        let state = batch
+            .read_topic_ahead(AntiEntropyChecker::TASK.name())
+            .await?;
+        let checked = self.checked_since_leadership(state.checks);
+        Ok(hold.is_set() || state.held || !checked)
+    }
+
+    /// Whether a check completed after this replica first led: the count of checks it saw then is
+    /// the baseline.
+    fn checked_since_leadership(&self, checks: u64) -> bool {
+        let mut baseline = locked(&self.checks_at_leadership);
+        checks > *baseline.get_or_insert(checks)
     }
 
     /// The loop that runs the task: a batch every [`POLL_INTERVAL`], or as soon as `wake` is
@@ -301,9 +326,9 @@ impl OutboxRelay {
 
 #[async_trait::async_trait]
 impl SingletonWork for OutboxRelay {
-    async fn run(&self, _batch: &mut dyn LeaderBatch) -> Result<(), BoxError> {
+    async fn run(&self, batch: &mut dyn LeaderBatch) -> Result<(), BoxError> {
         self.leading.send_replace(true);
-        if self.held_back() {
+        if self.held_back(batch).await? {
             log_held_back();
             return Ok(());
         }
@@ -322,6 +347,7 @@ impl SingletonWork for OutboxRelay {
 
     async fn on_follower(&self) {
         self.leading.send_replace(false);
+        *locked(&self.checks_at_leadership) = None;
     }
 }
 

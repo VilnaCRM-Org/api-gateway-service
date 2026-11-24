@@ -329,6 +329,24 @@ Feature: IAM roles
     And the JSON pointer "/version" should equal the number 1
     And the outbox should hold 0 "iam.role.updated" events
 
+  Scenario: The grants of a system role cannot be replaced over REST or GraphQL
+    Given a caller authenticated as the bootstrapped administrator
+    And a system role exists with name "iam-platform-admin"
+    And the If-Match header '"1"'
+    When PUT request is sent to "/api/roles/{id}/permissions" with body:
+      """
+      {"keys": []}
+      """
+    Then the response status code should be 403
+    When the GraphQL operation is sent:
+      """
+      mutation { setRolePermissions(input: {id: "{id}", expectedVersion: 1, keys: []}) { id } }
+      """
+    Then the GraphQL error code should be "FORBIDDEN"
+    When GET request is sent to "/api/roles/{id}"
+    Then the JSON pointer "/version" should equal the number 1
+    And the outbox should hold 0 "iam.role_permissions.changed" events
+
   Scenario: Deleting a role over REST revokes its assignments and commits the events, the audit records and one policy version
     Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"

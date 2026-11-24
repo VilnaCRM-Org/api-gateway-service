@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use iam_domain::{
     AuditOutcome, AuditSummary, ChangeStatement, CorsDraft, DecisionEffect, EnforcementMode,
-    EntityVersion, GatewayStatement, GuardCheck, HttpMethod, RatePolicyId, RouteConflict,
-    RouteDraft, RouteFlag, RouteFlags, ServiceName,
+    EntityVersion, GatewayPrecondition, GatewayStatement, GuardCheck, HttpMethod, RatePolicyId,
+    RouteConflict, RouteDraft, RouteFlag, RouteFlags, ServiceName,
 };
 use shared_domain::{Command as _, CommandHandler as _};
 use test_support::clock::FixedClock;
@@ -70,9 +70,31 @@ async fn a_valid_route_is_committed_as_one_insert_with_its_event_and_audit_recor
     assert_eq!(parts.change_id, change_id());
     assert_eq!(parts.effect, DecisionEffect::Affected);
     assert_eq!(parts.entity_version, EntityVersion::INITIAL);
-    let [ChangeStatement::SaveGateway(statement)] = parts.statements.as_slice() else {
-        panic!("one gateway statement expected: {:?}", parts.statements);
+    let [
+        ChangeStatement::ExpectGateway(targets),
+        ChangeStatement::ExpectGateway(table),
+        ChangeStatement::SaveGateway(statement),
+    ] = parts.statements.as_slice()
+    else {
+        panic!(
+            "two preconditions and one gateway statement expected: {:?}",
+            parts.statements
+        );
     };
+    let GatewayPrecondition::RouteTargets {
+        upstream_id: target,
+        service,
+        rate_policies,
+    } = targets.as_ref()
+    else {
+        panic!("the targets of the route expected: {targets:?}");
+    };
+    assert_eq!(*target, upstream_id());
+    assert_eq!(service.as_str(), "core");
+    assert_eq!(rate_policies.len(), 0);
+    assert!(
+        matches!(table.as_ref(), GatewayPrecondition::RouteTable(route) if route.id == route_id())
+    );
     let GatewayStatement::Route(statement) = statement.as_ref() else {
         panic!("a route statement expected: {statement:?}");
     };
@@ -168,9 +190,10 @@ async fn a_cors_policy_is_stored_with_the_route() {
     handler(&world).handle(command(draft)).await.unwrap();
 
     let committed = world.unit_of_work.committed();
-    let [ChangeStatement::SaveGateway(statement)] = committed[0].parts().statements.as_slice()
+    let [_, _, ChangeStatement::SaveGateway(statement)] =
+        committed[0].parts().statements.as_slice()
     else {
-        panic!("one gateway statement expected");
+        panic!("two preconditions and one gateway statement expected");
     };
     let GatewayStatement::Route(statement) = statement.as_ref() else {
         panic!("a route statement expected");
@@ -444,4 +467,53 @@ async fn a_calling_service_without_the_iam_route_key_is_forbidden_a_route_of_the
 
     assert!(matches!(error, IamError::Forbidden));
     assert_eq!(world.unit_of_work.committed(), Vec::new());
+}
+
+fn system_route_on_the_host() -> iam_domain::RouteParts {
+    let mut system = route_at(
+        numbered_id(9),
+        "/api/{rest:*}",
+        &[HttpMethod::Get, HttpMethod::Post],
+        1,
+    );
+    system.system = true;
+    system
+}
+
+#[tokio::test]
+async fn a_route_on_the_host_of_the_seeded_iam_routes_is_a_system_entry_and_audited() {
+    let world = route_world(Stores {
+        routes: vec![system_route_on_the_host()],
+        policy: Some(policy_holding(&["iam:route:core"])),
+        ..Stores::default()
+    });
+
+    let error = handler(&world)
+        .handle(command(draft_of("core")))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, IamError::SystemEntry), "{error:?}");
+    let offered = world.attempts.offered();
+    let [attempt] = offered.as_slice() else {
+        panic!("one attempt expected: {offered:?}");
+    };
+    assert_eq!(attempt.action.as_str(), "route.create");
+    assert_eq!(attempt.reason.as_str(), "system_entry");
+    assert_eq!(world.unit_of_work.committed(), Vec::new());
+}
+
+#[tokio::test]
+async fn a_route_on_another_host_is_not_reserved_by_the_seeded_iam_routes() {
+    let world = route_world(Stores {
+        routes: vec![system_route_on_the_host()],
+        policy: Some(policy_holding(&["iam:route:core"])),
+        ..Stores::default()
+    });
+    let mut draft = draft_of("core");
+    draft.host = "other.example.test".to_owned();
+
+    handler(&world).handle(command(draft)).await.unwrap();
+
+    assert_eq!(world.unit_of_work.committed().len(), 1);
 }

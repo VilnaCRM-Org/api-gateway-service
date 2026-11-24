@@ -74,8 +74,8 @@ impl From<&SpecRetirement> for SpecRetirementResponse {
 ///
 /// # Errors
 ///
-/// The problem of a refused request: 404 for an unknown version, 409 for a version that is not
-/// active, a concurrent change or orphaned grants without `confirmOrphans`, 422 for a key reused
+/// The problem of a refused request: 403 for a version of the service `iam`, 404 for an unknown
+/// version, 409 for a version that is not active, a concurrent change or orphaned grants without `confirmOrphans`, 422 for a key reused
 /// for another request, 500 for a storage failure.
 pub(crate) async fn retire_graphql_spec(
     state: &IamState,
@@ -92,8 +92,8 @@ pub(crate) async fn retire_graphql_spec(
 ///
 /// # Errors
 ///
-/// The problem of a refused request: 404 for an unknown version, 409 for a version that is not
-/// active, a concurrent change or orphaned grants without `confirmOrphans`, 422 for a key reused
+/// The problem of a refused request: 403 for a version of the service `iam`, 404 for an unknown
+/// version, 409 for a version that is not active, a concurrent change or orphaned grants without `confirmOrphans`, 422 for a key reused
 /// for another request, 500 for a storage failure.
 pub(crate) async fn retire_openapi_spec(
     state: &IamState,
@@ -214,8 +214,8 @@ fn retirement_headers(retirement: &SpecRetirement) -> WriteHeaders {
 ///
 /// # Errors
 ///
-/// A problem document: 401 without a valid token, 404 for an unknown version, 409 for a version
-/// that is not active, a concurrent change or orphaned grants without confirmation, 422 for an id
+/// A problem document: 401 without a valid token, 403 for a version of the service `iam`, 404 for
+/// an unknown version, 409 for a version that is not active, a concurrent change or orphaned grants without confirmation, 422 for an id
 /// that is not a UUID or a reused idempotency key, 500 when the storage fails.
 #[utoipa::path(
     post,
@@ -245,6 +245,7 @@ fn retirement_headers(retirement: &SpecRetirement) -> WriteHeaders {
             content_type = "application/problem+json",
             headers(("www-authenticate" = String, description = "The `Bearer` challenge."))
         ),
+        (status = 403, description = "A version of the service `iam` is retired by IAM's own startup registration only.", body = Problem, content_type = "application/problem+json"),
         (status = 404, description = "Version not found.", body = Problem, content_type = "application/problem+json"),
         (status = 409, description = "The version is not active, another change got there first, or the retirement would orphan grants (`/problems/orphan-confirmation-required`) without confirmation.", body = Problem, content_type = "application/problem+json"),
         (status = 413, description = "Request body too large.", body = Problem, content_type = "application/problem+json"),
@@ -273,8 +274,8 @@ pub async fn retire_graphql(
 ///
 /// # Errors
 ///
-/// A problem document: 401 without a valid token, 404 for an unknown version, 409 for a version
-/// that is not active, a concurrent change or orphaned grants without confirmation, 422 for an id
+/// A problem document: 401 without a valid token, 403 for a version of the service `iam`, 404 for
+/// an unknown version, 409 for a version that is not active, a concurrent change or orphaned grants without confirmation, 422 for an id
 /// that is not a UUID or a reused idempotency key, 500 when the storage fails.
 #[utoipa::path(
     post,
@@ -304,6 +305,7 @@ pub async fn retire_graphql(
             content_type = "application/problem+json",
             headers(("www-authenticate" = String, description = "The `Bearer` challenge."))
         ),
+        (status = 403, description = "A version of the service `iam` is retired by IAM's own startup registration only.", body = Problem, content_type = "application/problem+json"),
         (status = 404, description = "Version not found.", body = Problem, content_type = "application/problem+json"),
         (status = 409, description = "The version is not active, another change got there first, or the retirement would orphan grants (`/problems/orphan-confirmation-required`) without confirmation.", body = Problem, content_type = "application/problem+json"),
         (status = 413, description = "Request body too large.", body = Problem, content_type = "application/problem+json"),

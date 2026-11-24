@@ -401,3 +401,45 @@ async fn a_storage_failure_of_the_repository_or_the_unit_of_work_is_the_error_of
     assert!(matches!(read_error, IamError::Storage(_)));
     assert!(matches!(write_error, IamError::Storage(_)));
 }
+
+#[rstest::rstest]
+#[case::kube_system("kube-system", None)]
+#[case::kube_public("kube-public", None)]
+#[case::own_namespace("iam", Some("iam"))]
+#[case::seed_namespace_when_none_is_configured("iam", None)]
+#[case::seed_namespace_when_another_is_configured("iam", Some("platform"))]
+#[tokio::test]
+async fn moving_to_a_reserved_namespace_is_a_violation_and_commits_nothing(
+    #[case] namespace: &str,
+    #[case] own: Option<&str>,
+) {
+    let mut world = world(upstream(1));
+    world.handler = world.handler.with_own_namespace(own.map(str::to_owned));
+    let patch = UpstreamPatch {
+        namespace: Some(namespace.to_owned()),
+        ..UpstreamPatch::default()
+    };
+
+    let error = world.handler.handle(command(1, patch)).await.unwrap_err();
+
+    let IamError::Invalid(violations) = error else {
+        panic!("a violation expected: {error:?}");
+    };
+    assert_eq!(violations.len(), 1);
+    assert_eq!(violations[0].property_path, "namespace");
+    assert_eq!(violations[0].code, "reserved");
+    assert_eq!(world.unit_of_work.committed(), Vec::new());
+}
+
+#[tokio::test]
+async fn a_non_system_upstream_that_squats_the_seeded_name_is_refused_and_audited() {
+    let world = world(upstream_named(upstream_id(), "iam-control", "core", 1));
+
+    let error = world
+        .handler
+        .handle(command(1, port_and_protocol()))
+        .await
+        .unwrap_err();
+
+    assert_system_entry(&world, &error);
+}

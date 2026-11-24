@@ -19,6 +19,7 @@ use crate::persistence::bulk_operation;
 use crate::persistence::catalogue;
 use crate::persistence::event_encoding::encode;
 use crate::persistence::gateway_configuration;
+use crate::persistence::gateway_precondition;
 use crate::persistence::graphql_spec;
 use crate::persistence::openapi_spec;
 use crate::persistence::outbox_listener::OUTBOX_CHANNEL;
@@ -27,6 +28,7 @@ use crate::persistence::role::save_within;
 use crate::persistence::security_audit_log::{PgSecurityAuditLog, emit};
 use crate::persistence::state_writer::{StateCapture, Versioned};
 use crate::persistence::user_role;
+use crate::policy_snapshot::MatchitRouteTableCompiler;
 
 /// The topic of the IAM domain events.
 pub const EVENTS_TOPIC: &str = "iam.events.v1";
@@ -292,6 +294,10 @@ async fn run_statement(
         ChangeStatement::ApplyCatalogue(activation) => {
             catalogue::apply_within(connection, activation).await
         }
+        ChangeStatement::ExpectGateway(precondition) => {
+            gateway_precondition::check_within(connection, precondition, &MatchitRouteTableCompiler)
+                .await
+        }
         ChangeStatement::ExpectPolicyVersion(_)
         | ChangeStatement::SaveRole(_)
         | ChangeStatement::SaveUserRole(_)
@@ -327,6 +333,7 @@ async fn run_aggregate(
             revocation_statement::save_within(connection, statement).await
         }
         ChangeStatement::ExpectPolicyVersion(_)
+        | ChangeStatement::ExpectGateway(_)
         | ChangeStatement::SaveGraphQlSpec(_)
         | ChangeStatement::SaveOpenApiSpec(_)
         | ChangeStatement::ApplyCatalogue(_)

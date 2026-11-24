@@ -2,8 +2,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use iam_domain::{
-    LeaderBatch, LogEpoch, OutboxKind, OutboxRow, PolicyDigestValue, PolicyLogRecord,
-    PolicyVersion, RelayEpoch, RepositoryError, Violation,
+    LeaderBatch, Leadership, LogEpoch, OutboxKind, OutboxRow, PolicyDigestValue, PolicyLogRecord,
+    PolicyVersion, RelayEpoch, RepositoryError, SingletonLeadership as _, TopicAheadState,
+    Violation,
 };
 use shared_domain::{BoxError, Uuid};
 use test_support::clock::ManualClock;
@@ -18,14 +19,45 @@ use super::{
 };
 use crate::singleton_loop::{BatchOutcome, SingletonWork as _};
 
-/// A batch that holds no transaction.
-#[derive(Debug)]
-struct NullBatch;
+/// A batch that holds no transaction and reads the state of the anti-entropy task it is given.
+#[derive(Debug, Default)]
+struct NullBatch {
+    state: TopicAheadState,
+    failing_read: bool,
+}
+
+impl NullBatch {
+    fn after_checks(held: bool, checks: u64) -> Self {
+        Self {
+            state: TopicAheadState { held, checks },
+            failing_read: false,
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl LeaderBatch for NullBatch {
     async fn record_run(&mut self, _at: SystemTime) -> Result<(), RepositoryError> {
         Ok(())
+    }
+
+    async fn write_topic_ahead(
+        &mut self,
+        held: bool,
+        _at: SystemTime,
+    ) -> Result<(), RepositoryError> {
+        self.state.held = held;
+        Ok(())
+    }
+
+    async fn read_topic_ahead(
+        &mut self,
+        _checker: &str,
+    ) -> Result<TopicAheadState, RepositoryError> {
+        if self.failing_read {
+            return Err(RepositoryError::Unavailable("the state is down".into()));
+        }
+        Ok(self.state)
     }
 
     async fn commit(self: Box<Self>) -> Result<(), RepositoryError> {
@@ -109,7 +141,7 @@ fn simple(rows: Vec<OutboxRow>) -> Rig {
 }
 
 async fn run(rig: &Rig) -> Result<(), BoxError> {
-    rig.relay.run(&mut NullBatch).await
+    rig.relay.run(&mut NullBatch::default()).await
 }
 
 fn header<'a>(record: &'a PolicyLogRecord, name: &str) -> Option<&'a str> {
@@ -435,21 +467,160 @@ fn the_incomplete_acknowledgement_names_both_counts() {
     );
 }
 
+fn held_rig() -> (Rig, Arc<crate::anti_entropy::TopicAheadHold>) {
+    held_rig_of(vec![row(1)], OutboxRelaySettings::default())
+}
+
+fn held_rig_of(
+    rows: Vec<OutboxRow>,
+    settings: OutboxRelaySettings,
+) -> (Rig, Arc<crate::anti_entropy::TopicAheadHold>) {
+    let mut rig = rig(
+        FakeOutboxStore::new().with_rows(rows),
+        FakePolicyLogProducer::acknowledging(),
+        FakeTopicInspector::passing(),
+        settings,
+    );
+    let hold = Arc::new(crate::anti_entropy::TopicAheadHold::new());
+    rig.relay = rig.relay.with_hold(Arc::clone(&hold));
+    (rig, hold)
+}
+
+async fn run_after(rig: &Rig, held: bool, checks: u64) -> Result<(), BoxError> {
+    rig.relay
+        .run(&mut NullBatch::after_checks(held, checks))
+        .await
+}
+
 #[tokio::test]
 async fn a_relay_publishes_nothing_while_the_topic_is_ahead_and_resumes_when_it_is_not() {
-    let mut rig = simple(vec![row(1)]);
-    let hold = Arc::new(crate::anti_entropy::TopicAheadHold::new());
+    let (rig, hold) = held_rig();
     hold.set(true);
-    rig.relay = rig.relay.with_hold(Arc::clone(&hold));
 
-    run(&rig).await.unwrap();
+    run_after(&rig, false, 1).await.unwrap();
 
     assert_eq!(rig.producer.batches().len(), 0);
     assert_eq!(rig.store.published().len(), 0);
     assert!(*rig.leading.borrow());
 
     hold.set(false);
-    run(&rig).await.unwrap();
+    run_after(&rig, false, 2).await.unwrap();
 
     assert_eq!(rig.store.published().len(), 1);
+}
+
+#[tokio::test]
+async fn a_hold_written_by_another_replica_holds_the_relay_back() {
+    let (rig, hold) = held_rig();
+    assert!(!hold.is_set());
+
+    run_after(&rig, true, 5).await.unwrap();
+    run_after(&rig, true, 6).await.unwrap();
+
+    assert_eq!(rig.store.published().len(), 0);
+
+    run_after(&rig, false, 7).await.unwrap();
+
+    assert_eq!(rig.store.published().len(), 1);
+}
+
+#[tokio::test]
+async fn a_leader_publishes_nothing_until_a_check_completed_since_it_took_leadership() {
+    let (rig, _hold) = held_rig();
+
+    run_after(&rig, false, 3).await.unwrap();
+    run_after(&rig, false, 3).await.unwrap();
+    assert_eq!(rig.store.published().len(), 0);
+    assert_eq!(rig.producer.batches().len(), 0);
+
+    run_after(&rig, false, 4).await.unwrap();
+
+    assert_eq!(rig.store.published().len(), 1);
+}
+
+#[tokio::test]
+async fn losing_leadership_starts_the_wait_for_a_check_again() {
+    let (rig, _hold) = held_rig_of(
+        vec![row(1), row(2)],
+        OutboxRelaySettings {
+            batch_size: 1,
+            ..OutboxRelaySettings::default()
+        },
+    );
+    run_after(&rig, false, 3).await.unwrap();
+    run_after(&rig, false, 4).await.unwrap();
+    assert_eq!(rig.store.published().len(), 1);
+
+    rig.relay.on_follower().await;
+    run_after(&rig, false, 4).await.unwrap();
+    assert_eq!(rig.store.published().len(), 1);
+    run_after(&rig, false, 5).await.unwrap();
+
+    assert_eq!(rig.store.published().len(), 2);
+}
+
+#[tokio::test]
+async fn a_relay_that_cannot_read_the_shared_state_publishes_nothing() {
+    let (rig, _hold) = held_rig();
+    let mut batch = NullBatch {
+        failing_read: true,
+        ..NullBatch::default()
+    };
+
+    let outcome = rig.relay.run(&mut batch).await;
+
+    assert!(outcome.is_err());
+    assert_eq!(rig.store.published().len(), 0);
+}
+
+#[tokio::test]
+async fn the_checker_and_the_relay_of_different_replicas_share_the_hold() {
+    use crate::anti_entropy::{AntiEntropyChecker, AntiEntropyCounters, AntiEntropyPorts};
+    use test_support::anti_entropy::{
+        FakeAntiEntropyStore, FakePolicyLogTail, HashDigest, TextHeadCodec, head_record,
+    };
+    use test_support::task_state::FakeTaskStateRepository;
+
+    // The topic holds version 5 and PostgreSQL version 3: the topic is ahead.
+    let checker = AntiEntropyChecker::new(
+        AntiEntropyPorts {
+            store: Arc::new(FakeAntiEntropyStore::at(3, PolicyDigestValue::ZERO)),
+            tail: Arc::new(FakePolicyLogTail::with(vec![head_record(
+                0,
+                5,
+                PolicyDigestValue::ZERO,
+                1,
+            )])),
+            task_states: Arc::new(FakeTaskStateRepository::new()),
+            codec: Arc::new(TextHeadCodec),
+            digest: Arc::new(HashDigest),
+        },
+        Arc::new(ManualClock::at(start())),
+        crate::anti_entropy::AntiEntropySettings::default(),
+        Arc::new(AntiEntropyCounters::new()),
+        Arc::new(crate::anti_entropy::TopicAheadHold::new()),
+    );
+    let (rig, _own_hold) = held_rig();
+    let leadership = FakeSingletonLeadership::leading();
+
+    // The relay of another replica leads first: no check completed yet.
+    let Leadership::Leader(mut relay_batch) = leadership.begin(&OutboxRelay::TASK).await.unwrap()
+    else {
+        panic!("the relay leads");
+    };
+    rig.relay.run(relay_batch.as_mut()).await.unwrap();
+    // The checker finds the topic ahead and commits its batch.
+    let Leadership::Leader(mut checker_batch) =
+        leadership.begin(&AntiEntropyChecker::TASK).await.unwrap()
+    else {
+        panic!("the checker leads");
+    };
+    checker.run(checker_batch.as_mut()).await.unwrap();
+    checker_batch.record_run(start()).await.unwrap();
+
+    rig.relay.run(relay_batch.as_mut()).await.unwrap();
+
+    assert!(leadership.topic_ahead().held);
+    assert_eq!(leadership.topic_ahead().checks, 1);
+    assert_eq!(rig.store.published().len(), 0);
 }

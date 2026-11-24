@@ -12,6 +12,7 @@ use crate::value_object::identifier::RouteId;
 #[case(InvalidUpstream::NameLength, "name", "length")]
 #[case(InvalidUpstream::NamePattern, "name", "pattern")]
 #[case(InvalidUpstream::NamespaceFormat, "namespace", "format")]
+#[case(InvalidUpstream::NamespaceReserved, "namespace", "reserved")]
 #[case(InvalidUpstream::ServiceFormat, "serviceName", "format")]
 #[case(InvalidUpstream::CatalogServiceLength, "catalogService", "length")]
 #[case(InvalidUpstream::CatalogServicePattern, "catalogService", "pattern")]

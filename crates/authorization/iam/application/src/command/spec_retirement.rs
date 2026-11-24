@@ -14,11 +14,26 @@ use iam_domain::{
     IdempotencyRequest, OrphanPolicy, PermissionCatalogue, PermissionFlags, PermissionKey,
     PermissionKeyKind, PermissionsOrphaned, PolicyVersion, SecurityAuditEvent,
     SecurityAuditEventId, SecurityAuditEventParts, ServiceName, SpecId, SpecStatus, SpecTransition,
+    SystemComponent,
 };
 use shared_domain::UuidGenerator;
 
 use super::create_graphql_permissions::{Confirmations, confirmed};
 use crate::error::IamError;
+
+/// Refuses the retirement of a version of the reserved service `iam` by any actor other than
+/// `system:startup`, as the load of one is refused: the specifications of `iam` come from the
+/// startup registration only (FR-1, FR-2, FR-38).
+///
+/// # Errors
+///
+/// [`IamError::Forbidden`] for a version of `iam` retired by another actor.
+pub(crate) fn ensure_retirable(service: &ServiceName, actor: &ActorRef) -> Result<(), IamError> {
+    if service.is_iam() && *actor != ActorRef::System(SystemComponent::Startup) {
+        return Err(IamError::Forbidden);
+    }
+    Ok(())
+}
 
 /// A stored catalogue entry as a retirement sees it: its key, its flags and whether it is active.
 #[derive(Debug, Clone, PartialEq, Eq)]

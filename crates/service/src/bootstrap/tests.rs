@@ -998,11 +998,13 @@ mod access_validation {
             .with_subject(subject, policy)
     }
 
-    /// Reads the policy of the first subject lookup from `inner` and fails every other read, so
-    /// that the authorization of the caller passes and the decision path meets the failure.
+    /// Reads the policy of the first `healthy_reads` subject lookups from `inner` and fails every
+    /// other read, so that the authorization of the caller passes and the decision path meets the
+    /// failure.
     #[derive(Debug)]
     struct FailsAfterTheCaller {
         inner: FakePolicyReadRepository,
+        healthy_reads: usize,
         subject_reads: AtomicUsize,
     }
 
@@ -1012,7 +1014,7 @@ mod access_validation {
             &self,
             subject: &SubjectRef,
         ) -> Result<SubjectPolicy, RepositoryError> {
-            if self.subject_reads.fetch_add(1, Ordering::SeqCst) == 0 {
+            if self.subject_reads.fetch_add(1, Ordering::SeqCst) < self.healthy_reads {
                 self.inner.read_subject_policy(subject).await
             } else {
                 Err(RepositoryError::Unavailable("policy read failed".into()))
@@ -1121,11 +1123,13 @@ mod access_validation {
 
     #[tokio::test]
     async fn a_failing_database_is_a_200_deny_with_unavailable_over_rest_and_graphql() {
-        // One application per interface: each request authorizes its caller with the first read.
-        let failing = || {
+        // One application per interface: REST authorizes its caller with the first read, GraphQL
+        // with the first (the extension) and the second (the caller rule the resolver repeats).
+        let failing = |healthy_reads| {
             wiring(
                 FailsAfterTheCaller {
                     inner: holding_policy(),
+                    healthy_reads,
                     subject_reads: AtomicUsize::new(0),
                 },
                 FakePolicyEpochRepository::new(),
@@ -1133,12 +1137,12 @@ mod access_validation {
         };
 
         let over_rest = send(
-            &failing(),
+            &failing(1),
             rest(Some("caller-token"), &get_order("/api/orders/42"), None),
         )
         .await;
         let over_graphql = graphql(
-            &failing(),
+            &failing(2),
             "rest: {method: \"GET\", path: \"/api/orders/42\"}",
         )
         .await;

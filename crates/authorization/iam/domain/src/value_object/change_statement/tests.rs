@@ -5,6 +5,7 @@ use shared_domain::Uuid;
 use super::ChangeStatement;
 use crate::bulk_operation::statement::BulkProgressStatement;
 use crate::bulk_operation::{BulkKind, BulkOperation};
+use crate::gateway_statement::GatewayPrecondition;
 use crate::resync::{EpochChange, Republication, ResyncStart};
 use crate::role::statement::RoleStatement;
 use crate::role::{Role, RoleFields, RoleStamp};
@@ -14,6 +15,7 @@ use crate::user_role::{UserRole, UserRoleAssignment, UserRoleStamp};
 use crate::value_object::actor_ref::ActorRef;
 use crate::value_object::assignment_scope::AssignmentScope;
 use crate::value_object::identifier::BulkOperationId;
+use crate::value_object::identifier::UpstreamId;
 use crate::value_object::identifier::{RoleId, UserRoleId};
 use crate::value_object::log_epoch::LogEpoch;
 use crate::value_object::policy_version::PolicyVersion;
@@ -476,4 +478,18 @@ fn a_republication_names_the_keys_and_the_services_it_writes_again() {
     assert_eq!(statement.republished_services(), [service]);
     assert_eq!(statement.epoch_change(), None);
     assert_eq!(statement.catalogue_service(), None);
+}
+
+#[test]
+fn a_gateway_precondition_is_checked_by_the_storage_and_changes_no_entity() {
+    let statement = ChangeStatement::from(GatewayPrecondition::UpstreamUnreferenced(
+        UpstreamId::from_uuid(Uuid::parse("0190f2a8-7b3c-7d4e-8f10-1234567890cf").unwrap()),
+    ));
+
+    assert!(statement.holds(PolicyVersion::new(1).unwrap()));
+    assert_eq!(statement.state_keys().len(), 0);
+    assert!(statement.catalogue_service().is_none());
+    assert_eq!(statement.republished_services().len(), 0);
+    assert!(statement.epoch_change().is_none());
+    assert_eq!(statement.republished_keys().len(), 0);
 }

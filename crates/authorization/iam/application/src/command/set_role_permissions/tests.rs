@@ -329,15 +329,43 @@ async fn the_audit_record_lists_the_first_wildcards_and_counts_them_all() {
 }
 
 #[tokio::test]
-async fn a_system_role_accepts_the_replacement() {
+async fn a_system_role_is_forbidden_and_nothing_is_committed() {
+    let (handler, unit_of_work) = World::new().handler(vec![stored(
+        RoleKind::System,
+        1,
+        &["rest:billing:GET /invoices"],
+    )]);
+
+    let error = handler
+        .handle(command(1, &["rest:orders:GET /orders"]))
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, IamError::Forbidden), "{error:?}");
+    assert_eq!(unit_of_work.committed().len(), 0);
+}
+
+#[tokio::test]
+async fn a_system_role_is_forbidden_before_its_keys_are_validated() {
     let (handler, unit_of_work) = World::new().handler(vec![stored(RoleKind::System, 1, &[])]);
 
-    handler
-        .handle(command(1, &["rest:billing:GET /invoices"]))
+    let error = handler
+        .handle(command(1, &["rest:billing:GET /missing", "not a key"]))
         .await
-        .unwrap();
+        .unwrap_err();
 
-    assert_eq!(unit_of_work.committed().len(), 1);
+    assert!(matches!(error, IamError::Forbidden), "{error:?}");
+    assert_eq!(unit_of_work.committed().len(), 0);
+}
+
+#[tokio::test]
+async fn a_system_role_is_forbidden_even_with_a_stale_version() {
+    let (handler, unit_of_work) = World::new().handler(vec![stored(RoleKind::System, 5, &[])]);
+
+    let error = handler.handle(command(1, &[])).await.unwrap_err();
+
+    assert!(matches!(error, IamError::Forbidden), "{error:?}");
+    assert_eq!(unit_of_work.committed().len(), 0);
 }
 
 #[tokio::test]

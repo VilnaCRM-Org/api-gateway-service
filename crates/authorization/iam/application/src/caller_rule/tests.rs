@@ -56,8 +56,11 @@ fn a_user_resolving_a_token_is_admitted_by_the_wildcard_alone() {
 #[case::single(json!({"service": "core", "request_id": "r"}), &["core"])]
 #[case::batch(json!({"checks": [{"service": "core"}, {"service": "payment"}]}), &["core", "payment"])]
 #[case::list_of_inputs(json!([{"service": "core"}, {"service": "payment"}]), &["core", "payment"])]
-#[case::an_item_without_a_text_service_names_none(json!({"checks": [{"service": 5}, {}, "x", {"service": "core"}]}), &["core"])]
-#[case::a_scalar_names_none(json!("core"), &[])]
+#[case::an_item_without_a_text_service_is_unreadable(json!({"checks": [{"service": 5}, {}, "x", {"service": "core"}]}), &["", "", "", "core"])]
+#[case::a_scalar_is_unreadable(json!("core"), &[""])]
+#[case::an_object_without_a_service_is_unreadable(json!({"credential": "t"}), &[""])]
+#[case::a_null_item_is_unreadable(json!([null, {"service": "core"}]), &["", "core"])]
+#[case::a_batch_of_no_check_names_nothing(json!({"checks": []}), &[])]
 fn the_services_of_a_json_value_are_those_its_checks_name(
     #[case] value: serde_json::Value,
     #[case] expected: &[&str],
@@ -65,4 +68,15 @@ fn the_services_of_a_json_value_are_those_its_checks_name(
     let value = async_graphql::Value::from_json(value).unwrap();
 
     assert_eq!(target_services(&value), named(expected));
+}
+
+#[test]
+fn an_unreadable_service_is_admitted_by_the_wildcard_alone() {
+    let unreadable = named(&["core", ""]);
+
+    let validating = CallerRule::Validate.required_services(&service("core"), &unreadable);
+    let resolving = CallerRule::ResolveToken.required_services(&service("core"), &named(&[""]));
+
+    assert_eq!(validating, Some(named(&["", "core"])));
+    assert_eq!(resolving, None);
 }

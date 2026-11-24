@@ -115,3 +115,52 @@ fn routes_of_the_same_shape_with_other_methods_do_not_conflict() {
 
     assert_eq!(matcher.find(HttpMethod::Post, "/users/x"), Some(id(2)));
 }
+
+#[test]
+fn routes_that_name_the_same_position_differently_compile_on_one_host() {
+    let routes = [
+        route(1, "api.example.com", "/a/{x}", &[HttpMethod::Get]),
+        route(2, "api.example.com", "/a/{y}/b", &[HttpMethod::Get]),
+        route(3, "api.example.com", "/a/{z}/b/{w}", &[HttpMethod::Get]),
+    ];
+
+    let matcher = MatchitRouteTableCompiler.compile(&host(), &routes).unwrap();
+
+    assert_eq!(matcher.find(HttpMethod::Get, "/a/1"), Some(id(1)));
+    assert_eq!(matcher.find(HttpMethod::Get, "/a/1/b"), Some(id(2)));
+    assert_eq!(matcher.find(HttpMethod::Get, "/a/1/b/2"), Some(id(3)));
+}
+
+#[test]
+fn two_routes_of_one_shape_conflict_whatever_their_parameter_names() {
+    let routes = [
+        route(1, "api.example.com", "/a/{x}", &[HttpMethod::Get]),
+        route(2, "api.example.com", "/a/{y}", &[HttpMethod::Get]),
+    ];
+
+    let error = MatchitRouteTableCompiler
+        .compile(&host(), &routes)
+        .unwrap_err();
+
+    assert_eq!(
+        error,
+        RouteConflict::SamePattern {
+            first: id(1),
+            second: id(2)
+        }
+    );
+}
+
+#[test]
+fn a_catch_all_after_parameters_is_named_by_its_position() {
+    let routes = [route(
+        1,
+        "api.example.com",
+        "/f/{a}/{rest:*}",
+        &[HttpMethod::Get],
+    )];
+
+    let matcher = MatchitRouteTableCompiler.compile(&host(), &routes).unwrap();
+
+    assert_eq!(matcher.find(HttpMethod::Get, "/f/1/x/y"), Some(id(1)));
+}

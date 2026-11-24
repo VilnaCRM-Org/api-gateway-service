@@ -12,6 +12,7 @@ mod history;
 mod size;
 mod support;
 
+use support::route_with_pattern;
 use support::{
     Rig, catalogue, manifest_key, rate_policy, role, role_key, route, route_id, route_key, subject,
     subject_ref, upstream, upstream_id, upstream_key, version,
@@ -593,4 +594,76 @@ fn a_verified_rebuild_refuses_a_state_that_does_not_hash_to_the_head() {
         Err(SnapshotBuildError::DigestMismatch { .. })
     ));
     assert!(target.cell.current().is_none(), "nothing is published");
+}
+
+#[test]
+fn a_host_whose_routes_do_not_compile_denies_alone_and_holds_nothing_back() {
+    let mut rig = Rig::new();
+    let other = RouteHost::new("other.example.com").unwrap();
+
+    let outcome = rig.apply(vec![
+        route_with_pattern(1, "api.example.com", "/same/{id}"),
+        route_with_pattern(2, "api.example.com", "/same/{id}"),
+        route_with_pattern(3, "other.example.com", "/fine/{id}"),
+    ]);
+
+    assert!(
+        matches!(outcome, ApplyOutcome::Applied { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(rig.snapshot().version(), version(1));
+    let snapshot = rig.snapshot();
+    assert!(
+        snapshot
+            .route(&host(), HttpMethod::Get, "/same/7")
+            .is_none()
+    );
+    let found = snapshot.route(&other, HttpMethod::Get, "/fine/7").unwrap();
+    assert_eq!(found.id, route_id(3));
+}
+
+#[test]
+fn an_isolated_host_is_compiled_again_by_a_later_version() {
+    let mut rig = Rig::new();
+    rig.apply(vec![
+        route_with_pattern(1, "api.example.com", "/same/{id}"),
+        route_with_pattern(2, "api.example.com", "/same/{id}"),
+    ]);
+    assert!(
+        rig.snapshot()
+            .route(&host(), HttpMethod::Get, "/same/7")
+            .is_none()
+    );
+
+    let outcome = rig.apply(vec![(route_key(2), None)]);
+    rig.builder.flush();
+
+    assert!(
+        matches!(outcome, ApplyOutcome::Applied { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(rig.snapshot().version(), version(2));
+    let snapshot = rig.snapshot();
+    let found = snapshot.route(&host(), HttpMethod::Get, "/same/7").unwrap();
+    assert_eq!(found.id, route_id(1));
+}
+
+#[test]
+fn routes_that_name_a_parameter_differently_share_a_host() {
+    let mut rig = Rig::new();
+
+    let outcome = rig.apply(vec![
+        route_with_pattern(1, "api.example.com", "/a/{x}"),
+        route_with_pattern(2, "api.example.com", "/a/{y}/b"),
+    ]);
+
+    assert!(
+        matches!(outcome, ApplyOutcome::Applied { .. }),
+        "{outcome:?}"
+    );
+    let snapshot = rig.snapshot();
+    let first = snapshot.route(&host(), HttpMethod::Get, "/a/1").unwrap();
+    let second = snapshot.route(&host(), HttpMethod::Get, "/a/1/b").unwrap();
+    assert_eq!(first.id, route_id(1));
+    assert_eq!(second.id, route_id(2));
 }

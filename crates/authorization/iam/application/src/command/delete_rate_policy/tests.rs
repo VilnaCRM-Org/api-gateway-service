@@ -3,8 +3,8 @@ use std::time::{Duration, SystemTime};
 
 use iam_domain::{
     ActorRef, AuditSummary, ChangeId, ChangeStatement, DecisionEffect, EntityVersion,
-    GatewayStatement, HttpMethod, IamUnitOfWork, RatePolicyId, RatePolicyParts,
-    RatePolicyRepository, RouteParts, RouteRepository, UpstreamId,
+    GatewayPrecondition, GatewayStatement, HttpMethod, IamUnitOfWork, RatePolicyId,
+    RatePolicyParts, RatePolicyRepository, RouteParts, RouteRepository, UpstreamId,
 };
 use shared_domain::{Command as _, CommandHandler as _, Uuid};
 use test_support::clock::FixedClock;
@@ -92,9 +92,20 @@ async fn an_unreferenced_policy_is_deleted_with_a_tombstone_its_event_and_audit_
     let parts = committed[0].parts();
     assert_eq!(parts.effect, DecisionEffect::Affected);
     assert_eq!(parts.entity_version, EntityVersion::new(2).unwrap());
-    let [ChangeStatement::SaveGateway(statement)] = parts.statements.as_slice() else {
-        panic!("one gateway write expected: {:?}", parts.statements);
+    let [
+        ChangeStatement::ExpectGateway(precondition),
+        ChangeStatement::SaveGateway(statement),
+    ] = parts.statements.as_slice()
+    else {
+        panic!(
+            "a reference check and one gateway write expected: {:?}",
+            parts.statements
+        );
     };
+    assert_eq!(
+        precondition.as_ref(),
+        &GatewayPrecondition::RatePolicyUnreferenced(RatePolicyId::parse(POLICY).unwrap())
+    );
     let GatewayStatement::RatePolicy(statement) = statement.as_ref() else {
         panic!("a rate policy write expected: {statement:?}");
     };

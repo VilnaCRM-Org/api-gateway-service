@@ -7,13 +7,16 @@ use async_graphql::{Context, ID, InputObject, SimpleObject};
 use shared_application::http::Problem;
 use validator::Validate as _;
 
+use super::authorization::CallerRuleCheck;
 use super::{require_caller, state};
+use crate::error::IamError;
 use crate::http::access_validation::batch::ValidateAccessBatchRequest;
 use crate::http::access_validation::dto::{
     AccessSubjectDto, AccessValidationResponse, GraphQlTargetDto, RestTargetDto, ScopesResponse,
     ValidateAccessRequest,
 };
 use crate::http::access_validation::{validate_access, validate_access_batch};
+use crate::principal::Principal;
 
 /// The REST request that a check names.
 #[derive(Debug, InputObject)]
@@ -167,12 +170,38 @@ impl From<AccessValidationResponse> for AccessValidationObject {
     }
 }
 
+/// Repeats the caller rule of FR-12 on the services of the coerced input: the extension decided
+/// it on the document before execution, and the resolver decides it on what execution coerced,
+/// so that no reading of the arguments can lend a service the caller holds no key of. A request
+/// executed without the extension is refused.
+async fn enforce_caller_rule(
+    ctx: &Context<'_>,
+    principal: &Principal,
+    coordinate: &str,
+    services: &[String],
+) -> Result<(), Problem> {
+    let check = ctx
+        .data_opt::<CallerRuleCheck>()
+        .ok_or_else(|| Problem::from(IamError::Forbidden))?;
+    check
+        .enforce(principal, coordinate, services)
+        .await
+        .map_err(Problem::from)
+}
+
 /// Decides one check.
 pub(super) async fn validate_access_field(
     ctx: &Context<'_>,
     input: ValidateAccessInput,
 ) -> Result<AccessValidationObject, Problem> {
-    require_caller(ctx)?;
+    let principal = require_caller(ctx)?;
+    enforce_caller_rule(
+        ctx,
+        principal,
+        "Query.validateAccess",
+        std::slice::from_ref(&input.service),
+    )
+    .await?;
     let request = ValidateAccessRequest::from(input);
     request.validate()?;
     let response = validate_access(state(ctx)?, request).await?;
@@ -184,7 +213,11 @@ pub(super) async fn validate_access_batch_field(
     ctx: &Context<'_>,
     inputs: Vec<ValidateAccessInput>,
 ) -> Result<Vec<AccessValidationObject>, Problem> {
-    require_caller(ctx)?;
+    let principal = require_caller(ctx)?;
+    if !inputs.is_empty() {
+        let services: Vec<String> = inputs.iter().map(|input| input.service.clone()).collect();
+        enforce_caller_rule(ctx, principal, "Query.validateAccessBatch", &services).await?;
+    }
     let request = ValidateAccessBatchRequest {
         checks: inputs
             .into_iter()

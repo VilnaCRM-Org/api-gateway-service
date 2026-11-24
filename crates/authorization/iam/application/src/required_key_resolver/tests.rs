@@ -433,23 +433,147 @@ fn introspection_requires_the_introspection_key_without_flags() {
 }
 
 #[test]
-fn a_document_is_read_against_the_union_of_the_active_versions() {
+fn a_document_that_one_version_resolves_requires_the_keys_of_that_version() {
     let keys = document_keys(
-        "{ order { id } refund { id } }",
+        "{ refund { id } }",
         None,
         vec![first_version(), second_version()],
     );
 
     let names: Vec<&str> = keys.iter().map(|(key, _)| key.as_str()).collect();
-    assert_eq!(
-        names,
-        [
-            "gql:orders:Order.id",
-            "gql:orders:Query.order",
-            "gql:orders:Query.refund",
-            "gql:orders:Refund.id",
-        ]
+    assert_eq!(names, ["gql:orders:Query.refund", "gql:orders:Refund.id"]);
+}
+
+#[test]
+fn a_document_mixing_fields_that_no_single_version_has_is_an_unknown_operation() {
+    let verdict = document_refusal(
+        "{ order { id } refund { id } }",
+        None,
+        vec![first_version(), second_version()],
     );
+
+    assert_eq!(verdict.reason(), DecisionReason::UnknownOperation);
+}
+
+/// A version where `Query.thing` returns `Thing`, which has the field `a`, and `Thing.shared`.
+fn thing_version(shared: PermissionFlags) -> GraphQlTypeGraph {
+    GraphQlTypeGraph::new(
+        [
+            document_field("Query.thing", "Thing", PermissionFlags::NONE),
+            document_field("Thing.a", "ID", PermissionFlags::NONE),
+            document_field("Thing.shared", "ID", shared),
+        ],
+        [],
+    )
+    .unwrap()
+}
+
+/// A version where `Query.thing` returns `Other`, which has the field `b`, and `Other.shared`.
+fn other_version(shared: PermissionFlags) -> GraphQlTypeGraph {
+    GraphQlTypeGraph::new(
+        [
+            document_field("Query.thing", "Other", PermissionFlags::NONE),
+            document_field("Other.b", "ID", PermissionFlags::NONE),
+            document_field("Other.shared", "ID", shared),
+        ],
+        [],
+    )
+    .unwrap()
+}
+
+fn names(keys: &[(String, PermissionFlags)]) -> Vec<&str> {
+    keys.iter().map(|(key, _)| key.as_str()).collect()
+}
+
+#[rstest]
+#[case::only_the_first_version("{ thing { a } }", &["gql:orders:Query.thing", "gql:orders:Thing.a"])]
+#[case::only_the_second_version("{ thing { b } }", &["gql:orders:Other.b", "gql:orders:Query.thing"])]
+#[case::both_versions_with_their_own_return_types(
+    "{ thing { shared } }",
+    &["gql:orders:Other.shared", "gql:orders:Query.thing", "gql:orders:Thing.shared"]
+)]
+fn a_document_requires_the_keys_of_every_version_that_resolves_it_with_its_own_return_types(
+    #[case] document: &str,
+    #[case] expected: &[&str],
+) {
+    let versions = vec![
+        thing_version(PermissionFlags::NONE),
+        other_version(PermissionFlags::NONE),
+    ];
+    let reversed = versions.iter().rev().cloned().collect::<Vec<_>>();
+
+    let keys = document_keys(document, None, versions);
+    let keys_reversed = document_keys(document, None, reversed);
+
+    assert_eq!(names(&keys), expected);
+    assert_eq!(
+        keys, keys_reversed,
+        "the order of the versions never matters"
+    );
+}
+
+#[rstest]
+#[case::a_field_neither_version_has("{ thing { c } }")]
+#[case::a_field_of_one_version_under_the_return_type_of_the_other("{ thing { a b } }")]
+fn a_document_no_version_resolves_is_an_unknown_operation(#[case] document: &str) {
+    let versions = vec![
+        thing_version(PermissionFlags::NONE),
+        other_version(PermissionFlags::NONE),
+    ];
+
+    let verdict = document_refusal(document, None, versions);
+
+    assert_eq!(verdict.reason(), DecisionReason::UnknownOperation);
+}
+
+#[test]
+fn a_key_two_resolving_versions_share_takes_the_most_restrictive_flags() {
+    let versions = vec![
+        thing_version(PermissionFlags::NONE),
+        thing_version(PermissionFlags::NONE.with_sensitive()),
+    ];
+
+    let keys = document_keys("{ thing { shared } }", None, versions);
+
+    assert!(keys.contains(&(
+        "gql:orders:Thing.shared".to_owned(),
+        PermissionFlags::NONE.with_sensitive()
+    )));
+}
+
+#[test]
+fn introspection_is_required_when_any_resolving_version_reads_the_schema() {
+    let versions = vec![
+        thing_version(PermissionFlags::NONE),
+        other_version(PermissionFlags::NONE),
+    ];
+
+    let keys = document_keys(
+        "{ __schema { queryType { name } } thing { a } }",
+        None,
+        versions,
+    );
+
+    assert!(names(&keys).contains(&"gql:orders:__introspection"));
+}
+
+#[test]
+fn a_limit_is_reported_over_an_unknown_field_when_no_version_resolves() {
+    let aliases = (0..51)
+        .map(|number| format!("a{number}: thing {{ c }} "))
+        .collect::<Vec<_>>()
+        .concat();
+
+    let verdict = document_refusal(
+        &format!("{{ {aliases} }}"),
+        None,
+        vec![
+            thing_version(PermissionFlags::NONE),
+            other_version(PermissionFlags::NONE),
+        ],
+    );
+
+    assert_eq!(verdict.reason(), DecisionReason::LimitsExceeded);
 }
 
 #[test]

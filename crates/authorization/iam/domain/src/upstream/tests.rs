@@ -159,6 +159,33 @@ fn invalid_fields_report_each_violation(
     assert_eq!(UpstreamFields::new(name, &draft).unwrap_err(), expected);
 }
 
+#[rstest]
+#[case::kube_system("kube-system", None, false)]
+#[case::kube_public("kube-public", Some("iam"), false)]
+#[case::own("iam", Some("iam"), false)]
+#[case::other("platform", Some("iam"), true)]
+#[case::seed_namespace_without_own("iam", None, false)]
+#[case::seed_namespace_with_other_own("iam", Some("platform"), false)]
+#[case::no_own("platform", None, true)]
+fn reserved_namespaces_are_refused(
+    #[case] namespace: &str,
+    #[case] own: Option<&str>,
+    #[case] allowed: bool,
+) {
+    let draft = UpstreamSettingsDraft {
+        namespace: namespace.to_owned(),
+        ..settings()
+    };
+    let (_name, settings) = UpstreamFields::new("core", &draft).unwrap().into_parts();
+
+    let expected = if allowed {
+        Ok(())
+    } else {
+        Err(InvalidUpstream::NamespaceReserved)
+    };
+    assert_eq!(settings.check_namespace(own), expected);
+}
+
 #[test]
 fn protocols_have_names() {
     assert_eq!(UpstreamProtocol::Http1.as_str(), "http1");

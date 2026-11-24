@@ -6,8 +6,13 @@ use krafka::KrafkaError;
 use krafka::admin::{ConfigEntry, TopicDescription};
 use krafka::error::ErrorCode;
 
-use super::{answer_for, answer_of, authenticated, probe_connection, unauthenticated};
-use crate::kafka::settings::{KafkaSecret, KafkaSecurity, KafkaSettings, SaslMechanism};
+use super::{
+    ProbeLink, answer_for, answer_of, authenticated, combined_allow_everyone, probe_security,
+};
+use crate::kafka::cluster::ProbeOutcome;
+use crate::kafka::settings::{
+    KafkaSecret, KafkaSecurity, KafkaSettings, ProbeCredentials, SaslMechanism,
+};
 
 fn unknown_topic() -> KrafkaError {
     KrafkaError::broker(ErrorCode::UnknownTopicOrPartition, "unknown topic")
@@ -25,6 +30,7 @@ fn secured(mechanism: SaslMechanism, ca_file: Option<&str>) -> KafkaSettings {
             username: "iam-control".to_owned(),
             password: KafkaSecret::new("unit-test-password".to_owned()),
             ca_file: ca_file.map(str::to_owned),
+            probe: None,
         },
         client_id: "iam-control".to_owned(),
         connect_timeout: Duration::from_secs(1),
@@ -89,26 +95,50 @@ fn a_reply_that_does_not_name_the_resource_is_an_error_naming_it() {
     }
 }
 
-#[test]
-fn the_probe_counts_an_authentication_or_authorization_error_as_a_refusal() {
-    let auth = Err(KrafkaError::auth("no credentials"));
-    let refused = Err(denied());
-
-    assert!(answer_of(Some(&auth), false).unwrap());
-    assert!(answer_of(Some(&refused), false).unwrap());
+fn outcome(answer: &Result<(), KrafkaError>) -> Result<ProbeOutcome, String> {
+    answer_of(Some(answer)).map_err(|error| error.to_string())
 }
 
 #[test]
-fn the_probe_counts_a_network_error_as_a_refusal_only_where_credentials_are_required() {
-    let failed = Err(network());
+fn only_a_topic_or_cluster_authorization_failure_is_a_refusal() {
+    let topic = Err(denied());
+    let cluster = Err(KrafkaError::broker(
+        ErrorCode::ClusterAuthorizationFailed,
+        "denied",
+    ));
 
-    assert!(answer_of(Some(&failed), true).unwrap());
-    assert!(answer_of(Some(&failed), false).is_err());
+    assert_eq!(outcome(&topic), Ok(ProbeOutcome::Refused));
+    assert_eq!(outcome(&cluster), Ok(ProbeOutcome::Refused));
+}
+
+#[test]
+fn a_network_error_is_never_a_refusal() {
+    assert!(outcome(&Err(network())).is_err());
+}
+
+#[test]
+fn a_failed_login_or_any_other_failure_is_not_a_refusal() {
+    let failures = [
+        KrafkaError::auth("no credentials"),
+        KrafkaError::broker(ErrorCode::SaslAuthenticationFailed, "bad login"),
+        unknown_topic(),
+    ];
+
+    for failure in failures {
+        assert!(outcome(&Err(failure)).is_err());
+    }
+}
+
+#[test]
+fn a_returned_topic_is_an_answer() {
+    let answered = Ok(());
+
+    assert_eq!(outcome(&answered), Ok(ProbeOutcome::Answered));
 }
 
 #[test]
 fn the_probe_without_an_answer_for_the_topic_is_an_error() {
-    let error = answer_of(None, false).unwrap_err();
+    let error = answer_of::<()>(None).unwrap_err();
 
     assert_eq!(
         error.to_string(),
@@ -117,14 +147,67 @@ fn the_probe_without_an_answer_for_the_topic_is_an_error() {
 }
 
 #[test]
-fn a_refused_probe_connection_is_none_and_any_other_failure_an_error() {
-    assert!(
-        probe_connection(Err(KrafkaError::auth("refused")), false)
-            .unwrap()
-            .is_none()
+fn the_probe_of_a_secured_cluster_without_credentials_cannot_run() {
+    assert!(matches!(
+        probe_security(&secured(SaslMechanism::ScramSha512, None)),
+        ProbeLink::Impossible
+    ));
+}
+
+#[test]
+fn the_probe_of_a_secured_cluster_authenticates_with_the_probe_credentials() {
+    let mut settings = secured(SaslMechanism::ScramSha256, Some("/etc/ca.pem"));
+    if let KafkaSecurity::SaslSsl { probe, .. } = &mut settings.security {
+        *probe = Some(ProbeCredentials {
+            username: "iam-probe".to_owned(),
+            password: KafkaSecret::new("probe-password".to_owned()),
+        });
+    }
+
+    assert!(matches!(
+        probe_security(&settings),
+        ProbeLink::Authenticated(_)
+    ));
+}
+
+fn reported(values: &[Option<&str>]) -> Option<String> {
+    combined_allow_everyone(
+        &values
+            .iter()
+            .map(|value| value.map(str::to_owned))
+            .collect::<Vec<_>>(),
+    )
+}
+
+#[test]
+fn every_broker_reporting_false_is_false() {
+    assert_eq!(
+        reported(&[Some("false"), Some("false")]).as_deref(),
+        Some("false")
     );
-    assert!(probe_connection(Err(network()), true).unwrap().is_none());
-    assert!(probe_connection(Err(unknown_topic()), true).is_err());
+}
+
+#[test]
+fn one_broker_reporting_true_refuses_the_cluster() {
+    assert_eq!(
+        reported(&[Some("false"), Some("true"), Some("false")]).as_deref(),
+        Some("true")
+    );
+    assert_eq!(reported(&[None, Some("true")]).as_deref(), Some("true"));
+}
+
+#[test]
+fn a_broker_that_does_not_report_the_setting_leaves_it_to_the_probe() {
+    assert_eq!(reported(&[Some("false"), None]), None);
+    assert_eq!(reported(&[None]), None);
+}
+
+#[test]
+fn a_value_other_than_false_is_reported_as_it_is() {
+    assert_eq!(
+        reported(&[Some("false"), Some("maybe")]).as_deref(),
+        Some("maybe")
+    );
 }
 
 #[test]
@@ -133,17 +216,11 @@ fn a_plaintext_connection_has_no_security() {
     plaintext.security = KafkaSecurity::Plaintext;
 
     assert!(authenticated(&plaintext).is_none());
-    assert!(unauthenticated(&plaintext).is_none());
+    assert!(matches!(probe_security(&plaintext), ProbeLink::Anonymous));
 }
 
 #[test]
 fn a_secured_connection_authenticates_with_either_scram_mechanism() {
     assert!(authenticated(&secured(SaslMechanism::ScramSha256, None)).is_some());
     assert!(authenticated(&secured(SaslMechanism::ScramSha512, Some("/etc/ca.pem"))).is_some());
-}
-
-#[test]
-fn the_probe_of_a_secured_cluster_uses_tls_without_credentials() {
-    assert!(unauthenticated(&secured(SaslMechanism::ScramSha512, None)).is_some());
-    assert!(unauthenticated(&secured(SaslMechanism::ScramSha512, Some("/etc/ca.pem"))).is_some());
 }

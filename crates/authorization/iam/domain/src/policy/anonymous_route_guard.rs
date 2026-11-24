@@ -1,5 +1,5 @@
-//! `AnonymousRouteGuard`: only a holder of `iam:route:anonymous` makes a route anonymous or
-//! audit-only, or changes either flag (FR-57).
+//! `AnonymousRouteGuard`: only a holder of `iam:route:anonymous` creates or updates a route that
+//! is anonymous or audit-only before or after the change (FR-4, FR-57).
 
 use std::time::SystemTime;
 
@@ -47,12 +47,11 @@ impl AnonymousRouteGuard {
         fields.flags().anonymous() || fields.enforcement() == EnforcementMode::Audit
     }
 
-    /// Whether an update needs the key: it changes `anonymous` or `enforcement`, in either
-    /// direction.
+    /// Whether an update needs the key: the route is anonymous or audit-only before or after the
+    /// update, so every change of such a route needs it, not only a change of the flags (FR-4).
     #[must_use]
     pub fn needs_key_on_update(before: &RouteFields, after: &RouteFields) -> bool {
-        before.flags().anonymous() != after.flags().anonymous()
-            || before.enforcement() != after.enforcement()
+        Self::needs_key_on_create(before) || Self::needs_key_on_create(after)
     }
 
     /// Lets a change that needs the key through when the actor's policy holds
@@ -72,12 +71,12 @@ impl AnonymousRouteGuard {
         }
     }
 
-    /// Checks an update: changing `anonymous` or `enforcement` in either direction needs the key.
+    /// Checks an update: a route that is anonymous or audit-only before or after the update needs
+    /// the key.
     ///
     /// # Errors
     ///
-    /// [`AnonymousRouteRefused`] when the update changes either flag and `held` does not hold the
-    /// key.
+    /// [`AnonymousRouteRefused`] when the update needs the key and `held` does not hold it.
     pub fn check_update(
         held: &CompiledRoleSet,
         before: &RouteFields,

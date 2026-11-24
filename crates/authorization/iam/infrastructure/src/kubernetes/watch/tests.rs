@@ -144,3 +144,21 @@ fn a_certificate_authority_file_without_a_usable_certificate_is_refused(
         KubernetesSetupError::CertificateAuthority(_)
     ));
 }
+
+#[test]
+fn the_url_selects_the_slices_of_the_service_managed_by_the_cluster_controller() {
+    let watch = KubernetesEndpointWatch::new(&settings("http://api")).unwrap();
+    let target = iam_domain::WatchTarget {
+        namespace: "vilnacrm".to_owned(),
+        service: "user-service".to_owned(),
+    };
+
+    let uri = watch.url(&target, "&watch=true").unwrap().to_string();
+
+    assert!(
+        uri.contains(
+            "labelSelector=kubernetes.io%2Fservice-name%3Duser-service%2Cendpointslice.kubernetes.io%2Fmanaged-by%3Dendpointslice-controller.k8s.io&watch=true"
+        ),
+        "{uri}"
+    );
+}

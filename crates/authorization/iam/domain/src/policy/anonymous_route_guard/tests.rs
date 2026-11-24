@@ -109,7 +109,7 @@ fn changing_either_flag_is_for_the_holder_only(
 }
 
 #[test]
-fn an_update_that_leaves_both_flags_alone_needs_no_key() {
+fn an_update_of_an_anonymous_or_audit_route_needs_the_key_even_when_the_flags_stay() {
     let before = route(true, EnforcementMode::Audit);
     let mut timeout = draft("api.example.com", "/api/orders", &[HttpMethod::Get]);
     timeout.flags = RouteFlags::default().with(RouteFlag::Anonymous, true);
@@ -117,6 +117,37 @@ fn an_update_that_leaves_both_flags_alone_needs_no_key() {
     timeout.request_timeout_ms = 1;
     let after = RouteFields::new(&timeout).unwrap();
 
+    assert!(AnonymousRouteGuard::needs_key_on_update(&before, &after));
+    assert_eq!(
+        AnonymousRouteGuard::check_update(&holder(), &before, &after),
+        Ok(())
+    );
+    assert_eq!(
+        AnonymousRouteGuard::check_update(&CompiledRoleSet::default(), &before, &after),
+        Err(AnonymousRouteRefused)
+    );
+}
+
+#[rstest]
+#[case::anonymous(true, EnforcementMode::Enforce)]
+#[case::audit(false, EnforcementMode::Audit)]
+fn an_unrelated_change_of_a_flagged_route_needs_the_key(
+    #[case] anonymous: bool,
+    #[case] enforcement: EnforcementMode,
+) {
+    let fields = route(anonymous, enforcement);
+
+    assert!(AnonymousRouteGuard::needs_key_on_update(&fields, &fields));
+}
+
+#[test]
+fn an_update_of_a_protected_enforced_route_that_stays_so_needs_no_key() {
+    let before = route(false, EnforcementMode::Enforce);
+    let mut timeout = draft("api.example.com", "/api/orders", &[HttpMethod::Get]);
+    timeout.request_timeout_ms = 1;
+    let after = RouteFields::new(&timeout).unwrap();
+
+    assert!(!AnonymousRouteGuard::needs_key_on_update(&before, &after));
     assert_eq!(
         AnonymousRouteGuard::check_update(&CompiledRoleSet::default(), &before, &after),
         Ok(())
@@ -188,8 +219,17 @@ fn a_creation_needs_the_key_only_for_an_anonymous_or_audit_only_route(
 #[rstest]
 #[case::set_anonymous(false, EnforcementMode::Enforce, true, EnforcementMode::Enforce, true)]
 #[case::set_audit(false, EnforcementMode::Enforce, false, EnforcementMode::Audit, true)]
-#[case::unchanged(true, EnforcementMode::Audit, true, EnforcementMode::Audit, false)]
-fn an_update_needs_the_key_only_when_it_changes_a_flag(
+#[case::clear_anonymous(true, EnforcementMode::Enforce, false, EnforcementMode::Enforce, true)]
+#[case::unchanged_flagged(true, EnforcementMode::Audit, true, EnforcementMode::Audit, true)]
+#[case::unchanged_audit(false, EnforcementMode::Audit, false, EnforcementMode::Audit, true)]
+#[case::unchanged_protected(
+    false,
+    EnforcementMode::Enforce,
+    false,
+    EnforcementMode::Enforce,
+    false
+)]
+fn an_update_needs_the_key_when_the_route_is_flagged_before_or_after(
     #[case] before_anonymous: bool,
     #[case] before_enforcement: EnforcementMode,
     #[case] after_anonymous: bool,

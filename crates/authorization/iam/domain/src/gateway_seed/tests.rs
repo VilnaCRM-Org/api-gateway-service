@@ -101,3 +101,10 @@ fn the_seeded_routes_do_not_conflict_with_each_other() {
 
     assert_eq!(RouteConflictGuard::check_set(&routes), Ok(()));
 }
+
+#[test]
+fn only_the_seeded_upstream_name_is_reserved() {
+    assert!(IamGatewaySeed::reserves_upstream_name("iam-control"));
+    assert!(!IamGatewaySeed::reserves_upstream_name("iam-control-2"));
+    assert!(!IamGatewaySeed::reserves_upstream_name("orders"));
+}

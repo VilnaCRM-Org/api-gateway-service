@@ -130,8 +130,9 @@ impl KubernetesEndpointWatch {
         let namespace = dns_label(&target.namespace)?;
         let service = dns_label(&target.service)?;
         let url = format!(
-            "{}/{SLICES_PATH}/namespaces/{namespace}/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3D{service}{extra}",
-            self.api_base
+            "{}/{SLICES_PATH}/namespaces/{namespace}/endpointslices?labelSelector=kubernetes.io%2Fservice-name%3D{service}%2C{managed_by}{extra}",
+            self.api_base,
+            managed_by = managed_by_selector(),
         );
         Ok(url.parse()?)
     }
@@ -227,6 +228,16 @@ impl EndpointWatch for KubernetesEndpointWatch {
     ) -> Result<WatchBatch, EndpointWatchError> {
         self.watch_slices(target, resource_version).await
     }
+}
+
+/// The label selector term that keeps only the slices of the cluster's own controller, with the
+/// `/` and `=` percent-encoded.
+fn managed_by_selector() -> String {
+    format!(
+        "{}%3D{}",
+        wire::MANAGED_BY_LABEL.replace('/', "%2F"),
+        wire::MANAGED_BY_VALUE
+    )
 }
 
 /// `text` when it is a lower-case DNS label or name, so that it cannot add a path segment or a

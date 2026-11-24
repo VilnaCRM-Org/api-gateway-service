@@ -136,8 +136,8 @@ impl DecisionPolicy {
     /// A key nobody holds denies with `permission_missing`; keys held only in other projects deny
     /// with `scope_missing`. Without a project the check is allowed in the projects where every
     /// key is held, listed in the scopes. A check that requires no key is `malformed_operation`.
-    /// A reserved `iam:` key counts only through a global assignment, so a project assignment
-    /// never lends it to a check with or without a project.
+    /// A key of the service `iam` (reserved or catalogue) counts only through a global assignment,
+    /// so a project assignment never lends it to a check with or without a project.
     #[must_use]
     pub fn decide<R: RoleSets + ?Sized>(request: &DecisionRequest<'_, R>) -> DecisionVerdict {
         if request.required.is_empty() {
@@ -196,11 +196,12 @@ impl DecisionPolicy {
     }
 }
 
-/// Whether an assignment in `scope` can hold `key`: reserved `iam:` keys administer IAM itself
-/// and are required at global scope (FR-4, FR-12, FR-25), so only a global assignment holds them;
-/// every other key is held in the scope of its assignment.
-pub(crate) const fn counts_for(key: &PermissionKey, scope: AssignmentScope) -> bool {
-    !matches!(key, PermissionKey::Reserved(_)) || matches!(scope, AssignmentScope::Global)
+/// Whether an assignment in `scope` can hold `key`: the keys of the service `iam` (the reserved
+/// `iam:` keys and the `rest:iam:` and `gql:iam:` catalogue keys) administer IAM itself and are
+/// required at global scope (FR-4, FR-12, FR-25), so only a global assignment holds them; every
+/// other key is held in the scope of its assignment.
+pub(crate) fn counts_for(key: &PermissionKey, scope: AssignmentScope) -> bool {
+    !key.service().is_iam() || matches!(scope, AssignmentScope::Global)
 }
 
 /// The text of every held key whose scopes match `denied`, in required order.

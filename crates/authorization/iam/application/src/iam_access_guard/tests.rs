@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use iam_domain::{
     AccessToken, AccessTokenParts, AssignmentScope, AuditOutcome, CompiledRoleSet, GrantStatus,
     GraphQlSchemaParser as _, HttpMethod, PathTemplate, PermissionFlags, PermissionGrant,
-    PolicyReadRepository, RepositoryError, RestOperation, RestOperationSet, RoleAssignment, RoleId,
-    ServiceCatalog, ServiceName, SessionId, SubjectId, SubjectPolicy, SubjectRef, TokenId,
-    TokenIdentity,
+    PolicyReadRepository, ProjectId, RepositoryError, RestOperation, RestOperationSet,
+    RoleAssignment, RoleId, ServiceCatalog, ServiceName, SessionId, SubjectId, SubjectPolicy,
+    SubjectRef, TokenId, TokenIdentity,
 };
 use rstest::rstest;
 use shared_domain::{CommandHandler as _, Uuid};
@@ -95,6 +95,19 @@ fn holding(grants: &[&str]) -> SubjectPolicy {
     SubjectPolicy::new(
         seeded_policy_epoch(),
         vec![RoleAssignment::new(role, AssignmentScope::Global, None)],
+        BTreeMap::from([(role, CompiledRoleSet::compile(grants))]),
+    )
+}
+
+/// A subject whose one role holds `grants` through an assignment in `scope`.
+fn holding_in(grants: &[&str], scope: AssignmentScope) -> SubjectPolicy {
+    let role = RoleId::parse("00000000-0000-7000-8000-000000000101").unwrap();
+    let grants = grants
+        .iter()
+        .map(|raw| (PermissionGrant::parse(raw).unwrap(), GrantStatus::Active));
+    SubjectPolicy::new(
+        seeded_policy_epoch(),
+        vec![RoleAssignment::new(role, scope, None)],
         BTreeMap::from([(role, CompiledRoleSet::compile(grants))]),
     )
 }
@@ -187,6 +200,66 @@ async fn a_caller_holding_the_catalogue_key_passes_and_nothing_is_recorded() {
 
     assert!(outcome.is_ok());
     assert!(refusals(&recorded).is_empty());
+}
+
+#[rstest]
+#[case::exact(&["rest:iam:POST /api/roles"])]
+#[case::wildcard(&["rest:iam:*"])]
+#[tokio::test]
+async fn a_project_assignment_never_holds_an_iam_catalogue_key(#[case] grants: &[&str]) {
+    let project = ProjectId::parse("00000000-0000-7000-8000-000000000201").unwrap();
+    let policy = FakePolicyReadRepository::new()
+        .with_catalog(catalog())
+        .with_subject(
+            user(),
+            holding_in(grants, AssignmentScope::Project(project)),
+        );
+    let (guard, recorded) = guard_over(policy);
+
+    let outcome = guard
+        .authorize(&principal(), &request("POST", ROLES, ROLES))
+        .await;
+
+    assert!(matches!(outcome, Err(IamError::Forbidden)), "{outcome:?}");
+    assert_eq!(refusals(&recorded).len(), 1);
+}
+
+#[rstest]
+#[case::exact(&["rest:iam:POST /api/roles"])]
+#[case::wildcard(&["rest:iam:*"])]
+#[tokio::test]
+async fn a_global_assignment_holds_an_iam_catalogue_key(#[case] grants: &[&str]) {
+    let policy = FakePolicyReadRepository::new()
+        .with_catalog(catalog())
+        .with_subject(user(), holding_in(grants, AssignmentScope::Global));
+    let (guard, recorded) = guard_over(policy);
+
+    let outcome = guard
+        .authorize(&principal(), &request("POST", ROLES, ROLES))
+        .await;
+
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert!(refusals(&recorded).is_empty());
+}
+
+#[tokio::test]
+async fn a_project_assignment_never_holds_the_iam_graphql_keys() {
+    let project = ProjectId::parse("00000000-0000-7000-8000-000000000201").unwrap();
+    let policy = FakePolicyReadRepository::new()
+        .with_catalog(catalog())
+        .with_subject(
+            user(),
+            holding_in(&["gql:iam:*"], AssignmentScope::Project(project)),
+        );
+    let (guard, recorded) = guard_over(policy);
+    let coordinates = selected(&["Query.roles"]);
+
+    let outcome = guard
+        .authorize_graphql(&principal(), &fields(&coordinates))
+        .await;
+
+    assert!(matches!(outcome, Err(IamError::Forbidden)), "{outcome:?}");
+    assert_eq!(refusals(&recorded).len(), 1);
 }
 
 #[tokio::test]

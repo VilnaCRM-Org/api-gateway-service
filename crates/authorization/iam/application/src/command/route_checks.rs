@@ -5,13 +5,16 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use iam_domain::{
-    ActorRef, IamUnitOfWork, PolicyReadRepository, RatePolicyRepository, RejectedAttemptLog,
-    ReservedPermission, RouteConflictGuard, RouteFields, RouteParts, RouteRepository,
-    RouteScopeGuard, RouteScopeRefused, RouteTableCompiler, ServiceName, ServiceScope, SubjectRef,
+    ActorRef, AnonymousRouteGuard, ChangeStatement, GatewayPrecondition, IamUnitOfWork,
+    PolicyReadRepository, RatePolicyRepository, RejectedAttemptLog, ReservedPermission, Route,
+    RouteConflictGuard, RouteFields, RouteHost, RouteParts, RouteRepository, RouteScopeGuard,
+    RouteScopeRefused, RouteTableCompiler, ServiceName, ServiceScope, SubjectRef,
     UpstreamRepository,
 };
 
-use super::gateway_audit::{SystemEntryRefusal, refuse_route_scope, refuse_system_entry};
+use super::gateway_audit::{
+    SystemEntryRefusal, refuse_anonymous_route, refuse_route_scope, refuse_system_entry,
+};
 use crate::error::IamError;
 
 /// The ports that the creation and the update of a route read and write.
@@ -60,6 +63,70 @@ impl RoutePorts {
         } else {
             Err(refuse_route_scope(log, refusal))
         }
+    }
+
+    /// Lets a change of a route of `hosts` through when none of the stored routes of those hosts
+    /// is a system route: IAM seeds its own management routes on one host and reserves every
+    /// route on it, so a change that creates, moves or changes a route there is refused with 409
+    /// `system_entry`, and the refusal is offered to the buffer of the audit log.
+    ///
+    /// # Errors
+    ///
+    /// [`IamError::SystemEntry`] or the storage failure of the read of the routes.
+    pub(super) async fn admit_hosts(
+        &self,
+        hosts: &[&RouteHost],
+        refusal: SystemEntryRefusal<'_>,
+    ) -> Result<(), IamError> {
+        for host in hosts {
+            let reserved = self
+                .routes
+                .find_by_host(host)
+                .await?
+                .iter()
+                .any(|route| route.parts().system);
+            if reserved {
+                return Err(refuse_system_entry(
+                    self.rejected_attempts.as_ref(),
+                    refusal,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Lets a whole route set through when the actor holds the route key of every service the
+    /// set touches and, when the set needs it, `iam:route:anonymous`: the checks that the guarded
+    /// unit of work applies to the commit of the same set. A refusal is offered to the buffer of
+    /// the audit log. An IAM component acts without a check.
+    ///
+    /// # Errors
+    ///
+    /// [`IamError::Forbidden`] for a missing key, the storage failure of the read of the policy.
+    pub(crate) async fn admit_set(
+        &self,
+        services: &[ServiceName],
+        anonymous_key: bool,
+        refusal: SystemEntryRefusal<'_>,
+    ) -> Result<(), IamError> {
+        let subject = match refusal.actor {
+            ActorRef::User(id) => SubjectRef::user(*id),
+            ActorRef::Service(name) => SubjectRef::service(name.clone()),
+            ActorRef::System(_) => return Ok(()),
+        };
+        let policy = self.policies.read_subject_policy(&subject).await?;
+        let now = refusal.occurred_at;
+        let log = self.rejected_attempts.as_ref();
+        if services
+            .iter()
+            .any(|service| RouteScopeGuard::check_policy(&policy, now, service).is_err())
+        {
+            return Err(refuse_route_scope(log, refusal));
+        }
+        if anonymous_key && AnonymousRouteGuard::check_policy(&policy, now).is_err() {
+            return Err(refuse_anonymous_route(log, refusal));
+        }
+        Ok(())
     }
 
     /// Whether the actor holds a route key that reaches the service: `iam:route:*`, which never
@@ -152,6 +219,35 @@ pub(super) fn summary_of(route: &RouteParts, suffix: &str) -> String {
         route.fields.enforcement().as_str(),
         route.version.value()
     )
+}
+
+/// The statements of a change that writes `route`: first those that make the unit of work check,
+/// under the lock of the policy epoch, what `admit_references` and `admit_table` read before it
+/// (the upstream of the route is stored and serves its service, every rate policy is stored, and
+/// the route table of the host, read again, holds with the route in it), then `write`. A
+/// concurrent deletion or route write that this command did not see refuses the change as a
+/// conflict (409) instead of committing on a stale answer.
+pub(super) fn with_preconditions(route: &Route, write: ChangeStatement) -> Vec<ChangeStatement> {
+    let parts = route.parts();
+    vec![
+        GatewayPrecondition::RouteTargets {
+            upstream_id: parts.fields.upstream_id(),
+            service: parts.fields.service().clone(),
+            rate_policies: parts.fields.rate_policies().to_vec(),
+        }
+        .into(),
+        GatewayPrecondition::RouteTable(Box::new(parts.clone())).into(),
+        write,
+    ]
+}
+
+/// The hosts of a change that touches a route before and after it, each once.
+pub(super) fn hosts_of<'a>(before: &'a RouteHost, after: &'a RouteHost) -> Vec<&'a RouteHost> {
+    if before == after {
+        vec![after]
+    } else {
+        vec![before, after]
+    }
 }
 
 /// The services of a change that touches a route before and after it, each once.

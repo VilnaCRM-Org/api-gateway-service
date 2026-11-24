@@ -3,6 +3,7 @@ use std::error::Error as _;
 use rstest::rstest;
 
 use super::RepositoryError;
+use crate::error::ReferencedByRoute;
 
 #[rstest]
 #[case(RepositoryError::AlreadyExists, "the record already exists")]
@@ -15,6 +16,17 @@ use super::RepositoryError;
 fn displays_its_errors_without_a_source(#[case] error: RepositoryError, #[case] message: &str) {
     assert_eq!(error.to_string(), message);
     assert!(error.source().is_none());
+}
+
+#[test]
+fn the_refusals_under_the_lock_chain_their_cause() {
+    let referenced = RepositoryError::ReferencedByRoute(ReferencedByRoute { count: 2 });
+
+    assert_eq!(referenced.to_string(), "a route still references the entry");
+    assert_eq!(
+        referenced.source().unwrap().to_string(),
+        "2 route(s) still reference this entry."
+    );
 }
 
 #[test]

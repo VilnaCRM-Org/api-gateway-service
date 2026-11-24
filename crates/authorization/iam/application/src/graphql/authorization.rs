@@ -8,9 +8,14 @@
 //! refusal offered to the audit log by the [`IamAccessGuard`]). The caller rule of the decision
 //! fields (FR-12) needs the target service of each check, so the extension reads it from the
 //! arguments of the selected `validateAccess` and `validateAccessBatch` fields, through the
-//! variables of the request.
+//! variables of the request (a variable that the request leaves out takes the default of its
+//! definition). An argument that still does not resolve, and a check that names no service, stand
+//! for no service at all, so only `iam:validate:*` admits the request (fail closed).
+//!
+//! The extension also hands a `CallerRuleCheck` to the execution of the request, so that the
+//! resolvers of the decision fields repeat the caller rule on the input they coerced.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use async_graphql::extensions::{
@@ -21,10 +26,10 @@ use async_graphql::parser::types::{
     DocumentOperations, ExecutableDocument, Field, OperationDefinition, OperationType, Selection,
     SelectionSet,
 };
-use async_graphql::{Request, ServerError, ServerResult, Variables};
+use async_graphql::{Name, Request, ServerError, ServerResult, Value, Variables};
 use async_trait::async_trait;
 
-use crate::caller_rule::{CallerRule, target_services};
+use crate::caller_rule::{UNREADABLE_SERVICE, target_services};
 use crate::error::IamError;
 use crate::graphql::iam_problem_to_graphql_error;
 use crate::iam_access_guard::{GraphQlOperationRequest, IamAccessGuard};
@@ -54,6 +59,46 @@ impl ExtensionFactory for IamAuthorizationExtension {
     }
 }
 
+/// The caller rule of the decision fields (FR-12), handed to the execution of a request by
+/// [`IamAuthorizationExtension`] so that the resolver of `validateAccess` and
+/// `validateAccessBatch` can decide it again on the input it coerced.
+///
+/// A schema without the extension carries none, and the resolvers refuse such a request.
+#[derive(Debug, Clone)]
+pub(crate) struct CallerRuleCheck {
+    guard: Arc<IamAccessGuard>,
+}
+
+impl CallerRuleCheck {
+    /// A check that decides with `guard`.
+    #[must_use]
+    pub(crate) const fn new(guard: Arc<IamAccessGuard>) -> Self {
+        Self { guard }
+    }
+
+    /// Lets `principal` through when the row of `coordinate` admits it for every service of
+    /// `services`.
+    ///
+    /// # Errors
+    ///
+    /// [`IamError::Forbidden`] when the caller holds neither `iam:validate:*` nor the key of each
+    /// service (the refusal is offered to the audit log), and [`IamError::Storage`] when the
+    /// policy cannot be read.
+    pub(crate) async fn enforce(
+        &self,
+        principal: &Principal,
+        coordinate: &str,
+        services: &[String],
+    ) -> Result<(), IamError> {
+        let selected = GraphQlOperationRequest {
+            coordinates: &[coordinate.to_owned()],
+            services,
+            request_id: None,
+        };
+        self.guard.authorize_graphql(principal, &selected).await
+    }
+}
+
 /// The extension of one request.
 struct Authorizer {
     guard: Arc<IamAccessGuard>,
@@ -79,6 +124,7 @@ impl Authorizer {
         next: NextPrepareRequest<'_>,
     ) -> ServerResult<Request> {
         self.authorize(&request).await.map_err(refusal)?;
+        let request = request.data(CallerRuleCheck::new(Arc::clone(&self.guard)));
         next.run(ctx, request).await
     }
 
@@ -190,6 +236,14 @@ fn collect_operation(
         document,
         root,
         variables,
+        defaults: operation
+            .variable_definitions
+            .iter()
+            .filter_map(|definition| {
+                let default = definition.node.default_value.as_ref()?;
+                Some((definition.node.name.node.clone(), default.node.clone()))
+            })
+            .collect(),
         visited: BTreeSet::new(),
     };
     scan.selection_set(&operation.selection_set.node, found);
@@ -200,6 +254,8 @@ struct Scan<'doc> {
     document: &'doc ExecutableDocument,
     root: &'doc str,
     variables: &'doc Variables,
+    /// The defaults of the variable definitions of the operation.
+    defaults: BTreeMap<Name, Value>,
     visited: BTreeSet<String>,
 }
 
@@ -231,30 +287,38 @@ impl Scan<'_> {
         let Some(rule) = OperationRules::find_graphql(&coordinate) else {
             return;
         };
-        if rule
-            .requirement
-            .caller_rule()
-            .is_some_and(CallerRule::names_services)
-        {
-            found.services.extend(self.argument_services(field));
+        if let Some(caller_rule) = rule.requirement.caller_rule() {
+            let (named, unresolved) = self.argument_services(field);
+            if caller_rule.names_services() {
+                found.services.extend(named);
+            }
+            if unresolved {
+                found.services.insert(UNREADABLE_SERVICE.to_owned());
+            }
         }
         found.coordinates.insert(coordinate);
     }
 
-    /// The services that the arguments of `field` name, with the variables substituted; an
-    /// argument that cannot be resolved names none, because execution refuses it.
-    fn argument_services(&self, field: &Field) -> Vec<String> {
+    /// The services that the arguments of `field` name, with the variables substituted (a variable
+    /// the request leaves out takes its default), and whether an argument cannot be resolved. An
+    /// unresolved argument stands for [`UNREADABLE_SERVICE`], which only `iam:validate:*` admits.
+    fn argument_services(&self, field: &Field) -> (Vec<String>, bool) {
         let mut services = Vec::new();
+        let mut unresolved = false;
         for (_name, argument) in &field.arguments {
-            let resolved = argument
-                .node
-                .clone()
-                .into_const_with(|name| self.variables.get(&name).cloned().ok_or(()));
-            if let Ok(value) = resolved {
-                services.extend(target_services(&value));
+            let resolved = argument.node.clone().into_const_with(|name| {
+                self.variables
+                    .get(&name)
+                    .or_else(|| self.defaults.get(&name))
+                    .cloned()
+                    .ok_or(())
+            });
+            match resolved {
+                Ok(value) => services.extend(target_services(&value)),
+                Err(()) => unresolved = true,
             }
         }
-        services
+        (services, unresolved)
     }
 }
 

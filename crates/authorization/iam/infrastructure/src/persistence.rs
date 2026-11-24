@@ -9,6 +9,7 @@ pub mod catalogue;
 pub mod change_receipt;
 pub mod event_encoding;
 pub mod gateway_configuration;
+pub mod gateway_precondition;
 pub mod graphql_permission;
 pub mod graphql_spec;
 pub mod idempotency;

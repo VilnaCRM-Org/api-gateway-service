@@ -16,10 +16,10 @@ use super::route_checks::RoutePorts;
 use crate::error::IamError;
 
 /// The audited action of an applied route configuration.
-pub(super) const AUDIT_ACTION: &str = "route_configuration.apply";
+pub(crate) const AUDIT_ACTION: &str = "route_configuration.apply";
 
 /// The kind of the audited entry: the route configuration of one host.
-pub(super) const AUDIT_KIND: &str = "route_configuration";
+pub(crate) const AUDIT_KIND: &str = "route_configuration";
 
 /// The host that a request names.
 ///
@@ -162,7 +162,7 @@ impl<'a> RouteConfigurationPlanner<'a> {
             actor: request.actor,
             occurred_at: request.occurred_at,
         };
-        self.admit(&diff, &refusal).await?;
+        self.admit(&diff, &stored, &refusal).await?;
         let routes = self.planned(&diff, &refusal)?;
         let table = table_of(&stored, &routes);
         RouteConflictGuard::check_set(&table)?;
@@ -207,9 +207,16 @@ impl<'a> RouteConfigurationPlanner<'a> {
             .collect()
     }
 
-    /// Lets the set through when it changes no route that IAM manages itself, every route it
+    /// Lets the set through when it writes no route on a host that IAM reserves, changes no route
+    /// that IAM manages itself, every route it
     /// writes is of a service the API may change and every entry it names exists.
-    async fn admit(&self, diff: &RouteSetDiff, refusal: &Refusal<'_>) -> Result<(), IamError> {
+    async fn admit(
+        &self,
+        diff: &RouteSetDiff,
+        stored: &[RouteParts],
+        refusal: &Refusal<'_>,
+    ) -> Result<(), IamError> {
+        self.admit_host(diff, stored, refusal)?;
         for route in diff.removed() {
             self.admit_stored(route, refusal)?;
         }
@@ -235,6 +242,25 @@ impl<'a> RouteConfigurationPlanner<'a> {
                 self.ports.admit_references(fields).await?;
                 checked.push(references);
             }
+        }
+        Ok(())
+    }
+
+    /// Refuses a set that creates or changes a route on a host that holds a system route: IAM
+    /// reserves every route of the host it seeds its own routes on, so a caller's route cannot
+    /// join them even when the set leaves the system routes unchanged.
+    fn admit_host(
+        &self,
+        diff: &RouteSetDiff,
+        stored: &[RouteParts],
+        refusal: &Refusal<'_>,
+    ) -> Result<(), IamError> {
+        let writes = !diff.added().is_empty() || !diff.changed().is_empty();
+        if writes && stored.iter().any(|route| route.system) {
+            return Err(refuse_system_entry(
+                self.ports.rejected_attempts.as_ref(),
+                refusal.build(),
+            ));
         }
         Ok(())
     }
