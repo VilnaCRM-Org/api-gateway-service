@@ -50,6 +50,46 @@ type AccessValidation {
   subject: AccessSubject
 }
 
+"Input of the route-configuration mutation."
+input ApplyRouteConfigurationInput {
+  "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
+  consistency: String
+  "Returns the diff and writes nothing; default `false`."
+  dryRun: Boolean
+  "The version of the set that the caller read (`routeConfiguration.version`); required, and the application is refused when it is not the current one."
+  expectedVersion: Int
+  "The lower-case DNS name of the host whose routes the set replaces."
+  host: String!
+  "The routes the host has afterwards, at most `ROUTE_CONFIGURATION_MAX_ROUTES` (1,000 by default); a stored route that the set does not declare is deleted."
+  routes: [RouteDeclarationInput!]!
+}
+
+"The result of the route-configuration mutation."
+type ApplyRouteConfigurationPayload {
+  "The routes the set creates."
+  added: [RouteConfigurationChange!]!
+  "The routes the set updates."
+  changed: [RouteConfigurationChange!]!
+  "Whether the request was a dry run, which wrote nothing."
+  dryRun: Boolean!
+  "The host."
+  host: String!
+  "The policy version that the application produced; null for a dry run and for a set that changes nothing."
+  policyVersion: Int
+  "What the application learned about the publication of its policy version; null for a dry run and for a set that changes nothing."
+  propagation: Propagation
+  "The routes the set deletes."
+  removed: [RouteConfigurationChange!]!
+  "Whether the diff deletes a route, clears `anonymous` or moves `enforcement` from `audit` to `enforce`, which makes the application revocation-class."
+  revocation: Boolean!
+  "The number of routes the host has, or would have after a dry run."
+  routeCount: Int!
+  "The number of declared routes that equal a stored route."
+  unchanged: Int!
+  "The version of the set of the host: the version after an applied set, the stored version after a dry run or a set that changes nothing."
+  version: Int!
+}
+
 "Input of the assignment mutation."
 input AssignUserRoleInput {
   "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
@@ -581,6 +621,8 @@ input LoadOpenapiSpecInput {
 
 "Mutation root."
 type Mutation {
+  "Replaces the full route set of one host atomically when `expectedVersion` is the version that `routeConfiguration` returned: routes of the set that the host lacks are created, routes whose methods and path pattern match a stored route are updated, and stored routes that the set omits are deleted, all in one transaction under one policy version, with their `route/<id>` state records, `iam.route.*` events, `iam.route_configuration.applied` and an audit record. The whole set is validated first: one violation, conflict or route the caller may not write rejects it (`VALIDATION_FAILED`, `CONFLICT`, `FORBIDDEN`), and the candidate route table of the host must build. A set larger than `ROUTE_CONFIGURATION_MAX_ROUTES` routes is refused with `VALIDATION_FAILED`. With `dryRun` the mutation runs every check and returns the diff without writing anything. A set whose diff deletes a route, clears `anonymous` or moves `enforcement` from `audit` to `enforce` is revocation-class. The caller needs `iam:route:{service}` or `iam:route:*` for every service the set touches, and `iam:route:anonymous` to create an anonymous or audit-only route or change either flag."
+  applyRouteConfiguration(input: ApplyRouteConfigurationInput!): ApplyRouteConfigurationPayload!
   "Assigns an existing role to a user or a service principal at global or project scope, takes the next policy version and records `iam.user_role.assigned`, and `iam.privileged_role.assigned` as well when the role grants a wildcard or a reserved key."
   assignUserRole(input: AssignUserRoleInput!): UserRole!
   "Creates an example API resource."
@@ -609,6 +651,8 @@ type Mutation {
   loadGraphqlSpec(input: LoadGraphqlSpecInput!): GraphqlSpec!
   "Loads the `OpenAPI` document of a service as a draft version and returns it with its diff against the active versions; a document that the service already holds returns its version and changes nothing. The service `iam` is reserved."
   loadOpenapiSpec(input: LoadOpenapiSpecInput!): OpenApiSpec!
+  "Resyncs the policy state: republishes the complete current policy as a new log epoch, with versions continuing above the highest version of the state topic, as a bulk operation of kind `resync`, and records `iam.policy.resynced`. `reason` is required. Needs `iam:policy:resync`. Returns the bulk operation; follow it with `bulkOperation(id)` until it is `completed`. A repeated `idempotencyKey` with the same input within 24 hours returns the original operation."
+  resyncPolicy(input: ResyncPolicyInput!): BulkOperation!
   "Retires an active GraphQL specification version: its fields leave the catalogue of the service unless another active version holds them, the next policy version is taken and `iam.graphql_spec.retired` is recorded. A retirement that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED` unless `confirmOrphans` is true; with the confirmation the grants become inactive and `iam.permissions.orphaned` is recorded."
   retireGraphqlSpec(input: RetireGraphqlSpecInput!): SpecRetirement!
   "Retires an active `OpenAPI` specification version: its operations leave the catalogue of the service unless another active version holds them, the next policy version is taken and `iam.openapi_spec.retired` is recorded. A retirement that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED` unless `confirmOrphans` is true; with the confirmation the grants become inactive and `iam.permissions.orphaned` is recorded."
@@ -813,6 +857,8 @@ type Query {
   ): RolePage!
   "Retrieves a route by id; null when it is unknown or deleted."
   route(id: ID!): Route
+  "Retrieves the route configuration of a host: every route of the host that is not deleted, in the form that `applyRouteConfiguration` accepts, and the version of the set; a host without routes has an empty set."
+  routeConfiguration(host: String!): RouteConfiguration!
   "Retrieves one page of the routes that are not deleted, in a stable order; the filter keeps the routes that match every field given."
   routes(
     "The nextCursor of the previous page."
@@ -971,6 +1017,14 @@ type RestPermissionsActivation {
   status: String!
 }
 
+"Input of the policy resync mutation."
+input ResyncPolicyInput {
+  "Makes the resync safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+  "Why the policy is resynced: one line of 1 to 500 characters, kept in the audit record and in `iam.policy.resynced`; a missing or blank reason fails with `VALIDATION_FAILED`."
+  reason: String! = ""
+}
+
 "Input of the mutation that retires a GraphQL specification version."
 input RetireGraphqlSpecInput {
   "Accepts that grants of keys that leave the catalogue become inactive; without it, a retirement that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED`."
@@ -1115,6 +1169,26 @@ type Route {
   version: Int!
 }
 
+"The route set of a host and its version."
+type RouteConfiguration {
+  "The host."
+  host: String!
+  "The routes of the host, in the form that the application accepts."
+  routes: [RouteDeclaration!]!
+  "The version of the set, to pass as `expectedVersion` of the next application."
+  version: Int!
+}
+
+"A route that a set adds, changes or removes."
+type RouteConfigurationChange {
+  "The names of the properties that change; empty unless the route is changed."
+  changedFields: [String!]!
+  "The methods of the route."
+  methods: [String!]!
+  "The path pattern of the route."
+  pathPattern: String!
+}
+
 "The CORS policy of a route."
 type RouteCorsPolicy {
   "Whether credentials are allowed."
@@ -1141,6 +1215,70 @@ input RouteCorsPolicyInput {
   methods: [String!]
   "The allowed origins, each an exact `https` (or `http`) origin."
   origins: [String!]!
+}
+
+"One route of a set, in the form that the application accepts."
+type RouteDeclaration {
+  "Whether the route is served without authentication."
+  anonymous: Boolean!
+  "The largest request body in bytes."
+  bodyLimitBytes: Int!
+  "The CORS policy of the route; null when it has none."
+  cors: RouteCorsPolicy
+  "The enforcement mode: `enforce` or `audit`."
+  enforcement: String!
+  "Whether the route serves GraphQL."
+  graphql: Boolean!
+  "The idle timeout in milliseconds."
+  idleTimeoutMs: Int!
+  "The methods the route serves."
+  methods: [String!]!
+  "The path pattern."
+  pathPattern: String!
+  "The rate policies of the route, in the order they apply."
+  ratePolicyIds: [ID!]!
+  "The request timeout in milliseconds."
+  requestTimeoutMs: Int!
+  "Which failed requests are retried: `none` or `idempotent`."
+  retryPolicy: String!
+  "The catalogue service whose keys authorize the route."
+  service: String!
+  "Whether the route streams its response."
+  streaming: Boolean!
+  "The upstream the route forwards to."
+  upstreamId: ID!
+}
+
+"Input of one route of a declared set."
+input RouteDeclarationInput {
+  "Whether the route is served without authentication; needs `iam:route:anonymous`; default `false`."
+  anonymous: Boolean
+  "The largest request body in bytes; default 1,048,576."
+  bodyLimitBytes: Int
+  "The CORS policy of the route."
+  cors: RouteCorsPolicyInput
+  "The enforcement mode: `enforce` (the default) or `audit`, which needs `iam:route:anonymous`."
+  enforcement: String
+  "Whether the route serves GraphQL; default `false`."
+  graphql: Boolean
+  "The idle timeout in milliseconds; default 60,000."
+  idleTimeoutMs: Int
+  "The methods the route serves, such as `GET`."
+  methods: [String!]!
+  "The path pattern, with `{name}` and `{name:*}` segments."
+  pathPattern: String!
+  "The rate policies of the route, in the order they apply, at most 10."
+  ratePolicyIds: [ID!]
+  "The request timeout in milliseconds; default 30,000."
+  requestTimeoutMs: Int
+  "Which failed requests are retried: `none` (the default) or `idempotent`."
+  retryPolicy: String
+  "The catalogue service whose keys authorize the route; it must equal the catalogue service of the upstream."
+  service: String!
+  "Whether the route streams its response; default `false`."
+  streaming: Boolean
+  "The upstream the route forwards to."
+  upstreamId: ID!
 }
 
 "The filters of the route list: a route must match every one that is given."

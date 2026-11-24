@@ -1616,6 +1616,95 @@ paths:
                 $ref: '#/components/schemas/Problem'
       security:
       - bearerAuth: []
+  /api/policy-resyncs:
+    post:
+      tags:
+      - iam
+      summary: Resyncs the policy state.
+      description: 'Republishes the complete current policy as a new log epoch, for the operator who repairs the state topic after an incident: the log epoch moves on, the policy version continues above both the stored version and the highest version of the topic, and a bulk operation of kind `resync` publishes the state of every entity in ordered chunks under the new epoch. `reason` is required and is kept in the audit record and in `iam.policy.resynced`. The operation needs the reserved key `iam:policy:resync`. The response is 202 with the `Location` of the bulk operation; follow it until the operation is `completed`. A repeated `Idempotency-Key` with the same body within 24 hours returns the original bulk operation and starts no second resync. A gateway pod repairs its own cached policy from the topic, so the contract offers no operation that clears that cache.'
+      operationId: api_policy_resyncs_post
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        description: Makes the resync safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResyncPolicyRequest'
+        required: true
+      responses:
+        '202':
+          description: 'The resync started: the bulk operation that republishes the state.'
+          headers:
+            location:
+              schema:
+                type: string
+              description: Path of the bulk operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkOperation'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller does not hold `iam:policy:resync`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: The policy holds no entity, or the log epoch changed while the resync started.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: 'Validation failed: a missing or invalid reason, an invalid idempotency key, or the idempotency key was used for another request.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
   /api/rate-policies:
     get:
       tags:
@@ -3043,6 +3132,215 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '422':
           description: 'Validation failed: unknown keys, more than 5,000 keys, or the idempotency key was used for another request.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '428':
+          description: '`If-Match` is missing.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+  /api/route-configurations/{host}:
+    get:
+      tags:
+      - iam
+      summary: Retrieves the route configuration of a host.
+      description: Returns every route of the host that is not deleted, in the form that the replacement accepts, and the version of the set as its `ETag`; a host without routes has an empty set. The `ETag` is the `If-Match` of a later replacement.
+      operationId: api_route_configurations_host_get
+      parameters:
+      - name: host
+        in: path
+        description: The lower-case DNS name of the host
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: The route configuration of the host.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the set in double quotes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteConfiguration'
+        '400':
+          description: Invalid host.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks the operation key.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+    put:
+      tags:
+      - iam
+      summary: Replaces the route configuration of a host.
+      description: 'Replaces the full route set of the host atomically when `If-Match` holds the `ETag` that the retrieval returned: routes of the set that the host lacks are created, routes whose methods and path pattern match a stored route are updated, and stored routes that the set omits are deleted, all in one transaction under one policy version, with their `route/<id>` state records, `iam.route.*` events, `iam.route_configuration.applied` and an audit record. The whole set is validated first: one violation, conflict or route the caller may not write rejects it, and the candidate route table of the host must build. A set holds at most `ROUTE_CONFIGURATION_MAX_ROUTES` routes (1,000 by default); a larger set is refused with 422. With `dryRun=true` the operation runs every check and returns the diff without writing anything. A set whose diff deletes a route, clears `anonymous` or moves `enforcement` from `audit` to `enforce` is revocation-class. The caller needs `iam:route:{service}` or `iam:route:*` for every service the set touches, and `iam:route:anonymous` to create an anonymous or audit-only route or change either flag. A repeated request fails with 412 once the set changed, which makes it safe to repeat.'
+      operationId: api_route_configurations_host_put
+      parameters:
+      - name: host
+        in: path
+        description: The lower-case DNS name of the host
+        required: true
+        schema:
+          type: string
+      - name: If-Match
+        in: header
+        description: The `ETag` of the set the replacement changes, as the retrieval returned it.
+        required: true
+        schema:
+          type: string
+      - name: Prefer
+        in: header
+        description: 'What the write waits for: `wait=published` (the default) returns once Kafka acknowledged the policy version, `wait=propagated` is refused with 422 until the gateway pods report their versions.'
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: dryRun
+        in: query
+        description: Returns the diff and writes nothing; `false` when absent.
+        required: false
+        schema:
+          type: boolean
+          default: false
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplyRouteConfigurationRequest'
+        required: true
+      responses:
+        '200':
+          description: The diff of the set; the set was applied unless `dryRun` is true.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the set in double quotes.
+            iam-policy-offset:
+              schema:
+                type: string
+              description: The offset at which Kafka stored the `__head` record of the policy version; present when the change was acknowledged.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced; absent for a dry run and for a set that changes nothing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteConfigurationDiff'
+        '202':
+          description: The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the set in double quotes.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+            iam-propagation-status:
+              schema:
+                type: string
+              description: '`committed_pending_propagation`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteConfigurationDiff'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks the operation key, the route key of a service or `iam:route:anonymous`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: The set holds conflicting routes or a route table that the gateway could not build, or it changes a route that IAM manages itself.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '412':
+          description: '`If-Match` is not the current version of the set.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed, or the set holds more than `ROUTE_CONFIGURATION_MAX_ROUTES` routes.
           content:
             application/problem+json:
               schema:
@@ -5005,6 +5303,20 @@ components:
       description: The marker of a decision that holds in every project.
       enum:
       - all
+    ApplyRouteConfigurationRequest:
+      type: object
+      description: 'Body of the route-configuration operation: the full route set of the host.'
+      required:
+      - routes
+      properties:
+        routes:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteDeclaration'
+          description: |-
+            The routes the host has afterwards, at most `ROUTE_CONFIGURATION_MAX_ROUTES` (1,000 by
+            default); a stored route that the set does not declare is deleted.
+      additionalProperties: false
     AssignUserRoleRequest:
       type: object
       description: Body of the assignment operation.
@@ -6488,6 +6800,19 @@ components:
           type: string
           description: '`active`.'
           example: active
+    ResyncPolicyRequest:
+      type: object
+      description: Body of the operation that resyncs the policy state.
+      properties:
+        reason:
+          type: string
+          description: |-
+            Why the policy is resynced: one line of 1 to 500 characters, kept in the audit record and in
+            `iam.policy.resynced`. A missing or blank reason is refused with 422.
+          example: The state topic lost records after a broker failure.
+          maxLength: 500
+          minLength: 1
+      additionalProperties: false
     RetireSpecRequest:
       type: object
       description: Body of the operation that retires a specification version.
@@ -6717,6 +7042,104 @@ components:
             description: The version of the route; its `ETag` is this number in double quotes.
             minimum: 1
       description: A route.
+    RouteConfiguration:
+      type: object
+      description: The routes of a host and the version of the set.
+      required:
+      - host
+      - version
+      - routes
+      properties:
+        host:
+          type: string
+          description: The host.
+        routes:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteDeclaration'
+          description: The routes of the host, in the form that the operation accepts.
+        version:
+          type: integer
+          format: int64
+          description: The version of the set; its `ETag` is this number in double quotes.
+          minimum: 1
+    RouteConfigurationChange:
+      type: object
+      description: A route that a set adds, changes or removes.
+      required:
+      - methods
+      - pathPattern
+      properties:
+        changedFields:
+          type: array
+          items:
+            type: string
+          description: The names of the properties that change; present for a changed route only.
+        methods:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteMethod'
+          description: The methods of the route.
+        pathPattern:
+          type: string
+          description: The path pattern of the route.
+    RouteConfigurationDiff:
+      type: object
+      description: The routes that a set adds, changes and removes.
+      required:
+      - host
+      - dryRun
+      - version
+      - routeCount
+      - revocation
+      - unchanged
+      - added
+      - changed
+      - removed
+      properties:
+        added:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteConfigurationChange'
+          description: The routes the set creates.
+        changed:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteConfigurationChange'
+          description: The routes the set updates.
+        dryRun:
+          type: boolean
+          description: Whether the request was a dry run, which wrote nothing.
+        host:
+          type: string
+          description: The host.
+        removed:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteConfigurationChange'
+          description: The routes the set deletes.
+        revocation:
+          type: boolean
+          description: |-
+            Whether the diff deletes a route, clears `anonymous` or moves `enforcement` from `audit`
+            to `enforce`, which makes the application revocation-class.
+        routeCount:
+          type: integer
+          format: int64
+          description: The number of routes the host has, or would have after a dry run.
+          minimum: 0
+        unchanged:
+          type: integer
+          format: int64
+          description: The number of declared routes that equal a stored route.
+          minimum: 0
+        version:
+          type: integer
+          format: int64
+          description: |-
+            The version of the set of the host: the version after an applied set, the stored version
+            after a dry run or a set that changes nothing.
+          minimum: 1
     RouteCorsPolicy:
       type: object
       description: 'The CORS policy of a route: exact origins, never a wildcard.'
@@ -6752,6 +7175,95 @@ components:
             The allowed origins, each an exact `https` (or `http`) origin such as
             `https://app.example.com`.
           minItems: 1
+      additionalProperties: false
+    RouteDeclaration:
+      type: object
+      description: One route of a declared set.
+      required:
+      - methods
+      - pathPattern
+      - service
+      - upstreamId
+      properties:
+        anonymous:
+          type:
+          - boolean
+          - 'null'
+          description: |-
+            Whether the route is served without authentication; needs `iam:route:anonymous`; `false`
+            when absent.
+          default: false
+        bodyLimitBytes:
+          type: integer
+          format: int64
+          description: The largest request body, in bytes.
+          default: 1048576
+          minimum: 1
+        cors:
+          oneOf:
+          - $ref: '#/components/schemas/RouteCorsPolicy'
+            description: The CORS policy of the route, when it has one.
+          - type: 'null'
+        enforcement:
+          $ref: '#/components/schemas/RouteEnforcement'
+          description: The enforcement mode; `audit` needs `iam:route:anonymous`.
+        graphql:
+          type:
+          - boolean
+          - 'null'
+          description: Whether the route serves GraphQL; `false` when absent.
+          default: false
+        idleTimeoutMs:
+          type: integer
+          format: int64
+          description: The idle timeout, in milliseconds.
+          default: 60000
+          minimum: 1
+        methods:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteMethod'
+          description: The methods the route serves.
+          minItems: 1
+        pathPattern:
+          type: string
+          description: The path pattern, with `{name}` and `{name:*}` segments.
+          example: /api/orders/{id}
+          maxLength: 2048
+          minLength: 1
+        ratePolicyIds:
+          type: array
+          items:
+            type: string
+          description: The rate policies of the route, in the order they apply, at most 10.
+          maxItems: 10
+        requestTimeoutMs:
+          type: integer
+          format: int64
+          description: The request timeout, in milliseconds.
+          default: 30000
+          minimum: 1
+        retryPolicy:
+          $ref: '#/components/schemas/RouteRetryPolicy'
+          description: Which failed requests are retried.
+        service:
+          type: string
+          description: |-
+            The catalogue service whose keys authorize the route; it must equal the catalogue service
+            of the upstream.
+          example: core
+          maxLength: 63
+          minLength: 1
+        streaming:
+          type:
+          - boolean
+          - 'null'
+          description: Whether the route streams its response; `false` when absent.
+          default: false
+        upstreamId:
+          type: string
+          format: uuid
+          description: The upstream the route forwards to.
       additionalProperties: false
     RouteEnforcement:
       type: string
