@@ -31,6 +31,9 @@ pub use run::{BootstrapOutcome, run_bootstrap};
 /// How many times a failed bootstrap starts again before the pod stays not started.
 const RETRIES: u8 = 1;
 
+/// How many of the newest versions keep the offset of their first record.
+const KEPT_STARTS: usize = 3;
+
 /// The ports the pure judgement uses; both are deterministic and perform no I/O.
 #[derive(Debug, Clone)]
 pub struct BootstrapPorts {
@@ -65,6 +68,12 @@ pub struct BootstrapSnapshot {
     /// The version after `version` whose rows are on the topic without its head, when there is
     /// one: the relay stopped in the middle of it.
     pub incomplete: Option<PolicyVersion>,
+    /// The offset the tail starts from: the first row of the incomplete trailing version, so that
+    /// the tail applies it once its remaining rows arrive; the end of the read when there is none.
+    pub tail_from: i64,
+    /// The offset after the last record the bootstrap read. The tail checks the broker append
+    /// time of the records from here on only: older ones are history, not news.
+    pub read_to: i64,
 }
 
 /// Why a bootstrap attempt failed.
@@ -170,6 +179,8 @@ pub struct BootstrapMachine {
     retries: u8,
     newest_epoch: RelayEpoch,
     keys: BTreeMap<StateKey, KeyRecords>,
+    /// The offset of the first record of each of the newest versions seen.
+    starts: BTreeMap<PolicyVersion, i64>,
 }
 
 impl BootstrapMachine {
@@ -187,6 +198,7 @@ impl BootstrapMachine {
             retries,
             newest_epoch: RelayEpoch::ZERO,
             keys: BTreeMap::new(),
+            starts: BTreeMap::new(),
         }
     }
 
@@ -237,7 +249,7 @@ impl BootstrapMachine {
         };
         let resume = Self::resume_after(&records);
         for framed in records {
-            self.accept(framed.record);
+            self.accept(framed);
         }
         match resume {
             Some(next) if next < target => {
@@ -265,11 +277,16 @@ impl BootstrapMachine {
 
     /// Takes one record. A record of a relay older than one the log already showed is the late
     /// append of a zombie relay and is ignored.
-    fn accept(&mut self, record: VersionedRecord) {
+    fn accept(&mut self, framed: FramedRecord) {
+        let FramedRecord { offset, record } = framed;
         if record.relay_epoch < self.newest_epoch {
             return;
         }
         self.newest_epoch = record.relay_epoch;
+        self.starts.entry(record.version).or_insert(offset);
+        while self.starts.len() > KEPT_STARTS {
+            self.starts.pop_first();
+        }
         self.keys
             .entry(record.key.clone())
             .or_default()
@@ -343,6 +360,10 @@ impl BootstrapMachine {
             digest: computed,
             entries,
             incomplete,
+            tail_from: incomplete
+                .and_then(|trailing| self.starts.get(&trailing).copied())
+                .unwrap_or(self.next),
+            read_to: self.next,
         })
     }
 

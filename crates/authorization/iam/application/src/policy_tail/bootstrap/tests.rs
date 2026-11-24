@@ -147,6 +147,58 @@ async fn a_version_that_the_relay_left_half_written_is_reported_and_the_previous
 }
 
 #[tokio::test]
+async fn the_tail_starts_at_the_first_row_of_the_trailing_version() {
+    let mut records = first_version();
+    records.push(row(3, THIRD, "c", 2, (1, 3)));
+    records.push(row(4, ROLE, "a-later", 2, (2, 3)));
+    let log = FakePolicyBootstrapLog::with(records);
+
+    let snapshot = started(run(&log).await);
+
+    assert_eq!(snapshot.incomplete, Some(version(2)));
+    assert_eq!(snapshot.tail_from, 3);
+    assert_eq!(snapshot.read_to, 5);
+}
+
+#[tokio::test]
+async fn the_tail_start_of_a_trailing_version_survives_many_versions_before_it() {
+    let mut records = first_version();
+    records.push(row(3, ROLE, "a2", 2, (1, 2)));
+    records.push(framed_head(
+        4,
+        2,
+        2,
+        digest_of(&[(ROLE, "a2"), (OTHER, "b")]),
+    ));
+    records.push(row(5, OTHER, "b3", 3, (1, 2)));
+    records.push(framed_head(
+        6,
+        3,
+        2,
+        digest_of(&[(ROLE, "a2"), (OTHER, "b3")]),
+    ));
+    records.push(row(7, THIRD, "c", 4, (1, 3)));
+    let log = FakePolicyBootstrapLog::with(records);
+
+    let snapshot = started(run(&log).await);
+
+    assert_eq!(snapshot.version, version(3));
+    assert_eq!(snapshot.incomplete, Some(version(4)));
+    assert_eq!(snapshot.tail_from, 7);
+    assert_eq!(snapshot.read_to, 8);
+}
+
+#[tokio::test]
+async fn the_tail_of_a_complete_topic_starts_at_the_end_of_the_read() {
+    let log = FakePolicyBootstrapLog::with(first_version());
+
+    let snapshot = started(run(&log).await);
+
+    assert_eq!(snapshot.tail_from, 3);
+    assert_eq!(snapshot.read_to, 3);
+}
+
+#[tokio::test]
 async fn a_trailing_row_of_a_known_key_leaves_the_state_of_the_complete_version() {
     let mut records = first_version();
     records.push(row(3, ROLE, "a-later", 2, (1, 3)));

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use iam_domain::{
     HttpMethod, LogEpoch, PolicyDigestValue, PolicyHead, PolicyState, PolicyVersion, RatePolicyId,
-    RoleId, RouteHost, RouteId, RouteMatcher, StateKey, SubjectRef, UpstreamName,
+    RoleId, RouteHost, RouteId, RouteMatcher, SessionId, StateKey, SubjectRef, UpstreamName,
 };
 use shared_domain::Uuid;
 
@@ -92,4 +92,28 @@ fn a_rate_policy_entry_that_is_not_a_rate_policy_is_not_found() {
     let working = working_with(StateKey::RatePolicy(id));
 
     assert!(working.rate_policy(id).is_none());
+}
+
+#[test]
+fn a_session_entry_that_is_not_a_revocation_does_not_revoke() {
+    let session = SessionId::new("sid-1").unwrap();
+    let working = working_with(StateKey::SessionRevocation(session.clone()));
+
+    assert!(!working.session_revoked(&session));
+}
+
+#[test]
+fn a_cutoff_entry_that_is_not_a_cutoff_is_not_found() {
+    let user = uuid(1);
+
+    assert!(
+        working_with(StateKey::UserRevocation(user))
+            .user_cutoff(user)
+            .is_none()
+    );
+    assert!(
+        working_with(StateKey::GlobalRevocation)
+            .global_cutoff()
+            .is_none()
+    );
 }

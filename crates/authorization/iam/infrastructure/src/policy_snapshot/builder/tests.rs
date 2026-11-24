@@ -336,6 +336,53 @@ fn upstreams_and_rate_policies_are_read_by_identifier() {
 }
 
 #[test]
+fn revocations_and_cutoffs_are_read_from_the_snapshot() {
+    use iam_domain::{
+        GlobalRevocationState, PolicyState, SessionId, SessionRevocationState, StateKey,
+        UserRevocationState,
+    };
+
+    let session = SessionId::new("sid-1").unwrap();
+    let user = support::uuid(5_001);
+    let user_cutoff = UserRevocationState {
+        user,
+        tokens_valid_after_micros: 7_000_000,
+        prune_after_micros: 9_000_000,
+    };
+    let global = GlobalRevocationState {
+        tokens_valid_after_micros: 3_000_000,
+    };
+    let mut rig = Rig::new();
+    rig.apply(vec![
+        (
+            StateKey::SessionRevocation(session.clone()),
+            Some(PolicyState::SessionRevocation(SessionRevocationState {
+                session: session.clone(),
+                user,
+                revoked_at_micros: 1_000_000,
+                prune_after_micros: 9_000_000,
+            })),
+        ),
+        (
+            StateKey::UserRevocation(user),
+            Some(PolicyState::UserRevocation(user_cutoff.clone())),
+        ),
+        (
+            StateKey::GlobalRevocation,
+            Some(PolicyState::GlobalRevocation(global.clone())),
+        ),
+    ]);
+    rig.builder.flush();
+
+    let snapshot = rig.snapshot();
+    assert!(snapshot.session_revoked(&session));
+    assert!(!snapshot.session_revoked(&SessionId::new("sid-2").unwrap()));
+    assert_eq!(snapshot.user_cutoff(user), Some(&user_cutoff));
+    assert_eq!(snapshot.user_cutoff(support::uuid(5_002)), None);
+    assert_eq!(snapshot.global_cutoff(), Some(&global));
+}
+
+#[test]
 fn a_catalogue_is_applied_only_when_its_manifest_and_every_chunk_are_present() {
     let mut rig = Rig::new();
     let (manifest, chunk) = catalogue(1, "00ff", &["rest:cat-1:GET /a", "rest:cat-1:GET /b"]);

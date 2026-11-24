@@ -7,7 +7,8 @@ use async_trait::async_trait;
 use iam_domain::{
     ActorRef, AssignmentScope, AuditAction, AuditChainHead, AuditHash, AuditOutcome, AuditSummary,
     AuditTarget, IdempotencyKey, PolicyVersion, RepositoryError, RequestId, SecurityAuditEvent,
-    SecurityAuditEventId, SecurityAuditEventParts, SecurityAuditLog, StoredSecurityAuditEvent,
+    SecurityAuditEventId, SecurityAuditEventParts, SecurityAuditLog, SecurityAuditSearch,
+    StoredSecurityAuditEvent,
 };
 use rand::RngExt as _;
 use shared_domain::UuidGenerator as _;
@@ -190,6 +191,25 @@ impl SecurityAuditLog for FakeSecurityAuditLog {
         Ok(records
             .iter()
             .filter(|record| record.seq() > after_seq)
+            .take(limit)
+            .cloned()
+            .collect())
+    }
+
+    async fn search(
+        &self,
+        search: &SecurityAuditSearch,
+    ) -> Result<Vec<StoredSecurityAuditEvent>, RepositoryError> {
+        let records = self
+            .records()?
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let limit = usize::try_from(search.limit).unwrap_or(usize::MAX);
+        Ok(records
+            .iter()
+            .rev()
+            .filter(|record| search.before_seq.is_none_or(|before| record.seq() < before))
+            .filter(|record| search.filter.matches(record))
             .take(limit)
             .cloned()
             .collect())

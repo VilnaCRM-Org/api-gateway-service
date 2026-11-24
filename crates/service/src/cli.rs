@@ -392,6 +392,29 @@ pub struct GatewayArgs {
         hide_env_values = true
     )]
     pub kafka_bootstrap_sasl_password: Option<String>,
+    /// How long one fetch of the state tail waits for records (default `100ms`, positive).
+    #[arg(
+        long = "kafka-fetch-max-wait",
+        env = "KAFKA_FETCH_MAX_WAIT",
+        hide_env_values = true
+    )]
+    pub kafka_fetch_max_wait: Option<String>,
+    /// The longest gap in the proof of freshness before the pod is not ready, and the longest
+    /// random delay of a rebootstrap (default `2s`, positive).
+    #[arg(
+        long = "freshness-ready-bound",
+        env = "FRESHNESS_READY_BOUND",
+        hide_env_values = true
+    )]
+    pub freshness_ready_bound: Option<String>,
+    /// The longest a snapshot may be served without a proof of freshness (default `15s`, from
+    /// `3s` to `30s` and above `FRESHNESS_READY_BOUND`).
+    #[arg(
+        long = "freshness-hard-bound",
+        env = "FRESHNESS_HARD_BOUND",
+        hide_env_values = true
+    )]
+    pub freshness_hard_bound: Option<String>,
 }
 
 /// Arguments of `check-config`: the run mode and the settings of both modes.

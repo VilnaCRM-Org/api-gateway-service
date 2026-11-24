@@ -771,6 +771,33 @@ fn the_same_configuration_in_control_mode_names_the_database() {
 }
 
 #[rstest]
+#[case::below_the_range(("FRESHNESS_HARD_BOUND", "2s"), "FRESHNESS_HARD_BOUND: must be a duration from 3s to 30s\n")]
+#[case::above_the_range(("FRESHNESS_HARD_BOUND", "31s"), "FRESHNESS_HARD_BOUND: must be a duration from 3s to 30s\n")]
+#[case::not_above_the_ready_bound(
+    ("FRESHNESS_READY_BOUND", "15s"),
+    "FRESHNESS_HARD_BOUND: must be longer than FRESHNESS_READY_BOUND\n"
+)]
+#[case::zero_fetch_wait(
+    ("KAFKA_FETCH_MAX_WAIT", "0s"),
+    "KAFKA_FETCH_MAX_WAIT: must be a positive duration such as 10m or 90d\n"
+)]
+fn a_freshness_or_fetch_setting_out_of_range_exits_2_naming_the_variable(
+    #[case] setting: (&str, &str),
+    #[case] expected: &str,
+) {
+    let scratch = Scratch::new();
+
+    let output = scratch.run(
+        &["check-config", "--mode", "gateway"],
+        &[GATEWAY_ENVIRONMENT[0], setting],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), expected);
+}
+
+#[rstest]
 #[case::internal_equals_public(
     ("GATEWAY_INTERNAL_LISTEN", "127.0.0.1:9100"),
     "GATEWAY_INTERNAL_LISTEN: must differ from GATEWAY_LISTEN\n"

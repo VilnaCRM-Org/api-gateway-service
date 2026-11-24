@@ -76,6 +76,9 @@ pub(super) fn derive(
         | PolicyState::Upstream(_)
         | PolicyState::Route(_)
         | PolicyState::RatePolicy(_)
+        | PolicyState::SessionRevocation(_)
+        | PolicyState::UserRevocation(_)
+        | PolicyState::GlobalRevocation(_)
         | PolicyState::Head(_) => Ok(Derived::Nothing),
     }
 }

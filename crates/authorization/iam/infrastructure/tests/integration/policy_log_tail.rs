@@ -245,3 +245,156 @@ async fn the_bootstrap_reader_reads_the_framed_records_up_to_the_stable_end() {
     assert_eq!(framed[0].record.log_epoch, LogEpoch::new(0).unwrap());
     assert_eq!(framed[0].record.digest_after, PolicyDigestValue::ZERO);
 }
+
+/// Publishes `rows` in one transaction of the relay of epoch 1 and returns their offsets.
+async fn published(settings: &KafkaSettings, rows: &[OutboxRow]) -> Vec<i64> {
+    let records: Vec<_> = rows
+        .iter()
+        .map(|row| PolicyLogRecord::of(row, RelayEpoch::new(1).unwrap()))
+        .collect();
+    KrafkaPolicyLogProducer::new(
+        settings,
+        RelayMode::Transactional {
+            transaction_timeout: Duration::from_secs(10),
+        },
+    )
+    .with_transactional_id(unique("relay"))
+    .publish(&records)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn the_tail_reads_from_its_position_and_reports_the_bounds_while_idle() {
+    use iam_domain::PolicyTailLog as _;
+
+    let topic = unique("follow");
+    create_topic(&topic).await;
+    let settings = settings(stack_variable("KAFKA_BOOTSTRAP_SERVERS"), &topic);
+    let offsets = published(
+        &settings,
+        &[
+            row(&topic, ROLE_KEY, Some("{\"a\":1}"), 1, 1),
+            row(&topic, "__head", Some("{}"), 1, 2),
+        ],
+    )
+    .await;
+    let tail = KrafkaPolicyLogTail::tail(settings, Duration::from_millis(100));
+
+    let first = tail.poll(0).await.unwrap();
+    let after = offsets.last().unwrap().saturating_add(1);
+    let idle = tail.poll(after).await.unwrap();
+    let again = tail.poll(after).await.unwrap();
+    iam_domain::PolicyTailLog::close(&tail).await;
+    drop(tail);
+
+    let read: Vec<_> = first
+        .records
+        .iter()
+        .map(|timed| timed.framed.offset)
+        .collect();
+    assert_eq!(read, offsets);
+    assert_eq!((first.low, first.high), (0, after));
+    assert_eq!(
+        first.records[0].framed.record.key,
+        StateKey::parse(ROLE_KEY).unwrap()
+    );
+    assert!(idle.records.is_empty() && again.records.is_empty());
+    assert!(
+        idle.high >= after,
+        "the commit marker lies at or after {after}"
+    );
+    assert_eq!(idle.low, 0);
+}
+
+#[tokio::test]
+async fn a_tail_position_past_the_partition_is_reported_with_its_bounds() {
+    use iam_domain::PolicyTailLog as _;
+
+    let topic = unique("beyond");
+    create_topic(&topic).await;
+    let settings = settings(stack_variable("KAFKA_BOOTSTRAP_SERVERS"), &topic);
+    published(&settings, &[row(&topic, ROLE_KEY, Some("{}"), 1, 1)]).await;
+    let tail = KrafkaPolicyLogTail::tail(settings, Duration::from_millis(100));
+
+    let batch = tail.poll(1_000).await.unwrap();
+    iam_domain::PolicyTailLog::close(&tail).await;
+    drop(tail);
+
+    assert_eq!(batch.records.len(), 0);
+    assert!(batch.high < 1_000, "{batch:?}");
+}
+
+#[tokio::test]
+async fn a_tail_record_without_its_framing_is_malformed() {
+    use iam_domain::PolicyTailLog as _;
+
+    let topic = unique("unframed");
+    create_topic(&topic).await;
+    let settings = settings(stack_variable("KAFKA_BOOTSTRAP_SERVERS"), &topic);
+    let mut unframed = row(&topic, ROLE_KEY, Some("{}"), 1, 1);
+    unframed.seq = None;
+    let offsets = published(&settings, &[unframed]).await;
+    let tail = KrafkaPolicyLogTail::tail(settings, Duration::from_millis(100));
+
+    let polled = tail.poll(0).await;
+    iam_domain::PolicyTailLog::close(&tail).await;
+    drop(tail);
+
+    assert!(
+        matches!(polled, Err(PolicyLogTailError::Malformed { offset }) if offset == offsets[0]),
+        "{polled:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_tail_of_a_cluster_that_cannot_be_reached_is_unavailable() {
+    use iam_domain::PolicyTailLog as _;
+
+    let mut unreachable = settings("127.0.0.1:1".to_owned(), "unused");
+    unreachable.connect_timeout = Duration::from_millis(300);
+    unreachable.request_timeout = Duration::from_millis(300);
+    let tail = KrafkaPolicyLogTail::tail(unreachable, Duration::from_millis(100));
+
+    let polled = tail.poll(0).await;
+    iam_domain::PolicyTailLog::close(&tail).await;
+    drop(tail);
+
+    assert!(
+        matches!(polled, Err(PolicyLogTailError::Unavailable(_))),
+        "{polled:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_tail_position_below_the_first_offset_is_reported_with_its_bounds() {
+    use iam_domain::PolicyTailLog as _;
+    use krafka::admin::{DeleteRecordsOptions, TopicPartition};
+
+    let (topic, settings, offsets) = topic_with_records().await;
+    let first_kept = offsets[2];
+    let kafka = Kafka::builder(stack_variable("KAFKA_BOOTSTRAP_SERVERS"))
+        .client_id("iam-tail-integration-test-admin")
+        .connect()
+        .await
+        .unwrap();
+    let deleted = kafka
+        .admin()
+        .delete_records(
+            [(TopicPartition::new(topic.as_str(), 0), first_kept)],
+            DeleteRecordsOptions::default(),
+        )
+        .await
+        .unwrap();
+    drop(kafka);
+    assert!(deleted.values().all(Result::is_ok), "{deleted:?}");
+    let tail = KrafkaPolicyLogTail::tail(settings, Duration::from_millis(100));
+
+    let batch = tail.poll(0).await.unwrap();
+    iam_domain::PolicyTailLog::close(&tail).await;
+    drop(tail);
+
+    assert_eq!(batch.records.len(), 0);
+    assert_eq!(batch.low, first_kept);
+    assert!(batch.high > first_kept, "{batch:?}");
+}

@@ -288,3 +288,28 @@ fn the_bootstrap_reader_never_resets_an_offset_by_itself() {
 
     assert_eq!(reader.reset, krafka::consumer::AutoOffsetReset::None);
 }
+
+#[test]
+fn a_timed_record_carries_the_append_time_only_when_the_broker_stamped_it() {
+    let mut appended = framed(4, ROLE_KEY);
+    appended.timestamp_type = krafka::TimestampType::LogAppendTime;
+    appended.timestamp = 1_700_000_000_000;
+    let mut created = framed(5, ROLE_KEY);
+    created.timestamp_type = krafka::TimestampType::CreateTime;
+    created.timestamp = 1_700_000_000_000;
+
+    let appended = super::timed_of(&appended).unwrap();
+    let created = super::timed_of(&created).unwrap();
+
+    assert_eq!(appended.framed.offset, 4);
+    assert_eq!(appended.appended_at_ms, Some(1_700_000_000_000));
+    assert_eq!(created.appended_at_ms, None);
+}
+
+#[test]
+fn a_record_that_is_not_framed_is_not_a_timed_record() {
+    assert!(matches!(
+        super::timed_of(&consumed(6, Some(ROLE_KEY), Some("{}"))),
+        Err(PolicyLogTailError::Malformed { offset: 6 })
+    ));
+}

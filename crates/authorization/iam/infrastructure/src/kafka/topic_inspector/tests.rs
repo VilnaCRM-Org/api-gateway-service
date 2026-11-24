@@ -264,3 +264,33 @@ async fn a_failed_read_is_unavailable_whichever_read_failed() {
         assert!(matches!(error, KafkaInspectionError::Unavailable(_)));
     }
 }
+
+#[tokio::test]
+async fn the_gateway_judges_the_topic_and_leaves_the_acls_to_iam_control() {
+    let mut cluster = Cluster::compliant();
+    cluster.writers.push("User:other".to_owned());
+    cluster.allow_everyone = Some("true".to_owned());
+    let gateway = KrafkaTopicInspector {
+        acl_checks: false,
+        ..inspector(cluster.clone(), ConfigGates::Enforce)
+    };
+
+    let verdict = gateway.inspect().await.unwrap();
+
+    assert!(verdict.passed(), "{}", verdict.describe());
+    assert_eq!(verdict.allow_everyone_source(), None);
+}
+
+#[tokio::test]
+async fn the_gateway_still_fails_a_topic_that_breaks_a_topic_rule() {
+    let mut cluster = Cluster::compliant();
+    cluster.layout.partitions = 2;
+    let gateway = KrafkaTopicInspector {
+        acl_checks: false,
+        ..inspector(cluster, ConfigGates::Enforce)
+    };
+
+    let verdict = gateway.inspect().await.unwrap();
+
+    assert!(verdict.describe().contains("partitions"));
+}

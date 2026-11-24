@@ -19,6 +19,9 @@ pub const VALIDATE_ALL: &str = "iam:validate:*";
 /// `iam:policy:resync`: the reserved key of the operation that resyncs the policy state.
 pub const POLICY_RESYNC: &str = "iam:policy:resync";
 
+/// `iam:audit:read`: the reserved key of the operations that read the security audit log.
+pub const AUDIT_READ: &str = "iam:audit:read";
+
 /// What an operation requires of its caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Requirement {
@@ -243,6 +246,16 @@ const GRAPHQL_RULES: &[GraphQlRule] = &[
         "Mutation.applyRouteConfiguration",
         "route_configuration.apply",
         Requirement::Catalogue,
+    ),
+    field(
+        "Query.securityAuditEvent",
+        "security_audit.read",
+        Requirement::Reserved(&[AUDIT_READ]),
+    ),
+    field(
+        "Query.securityAuditEvents",
+        "security_audit.list",
+        Requirement::Reserved(&[AUDIT_READ]),
     ),
     field("Mutation.createRole", "role.create", Requirement::Catalogue),
     field("Mutation.updateRole", "role.update", Requirement::Catalogue),
@@ -632,6 +645,18 @@ const RULES: &[OperationRule] = &[
         "/api/route-configurations/{host}",
         "route_configuration.apply",
         Requirement::Catalogue,
+    ),
+    row(
+        HttpMethod::Get,
+        "/api/security-audit-events",
+        "security_audit.list",
+        Requirement::Reserved(&[AUDIT_READ]),
+    ),
+    row(
+        HttpMethod::Get,
+        "/api/security-audit-events/{id}",
+        "security_audit.read",
+        Requirement::Reserved(&[AUDIT_READ]),
     ),
 ];
 

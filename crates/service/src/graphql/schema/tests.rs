@@ -883,6 +883,17 @@ type Query {
     "Page size, from 1 to 100."
     first: Int = 30
   ): RoutePage!
+  "Retrieves a security audit record by id and records the read in the audit log; null when it is unknown. Needs `iam:audit:read`."
+  securityAuditEvent(id: ID!): SecurityAuditEvent
+  "Retrieves one page of the security audit records, newest first, and records the search in the audit log; the filter keeps the records that match every field given. Needs `iam:audit:read`."
+  securityAuditEvents(
+    "The nextCursor of the previous page."
+    after: String,
+    "Keeps the records in a time range, of an actor, an action, a target and an outcome."
+    filter: SecurityAuditEventFilterInput,
+    "Page size, from 1 to 100."
+    first: Int = 30
+  ): SecurityAuditEventPage!
   "Retrieves an upstream by id; null when it is unknown or deleted."
   upstream(id: ID!): Upstream
   "Retrieves one page of the upstreams that are not deleted, in a stable order."
@@ -1311,6 +1322,70 @@ type RoutePage {
   "The routes of the page."
   items: [Route!]!
   "The `after` value of the next page; null on the last page."
+  nextCursor: String
+}
+
+"One security audit record with its place in the hash chain."
+type SecurityAuditEvent {
+  "What was done, such as `role.create`."
+  action: String!
+  "Who performed the action: `user:<uuid>`, `service:<name>` or `system:<component>`."
+  actor: String!
+  "The state after the change, as a summary of identifiers, names and keys."
+  after: String
+  "The state before the change, as a summary of identifiers, names and keys."
+  before: String
+  "The service that called on behalf of the actor, when it differs from the actor."
+  callerService: String
+  "The hash of this record: `SHA-256(prevHash || canonical form)`, 64 lower-case hexadecimal digits."
+  hash: String!
+  "The identifier of the record."
+  id: ID!
+  "When the action happened, as an RFC 3339 UTC time."
+  occurredAt: String!
+  "Whether the change took effect: `committed` or `rejected`."
+  outcome: String!
+  "The policy version that resulted from the change."
+  policyVersion: Int
+  "The hash of the previous record, 64 lower-case hexadecimal digits; all zeros for the first."
+  prevHash: String!
+  "Why an attempt was refused, such as `forbidden`."
+  reason: String
+  "The request id of the caller."
+  requestId: String
+  "Where it applies: `global` or `project:<uuid>`."
+  scope: String
+  "The gap-free sequence number of the record in the chain, starting at 1."
+  seq: Int!
+  "The identifier of what it was done to."
+  targetId: String!
+  "The type of what it was done to, such as `role`."
+  targetType: String!
+}
+
+"The filters of the security audit search: a record must meet every one that is given."
+input SecurityAuditEventFilterInput {
+  "Only the records of this action, such as `role.create`."
+  action: String
+  "Only the records of this actor: `user:<uuid>`, `service:<name>` or `system:<component>`."
+  actor: String
+  "Only the records from this RFC 3339 UTC time on."
+  from: String
+  "Only the records of this outcome: `committed` or `rejected`."
+  outcome: String
+  "Only the records about this target; needs `targetType`."
+  targetId: String
+  "Only the records about targets of this type, such as `role`."
+  targetType: String
+  "Only the records before this RFC 3339 UTC time."
+  until: String
+}
+
+"One page of security audit records."
+type SecurityAuditEventPage {
+  "The records of the page, newest first."
+  items: [SecurityAuditEvent!]!
+  "The `after` value of the next, older page; null on the last page."
   nextCursor: String
 }
 
@@ -1916,6 +1991,28 @@ async fn the_assignment_queries_are_merged_into_the_query_root_and_need_an_authe
     let schema: ApiSchema = builder().data(iam_state()).finish();
     let single = Request::new("{ userRole(id: \"0190f2a8-7b3c-7d4e-8f10-1234567890cd\") { id } }");
     let page = Request::new("{ userRoles { items { id } } }");
+
+    let single = schema.execute(single).await;
+    let page = schema.execute(page).await;
+
+    for response in [single, page] {
+        assert_eq!(
+            error_code(&response),
+            Some(async_graphql::Value::String("UNAUTHENTICATED".to_owned()))
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_security_audit_queries_are_merged_into_the_query_root_and_need_an_authenticated_caller()
+ {
+    let schema: ApiSchema = builder().data(iam_state()).finish();
+    let single =
+        Request::new("{ securityAuditEvent(id: \"0190f2a8-7b3c-7d4e-8f10-1234567890cd\") { id } }");
+    let page = Request::new(
+        "{ securityAuditEvents(filter: { outcome: \"rejected\", targetType: \"role\" }) \
+         { items { id } nextCursor } }",
+    );
 
     let single = schema.execute(single).await;
     let page = schema.execute(page).await;

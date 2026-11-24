@@ -27,6 +27,7 @@ pub mod policy_epoch;
 pub mod policy_log_producer;
 pub mod policy_read;
 pub mod policy_state_inventory;
+pub mod policy_tail_log;
 pub mod policy_view;
 pub mod probe;
 pub mod propagation_store;

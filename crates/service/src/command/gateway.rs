@@ -193,9 +193,10 @@ async fn drain(servers: Vec<Server>, tasks: TaskSupervisor, grace_period: Durati
     }
 }
 
-/// The apply thread ended without being asked to: the pod cannot apply the policy log any more.
+/// The apply thread or the policy tail ended without being asked to: the pod cannot follow the
+/// policy log any more.
 #[derive(Debug, thiserror::Error)]
-#[error("the apply thread died")]
+#[error("the apply thread or the policy tail died")]
 struct ApplyThreadDied;
 
 /// Completes when the apply thread dies; a thread that ends cleanly never completes it.

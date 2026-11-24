@@ -23,6 +23,8 @@ pub mod get_role;
 pub mod get_role_permissions;
 pub mod get_route;
 pub mod get_route_configuration;
+pub mod get_security_audit_event;
+pub mod get_security_audit_events;
 pub mod get_upstream;
 pub mod get_user_role;
 pub mod get_user_role_permissions;

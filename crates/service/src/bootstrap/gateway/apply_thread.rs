@@ -16,10 +16,10 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use iam_application::BootstrapSnapshot;
-use iam_domain::PolicyVersion;
+use iam_application::{ApplyResult, BootstrapSnapshot, FenceCause, TailApplier};
+use iam_domain::{FenceVerdict, FramedRecord, PolicyVersion};
 use iam_infrastructure::{
-    ArcSwapPolicySnapshot, PolicySnapshotBuilder, RawEntry, SnapshotBuildError,
+    ApplyOutcome, ArcSwapPolicySnapshot, PolicySnapshotBuilder, RawEntry, SnapshotBuildError,
 };
 use tokio::sync::oneshot;
 
@@ -36,8 +36,15 @@ struct Install {
     reply: oneshot::Sender<Result<PolicyVersion, SnapshotBuildError>>,
 }
 
+/// A raw batch of the tail to apply, with the channel that carries the answer back.
+struct Batch {
+    records: Vec<FramedRecord>,
+    reply: oneshot::Sender<ApplyResult>,
+}
+
 enum Command {
     Install(Box<Install>),
+    Apply(Batch),
     Run(Hook),
     Stop,
 }
@@ -113,6 +120,17 @@ impl ApplyThread {
         Ok(applied?)
     }
 
+    /// Hands a raw batch of the tail to the thread: it assembles the versions, checks the digest of
+    /// each complete one before it publishes it and stops at the first fault of the log.
+    pub async fn apply_batch(&self, records: Vec<FramedRecord>) -> ApplyResult {
+        let (reply, answer) = oneshot::channel();
+        let sent = self.commands.send(Command::Apply(Batch { records, reply }));
+        match sent {
+            Ok(()) => answer.await.unwrap_or(ApplyResult::Gone),
+            Err(_gone) => ApplyResult::Gone,
+        }
+    }
+
     /// Runs `hook` on the apply thread with the builder. It exists for the tests that drive the
     /// thread, which inject a panic or read the identity of the thread through it.
     ///
@@ -162,6 +180,7 @@ fn serve(
     loop {
         match commands.recv_timeout(RECLAIM_INTERVAL) {
             Ok(Command::Install(install)) => answer(&mut builder, *install),
+            Ok(Command::Apply(batch)) => answer_batch(&mut builder, batch),
             Ok(Command::Run(hook)) => hook(&mut builder),
             Ok(Command::Stop) | Err(RecvTimeoutError::Disconnected) => return,
             Err(RecvTimeoutError::Timeout) => {
@@ -189,6 +208,53 @@ fn answer(builder: &mut PolicySnapshotBuilder, install: Install) {
     install.reply.send(applied).unwrap_or_default();
 }
 
+fn answer_batch(builder: &mut PolicySnapshotBuilder, batch: Batch) {
+    let result = apply_batch(builder, batch.records);
+    batch.reply.send(result).unwrap_or_default();
+}
+
+/// Offers the records of a batch to the builder in order. The first record that shows a fault of
+/// the log ends the batch: nothing after it is applied, and a version whose digest does not match
+/// its head was never published. Whatever was applied before the fault is published.
+fn apply_batch(builder: &mut PolicySnapshotBuilder, records: Vec<FramedRecord>) -> ApplyResult {
+    let mut result = ApplyResult::Applied;
+    for framed in records {
+        let offset = framed.offset;
+        let outcome = builder.offer(framed.record);
+        if let Some(cause) = fence_cause(&outcome, offset) {
+            result = ApplyResult::Fenced(cause);
+            break;
+        }
+    }
+    builder.tick();
+    result
+}
+
+/// The fault of the log that an outcome shows; `None` for an outcome that is progress, a repeat or
+/// a version that is not complete yet.
+fn fence_cause(outcome: &ApplyOutcome, offset: i64) -> Option<FenceCause> {
+    match outcome {
+        ApplyOutcome::Ignored(_)
+        | ApplyOutcome::Duplicate
+        | ApplyOutcome::Pending { .. }
+        | ApplyOutcome::Applied { .. } => None,
+        ApplyOutcome::Malformed => Some(FenceCause::Malformed { offset }),
+        ApplyOutcome::Gap { expected } => Some(FenceCause::Gap {
+            expected: expected.value(),
+        }),
+        ApplyOutcome::Fenced(FenceVerdict::ConflictingContent) => {
+            Some(FenceCause::ConflictingContent)
+        }
+        ApplyOutcome::Fenced(FenceVerdict::LowerLogEpoch) => Some(FenceCause::LowerLogEpoch),
+        ApplyOutcome::Rejected(SnapshotBuildError::DigestMismatch { version, .. }) => {
+            Some(FenceCause::DigestMismatch {
+                version: version.value(),
+            })
+        }
+        ApplyOutcome::Rejected(error) => Some(FenceCause::Unappliable(error.to_string())),
+    }
+}
+
 /// Applies the state of the bootstrap through the builder, which refuses a state whose digest is
 /// not the digest of its head.
 fn apply(
@@ -210,6 +276,13 @@ fn apply(
         (snapshot.log_epoch, snapshot.digest),
     )?;
     Ok(snapshot.version)
+}
+
+#[async_trait::async_trait]
+impl TailApplier for ApplyThread {
+    async fn apply(&self, records: Vec<FramedRecord>) -> ApplyResult {
+        self.apply_batch(records).await
+    }
 }
 
 #[cfg(test)]

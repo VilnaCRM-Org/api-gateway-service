@@ -1057,3 +1057,31 @@ Content-Type: application/json
     ]
   } }
 }
+
+### Search the security audit log over REST: a page of 1 to 100 records, newest first, filtered by time range (from, until), actor, action, targetType with targetId and outcome (committed or rejected); the nextCursor goes into after; the caller needs iam:audit:read (403 otherwise, audited), an invalid filter is 422, and the search is itself recorded as security_audit.list
+GET {{baseUrl}}/api/security-audit-events?outcome=rejected&from=2026-11-01T00:00:00Z&limit=30
+Authorization: Bearer <caller token>
+
+### Search the security audit log over GraphQL: the same page and filters; the error codes UNAUTHENTICATED, FORBIDDEN and VALIDATION_FAILED
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($first: Int, $after: String, $filter: SecurityAuditEventFilterInput) { securityAuditEvents(first: $first, after: $after, filter: $filter) { items { id seq occurredAt actor action targetType targetId before after outcome reason policyVersion hash } nextCursor } }",
+  "variables": { "first": 30, "filter": { "action": "role.update", "outcome": "committed" } }
+}
+
+### Read a security audit record over REST: 200 with its place in the hash chain; 404 for an unknown id; 422 for an id that is not a UUID; the read is itself recorded as security_audit.read
+GET {{baseUrl}}/api/security-audit-events/01a1c6b5-cb86-7134-868a-7608036facfe
+Authorization: Bearer <caller token>
+
+### Read a security audit record over GraphQL: null for an unknown id
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($id: ID!) { securityAuditEvent(id: $id) { id seq actor action targetType targetId outcome reason policyVersion prevHash hash } }",
+  "variables": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe" }
+}

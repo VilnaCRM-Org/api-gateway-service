@@ -4,11 +4,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iam_domain::{
-    AssignmentState, BootInstant, CatalogueEntryState, CompiledRoleSet, FreshnessProof, HttpMethod,
-    LogEpoch, PolicyDigestValue, PolicySnapshot, PolicyVersion, PolicyView, RatePolicyId,
-    RatePolicyState, RoleId, RouteHost, RouteState, ServiceName, SubjectRef, UpstreamId,
-    UpstreamName, UpstreamState,
+    AssignmentState, BootInstant, CatalogueEntryState, CompiledRoleSet, FreshnessProof,
+    GlobalRevocationState, HttpMethod, LogEpoch, PolicyDigestValue, PolicySnapshot, PolicyVersion,
+    PolicyView, RatePolicyId, RatePolicyState, RoleId, RouteHost, RouteState, ServiceName,
+    SessionId, SubjectRef, UpstreamId, UpstreamName, UpstreamState, UserRevocationState,
 };
+use shared_domain::Uuid;
 
 /// A snapshot that holds nothing but a version: no route, no upstream, no role, no assignment and
 /// no catalogue.
@@ -83,6 +84,126 @@ impl PolicySnapshot for EmptySnapshot {
 
     fn catalogue(&self, _service: &ServiceName) -> Option<&[CatalogueEntryState]> {
         None
+    }
+
+    fn session_revoked(&self, _session: &SessionId) -> bool {
+        false
+    }
+
+    fn user_cutoff(&self, _user: Uuid) -> Option<&UserRevocationState> {
+        None
+    }
+
+    fn global_cutoff(&self) -> Option<&GlobalRevocationState> {
+        None
+    }
+}
+
+/// An empty snapshot that holds revocation records: the revoked sessions, the cut-offs of users
+/// and the global cut-off.
+#[derive(Debug, Clone, Default)]
+pub struct RevocationSnapshot {
+    sessions: Vec<SessionId>,
+    users: Vec<UserRevocationState>,
+    global: Option<GlobalRevocationState>,
+}
+
+impl RevocationSnapshot {
+    /// A snapshot without any revocation record.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The same snapshot with `session` revoked.
+    #[must_use]
+    pub fn with_revoked_session(mut self, session: SessionId) -> Self {
+        self.sessions.push(session);
+        self
+    }
+
+    /// The same snapshot with the cut-off of a user.
+    #[must_use]
+    pub fn with_user_cutoff(mut self, state: UserRevocationState) -> Self {
+        self.users.push(state);
+        self
+    }
+
+    /// The same snapshot with the global cut-off.
+    #[must_use]
+    pub const fn with_global_cutoff(mut self, state: GlobalRevocationState) -> Self {
+        self.global = Some(state);
+        self
+    }
+}
+
+impl PolicySnapshot for RevocationSnapshot {
+    fn version(&self) -> PolicyVersion {
+        PolicyVersion::ZERO
+    }
+
+    fn digest(&self) -> PolicyDigestValue {
+        PolicyDigestValue::ZERO
+    }
+
+    fn derived_hash(&self) -> PolicyDigestValue {
+        PolicyDigestValue::ZERO
+    }
+
+    fn accounted_bytes(&self) -> usize {
+        0
+    }
+
+    fn log_epoch(&self) -> LogEpoch {
+        LogEpoch::ZERO
+    }
+
+    fn freshness_proof(&self) -> FreshnessProof {
+        EmptySnapshot::at(PolicyVersion::ZERO).freshness_proof()
+    }
+
+    fn route(&self, _host: &RouteHost, _method: HttpMethod, _path: &str) -> Option<&RouteState> {
+        None
+    }
+
+    fn upstream(&self, _name: &UpstreamName) -> Option<&UpstreamState> {
+        None
+    }
+
+    fn upstream_by_id(&self, _id: UpstreamId) -> Option<&UpstreamState> {
+        None
+    }
+
+    fn role_set(&self, _role: RoleId) -> Option<&CompiledRoleSet> {
+        None
+    }
+
+    fn assignments(&self, _subject: &SubjectRef) -> &[AssignmentState] {
+        &[]
+    }
+
+    fn subjects_of_role(&self, _role: RoleId) -> Vec<SubjectRef> {
+        Vec::new()
+    }
+
+    fn rate_policy(&self, _id: RatePolicyId) -> Option<&RatePolicyState> {
+        None
+    }
+
+    fn catalogue(&self, _service: &ServiceName) -> Option<&[CatalogueEntryState]> {
+        None
+    }
+
+    fn session_revoked(&self, session: &SessionId) -> bool {
+        self.sessions.contains(session)
+    }
+
+    fn user_cutoff(&self, user: Uuid) -> Option<&UserRevocationState> {
+        self.users.iter().find(|state| state.user == user)
+    }
+
+    fn global_cutoff(&self) -> Option<&GlobalRevocationState> {
+        self.global.as_ref()
     }
 }
 

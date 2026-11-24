@@ -180,6 +180,10 @@ fn handlers_use_only_the_problem_aware_extractors() {
             include_str!("../bulk_operation.rs"),
             vec!["get_one", "list"],
         ),
+        (
+            include_str!("../security_audit_event.rs"),
+            vec!["list", "get_one"],
+        ),
         (include_str!("../policy_resync.rs"), vec!["create"]),
     ];
 

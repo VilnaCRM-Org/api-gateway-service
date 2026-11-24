@@ -1,4 +1,7 @@
-use iam_domain::{AuditChainHead, RepositoryError, SecurityAuditLog};
+use iam_domain::{
+    AuditChainHead, AuditOutcome, RepositoryError, SecurityAuditFilter, SecurityAuditLog,
+    SecurityAuditSearch,
+};
 
 use super::{FakeSecurityAuditLog, security_audit_event};
 use crate::block_on;
@@ -111,6 +114,7 @@ fn the_failing_log_is_unavailable_for_every_call() {
         block_on(port.chain_head()).unwrap_err(),
         block_on(port.find_by_id(event.parts().id)).unwrap_err(),
         block_on(port.find_after(0, 1)).unwrap_err(),
+        block_on(port.search(&search(SecurityAuditFilter::new(), None, 1))).unwrap_err(),
     ];
 
     for error in errors {
@@ -121,4 +125,54 @@ fn the_failing_log_is_unavailable_for_every_call() {
         );
     }
     assert_eq!(log.recorded().len(), 0);
+}
+
+fn search(filter: SecurityAuditFilter, before_seq: Option<i64>, limit: u32) -> SecurityAuditSearch {
+    SecurityAuditSearch {
+        filter,
+        before_seq,
+        limit,
+    }
+}
+
+fn seqs(records: &[iam_domain::StoredSecurityAuditEvent]) -> Vec<i64> {
+    records
+        .iter()
+        .map(iam_domain::StoredSecurityAuditEvent::seq)
+        .collect()
+}
+
+#[test]
+fn a_search_returns_the_newest_records_first_and_follows_the_cursor() {
+    let mut rng = TestRng::from_seed(16);
+    let events: Vec<_> = (0..4).map(|_| security_audit_event(&mut rng)).collect();
+    let log = FakeSecurityAuditLog::new();
+    let port: &dyn SecurityAuditLog = &log;
+    block_on(port.append_batch(&events)).unwrap();
+
+    let first = block_on(port.search(&search(SecurityAuditFilter::new(), None, 3))).unwrap();
+    let second = block_on(port.search(&search(SecurityAuditFilter::new(), Some(2), 3))).unwrap();
+
+    assert_eq!(seqs(&first), [4, 3, 2]);
+    assert_eq!(seqs(&second), [1]);
+}
+
+#[test]
+fn a_search_keeps_only_the_records_that_meet_the_filter() {
+    let mut rng = TestRng::from_seed(17);
+    let events = [
+        security_audit_event(&mut rng),
+        security_audit_event(&mut rng),
+    ];
+    let log = FakeSecurityAuditLog::new();
+    let port: &dyn SecurityAuditLog = &log;
+    block_on(port.append_batch(&events)).unwrap();
+    let by_second_actor = SecurityAuditFilter::new().by_actor(events[1].parts().actor.clone());
+    let rejected = SecurityAuditFilter::new().with_outcome(AuditOutcome::Rejected);
+
+    let one = block_on(port.search(&search(by_second_actor, None, 10))).unwrap();
+    let none = block_on(port.search(&search(rejected, None, 10))).unwrap();
+
+    assert_eq!(seqs(&one), [2]);
+    assert_eq!(seqs(&none), Vec::<i64>::new());
 }

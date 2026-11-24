@@ -127,6 +127,8 @@ fn documents_exactly_the_twenty_four_operations() {
             "get /api/routes/{id}",
             "delete /api/routes/{id}",
             "patch /api/routes/{id}",
+            "get /api/security-audit-events",
+            "get /api/security-audit-events/{id}",
             "post /api/token-resolutions",
             "get /api/upstreams",
             "post /api/upstreams",
@@ -1350,6 +1352,8 @@ fn defines_exactly_the_documented_schemas() {
             "RoutePage",
             "RouteRetryPolicy",
             "RouteTraffic",
+            "SecurityAuditEvent",
+            "SecurityAuditEventPage",
             "SetRolePermissionsRequest",
             "SpecRetirement",
             "TokenResolution",
@@ -1768,6 +1772,97 @@ fn the_upstream_schemas_name_the_members_of_fr_56() {
         json["paths"]["/api/upstreams/{id}"]["get"]["responses"]["200"]["content"]["application/json"]
             ["schema"]["$ref"],
         "#/components/schemas/Upstream"
+    );
+}
+
+#[test]
+fn documents_the_security_audit_reads_with_the_bearer_requirement_and_the_iam_tag() {
+    let json = json_document();
+    let cases = [
+        (
+            "/api/security-audit-events",
+            "api_security_audit_events_get",
+            "SecurityAuditEventPage",
+            ["200", "400", "401", "403", "422", "default"].as_slice(),
+        ),
+        (
+            "/api/security-audit-events/{id}",
+            "api_security_audit_events_id_get",
+            "SecurityAuditEvent",
+            ["200", "400", "401", "403", "404", "422", "default"].as_slice(),
+        ),
+    ];
+
+    for (path, operation_id, schema, statuses) in cases {
+        let operation = &json["paths"][path]["get"];
+        assert_eq!(operation["operationId"], operation_id);
+        assert_eq!(operation["tags"], json!(["iam"]), "{operation_id}");
+        assert_eq!(
+            operation["security"],
+            json!([{ "bearerAuth": [] }]),
+            "{operation_id}"
+        );
+        let mut documented: Vec<&str> = operation["responses"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        documented.sort_unstable();
+        assert_eq!(documented, statuses, "{operation_id}");
+        assert_eq!(
+            operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            format!("#/components/schemas/{schema}"),
+            "{operation_id}"
+        );
+    }
+}
+
+#[test]
+fn the_security_audit_schemas_name_the_members_of_fr_52() {
+    let json = json_document();
+    let record = &json["components"]["schemas"]["SecurityAuditEvent"]["properties"];
+
+    for member in [
+        "id",
+        "seq",
+        "occurredAt",
+        "actor",
+        "callerService",
+        "action",
+        "targetType",
+        "targetId",
+        "scope",
+        "before",
+        "after",
+        "outcome",
+        "reason",
+        "policyVersion",
+        "requestId",
+        "prevHash",
+        "hash",
+    ] {
+        assert!(record[member].is_object(), "{member}");
+    }
+    let parameters: Vec<&str> = json["paths"]["/api/security-audit-events"]["get"]["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|parameter| parameter["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        parameters,
+        [
+            "limit",
+            "after",
+            "from",
+            "until",
+            "actor",
+            "action",
+            "targetType",
+            "targetId",
+            "outcome"
+        ]
     );
 }
 

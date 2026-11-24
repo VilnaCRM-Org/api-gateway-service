@@ -44,6 +44,13 @@ impl StateRecordCodec for TextCodec {
                 policy.fields.name(),
                 policy.version.value()
             ),
+            PolicyState::SessionRevocation(state) => format!("revoked session {}", state.session),
+            PolicyState::UserRevocation(state) => {
+                format!("user cutoff {}", state.tokens_valid_after_micros)
+            }
+            PolicyState::GlobalRevocation(state) => {
+                format!("global cutoff {}", state.tokens_valid_after_micros)
+            }
             PolicyState::Head(head) => {
                 format!("head {} {:?}", head.version.value(), head.digest.as_bytes())
             }

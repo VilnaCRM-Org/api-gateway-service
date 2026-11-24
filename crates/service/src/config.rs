@@ -291,6 +291,15 @@ pub struct GatewayConfig {
     /// The state topic and the connection that reads it, under the principal
     /// `iam-gateway-bootstrap` (`KAFKA_BOOTSTRAP_SASL_USERNAME`, `KAFKA_BOOTSTRAP_SASL_PASSWORD`).
     pub kafka: KafkaSettings,
+    /// The connection of the tail: the principal `iam-gateway` (`KAFKA_SASL_USERNAME`,
+    /// `KAFKA_SASL_PASSWORD`) with the client id `iam-gateway-<pod-name>`.
+    pub kafka_tail: KafkaSettings,
+    /// `KAFKA_FETCH_MAX_WAIT`: how long one fetch of the tail waits for records.
+    pub kafka_fetch_max_wait: Duration,
+    /// `FRESHNESS_READY_BOUND`: the longest random delay of a rebootstrap after a fence.
+    pub freshness_ready_bound: Duration,
+    /// `FRESHNESS_HARD_BOUND`: the longest a fenced pod keeps serving its last verified snapshot.
+    pub freshness_hard_bound: Duration,
 }
 
 /// How the gateway discovers the endpoints of its upstreams (`UPSTREAM_DISCOVERY`).
@@ -334,18 +343,19 @@ impl GatewayConfig {
         let tokens = tokens(&mut collector, &service.tokens);
         let listeners = listeners(&mut collector, args);
         let tls = tls_files(&mut collector, args, app_env);
-        let pod_name = collector.collect("POD_NAME", optional(args.pod_name.as_deref()));
-        let pod_namespace =
-            collector.collect("POD_NAMESPACE", optional(args.pod_namespace.as_deref()));
+        let (pod_name, pod_namespace) = pod_identity(&mut collector, args);
         let endpoints = endpoint_settings(&mut collector, args);
         let kafka = gateway_kafka(&mut collector, args, app_env);
+        let tail = tail_settings(&mut collector, args);
         match (
             (app_env, log_level, grace, tokens),
             (listeners, tls, endpoints, kafka),
+            tail,
         ) {
             (
                 (Some(app_env), Some(log_level), Some(shutdown_grace_period), Some(tokens)),
                 (Some(listeners), Some(tls), Some(endpoints), Some(kafka)),
+                Some(tail),
             ) if collector.problems.is_empty() => Ok(Self {
                 app_env,
                 log_level,
@@ -355,43 +365,130 @@ impl GatewayConfig {
                 internal_listen: listeners.internal,
                 probe_listen: listeners.probe,
                 tls: tls.into_files(),
-                pod_name: pod_name.flatten(),
-                pod_namespace: pod_namespace.flatten(),
+                kafka_tail: tail_connection(kafka.tail, pod_name.as_deref()),
+                kafka: kafka.bootstrap,
+                kafka_fetch_max_wait: tail.fetch_max_wait,
+                freshness_ready_bound: tail.ready_bound,
+                freshness_hard_bound: tail.hard_bound,
+                pod_name,
+                pod_namespace,
                 endpoints,
-                kafka,
             }),
             _ => Err(ConfigErrors(collector.problems)),
         }
     }
 }
 
-/// The placeholder that stands for a bootstrap credential that is missing, so that the shared
-/// parser reports the other Kafka variables without naming a control-plane variable twice. The
-/// configuration is refused whenever it is used.
-const MISSING_CREDENTIAL: &str = "missing";
-
-/// The Kafka variables of the gateway: the control-plane connection variables, read under the
-/// principal `iam-gateway-bootstrap`, whose `KAFKA_BOOTSTRAP_SASL_USERNAME` and
-/// `KAFKA_BOOTSTRAP_SASL_PASSWORD` `SASL_SSL` requires (the control-plane principal is not the
-/// gateway's). `KAFKA_CLIENT_ID` is not read: the client id is the name of the principal.
+/// The Kafka variables of the gateway: the control-plane connection variables, read twice. The
+/// bootstrap read runs under the principal `iam-gateway-bootstrap`, whose
+/// `KAFKA_BOOTSTRAP_SASL_USERNAME` and `KAFKA_BOOTSTRAP_SASL_PASSWORD` `SASL_SSL` requires; the tail
+/// runs under the principal `iam-gateway`, whose `KAFKA_SASL_USERNAME` and `KAFKA_SASL_PASSWORD`
+/// `SASL_SSL` requires as well. `KAFKA_CLIENT_ID` is not read: the client ids are the name of the
+/// bootstrap principal and `iam-gateway-<pod-name>`.
 fn gateway_kafka(
     collector: &mut Collector,
     args: &GatewayArgs,
     app_env: Option<AppEnv>,
-) -> Option<KafkaSettings> {
+) -> Option<GatewayKafka> {
     let mut forwarded = args.service.kafka.clone();
     forwarded.client_id = None;
-    let mut principal = (String::new(), KafkaSecret::new(String::new()));
-    if matches!(
+    let principal = if matches!(
         security_protocol(forwarded.security_protocol.as_deref()),
         Ok(Protocol::SaslSsl)
     ) {
-        principal = bootstrap_principal(collector, args);
-        forwarded.sasl_username = Some(MISSING_CREDENTIAL.to_owned());
-        forwarded.sasl_password = Some(MISSING_CREDENTIAL.to_owned());
+        bootstrap_principal(collector, args)
+    } else {
+        (String::new(), KafkaSecret::new(String::new()))
+    };
+    let tail = kafka(collector, &forwarded, app_env)?;
+    let bootstrap = tail.bootstrap_principal(principal.0, principal.1);
+    Some(GatewayKafka { bootstrap, tail })
+}
+
+/// The two Kafka connections of a gateway pod: the bootstrap read and the tail.
+struct GatewayKafka {
+    /// Under the principal `iam-gateway-bootstrap`.
+    bootstrap: KafkaSettings,
+    /// Under the principal `iam-gateway` (`KAFKA_SASL_USERNAME`, `KAFKA_SASL_PASSWORD`); the client
+    /// id is set from the pod name.
+    tail: KafkaSettings,
+}
+
+/// The client id of the tail connection: `iam-gateway-<pod-name>`.
+/// `POD_NAME` and `POD_NAMESPACE`, each absent when the downward API does not provide it.
+fn pod_identity(collector: &mut Collector, args: &GatewayArgs) -> (Option<String>, Option<String>) {
+    let pod_name = collector.collect("POD_NAME", optional(args.pod_name.as_deref()));
+    let pod_namespace = collector.collect("POD_NAMESPACE", optional(args.pod_namespace.as_deref()));
+    (pod_name.flatten(), pod_namespace.flatten())
+}
+
+/// The tail connection with the client id `iam-gateway-<pod-name>`.
+fn tail_connection(tail: KafkaSettings, pod_name: Option<&str>) -> KafkaSettings {
+    KafkaSettings {
+        client_id: tail_client_id(pod_name),
+        ..tail
     }
-    let settings = kafka(collector, &forwarded, app_env)?;
-    Some(settings.bootstrap_principal(principal.0, principal.1))
+}
+
+fn tail_client_id(pod_name: Option<&str>) -> String {
+    format!("iam-gateway-{}", pod_name.unwrap_or("unknown"))
+}
+
+/// The settings of the tail and of the freshness bounds.
+struct TailSettings {
+    fetch_max_wait: Duration,
+    ready_bound: Duration,
+    hard_bound: Duration,
+}
+
+/// `KAFKA_FETCH_MAX_WAIT` (100ms), `FRESHNESS_READY_BOUND` (2s) and `FRESHNESS_HARD_BOUND` (15s):
+/// the hard bound lies from 3s to 30s and above the ready bound.
+fn tail_settings(collector: &mut Collector, args: &GatewayArgs) -> Option<TailSettings> {
+    let fetch_max_wait = collector.collect(
+        "KAFKA_FETCH_MAX_WAIT",
+        positive_duration(
+            args.kafka_fetch_max_wait.as_deref(),
+            Duration::from_millis(100),
+        ),
+    );
+    let ready_bound = collector.collect(
+        "FRESHNESS_READY_BOUND",
+        positive_duration(
+            args.freshness_ready_bound.as_deref(),
+            Duration::from_secs(2),
+        ),
+    );
+    let hard_bound = collector.collect(
+        "FRESHNESS_HARD_BOUND",
+        hard_bound_value(args.freshness_hard_bound.as_deref()),
+    );
+    collector.longer_than(
+        "FRESHNESS_HARD_BOUND",
+        hard_bound,
+        "FRESHNESS_READY_BOUND",
+        ready_bound,
+    );
+    Some(TailSettings {
+        fetch_max_wait: fetch_max_wait?,
+        ready_bound: ready_bound?,
+        hard_bound: hard_bound?,
+    })
+}
+
+/// The shortest accepted `FRESHNESS_HARD_BOUND`.
+const MIN_HARD_BOUND: Duration = Duration::from_secs(3);
+
+/// The longest accepted `FRESHNESS_HARD_BOUND`.
+const MAX_HARD_BOUND: Duration = Duration::from_secs(30);
+
+/// `FRESHNESS_HARD_BOUND`: from 3 to 30 seconds, 15 by default.
+fn hard_bound_value(raw: Option<&str>) -> Parsed<Duration> {
+    let value = duration(raw, Duration::from_secs(15))?;
+    if (MIN_HARD_BOUND..=MAX_HARD_BOUND).contains(&value) {
+        Ok(value)
+    } else {
+        Err("must be a duration from 3s to 30s".to_owned())
+    }
 }
 
 /// `KAFKA_BOOTSTRAP_SASL_USERNAME` and `KAFKA_BOOTSTRAP_SASL_PASSWORD`: both required.

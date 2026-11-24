@@ -56,8 +56,9 @@ pub use persistence::unit_of_work::PgIamUnitOfWork;
 pub use persistence::upstream::PgUpstreamRepository;
 pub use persistence::user_role::PgUserRoleRepository;
 pub use policy_snapshot::{
-    ArcSwapPolicySnapshot, MatchitRouteTableCompiler, PUBLISH_INTERVAL, PolicySnapshotBuilder,
-    RawEntry, SnapshotBuildError, SnapshotPorts,
+    ApplyOutcome, ArcSwapPolicySnapshot, MatchitRouteTableCompiler, PUBLISH_INTERVAL,
+    PolicySnapshotBuilder, RawEntry, SnapshotBuildError, SnapshotPorts, SnapshotRevocationError,
+    SnapshotRevocationView,
 };
 pub use policy_state::json_state_record_codec::JsonStateRecordCodec;
 pub use policy_state::sha256_policy_digest::Sha256PolicyDigest;

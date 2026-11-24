@@ -74,6 +74,7 @@ use iam_application::{
 use iam_application::{
     GetRolePermissionsQueryHandler, SetRolePermissionsCommandHandler, SetRolePermissionsReads,
 };
+use iam_application::{GetSecurityAuditEventQueryHandler, GetSecurityAuditEventsQueryHandler};
 use iam_application::{GuardReads, GuardedUnitOfWork};
 use iam_application::{IamAccessGuard, RecordRejectedAttemptCommandHandler};
 use iam_application::{PolicyTopicHead, ResyncPolicyCommandHandler, ResyncPolicyPorts};
@@ -670,6 +671,25 @@ fn register_upstream_queries(
     Ok(bus.register(get)?.register(list)?)
 }
 
+/// Registers the query handlers that read the security audit log; each one appends the record of
+/// its own read to the log.
+fn register_security_audit_queries(
+    bus: InMemoryQueryBus,
+    adapters: &Adapters,
+) -> Result<InMemoryQueryBus, BootstrapError> {
+    let search = GetSecurityAuditEventsQueryHandler::new(
+        Arc::clone(&adapters.security_audit_log),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    let get = GetSecurityAuditEventQueryHandler::new(
+        Arc::clone(&adapters.security_audit_log),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    Ok(bus.register(search)?.register(get)?)
+}
+
 /// Registers the query handlers that read the result of an IAM write: its change receipt and the
 /// idempotent replay of a repeated write.
 fn register_change_queries(
@@ -1056,6 +1076,7 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
     let queries = register_rest_activation_queries(queries, adapters)?;
     let queries = register_rest_permission_queries(queries, adapters)?;
     let queries = register_user_role_queries(queries, adapters)?;
+    let queries = register_security_audit_queries(queries, adapters)?;
     let queries = register_token_queries(queries, &adapters.tokens, config)?;
     let queries = register_access_validation_queries(queries, adapters)?;
     Ok((Arc::new(commands), Arc::new(queries)))

@@ -5,11 +5,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use iam_domain::{
-    AssignmentState, CatalogueEntryState, CompiledRoleSet, HttpMethod, LogEpoch, PolicyDigestValue,
-    PolicyState, PolicyVersion, RatePolicyId, RatePolicyState, RoleId, RouteHost, RouteId,
-    RouteMatcher, RouteState, ServiceName, StateKey, SubjectRef, UpstreamId, UpstreamName,
-    UpstreamState,
+    AssignmentState, CatalogueEntryState, CompiledRoleSet, GlobalRevocationState, HttpMethod,
+    LogEpoch, PolicyDigestValue, PolicyState, PolicyVersion, RatePolicyId, RatePolicyState, RoleId,
+    RouteHost, RouteId, RouteMatcher, RouteState, ServiceName, SessionId, StateKey, SubjectRef,
+    UpstreamId, UpstreamName, UpstreamState, UserRevocationState,
 };
+use shared_domain::Uuid;
 
 use super::shards::{Derived, Entry, Shards};
 
@@ -113,6 +114,30 @@ impl Working {
             return None;
         };
         Some(policy)
+    }
+
+    pub(super) fn session_revoked(&self, session: &SessionId) -> bool {
+        self.shards
+            .get(&StateKey::SessionRevocation(session.clone()))
+            .is_some_and(|entry| matches!(entry.state, PolicyState::SessionRevocation(_)))
+    }
+
+    pub(super) fn user_cutoff(&self, user: Uuid) -> Option<&UserRevocationState> {
+        let PolicyState::UserRevocation(state) =
+            &self.shards.get(&StateKey::UserRevocation(user))?.state
+        else {
+            return None;
+        };
+        Some(state)
+    }
+
+    pub(super) fn global_cutoff(&self) -> Option<&GlobalRevocationState> {
+        let PolicyState::GlobalRevocation(state) =
+            &self.shards.get(&StateKey::GlobalRevocation)?.state
+        else {
+            return None;
+        };
+        Some(state)
     }
 
     /// An estimate of the bytes that the raw state and the derived structures hold. A list shared

@@ -4,8 +4,9 @@
 use std::time::Duration;
 
 use iam_domain::{
-    AuditChainHead, AuditHash, AuditSummary, RepositoryError, SecurityAuditEvent,
-    SecurityAuditLog as _, StoredSecurityAuditEvent,
+    AuditAction, AuditChainHead, AuditHash, AuditOutcome, AuditSummary, RepositoryError,
+    SecurityAuditEvent, SecurityAuditFilter, SecurityAuditLog as _, SecurityAuditSearch,
+    StoredSecurityAuditEvent,
 };
 use iam_infrastructure::PgSecurityAuditLog;
 use shared_infrastructure::persistence::{PostgresSettings, connect_lazy};
@@ -285,6 +286,81 @@ async fn records_are_found_by_id_and_paged_by_sequence_number(pool: PgPool) {
     assert!(matches!(missing, RepositoryError::NotFound));
 }
 
+fn search(filter: SecurityAuditFilter, before_seq: Option<i64>, limit: u32) -> SecurityAuditSearch {
+    SecurityAuditSearch {
+        filter,
+        before_seq,
+        limit,
+    }
+}
+
+fn seqs(records: &[StoredSecurityAuditEvent]) -> Vec<i64> {
+    records.iter().map(StoredSecurityAuditEvent::seq).collect()
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn a_search_pages_newest_first_and_applies_every_condition(pool: PgPool) {
+    let mut rng = TestRng::from_env();
+    let batch = events(&mut rng, 4);
+    let log = PgSecurityAuditLog::new(pool);
+    log.append_batch(&batch).await.unwrap();
+    let second = batch[1].parts();
+    let micros = batch[1].occurred_at_micros();
+
+    let first_page = log
+        .search(&search(SecurityAuditFilter::new(), None, 3))
+        .await
+        .unwrap();
+    let second_page = log
+        .search(&search(SecurityAuditFilter::new(), Some(2), 3))
+        .await
+        .unwrap();
+    let by_actor = log
+        .search(&search(
+            SecurityAuditFilter::new().by_actor(second.actor.clone()),
+            None,
+            10,
+        ))
+        .await
+        .unwrap();
+    let in_range = SecurityAuditFilter::new()
+        .within(
+            Some(second.occurred_at),
+            second.occurred_at.checked_add(Duration::from_micros(1)),
+        )
+        .unwrap();
+    let by_time = log.search(&search(in_range, None, 10)).await.unwrap();
+    let about_it = SecurityAuditFilter::new()
+        .about(second.target.target_type(), Some(second.target.target_id()))
+        .unwrap();
+    let by_target = log.search(&search(about_it, None, 10)).await.unwrap();
+    let no_match = SecurityAuditFilter::new()
+        .of_action(AuditAction::new("role.update").unwrap())
+        .with_outcome(AuditOutcome::Rejected);
+    let none = log.search(&search(no_match, None, 10)).await.unwrap();
+    let all_of_it = SecurityAuditFilter::new()
+        .of_action(second.action.clone())
+        .with_outcome(AuditOutcome::Committed)
+        .about(second.target.target_type(), None)
+        .unwrap();
+    let every = log.search(&search(all_of_it, None, 10)).await.unwrap();
+
+    assert_eq!(seqs(&first_page), [4, 3, 2]);
+    assert_eq!(first_page[0].event(), &batch[3]);
+    assert_eq!(seqs(&second_page), [1]);
+    assert_eq!(seqs(&by_actor), [2]);
+    assert_eq!(
+        by_time
+            .iter()
+            .map(|record| record.event().occurred_at_micros())
+            .collect::<Vec<_>>(),
+        [micros]
+    );
+    assert_eq!(seqs(&by_target), [2]);
+    assert_eq!(seqs(&none), Vec::<i64>::new());
+    assert_eq!(seqs(&every), [4, 3, 2, 1]);
+}
+
 #[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
 async fn a_stored_record_that_breaks_an_invariant_is_unavailable(pool: PgPool) {
     let event = security_audit_event(&mut TestRng::from_env());
@@ -375,8 +451,13 @@ async fn an_unreachable_database_is_unavailable() {
         .await
         .unwrap_err();
     let head = log.chain_head().await.unwrap_err();
+    let found = log
+        .search(&search(SecurityAuditFilter::new(), None, 1))
+        .await
+        .unwrap_err();
 
     assert!(matches!(append, RepositoryError::Unavailable(_)));
     assert!(matches!(head, RepositoryError::Unavailable(_)));
+    assert!(matches!(found, RepositoryError::Unavailable(_)));
     assert_eq!(append.to_string(), "the repository is unavailable");
 }

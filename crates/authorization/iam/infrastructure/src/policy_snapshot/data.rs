@@ -1,11 +1,12 @@
 //! The published snapshot: the working state at one version, frozen.
 
 use iam_domain::{
-    AssignmentState, BootInstant, CatalogueEntryState, CompiledRoleSet, FreshnessProof, HttpMethod,
-    LogEpoch, PolicyDigestValue, PolicySnapshot, PolicyVersion, RatePolicyId, RatePolicyState,
-    RoleId, RouteHost, RouteState, ServiceName, SubjectRef, UpstreamId, UpstreamName,
-    UpstreamState,
+    AssignmentState, BootInstant, CatalogueEntryState, CompiledRoleSet, FreshnessProof,
+    GlobalRevocationState, HttpMethod, LogEpoch, PolicyDigestValue, PolicySnapshot, PolicyVersion,
+    RatePolicyId, RatePolicyState, RoleId, RouteHost, RouteState, ServiceName, SessionId,
+    SubjectRef, UpstreamId, UpstreamName, UpstreamState, UserRevocationState,
 };
+use shared_domain::Uuid;
 
 use super::working::Working;
 
@@ -103,5 +104,17 @@ impl PolicySnapshot for SnapshotData {
 
     fn catalogue(&self, service: &ServiceName) -> Option<&[CatalogueEntryState]> {
         self.working.catalogue(service)
+    }
+
+    fn session_revoked(&self, session: &SessionId) -> bool {
+        self.working.session_revoked(session)
+    }
+
+    fn user_cutoff(&self, user: Uuid) -> Option<&UserRevocationState> {
+        self.working.user_cutoff(user)
+    }
+
+    fn global_cutoff(&self) -> Option<&GlobalRevocationState> {
+        self.working.global_cutoff()
     }
 }

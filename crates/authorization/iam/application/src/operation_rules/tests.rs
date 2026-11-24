@@ -4,7 +4,7 @@ use iam_domain::{
     AuditAction, HttpMethod, PermissionKey, PermissionKeyKind, ReservedPermission, ServiceScope,
 };
 
-use super::{CallerRule, OperationRules, POLICY_RESYNC, Requirement, VALIDATE_ALL};
+use super::{AUDIT_READ, CallerRule, OperationRules, POLICY_RESYNC, Requirement, VALIDATE_ALL};
 use crate::http::{IamState, router, specification_router};
 
 fn rows_of(requirement: fn(Requirement) -> bool) -> Vec<(&'static str, &'static str)> {
@@ -136,7 +136,7 @@ fn a_row_with_fixed_keys_has_no_caller_rule() {
 fn every_other_operation_requires_its_catalogue_key() {
     let catalogue = rows_of(|requirement| requirement == Requirement::Catalogue);
 
-    assert_eq!(catalogue.len(), OperationRules::all().len() - 4);
+    assert_eq!(catalogue.len(), OperationRules::all().len() - 6);
     for rule in OperationRules::all() {
         if rule.requirement == Requirement::Catalogue {
             assert!(rule.requirement.needs_catalogue());
@@ -362,6 +362,35 @@ fn the_policy_resync_needs_the_reserved_key_and_no_catalogue_key_on_both_interfa
         assert_eq!(requirement, Requirement::Reserved(&[POLICY_RESYNC]));
         assert!(!requirement.needs_catalogue());
         assert_eq!(requirement.reserved(), ["iam:policy:resync"]);
+    }
+}
+
+#[test]
+fn the_security_audit_reads_need_the_audit_key_and_no_catalogue_key_on_both_interfaces() {
+    let rest = [
+        ("/api/security-audit-events", "security_audit.list"),
+        ("/api/security-audit-events/{id}", "security_audit.read"),
+    ];
+    let graphql = [
+        ("Query.securityAuditEvents", "security_audit.list"),
+        ("Query.securityAuditEvent", "security_audit.read"),
+    ];
+
+    let rules = rest
+        .iter()
+        .map(|(template, action)| {
+            let rule = OperationRules::find("GET", template).unwrap();
+            (rule.action, rule.requirement, *action)
+        })
+        .chain(graphql.iter().map(|(coordinate, action)| {
+            let rule = OperationRules::find_graphql(coordinate).unwrap();
+            (rule.action, rule.requirement, *action)
+        }));
+    for (found, requirement, expected) in rules {
+        assert_eq!(found, expected);
+        assert_eq!(requirement, Requirement::Reserved(&[AUDIT_READ]));
+        assert!(!requirement.needs_catalogue());
+        assert_eq!(requirement.reserved(), ["iam:audit:read"]);
     }
 }
 

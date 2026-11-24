@@ -28,6 +28,7 @@ mod role_deletion;
 mod roles;
 mod route_configurations;
 mod routes;
+mod security_audit_events;
 mod upstreams;
 mod user_roles;
 

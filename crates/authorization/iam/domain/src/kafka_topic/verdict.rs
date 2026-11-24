@@ -55,6 +55,9 @@ impl Violation {
     }
 }
 
+/// The settings that the ACL rules name in a violation.
+const ACL_SETTINGS: [&str; 2] = ["acl.write", "allow.everyone.if.no.acl.found"];
+
 /// Whether the state topic may be published to, and why not.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigurationVerdict {
@@ -76,6 +79,22 @@ impl ConfigurationVerdict {
             gates,
             violations,
             allow_everyone_source,
+        }
+    }
+
+    /// The verdict without the rules about who may write the topic and what an absent ACL means:
+    /// the gateway judges the topic, not the ACLs, which stay with `iam-control`.
+    #[must_use]
+    pub fn without_acl_rules(self) -> Self {
+        let violations = self
+            .violations
+            .into_iter()
+            .filter(|violation| !ACL_SETTINGS.contains(&violation.setting.as_str()))
+            .collect();
+        Self {
+            violations,
+            allow_everyone_source: None,
+            gates: self.gates,
         }
     }
 

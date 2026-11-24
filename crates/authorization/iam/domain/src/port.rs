@@ -28,6 +28,7 @@ pub mod policy_log_producer;
 pub mod policy_log_tail;
 pub mod policy_read_repository;
 pub mod policy_state_inventory;
+pub mod policy_tail_log;
 pub mod policy_view;
 pub mod propagation_store;
 pub mod rate_limit_store;

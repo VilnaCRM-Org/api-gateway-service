@@ -76,7 +76,10 @@ impl PolicyTopicHead {
                 | PolicyState::Chunk(_)
                 | PolicyState::Route(_)
                 | PolicyState::Upstream(_)
-                | PolicyState::RatePolicy(_) => None,
+                | PolicyState::RatePolicy(_)
+                | PolicyState::SessionRevocation(_)
+                | PolicyState::UserRevocation(_)
+                | PolicyState::GlobalRevocation(_) => None,
             })
             .max()
     }

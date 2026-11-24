@@ -302,3 +302,199 @@ fn the_test_codec_names_an_upstream_a_route_and_a_rate_policy() {
     assert!(route_text.starts_with("route /users v"), "{route_text}");
     assert_eq!(TextCodec.encode(&policy).unwrap(), "ratepolicy per-ip v2");
 }
+
+fn instant(seconds: u64) -> std::time::SystemTime {
+    std::time::UNIX_EPOCH
+        .checked_add(std::time::Duration::from_secs(seconds))
+        .unwrap()
+}
+
+fn user() -> Uuid {
+    Uuid::parse("0192f6a0-0000-7000-8000-0000000000aa").unwrap()
+}
+
+#[test]
+fn the_state_of_a_session_revocation_keeps_the_session_user_and_instants_in_microseconds() {
+    use crate::revocation::revocation_source::RevocationSource;
+    use crate::value_object::actor_ref::ActorRef;
+    use crate::value_object::identifier::SessionRevocationId;
+
+    let session = SessionId::new("sid-1").unwrap();
+    let revocation = SessionRevocation {
+        id: SessionRevocationId::from_uuid(user()),
+        session: session.clone(),
+        user: user(),
+        source: RevocationSource::Operator,
+        revoked_by: ActorRef::parse(&format!("user:{}", user())).unwrap(),
+        revoked_at: instant(10),
+        prune_after: instant(100),
+    };
+
+    let state = SessionRevocationState::of(&revocation).unwrap();
+    let record = StateRecord::new(
+        StateKey::SessionRevocation(session),
+        Some(PolicyState::SessionRevocation(state.clone())),
+    );
+
+    assert_eq!(state.user, user());
+    assert_eq!(state.revoked_at_micros, 10_000_000);
+    assert_eq!(state.prune_after_micros, 100_000_000);
+    assert!(record.is_ok());
+}
+
+#[test]
+fn the_state_of_a_cutoff_belongs_to_its_own_key_only() {
+    let user_state = UserRevocationState {
+        user: user(),
+        tokens_valid_after_micros: 5,
+        prune_after_micros: 9,
+    };
+    let global = PolicyState::GlobalRevocation(GlobalRevocationState {
+        tokens_valid_after_micros: 5,
+    });
+
+    assert!(
+        StateRecord::new(
+            StateKey::UserRevocation(user()),
+            Some(PolicyState::UserRevocation(user_state.clone()))
+        )
+        .is_ok()
+    );
+    assert!(
+        StateRecord::new(
+            StateKey::UserRevocation(Uuid::parse("0192f6a0-0000-7000-8000-0000000000bb").unwrap()),
+            Some(PolicyState::UserRevocation(user_state))
+        )
+        .is_err()
+    );
+    assert!(StateRecord::new(StateKey::GlobalRevocation, Some(global.clone())).is_ok());
+    assert!(StateRecord::new(StateKey::Head, Some(global)).is_err());
+}
+
+#[test]
+fn a_time_before_1970_has_no_state() {
+    use crate::value_object::actor_ref::ActorRef;
+
+    let before = std::time::UNIX_EPOCH
+        .checked_sub(std::time::Duration::from_secs(1))
+        .unwrap();
+    let cutoff = GlobalTokenCutoff {
+        tokens_valid_after: before,
+        set_by: ActorRef::parse(&format!("user:{}", user())).unwrap(),
+        set_at: before,
+    };
+
+    assert_eq!(
+        GlobalRevocationState::of(&cutoff),
+        Err(InvalidStateRecord::Field {
+            field: "tokensValidAfter"
+        })
+    );
+}
+
+fn before_1970() -> std::time::SystemTime {
+    std::time::UNIX_EPOCH
+        .checked_sub(std::time::Duration::from_secs(1))
+        .unwrap()
+}
+
+fn session_revocation(
+    revoked_at: std::time::SystemTime,
+    prune_after: std::time::SystemTime,
+) -> SessionRevocation {
+    use crate::revocation::revocation_source::RevocationSource;
+    use crate::value_object::actor_ref::ActorRef;
+    use crate::value_object::identifier::SessionRevocationId;
+
+    SessionRevocation {
+        id: SessionRevocationId::from_uuid(user()),
+        session: SessionId::new("sid-1").unwrap(),
+        user: user(),
+        source: RevocationSource::Operator,
+        revoked_by: ActorRef::parse(&format!("user:{}", user())).unwrap(),
+        revoked_at,
+        prune_after,
+    }
+}
+
+fn user_cutoff(
+    tokens_valid_after: std::time::SystemTime,
+    prune_after: std::time::SystemTime,
+) -> UserTokenCutoff {
+    use crate::revocation::revocation_source::RevocationSource;
+
+    UserTokenCutoff {
+        user: user(),
+        tokens_valid_after,
+        source: RevocationSource::Operator,
+        updated_at: instant(10),
+        prune_after,
+    }
+}
+
+#[test]
+fn a_session_revocation_with_a_time_before_1970_has_no_state() {
+    assert_eq!(
+        SessionRevocationState::of(&session_revocation(before_1970(), instant(100))),
+        Err(InvalidStateRecord::Field { field: "revokedAt" })
+    );
+    assert_eq!(
+        SessionRevocationState::of(&session_revocation(instant(10), before_1970())),
+        Err(InvalidStateRecord::Field {
+            field: "pruneAfter"
+        })
+    );
+}
+
+#[test]
+fn the_state_of_a_user_cutoff_keeps_its_times_in_microseconds() {
+    let state = UserRevocationState::of(&user_cutoff(instant(5), instant(90))).unwrap();
+
+    assert_eq!(
+        state,
+        UserRevocationState {
+            user: user(),
+            tokens_valid_after_micros: 5_000_000,
+            prune_after_micros: 90_000_000,
+        }
+    );
+}
+
+#[test]
+fn a_user_cutoff_with_a_time_before_1970_has_no_state() {
+    assert_eq!(
+        UserRevocationState::of(&user_cutoff(before_1970(), instant(90))),
+        Err(InvalidStateRecord::Field {
+            field: "tokensValidAfter"
+        })
+    );
+    assert_eq!(
+        UserRevocationState::of(&user_cutoff(instant(5), before_1970())),
+        Err(InvalidStateRecord::Field {
+            field: "pruneAfter"
+        })
+    );
+}
+
+#[test]
+fn the_test_codec_names_the_revocation_states() {
+    use crate::port::state_record_codec::StateRecordCodec as _;
+    use crate::state::fakes::TextCodec;
+
+    let session = PolicyState::SessionRevocation(
+        SessionRevocationState::of(&session_revocation(instant(10), instant(100))).unwrap(),
+    );
+    let user_state = PolicyState::UserRevocation(
+        UserRevocationState::of(&user_cutoff(instant(5), instant(90))).unwrap(),
+    );
+    let global = PolicyState::GlobalRevocation(GlobalRevocationState {
+        tokens_valid_after_micros: 7,
+    });
+
+    assert_eq!(TextCodec.encode(&session).unwrap(), "revoked session sid-1");
+    assert_eq!(
+        TextCodec.encode(&user_state).unwrap(),
+        "user cutoff 5000000"
+    );
+    assert_eq!(TextCodec.encode(&global).unwrap(), "global cutoff 7");
+}

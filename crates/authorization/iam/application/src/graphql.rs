@@ -26,6 +26,7 @@ pub mod role_permission;
 pub mod route;
 pub mod route_configuration;
 pub mod schema_parser;
+pub mod security_audit_event;
 pub mod spec_retirement;
 pub mod upstream;
 pub mod user_role;
@@ -103,6 +104,10 @@ use route::{
 use route_configuration::{
     ApplyRouteConfigurationInput, ApplyRouteConfigurationPayload, RouteConfigurationObject,
     apply_route_configuration_field, route_configuration_field,
+};
+use security_audit_event::{
+    SecurityAuditEventFilterInput, SecurityAuditEventObject, SecurityAuditEventPageObject,
+    security_audit_event_field, security_audit_events_field,
 };
 use spec_retirement::{
     RetireGraphQlSpecInput, RetireOpenApiSpecInput, SpecRetirementObject,
@@ -718,6 +723,34 @@ impl IamQuery {
         filter: Option<RouteFilterInput>,
     ) -> async_graphql::Result<RoutePageObject> {
         routes_field(ctx, first, after, filter.unwrap_or_default())
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves a security audit record by id and records the read in the audit log; null when it is unknown. Needs `iam:audit:read`.
+    async fn security_audit_event(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> async_graphql::Result<Option<SecurityAuditEventObject>> {
+        security_audit_event_field(ctx, &id)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves one page of the security audit records, newest first, and records the search in the audit log; the filter keeps the records that match every field given. Needs `iam:audit:read`.
+    #[graphql(complexity = "page_complexity(first, child_complexity)")]
+    async fn security_audit_events(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 30, desc = "Page size, from 1 to 100.")] first: Option<i32>,
+        #[graphql(desc = "The nextCursor of the previous page.")] after: Option<String>,
+        #[graphql(
+            desc = "Keeps the records in a time range, of an actor, an action, a target and an outcome."
+        )]
+        filter: Option<SecurityAuditEventFilterInput>,
+    ) -> async_graphql::Result<SecurityAuditEventPageObject> {
+        security_audit_events_field(ctx, first, after, filter.unwrap_or_default())
             .await
             .map_err(iam_problem_to_graphql_error)
     }

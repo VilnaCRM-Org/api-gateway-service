@@ -22,6 +22,8 @@ pub struct KrafkaTopicInspector {
     connector: Arc<dyn ClusterConnector>,
     topic: String,
     gates: ConfigGates,
+    /// Whether the ACLs are read and judged: `iam-control` does, the gateway does not.
+    acl_checks: bool,
 }
 
 impl KrafkaTopicInspector {
@@ -36,6 +38,17 @@ impl KrafkaTopicInspector {
         )
     }
 
+    /// An inspector for the gateway: it judges the topic under the `KAFKA_CONFIG_GATES` of
+    /// `settings` and reads no ACL, which the principal `iam-gateway` may not do and which stay with
+    /// `iam-control`.
+    #[must_use]
+    pub fn for_gateway(settings: &KafkaSettings) -> Self {
+        Self {
+            acl_checks: false,
+            ..Self::new(settings)
+        }
+    }
+
     /// An inspector of `topic` that reads the cluster through `connector`.
     #[must_use]
     pub fn with_connector(
@@ -47,6 +60,7 @@ impl KrafkaTopicInspector {
             connector,
             topic,
             gates,
+            acl_checks: true,
         }
     }
 
@@ -54,12 +68,12 @@ impl KrafkaTopicInspector {
     async fn observe(&self, cluster: &dyn ClusterReader) -> Result<TopicObservation, BoxError> {
         let settings = cluster.topic_settings(&self.topic).await?;
         let layout = cluster.topic_layout(&self.topic).await?;
-        let (writers, allow_everyone) = match self.gates {
-            ConfigGates::Enforce => (
+        let (writers, allow_everyone) = match (self.gates, self.acl_checks) {
+            (ConfigGates::Enforce, true) => (
                 cluster.topic_writers(&self.topic).await?,
                 Some(self.allow_everyone(cluster).await?),
             ),
-            ConfigGates::Relaxed => (Vec::new(), None),
+            (ConfigGates::Enforce, false) | (ConfigGates::Relaxed, _) => (Vec::new(), None),
         };
         Ok(TopicObservation {
             cleanup_policy: settings.cleanup_policy,
@@ -93,7 +107,12 @@ impl KrafkaTopicInspector {
     async fn verdict(&self) -> Result<ConfigurationVerdict, BoxError> {
         let cluster = self.connector.connect().await?;
         let observation = self.observe(cluster.as_ref()).await?;
-        Ok(ConfigurationRules::new(self.gates).evaluate(&observation))
+        let verdict = ConfigurationRules::new(self.gates).evaluate(&observation);
+        Ok(if self.acl_checks {
+            verdict
+        } else {
+            verdict.without_acl_rules()
+        })
     }
 
     fn log(&self, verdict: &ConfigurationVerdict) {

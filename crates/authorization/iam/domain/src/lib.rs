@@ -29,6 +29,7 @@ pub mod resync;
 pub mod revocation;
 pub mod role;
 pub mod route;
+pub mod security_audit_search;
 pub mod snapshot;
 pub mod state;
 pub mod upstream;
@@ -156,6 +157,7 @@ pub use port::policy_log_producer::{
 pub use port::policy_log_tail::{PolicyLogTail, PolicyLogTailError, TAIL_READ_LIMIT, TailRecord};
 pub use port::policy_read_repository::PolicyReadRepository;
 pub use port::policy_state_inventory::PolicyStateInventory;
+pub use port::policy_tail_log::{PolicyTailLog, TailBatch, TimedRecord};
 pub use port::policy_view::PolicyView;
 pub use port::propagation_store::PropagationStore;
 pub use port::rate_limit_store::{RateLimitStore, RateLimitStoreError};
@@ -194,6 +196,7 @@ pub use rest_permission::{RestPermission, RestPermissionParts};
 pub use resync::{EpochChange, InventoryEntry, PolicyResynced, Republication, ResyncStart};
 pub use revocation::global_token_cutoff::GlobalTokenCutoff;
 pub use revocation::inbound_event::{InboundEvent, InboundOutcome};
+pub use revocation::prune_policy::{CUTOFF_MARGIN, PRUNE_MARGIN, PrunePolicy, SKEW_ALLOWANCE};
 pub use revocation::revocation_rule::{RevocationRule, RevocationStatus};
 pub use revocation::revocation_source::RevocationSource;
 pub use revocation::session_revocation::SessionRevocation;
@@ -209,6 +212,7 @@ pub use route::settings::{
 };
 pub use route::statement::RouteStatement;
 pub use route::{Route, RouteParts, RouteStamp};
+pub use security_audit_search::{SecurityAuditFilter, SecurityAuditSearch};
 pub use snapshot::assembly::{Completeness, Offer, VersionAssembly, VersionedRecord};
 pub use snapshot::read::{FreshnessProof, PolicySnapshot};
 pub use snapshot::ring::{DIGEST_RING_CAPACITY, DigestRing};
@@ -217,9 +221,9 @@ pub use state::batch::{StateBatch, StateChange, StateRow};
 pub use state::key::{CATALOGUE_CHUNK_VERSION, ChunkId, StateKey};
 pub use state::layout::{CatalogueLayout, MAX_CHUNK_BYTES};
 pub use state::model::{
-    AssignmentState, CatalogueChunk, CatalogueEntryState, CatalogueManifest, GrantState,
-    PolicyHead, PolicyState, RatePolicyState, RoleState, RouteState, StateRecord, SubjectState,
-    UpstreamState,
+    AssignmentState, CatalogueChunk, CatalogueEntryState, CatalogueManifest, GlobalRevocationState,
+    GrantState, PolicyHead, PolicyState, RatePolicyState, RoleState, RouteState,
+    SessionRevocationState, StateRecord, SubjectState, UpstreamState, UserRevocationState,
 };
 pub use state::shadow::{ShadowState, ShadowVerdict};
 pub use upstream::event::{UpstreamCreated, UpstreamDeleted, UpstreamUpdated};

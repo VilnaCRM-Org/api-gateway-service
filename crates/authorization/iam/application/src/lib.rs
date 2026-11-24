@@ -63,6 +63,9 @@ mod role_permission_fixtures;
 mod route_configuration_fixtures;
 #[cfg(test)]
 mod route_fixtures;
+#[cfg(test)]
+mod security_audit_fixtures;
+pub(crate) mod security_audit_reads;
 pub mod service_catalog_loader;
 pub mod singleton_loop;
 #[cfg(test)]
@@ -146,6 +149,10 @@ pub use operation_rules::{GraphQlRule, OperationRule, OperationRules, Requiremen
 pub use outbox_relay::{OutboxRelay, OutboxRelayPorts, OutboxRelaySettings};
 pub use policy_maintenance::{MaintenanceSettings, PolicyMaintenance};
 pub use policy_tail::{
+    ApplyResult, FenceCause, MAX_APPEND_AGE_MS, TailAction, TailApplier, TailEnd, TailInput,
+    TailMachine, TailPorts, rebootstrap_delay, run_tail,
+};
+pub use policy_tail::{
     BootstrapAction, BootstrapEntry, BootstrapFailure, BootstrapInput, BootstrapMachine,
     BootstrapOutcome, BootstrapPorts, BootstrapSnapshot, run_bootstrap,
 };
@@ -198,6 +205,12 @@ pub use query::get_role_permissions::{
 pub use query::get_route::{GetRouteQuery, GetRouteQueryHandler};
 pub use query::get_route_configuration::{
     GetRouteConfigurationQuery, GetRouteConfigurationQueryHandler, RouteConfiguration,
+};
+pub use query::get_security_audit_event::{
+    GetSecurityAuditEventQuery, GetSecurityAuditEventQueryHandler,
+};
+pub use query::get_security_audit_events::{
+    GetSecurityAuditEventsQuery, GetSecurityAuditEventsQueryHandler, SecurityAuditEventPage,
 };
 pub use query::get_upstream::{GetUpstreamQuery, GetUpstreamQueryHandler};
 pub use query::get_user_role::{GetUserRoleQuery, GetUserRoleQueryHandler, UserRoleView};

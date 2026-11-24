@@ -3,9 +3,15 @@
 //! The states are plain data: the order of every list is canonical, so that the same entity always
 //! has the same state, and so the same encoded bytes and the same entity hash.
 
+use shared_domain::Uuid;
+
 use crate::error::InvalidStateRecord;
+use crate::micros;
 use crate::rate_policy::RatePolicyParts;
 use crate::rate_policy::fields::RatePolicyFields;
+use crate::revocation::global_token_cutoff::GlobalTokenCutoff;
+use crate::revocation::session_revocation::SessionRevocation;
+use crate::revocation::user_token_cutoff::UserTokenCutoff;
 use crate::route::RouteParts;
 use crate::route::fields::RouteFields;
 use crate::state::key::{ChunkId, StateKey};
@@ -18,6 +24,7 @@ use crate::value_object::policy_digest_value::PolicyDigestValue;
 use crate::value_object::policy_version::PolicyVersion;
 use crate::value_object::role_kind::RoleKind;
 use crate::value_object::service_name::ServiceName;
+use crate::value_object::session_id::SessionId;
 use crate::value_object::subject::SubjectRef;
 use crate::value_object::upstream_name::UpstreamName;
 
@@ -197,6 +204,102 @@ impl RatePolicyState {
     }
 }
 
+/// The state of a revoked session: every token of the session is refused until the record is
+/// pruned. The key of the record carries the session as well.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionRevocationState {
+    /// The revoked session.
+    pub session: SessionId,
+    /// The user the session belongs to.
+    pub user: Uuid,
+    /// When the revocation was recorded, in whole microseconds since 1970.
+    pub revoked_at_micros: i64,
+    /// The earliest instant at which the record may be pruned, in whole microseconds since 1970.
+    pub prune_after_micros: i64,
+}
+
+impl SessionRevocationState {
+    /// The state of a stored session revocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidStateRecord::Field`] when a time cannot be kept in microseconds.
+    pub fn of(revocation: &SessionRevocation) -> Result<Self, InvalidStateRecord> {
+        Ok(Self {
+            session: revocation.session.clone(),
+            user: revocation.user,
+            revoked_at_micros: micros::since_epoch(revocation.revoked_at)
+                .ok_or(InvalidStateRecord::Field { field: "revokedAt" })?,
+            prune_after_micros: micros::since_epoch(revocation.prune_after).ok_or(
+                InvalidStateRecord::Field {
+                    field: "pruneAfter",
+                },
+            )?,
+        })
+    }
+}
+
+/// The state of a user cut-off: every token of the user issued at or before the instant is
+/// refused. The key of the record carries the user as well.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UserRevocationState {
+    /// The user.
+    pub user: Uuid,
+    /// Tokens whose `iat` is at or before this instant are refused, in whole microseconds since
+    /// 1970.
+    pub tokens_valid_after_micros: i64,
+    /// The earliest instant at which the record may be pruned, in whole microseconds since 1970.
+    pub prune_after_micros: i64,
+}
+
+impl UserRevocationState {
+    /// The state of a stored user cut-off.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidStateRecord::Field`] when a time cannot be kept in microseconds.
+    pub fn of(cutoff: &UserTokenCutoff) -> Result<Self, InvalidStateRecord> {
+        Ok(Self {
+            user: cutoff.user,
+            tokens_valid_after_micros: micros::since_epoch(cutoff.tokens_valid_after).ok_or(
+                InvalidStateRecord::Field {
+                    field: "tokensValidAfter",
+                },
+            )?,
+            prune_after_micros: micros::since_epoch(cutoff.prune_after).ok_or(
+                InvalidStateRecord::Field {
+                    field: "pruneAfter",
+                },
+            )?,
+        })
+    }
+}
+
+/// The state of the global cut-off: every token issued at or before the instant is refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalRevocationState {
+    /// Tokens whose `iat` is at or before this instant are refused, in whole microseconds since
+    /// 1970.
+    pub tokens_valid_after_micros: i64,
+}
+
+impl GlobalRevocationState {
+    /// The state of the stored global cut-off.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidStateRecord::Field`] when the time cannot be kept in microseconds.
+    pub fn of(cutoff: &GlobalTokenCutoff) -> Result<Self, InvalidStateRecord> {
+        Ok(Self {
+            tokens_valid_after_micros: micros::since_epoch(cutoff.tokens_valid_after).ok_or(
+                InvalidStateRecord::Field {
+                    field: "tokensValidAfter",
+                },
+            )?,
+        })
+    }
+}
+
 /// The version and the digest that a versioned transaction ended with: the last record of the
 /// version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,6 +327,12 @@ pub enum PolicyState {
     Route(RouteState),
     /// A rate policy.
     RatePolicy(RatePolicyState),
+    /// A revoked session.
+    SessionRevocation(SessionRevocationState),
+    /// The cut-off of a user.
+    UserRevocation(UserRevocationState),
+    /// The global cut-off.
+    GlobalRevocation(GlobalRevocationState),
     /// The head of a version.
     Head(PolicyHead),
 }
@@ -244,7 +353,12 @@ impl PolicyState {
             (Self::Upstream(upstream), StateKey::Upstream(name)) => upstream.name == *name,
             (Self::Route(route), StateKey::Route(id)) => route.id == *id,
             (Self::RatePolicy(policy), StateKey::RatePolicy(id)) => policy.id == *id,
-            (Self::Head(_), StateKey::Head) => true,
+            (Self::SessionRevocation(state), StateKey::SessionRevocation(session)) => {
+                state.session == *session
+            }
+            (Self::UserRevocation(state), StateKey::UserRevocation(user)) => state.user == *user,
+            (Self::GlobalRevocation(_), StateKey::GlobalRevocation)
+            | (Self::Head(_), StateKey::Head) => true,
             _ => false,
         }
     }

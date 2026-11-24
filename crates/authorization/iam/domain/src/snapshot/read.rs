@@ -2,8 +2,11 @@
 //! request reads (FR-71).
 
 use crate::policy::compiled_role_set::CompiledRoleSet;
+use shared_domain::Uuid;
+
 use crate::state::model::{
-    AssignmentState, CatalogueEntryState, RatePolicyState, RouteState, UpstreamState,
+    AssignmentState, CatalogueEntryState, GlobalRevocationState, RatePolicyState, RouteState,
+    UpstreamState, UserRevocationState,
 };
 use crate::value_object::boot_instant::BootInstant;
 use crate::value_object::http_method::HttpMethod;
@@ -13,6 +16,7 @@ use crate::value_object::policy_digest_value::PolicyDigestValue;
 use crate::value_object::policy_version::PolicyVersion;
 use crate::value_object::route_host::RouteHost;
 use crate::value_object::service_name::ServiceName;
+use crate::value_object::session_id::SessionId;
 use crate::value_object::subject::SubjectRef;
 use crate::value_object::upstream_name::UpstreamName;
 
@@ -73,4 +77,13 @@ pub trait PolicySnapshot: std::fmt::Debug + Send + Sync {
 
     /// The entries of the catalogue of `service`, once its manifest and every chunk are present.
     fn catalogue(&self, service: &ServiceName) -> Option<&[CatalogueEntryState]>;
+
+    /// Whether `session` has a revocation record in the revocation sets.
+    fn session_revoked(&self, session: &SessionId) -> bool;
+
+    /// The cut-off record of `user`, when one is set.
+    fn user_cutoff(&self, user: Uuid) -> Option<&UserRevocationState>;
+
+    /// The global cut-off record, when one is set.
+    fn global_cutoff(&self) -> Option<&GlobalRevocationState>;
 }

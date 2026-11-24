@@ -7,14 +7,39 @@ use iam_domain::{
     ActorRef, AssignmentScope, AuditAction, AuditChainHead, AuditHash, AuditOutcome, AuditReason,
     AuditSummary, AuditTarget, IdempotencyKey, InvalidIamValue, PolicyVersion, RepositoryError,
     RequestId, SecurityAuditEvent, SecurityAuditEventId, SecurityAuditEventParts, SecurityAuditLog,
-    ServiceName, StoredSecurityAuditEvent,
+    SecurityAuditSearch, ServiceName, StoredSecurityAuditEvent,
 };
 use shared_domain::Uuid;
-use sqlx::PgConnection;
+use sqlx::postgres::PgRow;
 use sqlx::types::Uuid as SqlUuid;
+use sqlx::{PgConnection, Row as _};
 
 /// The message of the `tracing` event of an appended record.
 const AUDIT_MESSAGE: &str = "security audit event";
+
+/// The page of the records that meet the conditions of a search, newest first. A condition that is
+/// null is not applied; the time bounds travel as microseconds since 1970 and become times the
+/// way the insert makes them.
+const SEARCH: &str =
+    "SELECT seq, id, (extract(epoch FROM occurred_at) * 1000000)::bigint AS occurred_at_micros,
+        actor, caller_service, action, target_type, target_id, scope, before_summary,
+        after_summary, idempotency_key, outcome, reason, policy_version, request_id,
+        prev_hash, hash
+    FROM iam_security_audit_events
+    WHERE ($1::bigint IS NULL OR seq < $1)
+        AND ($2::bigint IS NULL OR occurred_at >= 'epoch'::timestamptz
+            + ($2::bigint / 1000000) * interval '1 second'
+            + ($2::bigint % 1000000) * interval '1 microsecond')
+        AND ($3::bigint IS NULL OR occurred_at < 'epoch'::timestamptz
+            + ($3::bigint / 1000000) * interval '1 second'
+            + ($3::bigint % 1000000) * interval '1 microsecond')
+        AND ($4::text IS NULL OR actor = $4)
+        AND ($5::text IS NULL OR action = $5)
+        AND ($6::text IS NULL OR target_type = $6)
+        AND ($7::text IS NULL OR target_id = $7)
+        AND ($8::text IS NULL OR outcome = $8)
+    ORDER BY seq DESC
+    LIMIT $9";
 
 /// The append-only, hash-chained `iam_security_audit_events` table.
 #[derive(Debug)]
@@ -151,6 +176,54 @@ impl PgSecurityAuditLog {
         .map_err(unavailable)?;
         rows.iter().map(restore).collect()
     }
+
+    async fn select_search(
+        &self,
+        search: &SecurityAuditSearch,
+    ) -> Result<Vec<StoredSecurityAuditEvent>, RepositoryError> {
+        let filter = &search.filter;
+        let rows = sqlx::query(SEARCH)
+            .bind(search.before_seq)
+            .bind(filter.since_micros())
+            .bind(filter.until_micros())
+            .bind(filter.actor().map(ToString::to_string))
+            .bind(filter.action().map(ToString::to_string))
+            .bind(filter.target_type())
+            .bind(filter.target_id())
+            .bind(filter.outcome().map(AuditOutcome::as_str))
+            .bind(i64::from(search.limit))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(unavailable)?;
+        rows.iter()
+            .map(|row| row_of(row).map_err(unavailable))
+            .map(|row| row.and_then(|row| restore(&row)))
+            .collect()
+    }
+}
+
+/// The stored record of a row of [`SEARCH`].
+fn row_of(row: &PgRow) -> Result<Row, sqlx::Error> {
+    Ok(Row {
+        seq: row.try_get("seq")?,
+        id: row.try_get("id")?,
+        occurred_at_micros: row.try_get("occurred_at_micros")?,
+        actor: row.try_get("actor")?,
+        caller_service: row.try_get("caller_service")?,
+        action: row.try_get("action")?,
+        target_type: row.try_get("target_type")?,
+        target_id: row.try_get("target_id")?,
+        scope: row.try_get("scope")?,
+        before_summary: row.try_get("before_summary")?,
+        after_summary: row.try_get("after_summary")?,
+        idempotency_key: row.try_get("idempotency_key")?,
+        outcome: row.try_get("outcome")?,
+        reason: row.try_get("reason")?,
+        policy_version: row.try_get("policy_version")?,
+        request_id: row.try_get("request_id")?,
+        prev_hash: row.try_get("prev_hash")?,
+        hash: row.try_get("hash")?,
+    })
 }
 
 /// The column values of one record. The text values travel as one `text[]` parameter, in the
@@ -381,6 +454,13 @@ impl SecurityAuditLog for PgSecurityAuditLog {
         limit: u32,
     ) -> Result<Vec<StoredSecurityAuditEvent>, RepositoryError> {
         self.select_after(after_seq, limit).await
+    }
+
+    async fn search(
+        &self,
+        search: &SecurityAuditSearch,
+    ) -> Result<Vec<StoredSecurityAuditEvent>, RepositoryError> {
+        self.select_search(search).await
     }
 }
 

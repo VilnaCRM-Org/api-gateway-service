@@ -89,6 +89,9 @@ fn entries_fill_chunks_up_to_the_limit_and_each_one_lands_in_exactly_one_chunk()
             | PolicyState::Upstream(_)
             | PolicyState::Route(_)
             | PolicyState::RatePolicy(_)
+            | PolicyState::SessionRevocation(_)
+            | PolicyState::UserRevocation(_)
+            | PolicyState::GlobalRevocation(_)
             | PolicyState::Head(_) => None,
         })
         .collect();

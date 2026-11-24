@@ -2,6 +2,7 @@
 
 use crate::entity::security_audit_event::{SecurityAuditEvent, StoredSecurityAuditEvent};
 use crate::port::RepositoryError;
+use crate::security_audit_search::SecurityAuditSearch;
 use crate::value_object::audit_chain_head::AuditChainHead;
 use crate::value_object::identifier::SecurityAuditEventId;
 
@@ -50,5 +51,15 @@ pub trait SecurityAuditLog: std::fmt::Debug + Send + Sync {
         &self,
         after_seq: i64,
         limit: u32,
+    ) -> Result<Vec<StoredSecurityAuditEvent>, RepositoryError>;
+
+    /// One page of the records that meet the conditions of `search`, newest first.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when the storage fails or holds unusable data.
+    async fn search(
+        &self,
+        search: &SecurityAuditSearch,
     ) -> Result<Vec<StoredSecurityAuditEvent>, RepositoryError>;
 }

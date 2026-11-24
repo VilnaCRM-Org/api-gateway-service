@@ -8,18 +8,23 @@
 //! The same adapter serves the bootstrap of a gateway pod (Story 9.3): [`KrafkaPolicyLogTail::bootstrap`]
 //! opens it under the principal `iam-gateway-bootstrap` with the client id of the same name, it
 //! never resets an offset by itself, and [`PolicyBootstrapLog`] returns the records with their
-//! whole framing. The tail mode and the reseek of the gateway follow in Story 9.4.
+//! whole framing.
+//!
+//! Story 9.4 adds the tail mode of the gateway: [`KrafkaPolicyLogTail::tail`] opens the reader
+//! under the principal `iam-gateway` with `fetch.min.bytes` 1 and `KAFKA_FETCH_MAX_WAIT`, the
+//! position is kept by the caller and every [`PolicyTailLog::poll`] reseeks to it when the consumer
+//! is not there (after a reconnect, or when the watermark moved while the tail was idle).
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use iam_domain::{
     FramedRecord, LogEpoch, PolicyBootstrapLog, PolicyDigestValue, PolicyLogTail,
-    PolicyLogTailError, PolicyVersion, RelayEpoch, STATE_PARTITION, StateKey, TAIL_READ_LIMIT,
-    TailRecord, VersionedRecord,
+    PolicyLogTailError, PolicyTailLog, PolicyVersion, RelayEpoch, STATE_PARTITION, StateKey,
+    TAIL_READ_LIMIT, TailBatch, TailRecord, TimedRecord, VersionedRecord,
 };
-use krafka::KrafkaError;
 use krafka::consumer::{AutoOffsetReset, Consumer, ConsumerRecord, IsolationLevel};
+use krafka::{KrafkaError, TimestampType};
 use shared_domain::BoxError;
 
 use super::krafka_cluster::{authenticated, builder};
@@ -39,6 +44,8 @@ struct ReadTimedOut;
 pub struct KrafkaPolicyLogTail {
     settings: KafkaSettings,
     reset: AutoOffsetReset,
+    /// `KAFKA_FETCH_MAX_WAIT` in tail mode; `None` for the bounded reads.
+    fetch_wait: Option<Duration>,
     consumer: Mutex<Option<Arc<Consumer>>>,
 }
 
@@ -62,6 +69,7 @@ impl KrafkaPolicyLogTail {
         Self {
             settings,
             reset: AutoOffsetReset::Earliest,
+            fetch_wait: None,
             consumer: Mutex::new(None),
         }
     }
@@ -74,6 +82,21 @@ impl KrafkaPolicyLogTail {
         Self {
             settings,
             reset: AutoOffsetReset::None,
+            fetch_wait: None,
+            consumer: Mutex::new(None),
+        }
+    }
+
+    /// A reader that follows the state topic in tail mode. `settings` carry the principal
+    /// `iam-gateway` and the client id `iam-gateway-<pod-name>`; the reader fetches with
+    /// `fetch.min.bytes` 1 and `fetch_max_wait` (`KAFKA_FETCH_MAX_WAIT`) and never resets an offset
+    /// by itself: a position outside the partition is reported to the caller, which rebootstraps.
+    #[must_use]
+    pub const fn tail(settings: KafkaSettings, fetch_max_wait: Duration) -> Self {
+        Self {
+            settings,
+            reset: AutoOffsetReset::None,
+            fetch_wait: Some(fetch_max_wait),
             consumer: Mutex::new(None),
         }
     }
@@ -83,7 +106,7 @@ impl KrafkaPolicyLogTail {
         if let Some(consumer) = open {
             return Ok(consumer);
         }
-        let consumer = Arc::new(open_consumer(&self.settings, self.reset).await?);
+        let consumer = Arc::new(open_consumer(&self.settings, self.reset, self.fetch_wait).await?);
         *locked(&self.consumer) = Some(Arc::clone(&consumer));
         Ok(consumer)
     }
@@ -165,6 +188,105 @@ impl KrafkaPolicyLogTail {
         drop(consumer);
         completed(records, done)
     }
+
+    /// The partition bounds: the first offset it holds and the last stable offset.
+    async fn bounds(&self) -> Result<(i64, i64), BoxError> {
+        let consumer = self.consumer().await?;
+        let bounds = consumer
+            .fetch_watermarks(&self.settings.policy_topic, STATE_PARTITION)
+            .await?;
+        drop(consumer);
+        Ok(bounds)
+    }
+
+    /// One poll of the tail from `position`: the failure of a poll drops the consumer, and a
+    /// failure that comes from a position outside the partition is an empty batch that carries the
+    /// bounds, so that the caller can fence.
+    async fn tail_poll(&self, position: i64) -> Result<TailBatch, PolicyLogTailError> {
+        match self.tail_attempt(position).await {
+            Ok(batch) => Ok(batch),
+            Err(error) => {
+                self.release().await;
+                self.outside_partition(position, error).await
+            }
+        }
+    }
+
+    async fn outside_partition(
+        &self,
+        position: i64,
+        error: PolicyLogTailError,
+    ) -> Result<TailBatch, PolicyLogTailError> {
+        if matches!(error, PolicyLogTailError::Malformed { .. }) {
+            return Err(error);
+        }
+        match self.bounds().await {
+            Ok((low, high)) if position < low || position > high => Ok(TailBatch {
+                records: Vec::new(),
+                low,
+                high,
+            }),
+            _ => {
+                self.release().await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn tail_attempt(&self, position: i64) -> Result<TailBatch, PolicyLogTailError> {
+        let consumer = self.consumer().await.map_err(into_unavailable)?;
+        let topic = &self.settings.policy_topic;
+        let behind = consumer
+            .position(topic, STATE_PARTITION)
+            .await
+            .is_none_or(|held| held < position);
+        if behind {
+            consumer
+                .seek(topic, STATE_PARTITION, position)
+                .await
+                .map_err(into_unavailable)?;
+        }
+        let wait = self
+            .fetch_wait
+            .unwrap_or(POLL_TIMEOUT)
+            .saturating_add(POLL_TIMEOUT);
+        let polled = consumer.poll(wait).await.map_err(into_unavailable)?;
+        let mut records = Vec::new();
+        for record in polled.iter().filter(|record| record.offset >= position) {
+            records.push(timed_of(record)?);
+        }
+        records.truncate(TAIL_READ_LIMIT);
+        if let Some(last) = records.last() {
+            let high = last.framed.offset.saturating_add(1);
+            drop(consumer);
+            return Ok(TailBatch {
+                records,
+                low: position.min(high),
+                high,
+            });
+        }
+        drop(consumer);
+        self.idle_bounds(position).await
+    }
+
+    /// The bounds of an idle tail; a watermark above the position means the consumer missed
+    /// records, so it is seeked to the position again.
+    async fn idle_bounds(&self, position: i64) -> Result<TailBatch, PolicyLogTailError> {
+        let (low, high) = self.bounds().await.map_err(unavailable)?;
+        if high > position && position >= low {
+            let consumer = self.consumer().await.map_err(into_unavailable)?;
+            consumer
+                .seek(&self.settings.policy_topic, STATE_PARTITION, position)
+                .await
+                .map_err(into_unavailable)?;
+            drop(consumer);
+        }
+        Ok(TailBatch {
+            records: Vec::new(),
+            low,
+            high,
+        })
+    }
 }
 
 /// Logs a consumer that did not close cleanly; it is closed either way.
@@ -225,16 +347,21 @@ fn take_converted<T>(
 async fn open_consumer(
     settings: &KafkaSettings,
     reset: AutoOffsetReset,
+    fetch_wait: Option<Duration>,
 ) -> Result<Consumer, KrafkaError> {
     let kafka = builder(settings, authenticated(settings)).connect().await?;
-    let consumer = kafka
+    let configured = kafka
         .consumer_without_group()
         .isolation_level(IsolationLevel::ReadCommitted)
         .auto_offset_reset(reset)
         .enable_auto_commit(false)
-        .max_poll_records(i32::try_from(TAIL_READ_LIMIT).unwrap_or(i32::MAX))
-        .build()
-        .await?;
+        .max_poll_records(i32::try_from(TAIL_READ_LIMIT).unwrap_or(i32::MAX));
+    let consumer = match fetch_wait {
+        Some(wait) => configured.fetch_min_bytes(1).fetch_max_wait(wait),
+        None => configured,
+    }
+    .build()
+    .await?;
     consumer
         .assign(&settings.policy_topic, vec![STATE_PARTITION])
         .await?;
@@ -309,6 +436,22 @@ pub(super) fn framed_of(record: &ConsumerRecord) -> Result<FramedRecord, PolicyL
     })
 }
 
+/// The timed record of a consumed record: the framed record and the broker append time, when the
+/// topic stamps one.
+///
+/// # Errors
+///
+/// The errors of [`framed_of`].
+pub(super) fn timed_of(record: &ConsumerRecord) -> Result<TimedRecord, PolicyLogTailError> {
+    let framed = framed_of(record)?;
+    let appended_at_ms =
+        matches!(record.timestamp_type, TimestampType::LogAppendTime).then_some(record.timestamp);
+    Ok(TimedRecord {
+        framed,
+        appended_at_ms,
+    })
+}
+
 fn unavailable(error: BoxError) -> PolicyLogTailError {
     PolicyLogTailError::Unavailable(error)
 }
@@ -353,6 +496,17 @@ impl PolicyBootstrapLog for KrafkaPolicyLogTail {
         up_to: i64,
     ) -> Result<Vec<FramedRecord>, PolicyLogTailError> {
         self.converted(from, up_to, framed_of).await
+    }
+
+    async fn close(&self) {
+        self.release().await;
+    }
+}
+
+#[async_trait::async_trait]
+impl PolicyTailLog for KrafkaPolicyLogTail {
+    async fn poll(&self, position: i64) -> Result<TailBatch, PolicyLogTailError> {
+        self.tail_poll(position).await
     }
 
     async fn close(&self) {

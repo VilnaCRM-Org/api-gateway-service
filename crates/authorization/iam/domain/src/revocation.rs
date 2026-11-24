@@ -3,6 +3,7 @@
 
 pub mod global_token_cutoff;
 pub mod inbound_event;
+pub mod prune_policy;
 pub mod revocation_rule;
 pub mod revocation_source;
 pub mod session_revocation;

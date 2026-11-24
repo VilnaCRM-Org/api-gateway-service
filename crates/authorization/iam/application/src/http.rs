@@ -20,6 +20,7 @@ pub mod role;
 pub mod role_permission;
 pub mod route;
 pub mod route_configuration;
+pub mod security_audit_event;
 pub mod spec_retirement;
 pub mod upstream;
 pub mod user_role;
@@ -75,6 +76,7 @@ where
         .merge(upstream_router())
         .merge(route_router())
         .merge(route_configuration_router())
+        .merge(security_audit_event_router())
 }
 
 /// The routes of the access validation, single and batch, merged into [`router`].
@@ -241,6 +243,17 @@ where
         .layer(DefaultBodyLimit::max(
             route_configuration::ROUTE_CONFIGURATION_BODY_LIMIT_BYTES,
         ))
+}
+
+/// The routes that read the security audit log, merged into [`router`].
+fn security_audit_event_router<S>() -> OpenApiRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+    IamState: FromRef<S>,
+{
+    OpenApiRouter::new()
+        .routes(routes!(security_audit_event::list))
+        .routes(routes!(security_audit_event::get_one))
 }
 
 /// The routes that upload specification documents, to be nested under `/api`.

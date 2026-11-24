@@ -1547,6 +1547,8 @@ fn valid_gateway() -> GatewayArgs {
 /// principal, since `PLAINTEXT` is refused there.
 fn over_sasl_ssl(args: &mut GatewayArgs) {
     args.service.kafka.security_protocol = some("SASL_SSL");
+    args.service.kafka.sasl_username = some("iam-gateway");
+    args.service.kafka.sasl_password = some("tail-password");
     args.kafka_bootstrap_sasl_username = some("iam-gateway-bootstrap");
     args.kafka_bootstrap_sasl_password = some("bootstrap-password");
 }
@@ -2191,6 +2193,8 @@ fn the_gateway_reads_the_state_topic_under_the_bootstrap_principal() {
     let mut args = valid_gateway();
     args.service.kafka.client_id = some("iam-control");
     args.service.kafka.security_protocol = some("SASL_SSL");
+    args.service.kafka.sasl_username = some("iam-gateway");
+    args.service.kafka.sasl_password = some("hunter2-tail");
     args.kafka_bootstrap_sasl_username = some("iam-gateway-bootstrap");
     args.kafka_bootstrap_sasl_password = some("hunter2-bootstrap");
 
@@ -2232,11 +2236,78 @@ fn a_plaintext_gateway_needs_no_bootstrap_credentials() {
 }
 
 #[test]
-fn the_gateway_does_not_need_the_control_plane_principal() {
+fn the_gateway_needs_the_credentials_of_the_tail_principal_with_sasl_ssl() {
     let mut args = valid_gateway();
     args.service.kafka.security_protocol = some("SASL_SSL");
     args.kafka_bootstrap_sasl_username = some("iam-gateway-bootstrap");
     args.kafka_bootstrap_sasl_password = some("bootstrap-password");
 
-    assert!(GatewayConfig::from_args(&args).is_ok());
+    assert_eq!(
+        gateway_variables(&args),
+        vec!["KAFKA_SASL_USERNAME", "KAFKA_SASL_PASSWORD"]
+    );
+}
+
+#[test]
+fn the_tail_reads_under_the_gateway_principal_with_the_pod_name_as_client_id() {
+    let mut args = valid_gateway();
+    args.pod_name = some("iam-gateway-7d9f");
+    args.service.kafka.security_protocol = some("SASL_SSL");
+    args.service.kafka.sasl_username = some("iam-gateway");
+    args.service.kafka.sasl_password = some("tail-password");
+    args.kafka_bootstrap_sasl_username = some("iam-gateway-bootstrap");
+    args.kafka_bootstrap_sasl_password = some("bootstrap-password");
+
+    let config = GatewayConfig::from_args(&args).unwrap();
+
+    assert_eq!(config.kafka_tail.client_id, "iam-gateway-iam-gateway-7d9f");
+    let KafkaSecurity::SaslSsl { username, .. } = config.kafka_tail.security else {
+        panic!("SASL_SSL was requested");
+    };
+    assert_eq!(username, "iam-gateway");
+    assert_eq!(config.kafka.client_id, "iam-gateway-bootstrap");
+}
+
+#[test]
+fn the_tail_and_the_freshness_bounds_have_defaults() {
+    let config = GatewayConfig::from_args(&valid_gateway()).unwrap();
+
+    assert_eq!(config.kafka_fetch_max_wait, Duration::from_millis(100));
+    assert_eq!(config.freshness_ready_bound, Duration::from_secs(2));
+    assert_eq!(config.freshness_hard_bound, Duration::from_secs(15));
+}
+
+#[rstest]
+#[case("2s", "15s", None)]
+#[case("2s", "3s", None)]
+#[case("2s", "30s", None)]
+#[case("2s", "2s", Some("FRESHNESS_HARD_BOUND"))]
+#[case("5s", "3s", Some("FRESHNESS_HARD_BOUND"))]
+#[case("2s", "2999ms", Some("FRESHNESS_HARD_BOUND"))]
+#[case("2s", "31s", Some("FRESHNESS_HARD_BOUND"))]
+#[case("2s", "soon", Some("FRESHNESS_HARD_BOUND"))]
+#[case("0s", "15s", Some("FRESHNESS_READY_BOUND"))]
+fn the_hard_bound_lies_from_3_to_30_seconds_and_above_the_ready_bound(
+    #[case] ready: &str,
+    #[case] hard: &str,
+    #[case] refused: Option<&str>,
+) {
+    let mut args = valid_gateway();
+    args.freshness_ready_bound = some(ready);
+    args.freshness_hard_bound = some(hard);
+
+    match refused {
+        None => assert!(GatewayConfig::from_args(&args).is_ok()),
+        Some(variable) => assert_eq!(gateway_variables(&args), vec![variable]),
+    }
+}
+
+#[rstest]
+#[case("0s")]
+#[case("fast")]
+fn a_fetch_wait_that_is_not_a_positive_duration_names_its_variable(#[case] raw: &str) {
+    let mut args = valid_gateway();
+    args.kafka_fetch_max_wait = some(raw);
+
+    assert_eq!(gateway_variables(&args), vec!["KAFKA_FETCH_MAX_WAIT"]);
 }

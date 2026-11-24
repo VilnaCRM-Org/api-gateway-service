@@ -6,6 +6,7 @@
 pub mod arc_swap_policy_snapshot;
 pub mod builder;
 pub mod matchit_route_table_compiler;
+pub mod snapshot_revocation_view;
 
 mod data;
 mod derived;
@@ -19,3 +20,4 @@ pub use builder::{
     SnapshotPorts,
 };
 pub use matchit_route_table_compiler::MatchitRouteTableCompiler;
+pub use snapshot_revocation_view::{SnapshotRevocationError, SnapshotRevocationView};

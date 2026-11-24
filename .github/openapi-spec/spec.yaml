@@ -3930,6 +3930,183 @@ paths:
                 $ref: '#/components/schemas/Problem'
       security:
       - bearerAuth: []
+  /api/security-audit-events:
+    get:
+      tags:
+      - iam
+      summary: Searches the security audit log.
+      description: Returns one page of the audit records that meet every filter given, newest first, with the actor, the action, the target, the summaries before and after, the outcome, the resulting `policyVersion` and the place in the hash chain. Committed changes and rejected attempts are both returned. The caller needs `iam:audit:read`, and the search is itself recorded in the log as `security_audit.list`. `nextCursor` goes into `after` for the next, older page.
+      operationId: api_security_audit_events_get
+      parameters:
+      - name: limit
+        in: query
+        description: The largest number of records of the page; 30 when absent.
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 30
+          maximum: 100
+          minimum: 1
+      - name: after
+        in: query
+        description: The `nextCursor` of the previous page; absent for the first page.
+        required: false
+        schema:
+          type: string
+      - name: from
+        in: query
+        description: Only the records from this RFC 3339 UTC time on.
+        required: false
+        schema:
+          type: string
+          format: date-time
+      - name: until
+        in: query
+        description: Only the records before this RFC 3339 UTC time.
+        required: false
+        schema:
+          type: string
+          format: date-time
+      - name: actor
+        in: query
+        description: 'Only the records of this actor: `user:<uuid>`, `service:<name>` or `system:<component>`.'
+        required: false
+        schema:
+          type: string
+      - name: action
+        in: query
+        description: Only the records of this action, such as `role.create`.
+        required: false
+        schema:
+          type: string
+      - name: targetType
+        in: query
+        description: Only the records about targets of this type, such as `role`.
+        required: false
+        schema:
+          type: string
+      - name: targetId
+        in: query
+        description: Only the records about this target; needs `targetType`.
+        required: false
+        schema:
+          type: string
+      - name: outcome
+        in: query
+        description: 'Only the records of this outcome: `committed` or `rejected`.'
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: One page of audit records.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityAuditEventPage'
+        '400':
+          description: Invalid query parameter.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks `iam:audit:read`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+  /api/security-audit-events/{id}:
+    get:
+      tags:
+      - iam
+      summary: Retrieves a security audit record.
+      description: Returns the audit record with the identifier and its place in the hash chain. The caller needs `iam:audit:read`, and the read is itself recorded in the log as `security_audit.read`.
+      operationId: api_security_audit_events_id_get
+      parameters:
+      - name: id
+        in: path
+        description: Audit record identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The audit record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityAuditEvent'
+        '400':
+          description: Invalid identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks `iam:audit:read`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Audit record not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
   /api/token-resolutions:
     post:
       tags:
@@ -7318,6 +7495,113 @@ components:
         streaming:
           type: boolean
           description: Whether the route streams its response.
+    SecurityAuditEvent:
+      type: object
+      description: One security audit record with its place in the hash chain.
+      required:
+      - id
+      - seq
+      - occurredAt
+      - actor
+      - action
+      - targetType
+      - targetId
+      - outcome
+      - prevHash
+      - hash
+      properties:
+        action:
+          type: string
+          description: What was done, such as `role.create`.
+          example: role.create
+        actor:
+          type: string
+          description: 'Who performed the action: `user:<uuid>`, `service:<name>` or `system:<component>`.'
+          example: user:0190f2a8-7b3c-7d4e-8f10-1234567890ab
+        after:
+          type:
+          - string
+          - 'null'
+          description: The state after the change, as a summary of identifiers, names and keys.
+        before:
+          type:
+          - string
+          - 'null'
+          description: The state before the change, as a summary of identifiers, names and keys.
+        callerService:
+          type:
+          - string
+          - 'null'
+          description: The service that called on behalf of the actor, when it differs from the actor.
+        hash:
+          type: string
+          description: |-
+            The hash of this record: `SHA-256(prevHash || canonical form)`, 64 lower-case hexadecimal
+            digits.
+        id:
+          type: string
+          format: uuid
+          description: The identifier of the record.
+        occurredAt:
+          type: string
+          format: date-time
+          description: When the action happened, as an RFC 3339 UTC time.
+          example: 2026-11-23T10:15:30.123456Z
+        outcome:
+          type: string
+          description: 'Whether the change took effect: `committed` or `rejected`.'
+          example: committed
+        policyVersion:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: The policy version that resulted from the change.
+        prevHash:
+          type: string
+          description: The hash of the previous record, 64 lower-case hexadecimal digits; all zeros for the first.
+        reason:
+          type:
+          - string
+          - 'null'
+          description: Why an attempt was refused, such as `forbidden`.
+        requestId:
+          type:
+          - string
+          - 'null'
+          description: The request id of the caller.
+        scope:
+          type:
+          - string
+          - 'null'
+          description: 'Where it applies: `global` or `project:<uuid>`.'
+        seq:
+          type: integer
+          format: int64
+          description: The gap-free sequence number of the record in the chain, starting at 1.
+        targetId:
+          type: string
+          description: The identifier of what it was done to.
+        targetType:
+          type: string
+          description: The type of what it was done to, such as `role`.
+          example: role
+    SecurityAuditEventPage:
+      type: object
+      description: One page of security audit records.
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecurityAuditEvent'
+          description: The records of the page, newest first.
+        nextCursor:
+          type:
+          - string
+          - 'null'
+          description: The `after` value of the next, older page; absent on the last page.
     SetRolePermissionsRequest:
       type: object
       description: Body of the operation that replaces the grants of a role.

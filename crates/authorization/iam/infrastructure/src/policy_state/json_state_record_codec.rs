@@ -5,15 +5,17 @@
 
 use iam_domain::{
     AssignmentScope, AssignmentState, CatalogueChunk, CatalogueEntryState, CatalogueManifest,
-    ChunkId, CorsDraft, CorsPolicy, EnforcementMode, EntityVersion, GrantState, HttpMethod,
-    InvalidStateRecord, PolicyDigestValue, PolicyHead, PolicyState, PolicyVersion, ProjectId,
-    RateFallback, RateKeyKind, RatePolicyDraft, RatePolicyFields, RatePolicyId, RatePolicyState,
-    RetryPolicy, RoleId, RoleKind, RoleState, RouteDraft, RouteFields, RouteFlag, RouteFlags,
-    RouteId, RouteState, ServiceName, StateKey, StateRecordCodec, SubjectKind, SubjectRef,
-    SubjectState, UpstreamFields, UpstreamId, UpstreamProtocol, UpstreamSettingsDraft,
-    UpstreamState,
+    ChunkId, CorsDraft, CorsPolicy, EnforcementMode, EntityVersion, GlobalRevocationState,
+    GrantState, HttpMethod, InvalidStateRecord, PolicyDigestValue, PolicyHead, PolicyState,
+    PolicyVersion, ProjectId, RateFallback, RateKeyKind, RatePolicyDraft, RatePolicyFields,
+    RatePolicyId, RatePolicyState, RetryPolicy, RoleId, RoleKind, RoleState, RouteDraft,
+    RouteFields, RouteFlag, RouteFlags, RouteId, RouteState, ServiceName, SessionId,
+    SessionRevocationState, StateKey, StateRecordCodec, SubjectKind, SubjectRef, SubjectState,
+    UpstreamFields, UpstreamId, UpstreamProtocol, UpstreamSettingsDraft, UpstreamState,
+    UserRevocationState,
 };
 use serde_json::{Map, Value};
+use shared_domain::Uuid;
 
 /// The schema version that this release writes and reads.
 pub const SCHEMA_VERSION: i64 = 1;
@@ -284,6 +286,38 @@ fn encode_rate_policy(policy: &RatePolicyState) -> Value {
         ("periodSeconds", Value::from(fields.period_seconds())),
         ("schemaVersion", Value::from(SCHEMA_VERSION)),
         ("version", Value::from(policy.version.value())),
+    ])
+}
+
+fn encode_session_revocation(state: &SessionRevocationState) -> Value {
+    object([
+        ("pruneAfterMicros", Value::from(state.prune_after_micros)),
+        ("revokedAtMicros", Value::from(state.revoked_at_micros)),
+        ("schemaVersion", Value::from(SCHEMA_VERSION)),
+        ("session", Value::String(state.session.to_string())),
+        ("user", Value::String(state.user.to_string())),
+    ])
+}
+
+fn encode_user_revocation(state: &UserRevocationState) -> Value {
+    object([
+        ("pruneAfterMicros", Value::from(state.prune_after_micros)),
+        ("schemaVersion", Value::from(SCHEMA_VERSION)),
+        (
+            "tokensValidAfterMicros",
+            Value::from(state.tokens_valid_after_micros),
+        ),
+        ("user", Value::String(state.user.to_string())),
+    ])
+}
+
+fn encode_global_revocation(state: &GlobalRevocationState) -> Value {
+    object([
+        ("schemaVersion", Value::from(SCHEMA_VERSION)),
+        (
+            "tokensValidAfterMicros",
+            Value::from(state.tokens_valid_after_micros),
+        ),
     ])
 }
 
@@ -593,6 +627,30 @@ fn decode_rate_policy(fields: &Fields) -> Result<PolicyState, InvalidStateRecord
     }))
 }
 
+fn decode_session_revocation(fields: &Fields) -> Result<PolicyState, InvalidStateRecord> {
+    Ok(PolicyState::SessionRevocation(SessionRevocationState {
+        session: SessionId::new(&text(fields, "session")?)
+            .map_err(|_error| field_error("session"))?,
+        user: Uuid::parse(&text(fields, "user")?).map_err(|_error| field_error("user"))?,
+        revoked_at_micros: number(fields, "revokedAtMicros")?,
+        prune_after_micros: number(fields, "pruneAfterMicros")?,
+    }))
+}
+
+fn decode_user_revocation(fields: &Fields) -> Result<PolicyState, InvalidStateRecord> {
+    Ok(PolicyState::UserRevocation(UserRevocationState {
+        user: Uuid::parse(&text(fields, "user")?).map_err(|_error| field_error("user"))?,
+        tokens_valid_after_micros: number(fields, "tokensValidAfterMicros")?,
+        prune_after_micros: number(fields, "pruneAfterMicros")?,
+    }))
+}
+
+fn decode_global_revocation(fields: &Fields) -> Result<PolicyState, InvalidStateRecord> {
+    Ok(PolicyState::GlobalRevocation(GlobalRevocationState {
+        tokens_valid_after_micros: number(fields, "tokensValidAfterMicros")?,
+    }))
+}
+
 fn decode_head(fields: &Fields) -> Result<PolicyState, InvalidStateRecord> {
     Ok(PolicyState::Head(PolicyHead {
         version: PolicyVersion::new(number(fields, "version")?)
@@ -612,6 +670,9 @@ impl StateRecordCodec for JsonStateRecordCodec {
             PolicyState::Upstream(upstream) => encode_upstream(upstream),
             PolicyState::Route(route) => encode_route(route),
             PolicyState::RatePolicy(policy) => encode_rate_policy(policy),
+            PolicyState::SessionRevocation(state) => encode_session_revocation(state),
+            PolicyState::UserRevocation(state) => encode_user_revocation(state),
+            PolicyState::GlobalRevocation(state) => encode_global_revocation(state),
             PolicyState::Head(head) => encode_head(head),
         };
         Ok(value.to_string())
@@ -634,9 +695,9 @@ impl StateRecordCodec for JsonStateRecordCodec {
             StateKey::Upstream(_) => decode_upstream(fields),
             StateKey::Route(_) => decode_route(fields),
             StateKey::RatePolicy(_) => decode_rate_policy(fields),
-            StateKey::SessionRevocation(_)
-            | StateKey::UserRevocation(_)
-            | StateKey::GlobalRevocation => Err(field_error("key")),
+            StateKey::SessionRevocation(_) => decode_session_revocation(fields),
+            StateKey::UserRevocation(_) => decode_user_revocation(fields),
+            StateKey::GlobalRevocation => decode_global_revocation(fields),
         }?;
         if state.belongs_to(key) {
             Ok(state)

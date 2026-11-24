@@ -38,3 +38,40 @@ fn a_source_has_an_identifier() {
     assert_eq!(CheckSource::Broker.identifier(), "broker");
     assert_eq!(CheckSource::Fallback.identifier(), "fallback");
 }
+
+#[test]
+fn a_verdict_without_the_acl_rules_keeps_the_topic_violations_only() {
+    let verdict = ConfigurationVerdict::new(
+        ConfigGates::Enforce,
+        vec![
+            Violation::new("cleanup.policy", "compact", "delete"),
+            Violation::new("acl.write", "only User:iam-control may write", "User:other"),
+            Violation::new("allow.everyone.if.no.acl.found", "false", "not checked"),
+        ],
+        Some(CheckSource::Broker),
+    );
+
+    let judged = verdict.without_acl_rules();
+
+    assert_eq!(
+        judged.violations(),
+        vec![Violation::new("cleanup.policy", "compact", "delete")]
+    );
+    assert_eq!(judged.allow_everyone_source(), None);
+    assert_eq!(judged.gates(), ConfigGates::Enforce);
+}
+
+#[test]
+fn a_verdict_that_only_the_acl_rules_failed_passes_without_them() {
+    let verdict = ConfigurationVerdict::new(
+        ConfigGates::Enforce,
+        vec![Violation::new(
+            "acl.write",
+            "only User:iam-control may write",
+            "User:other",
+        )],
+        None,
+    );
+
+    assert!(verdict.without_acl_rules().passed());
+}

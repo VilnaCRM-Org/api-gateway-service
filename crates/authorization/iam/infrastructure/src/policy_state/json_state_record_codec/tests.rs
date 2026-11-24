@@ -1,11 +1,12 @@
 use iam_domain::{
     AssignmentScope, AssignmentState, CatalogueChunk, CatalogueEntryState, CatalogueManifest,
-    ChunkId, CorsDraft, EnforcementMode, EntityVersion, GrantState, HttpMethod, InvalidStateRecord,
-    PolicyDigestValue, PolicyHead, PolicyState, PolicyVersion, ProjectId, RateFallback,
-    RateKeyKind, RatePolicyDraft, RatePolicyFields, RatePolicyId, RatePolicyState, RetryPolicy,
-    RoleId, RoleKind, RoleState, RouteDraft, RouteFields, RouteFlag, RouteFlags, RouteId,
-    RouteState, ServiceName, StateKey, StateRecordCodec as _, SubjectRef, SubjectState,
-    UpstreamFields, UpstreamId, UpstreamProtocol, UpstreamSettingsDraft, UpstreamState,
+    ChunkId, CorsDraft, EnforcementMode, EntityVersion, GlobalRevocationState, GrantState,
+    HttpMethod, InvalidStateRecord, PolicyDigestValue, PolicyHead, PolicyState, PolicyVersion,
+    ProjectId, RateFallback, RateKeyKind, RatePolicyDraft, RatePolicyFields, RatePolicyId,
+    RatePolicyState, RetryPolicy, RoleId, RoleKind, RoleState, RouteDraft, RouteFields, RouteFlag,
+    RouteFlags, RouteId, RouteState, ServiceName, SessionId, SessionRevocationState, StateKey,
+    StateRecordCodec as _, SubjectRef, SubjectState, UpstreamFields, UpstreamId, UpstreamProtocol,
+    UpstreamSettingsDraft, UpstreamState, UserRevocationState,
 };
 use rstest::rstest;
 use serde_json::Value as Json;
@@ -202,6 +203,9 @@ fn key_of(state: &PolicyState) -> StateKey {
         PolicyState::Upstream(upstream) => StateKey::Upstream(upstream.name.clone()),
         PolicyState::Route(route) => StateKey::Route(route.id),
         PolicyState::RatePolicy(policy) => StateKey::RatePolicy(policy.id),
+        PolicyState::SessionRevocation(state) => StateKey::SessionRevocation(state.session.clone()),
+        PolicyState::UserRevocation(state) => StateKey::UserRevocation(state.user),
+        PolicyState::GlobalRevocation(_) => StateKey::GlobalRevocation,
         PolicyState::Head(_) => StateKey::Head,
     }
 }
@@ -390,12 +394,116 @@ fn a_payload_is_refused_for_the_key_of_another_entity() {
 }
 
 #[test]
-fn a_payload_is_refused_for_a_key_that_carries_no_state_yet() {
+fn a_payload_of_another_kind_is_refused_for_a_revocation_key() {
     let encoded = JsonStateRecordCodec.encode(&head()).unwrap();
 
     assert_eq!(
         JsonStateRecordCodec.decode(&StateKey::GlobalRevocation, &encoded),
+        Err(InvalidStateRecord::Field {
+            field: "tokensValidAfterMicros"
+        })
+    );
+}
+
+fn revocation_states() -> Vec<(StateKey, PolicyState)> {
+    let user = Uuid::parse(USER).unwrap();
+    let session = SessionId::new("sid-1").unwrap();
+    vec![
+        (
+            StateKey::SessionRevocation(session.clone()),
+            PolicyState::SessionRevocation(SessionRevocationState {
+                session,
+                user,
+                revoked_at_micros: 10,
+                prune_after_micros: 20,
+            }),
+        ),
+        (
+            StateKey::UserRevocation(user),
+            PolicyState::UserRevocation(UserRevocationState {
+                user,
+                tokens_valid_after_micros: 30,
+                prune_after_micros: 40,
+            }),
+        ),
+        (
+            StateKey::GlobalRevocation,
+            PolicyState::GlobalRevocation(GlobalRevocationState {
+                tokens_valid_after_micros: 50,
+            }),
+        ),
+    ]
+}
+
+#[test]
+fn a_revocation_state_round_trips_through_its_key() {
+    for (key, state) in revocation_states() {
+        let encoded = JsonStateRecordCodec.encode(&state).unwrap();
+
+        assert_eq!(JsonStateRecordCodec.decode(&key, &encoded), Ok(state));
+    }
+}
+
+#[test]
+fn a_revocation_state_encodes_its_fields_in_alphabetical_order() {
+    let encoded: Vec<String> = revocation_states()
+        .iter()
+        .map(|(_, state)| JsonStateRecordCodec.encode(state).unwrap())
+        .collect();
+
+    assert_eq!(
+        encoded[2],
+        r#"{"schemaVersion":1,"tokensValidAfterMicros":50}"#
+    );
+    assert_eq!(
+        encoded[1],
+        format!(
+            r#"{{"pruneAfterMicros":40,"schemaVersion":1,"tokensValidAfterMicros":30,"user":"{USER}"}}"#
+        )
+    );
+}
+
+#[test]
+fn a_revocation_state_is_refused_for_the_key_of_another_subject() {
+    let (_, state) = revocation_states().remove(1);
+    let encoded = JsonStateRecordCodec.encode(&state).unwrap();
+    let other = StateKey::UserRevocation(Uuid::parse(ROLE).unwrap());
+
+    assert_eq!(
+        JsonStateRecordCodec.decode(&other, &encoded),
         Err(InvalidStateRecord::Field { field: "key" })
+    );
+}
+
+#[test]
+fn a_session_revocation_with_a_bad_session_or_user_is_refused() {
+    let (key, state) = revocation_states().remove(0);
+    let encoded = JsonStateRecordCodec.encode(&state).unwrap();
+
+    let bad_session = encoded.replace("sid-1", "bad session");
+    let bad_user = encoded.replace(USER, "nope");
+
+    assert_eq!(
+        JsonStateRecordCodec.decode(&key, &bad_session),
+        Err(InvalidStateRecord::Field { field: "session" })
+    );
+    assert_eq!(
+        JsonStateRecordCodec.decode(&key, &bad_user),
+        Err(InvalidStateRecord::Field { field: "user" })
+    );
+}
+
+#[test]
+fn a_user_cutoff_with_a_bad_user_is_refused() {
+    let (key, state) = revocation_states().remove(1);
+    let encoded = JsonStateRecordCodec.encode(&state).unwrap();
+
+    let bad_user = encoded.replace(USER, "nope");
+
+    assert_ne!(bad_user, encoded);
+    assert_eq!(
+        JsonStateRecordCodec.decode(&key, &bad_user),
+        Err(InvalidStateRecord::Field { field: "user" })
     );
 }
 
