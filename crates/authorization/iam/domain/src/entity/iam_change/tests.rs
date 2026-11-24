@@ -7,6 +7,7 @@ use super::{IamChange, IamChangeParts};
 use crate::entity::idempotency_record::IdempotencyRequest;
 use crate::entity::security_audit_event::{SecurityAuditEvent, SecurityAuditEventParts};
 use crate::error::InvalidIamValue;
+use crate::policy::change_guard::GuardCheck;
 use crate::value_object::actor_ref::ActorRef;
 use crate::value_object::audit_action::AuditAction;
 use crate::value_object::audit_outcome::AuditOutcome;
@@ -18,6 +19,7 @@ use crate::value_object::idempotency_key::IdempotencyKey;
 use crate::value_object::identifier::{ChangeId, SecurityAuditEventId};
 use crate::value_object::policy_version::PolicyVersion;
 use crate::value_object::request_digest::RequestDigest;
+use crate::value_object::service_name::ServiceName;
 
 const CHANGE: &str = "0190f2a8-7b3c-7d4e-8f00-000000000001";
 const USER: &str = "0190f2a8-7b3c-7d4e-8f00-123456789abc";
@@ -197,4 +199,32 @@ fn a_related_audit_record_that_is_not_committed_is_refused() {
     let refused = change.with_related_audits(vec![audit(AuditOutcome::Rejected)]);
 
     assert_eq!(refused, Err(InvalidIamValue::ChangeAuditOutcome));
+}
+
+#[test]
+fn a_change_asks_for_no_check_unless_it_names_one() {
+    let change = IamChange::new(parts(DecisionEffect::Affected)).unwrap();
+    let service = ServiceName::new("core").unwrap();
+    let check = GuardCheck::Spec {
+        service,
+        flag_downgrade: true,
+    };
+
+    assert_eq!(change.guard(), None);
+    assert_eq!(change.with_guard(check.clone()).guard(), Some(&check));
+}
+
+#[test]
+fn a_change_can_expect_the_policy_version_its_check_was_decided_against() {
+    let change = IamChange::new(parts(DecisionEffect::Affected)).unwrap();
+
+    let expecting = change.expecting_policy_version(PolicyVersion::new(7).unwrap());
+
+    assert_eq!(
+        expecting.parts().statements.last(),
+        Some(&ChangeStatement::ExpectPolicyVersion(
+            PolicyVersion::new(7).unwrap()
+        ))
+    );
+    assert_eq!(expecting.parts().statements.len(), 2);
 }

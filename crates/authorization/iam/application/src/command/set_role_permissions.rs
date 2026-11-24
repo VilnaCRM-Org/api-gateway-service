@@ -5,11 +5,11 @@ use std::sync::Arc;
 
 use iam_domain::{
     ActorRef, AuditAction, AuditOutcome, AuditSummary, AuditTarget, ChangeId, ChangeStatement,
-    DecisionEffect, EntityVersion, GraphQlPermission, GraphQlPermissionRepository, IamChange,
-    IamChangeParts, IamUnitOfWork, IdempotencyRequest, PermissionGrant, PermissionGrantSet,
-    PermissionKey, PermissionKeyKind, RestPermission, RestPermissionRepository, Role, RoleId,
-    RoleParts, RoleRepository, RoleStamp, RoleStatement, SecurityAuditEvent, SecurityAuditEventId,
-    SecurityAuditEventParts, ServiceName,
+    DecisionEffect, EntityVersion, GraphQlPermission, GraphQlPermissionRepository, GuardCheck,
+    IamChange, IamChangeParts, IamUnitOfWork, IdempotencyRequest, PermissionGrant,
+    PermissionGrantSet, PermissionKey, PermissionKeyKind, RestPermission, RestPermissionRepository,
+    Role, RoleId, RoleParts, RoleRepository, RoleStamp, RoleStatement, SecurityAuditEvent,
+    SecurityAuditEventId, SecurityAuditEventParts, ServiceName,
 };
 use shared_application::http::Violation;
 use shared_domain::{Clock, Command, CommandHandler, UuidGenerator};
@@ -283,6 +283,13 @@ impl SetRolePermissionsCommandHandler {
             ..
         } = command;
         let before = role.parts().clone();
+        let guard = GuardCheck::Grants(
+            grants
+                .iter()
+                .filter(|grant| !before.grants.contains(grant))
+                .cloned()
+                .collect(),
+        );
         let stamp = RoleStamp {
             event_id: self.uuid_generator.generate(),
             actor: actor.clone(),
@@ -300,7 +307,8 @@ impl SetRolePermissionsCommandHandler {
             audit,
             entity_version: role.parts().version,
             idempotency,
-        })?)
+        })?
+        .with_guard(guard))
     }
 
     /// The committed audit record of the replacement.

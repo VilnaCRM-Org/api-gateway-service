@@ -10,10 +10,10 @@ use iam_domain::{
     CatalogueStatement, CatalogueStatementParts, ChangeId, ChangeStatement, CoordinateSet,
     DecisionEffect, EntityVersion, EntryFlags, EntryInsert, EventEnvelope, FlagChange,
     GraphQlPermission, GraphQlPermissionRepository, GraphQlPermissionsCreated, GraphQlSpec,
-    GraphQlSpecRepository, IamChange, IamChangeParts, IamUnitOfWork, IdempotencyRequest,
-    OrphanPolicy, PermissionCatalogue, PermissionFlags, PermissionId, PermissionKey,
-    PermissionKeyKind, PermissionsOrphaned, PolicyEpochRepository, PolicyVersion, RenameMap,
-    RenameRefused, RoleRepository, SecurityAuditEvent, SecurityAuditEventId,
+    GraphQlSpecRepository, GuardCheck, IamChange, IamChangeParts, IamUnitOfWork,
+    IdempotencyRequest, OrphanPolicy, PermissionCatalogue, PermissionFlags, PermissionId,
+    PermissionKey, PermissionKeyKind, PermissionsOrphaned, PolicyEpochRepository, PolicyVersion,
+    RenameMap, RenameRefused, RoleRepository, SecurityAuditEvent, SecurityAuditEventId,
     SecurityAuditEventParts, ServiceName, SpecActivation, SpecId, SpecStatus, SpecTransition,
 };
 use shared_application::http::Violation;
@@ -187,6 +187,11 @@ impl CreateGraphQlPermissionsCommandHandler {
         locked: PolicyVersion,
         now: SystemTime,
     ) -> Result<IamChange, IamError> {
+        let guard = GuardCheck::Spec {
+            service: plan.service.clone(),
+            flag_downgrade: command.confirm_flag_downgrade
+                && !plan.activation.flag_downgrades.is_empty(),
+        };
         let context = Context {
             spec_id: plan.spec_id,
             service: plan.service.clone(),
@@ -207,7 +212,8 @@ impl CreateGraphQlPermissionsCommandHandler {
             audit,
             entity_version: EntityVersion::INITIAL,
             idempotency: command.idempotency,
-        })?)
+        })?
+        .with_guard(guard))
     }
 
     /// `iam.graphql_permissions.created`, and `iam.permissions.orphaned` when grants were orphaned.

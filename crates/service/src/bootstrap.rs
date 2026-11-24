@@ -27,8 +27,8 @@ use iam_application::{
 };
 use iam_application::{AdministratorSafeguard, RevokeUserRoleReads, SafeguardPorts};
 use iam_application::{
-    AssignUserRoleCommandHandler, GetUserRoleQueryHandler, ListUserRolesQueryHandler,
-    RevokeUserRoleCommandHandler, UpdateUserRoleCommandHandler,
+    AssignUserRoleCommandHandler, GetUserRolePermissionsQueryHandler, GetUserRoleQueryHandler,
+    ListUserRolesQueryHandler, RevokeUserRoleCommandHandler, UpdateUserRoleCommandHandler,
 };
 use iam_application::{
     CreateRestPermissionsCommandHandler, GetRestPermissionsCreatedQueryHandler, RestActivationReads,
@@ -57,6 +57,7 @@ use iam_application::{
 use iam_application::{
     GetRolePermissionsQueryHandler, SetRolePermissionsCommandHandler, SetRolePermissionsReads,
 };
+use iam_application::{GuardReads, GuardedUnitOfWork};
 use iam_application::{IamAccessGuard, RecordRejectedAttemptCommandHandler};
 use iam_application::{RegisterOwnSpecsCommand, RegisterOwnSpecsCommandHandler};
 use iam_application::{ResolveSubjectTokenQueryHandler, ResolveTokenQueryHandler};
@@ -730,7 +731,8 @@ fn register_user_role_commands(
     Ok(bus.register(assign)?.register(update)?.register(revoke)?)
 }
 
-/// Registers the query handlers of the IAM role assignments.
+/// Registers the query handlers of the IAM role assignments and of the effective permissions of a
+/// user, which `iam-control` composes from PostgreSQL through the policy read repository.
 fn register_user_role_queries(
     bus: InMemoryQueryBus,
     adapters: &Adapters,
@@ -744,7 +746,29 @@ fn register_user_role_queries(
         Arc::clone(&adapters.roles),
         Arc::clone(&adapters.clock),
     );
-    Ok(bus.register(get)?.register(list)?)
+    let effective = GetUserRolePermissionsQueryHandler::new(
+        Arc::clone(&adapters.policy_reads),
+        Arc::clone(&adapters.roles),
+        Arc::clone(&adapters.clock),
+    );
+    Ok(bus.register(get)?.register(list)?.register(effective)?)
+}
+
+/// The unit of work of the administrative writes: it runs the escalation and specification-scope
+/// guards of a change against the stored policy of its actor before it commits.
+fn guarded_unit_of_work(adapters: &Adapters) -> Arc<dyn IamUnitOfWork> {
+    Arc::new(GuardedUnitOfWork::new(
+        Arc::clone(&adapters.write_unit_of_work),
+        GuardReads {
+            policy: Arc::clone(&adapters.policy_reads),
+            roles: Arc::clone(&adapters.roles),
+            rest_permissions: Arc::clone(&adapters.rest_permissions),
+            graphql_permissions: Arc::clone(&adapters.graphql_permissions),
+            audit_log: Arc::clone(&adapters.security_audit_log),
+        },
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    ))
 }
 
 /// The command bus and the query bus of the service.
@@ -759,16 +783,13 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
         Arc::clone(&adapters.uuid_generator),
     );
     let commands = register_commands(InMemoryCommandBus::new(), create)?;
-    let commands = register_role_commands(commands, adapters, &adapters.write_unit_of_work)?;
-    let commands =
-        register_graphql_spec_commands(commands, adapters, &adapters.write_unit_of_work)?;
-    let commands =
-        register_graphql_activation_commands(commands, adapters, &adapters.write_unit_of_work)?;
-    let commands =
-        register_openapi_spec_commands(commands, adapters, &adapters.write_unit_of_work)?;
-    let commands =
-        register_rest_activation_commands(commands, adapters, &adapters.write_unit_of_work)?;
-    let commands = register_user_role_commands(commands, adapters, &adapters.write_unit_of_work)?;
+    let guarded = guarded_unit_of_work(adapters);
+    let commands = register_role_commands(commands, adapters, &guarded)?;
+    let commands = register_graphql_spec_commands(commands, adapters, &guarded)?;
+    let commands = register_graphql_activation_commands(commands, adapters, &guarded)?;
+    let commands = register_openapi_spec_commands(commands, adapters, &guarded)?;
+    let commands = register_rest_activation_commands(commands, adapters, &guarded)?;
+    let commands = register_user_role_commands(commands, adapters, &guarded)?;
     let commands = register_rejected_attempt_commands(commands, adapters)?;
     let queries = InMemoryQueryBus::new();
     let queries = register_queries(queries, &adapters.repository, &adapters.policy_epochs)?;

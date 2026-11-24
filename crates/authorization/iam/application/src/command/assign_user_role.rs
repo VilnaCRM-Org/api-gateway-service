@@ -5,10 +5,11 @@ use std::time::SystemTime;
 
 use iam_domain::{
     ActorRef, AssignmentScope, AuditAction, AuditOutcome, AuditSummary, AuditTarget, ChangeId,
-    ChangeStatement, DecisionEffect, EntityVersion, IamChange, IamChangeParts, IamUnitOfWork,
-    IdempotencyRequest, InvalidUserRole, PermissionGrant, PrivilegedGrants, RoleId, RoleParts,
-    RoleRepository, SecurityAuditEvent, SecurityAuditEventId, SecurityAuditEventParts, SubjectRef,
-    UserRole, UserRoleAssignment, UserRoleId, UserRoleParts, UserRoleStamp, UserRoleStatement,
+    ChangeStatement, DecisionEffect, EntityVersion, GuardCheck, IamChange, IamChangeParts,
+    IamUnitOfWork, IdempotencyRequest, InvalidUserRole, PermissionGrant, PrivilegedGrants, RoleId,
+    RoleParts, RoleRepository, SecurityAuditEvent, SecurityAuditEventId, SecurityAuditEventParts,
+    SubjectRef, UserRole, UserRoleAssignment, UserRoleId, UserRoleParts, UserRoleStamp,
+    UserRoleStatement,
 };
 use shared_application::http::Violation;
 use shared_domain::{Clock, Command, CommandHandler, UuidGenerator};
@@ -108,6 +109,10 @@ impl AssignUserRoleCommandHandler {
             idempotency,
         } = command;
         let now = self.clock.now();
+        let guard = GuardCheck::Assignment {
+            subject: subject.clone(),
+            role_id,
+        };
         let assignment = UserRoleAssignment {
             id: user_role_id,
             subject,
@@ -134,7 +139,8 @@ impl AssignUserRoleCommandHandler {
             audit,
             entity_version: EntityVersion::INITIAL,
             idempotency,
-        })?)
+        })?
+        .with_guard(guard))
     }
 
     /// The wildcards and reserved keys of the role with the id of their alert, none when it holds

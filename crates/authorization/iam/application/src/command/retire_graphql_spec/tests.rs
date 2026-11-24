@@ -455,3 +455,26 @@ async fn a_retired_version_cannot_be_retired_again() {
     assert!(matches!(error, IamError::Conflict));
     assert_eq!(unit_of_work.committed().len(), 0);
 }
+
+#[tokio::test]
+async fn a_retirement_asks_for_the_specification_scope_check_of_its_service() {
+    let world = World::new(&[spec(
+        1,
+        SpecStatus::Active,
+        &[("Query.invoices", PLAIN), ("Mutation.pay", SENSITIVE)],
+    )]);
+    world.stored_entry(1, "gql:billing:Query.invoices", PLAIN, true);
+    world.stored_entry(2, "gql:billing:Mutation.pay", SENSITIVE, true);
+    world.stored_entry(3, "gql:billing:__introspection", PLAIN, true);
+    let (handler, unit_of_work) = world.handler();
+
+    handler.handle(command(1)).await.unwrap();
+
+    assert_eq!(
+        unit_of_work.committed()[0].guard(),
+        Some(&iam_domain::GuardCheck::Spec {
+            service: service(),
+            flag_downgrade: false,
+        })
+    );
+}

@@ -163,6 +163,7 @@ impl From<RepositoryError> for IamError {
     fn from(error: RepositoryError) -> Self {
         match error {
             RepositoryError::NotFound => Self::NotFound,
+            RepositoryError::Forbidden => Self::Forbidden,
             RepositoryError::AlreadyExists | RepositoryError::Conflict => Self::Conflict,
             unavailable @ RepositoryError::Unavailable(_) => Self::Storage(Box::new(unavailable)),
         }

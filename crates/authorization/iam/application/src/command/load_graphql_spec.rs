@@ -5,8 +5,8 @@ use std::sync::Arc;
 use iam_domain::{
     ActorRef, AuditAction, AuditOutcome, AuditSummary, AuditTarget, ChangeId, ChangeStatement,
     ContentHash, DecisionEffect, EntityVersion, GraphQlSchemaParser, GraphQlSpec,
-    GraphQlSpecContent, GraphQlSpecParts, GraphQlSpecStatement, IamChange, IamChangeParts,
-    IamUnitOfWork, RequestDigester, SecurityAuditEvent, SecurityAuditEventId,
+    GraphQlSpecContent, GraphQlSpecParts, GraphQlSpecStatement, GuardCheck, IamChange,
+    IamChangeParts, IamUnitOfWork, RequestDigester, SecurityAuditEvent, SecurityAuditEventId,
     SecurityAuditEventParts, ServiceName, SpecId, SpecStamp, SystemComponent,
 };
 use shared_domain::{Clock, Command, CommandHandler, UuidGenerator};
@@ -115,6 +115,10 @@ impl LoadGraphQlSpecCommandHandler {
             sdl,
         } = command;
         let service = loadable_service(&service, &actor)?;
+        let guard = GuardCheck::Spec {
+            service: service.clone(),
+            flag_downgrade: false,
+        };
         let content_hash = content_hash_of(self.digester.as_ref(), &sdl);
         let type_graph = self.parser.parse(&sdl)?;
         let now = self.clock.now();
@@ -140,7 +144,8 @@ impl LoadGraphQlSpecCommandHandler {
             audit,
             entity_version: EntityVersion::INITIAL,
             idempotency: None,
-        })?)
+        })?
+        .with_guard(guard))
     }
 
     /// The committed audit record of the load.

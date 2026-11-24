@@ -367,3 +367,18 @@ async fn an_administrator_is_revoked_while_another_one_is_active() {
     assert_eq!(unit_of_work.committed().len(), 1);
     assert_eq!(audit.recorded().len(), 0);
 }
+
+#[tokio::test]
+async fn a_revocation_asks_for_the_escalation_check_of_the_stored_subject_and_role() {
+    let unit_of_work = Arc::new(FakeIamUnitOfWork::new());
+
+    standard(&unit_of_work).handle(command()).await.unwrap();
+
+    assert_eq!(
+        unit_of_work.committed()[0].guard(),
+        Some(&iam_domain::GuardCheck::Assignment {
+            subject: stored().subject,
+            role_id: stored().role_id,
+        })
+    );
+}

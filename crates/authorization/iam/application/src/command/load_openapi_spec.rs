@@ -4,9 +4,10 @@ use std::sync::Arc;
 
 use iam_domain::{
     ActorRef, AuditAction, AuditOutcome, AuditSummary, AuditTarget, ChangeId, ChangeStatement,
-    DecisionEffect, EntityVersion, IamChange, IamChangeParts, IamUnitOfWork, OpenApiDocumentParser,
-    OpenApiSpec, OpenApiSpecContent, OpenApiSpecParts, OpenApiSpecStatement, RequestDigester,
-    SecurityAuditEvent, SecurityAuditEventId, SecurityAuditEventParts, SpecId, SpecStamp,
+    DecisionEffect, EntityVersion, GuardCheck, IamChange, IamChangeParts, IamUnitOfWork,
+    OpenApiDocumentParser, OpenApiSpec, OpenApiSpecContent, OpenApiSpecParts, OpenApiSpecStatement,
+    RequestDigester, SecurityAuditEvent, SecurityAuditEventId, SecurityAuditEventParts, SpecId,
+    SpecStamp,
 };
 use shared_domain::{Clock, Command, CommandHandler, UuidGenerator};
 
@@ -92,6 +93,10 @@ impl LoadOpenApiSpecCommandHandler {
             document,
         } = command;
         let service = loadable_service(&service, &actor)?;
+        let guard = GuardCheck::Spec {
+            service: service.clone(),
+            flag_downgrade: false,
+        };
         let content_hash = content_hash_of(self.digester.as_ref(), &document);
         let operations = self.parser.parse(&document)?;
         let now = self.clock.now();
@@ -117,7 +122,8 @@ impl LoadOpenApiSpecCommandHandler {
             audit,
             entity_version: EntityVersion::INITIAL,
             idempotency: None,
-        })?)
+        })?
+        .with_guard(guard))
     }
 
     /// The committed audit record of the load.

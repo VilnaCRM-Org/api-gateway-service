@@ -10,7 +10,7 @@ use std::time::SystemTime;
 use iam_domain::{
     ActorRef, AuditAction, AuditOutcome, AuditSummary, AuditTarget, CatalogueActivation,
     CatalogueStatement, CatalogueStatementParts, ChangeId, ChangeStatement, DecisionEffect,
-    EntityVersion, EntryFlags, EventEnvelope, GrantRecord, IamChange, IamChangeParts,
+    EntityVersion, EntryFlags, EventEnvelope, GrantRecord, GuardCheck, IamChange, IamChangeParts,
     IdempotencyRequest, OrphanPolicy, PermissionCatalogue, PermissionFlags, PermissionKey,
     PermissionKeyKind, PermissionsOrphaned, PolicyVersion, SecurityAuditEvent,
     SecurityAuditEventId, SecurityAuditEventParts, ServiceName, SpecId, SpecStatus, SpecTransition,
@@ -170,6 +170,10 @@ pub(crate) fn retirement_change(mut input: RetirementChange<'_>) -> Result<IamCh
         })?);
     }
     let audit = audit_record(&input)?;
+    let guard = GuardCheck::Spec {
+        service: input.service.clone(),
+        flag_downgrade: !input.plan.activation.flag_downgrades.is_empty(),
+    };
     Ok(IamChange::new(IamChangeParts {
         change_id: input.change_id,
         effect: DecisionEffect::Affected,
@@ -181,7 +185,8 @@ pub(crate) fn retirement_change(mut input: RetirementChange<'_>) -> Result<IamCh
         audit,
         entity_version: EntityVersion::INITIAL,
         idempotency: input.idempotency,
-    })?)
+    })?
+    .with_guard(guard))
 }
 
 /// The committed audit record of the retirement.

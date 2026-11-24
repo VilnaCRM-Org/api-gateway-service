@@ -6,11 +6,11 @@ use std::time::SystemTime;
 
 use iam_domain::{
     ActorRef, AuditAction, AuditTarget, CatalogueActivation, ChangeId, ChangeStatement,
-    DecisionEffect, EntityVersion, EventEnvelope, IamChange, IamChangeParts, IamUnitOfWork,
-    IdempotencyRequest, OpenApiSpec, OpenApiSpecRepository, OrphanPolicy, PermissionCatalogue,
-    PermissionKey, PermissionKeyKind, PermissionsOrphaned, PolicyEpochRepository, PolicyVersion,
-    RenameMap, RestPermissionRepository, RestPermissionsCreated, RoleRepository,
-    SecurityAuditEvent, SpecActivation, SpecId,
+    DecisionEffect, EntityVersion, EventEnvelope, GuardCheck, IamChange, IamChangeParts,
+    IamUnitOfWork, IdempotencyRequest, OpenApiSpec, OpenApiSpecRepository, OrphanPolicy,
+    PermissionCatalogue, PermissionKey, PermissionKeyKind, PermissionsOrphaned,
+    PolicyEpochRepository, PolicyVersion, RenameMap, RestPermissionRepository,
+    RestPermissionsCreated, RoleRepository, SecurityAuditEvent, SpecActivation, SpecId,
 };
 use shared_domain::{Clock, Command, CommandHandler, UuidGenerator};
 
@@ -175,6 +175,11 @@ impl CreateRestPermissionsCommandHandler {
         locked: PolicyVersion,
         now: SystemTime,
     ) -> Result<IamChange, IamError> {
+        let guard = GuardCheck::Spec {
+            service: plan.service.clone(),
+            flag_downgrade: command.confirm_flag_downgrade
+                && !plan.activation.flag_downgrades.is_empty(),
+        };
         let context = Context {
             spec_id: plan.spec_id,
             service: plan.service.clone(),
@@ -195,7 +200,8 @@ impl CreateRestPermissionsCommandHandler {
             audit,
             entity_version: EntityVersion::INITIAL,
             idempotency: command.idempotency,
-        })?)
+        })?
+        .with_guard(guard))
     }
 
     /// `iam.rest_permissions.created`, and `iam.permissions.orphaned` when grants were orphaned.

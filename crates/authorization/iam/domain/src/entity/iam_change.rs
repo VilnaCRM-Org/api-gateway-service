@@ -5,6 +5,7 @@ use crate::entity::event_envelope::EventEnvelope;
 use crate::entity::idempotency_record::{IdempotencyRecord, IdempotencyRequest};
 use crate::entity::security_audit_event::SecurityAuditEvent;
 use crate::error::InvalidIamValue;
+use crate::policy::change_guard::GuardCheck;
 use crate::value_object::audit_outcome::AuditOutcome;
 use crate::value_object::change_statement::ChangeStatement;
 use crate::value_object::decision_effect::DecisionEffect;
@@ -42,6 +43,7 @@ pub struct IamChange {
     parts: IamChangeParts,
     revoked_assignments: Option<u32>,
     related_audits: Vec<SecurityAuditEvent>,
+    guard: Option<GuardCheck>,
 }
 
 impl IamChange {
@@ -58,6 +60,7 @@ impl IamChange {
             parts,
             revoked_assignments: None,
             related_audits: Vec::new(),
+            guard: None,
         })
     }
 
@@ -88,6 +91,30 @@ impl IamChange {
         }
         self.related_audits = audits;
         Ok(self)
+    }
+
+    /// The same change, which asks the unit of work to run `check` for its actor against the
+    /// stored policy before it commits.
+    #[must_use]
+    pub fn with_guard(mut self, check: GuardCheck) -> Self {
+        self.guard = Some(check);
+        self
+    }
+
+    /// The same change that also holds when the policy version is still `version`: the version
+    /// the guard decided against, which the transaction compares with the version it locked.
+    #[must_use]
+    pub fn expecting_policy_version(mut self, version: PolicyVersion) -> Self {
+        self.parts
+            .statements
+            .push(ChangeStatement::ExpectPolicyVersion(version));
+        self
+    }
+
+    /// The check the change asks for, when it asks for one.
+    #[must_use]
+    pub const fn guard(&self) -> Option<&GuardCheck> {
+        self.guard.as_ref()
     }
 
     /// The number of assignments the change revokes, when it reports one.

@@ -5,6 +5,7 @@
 //! kernel, never another bounded context.
 
 pub mod audit_anchor;
+pub mod bulk_operation;
 pub mod catalogue_event;
 pub mod catalogue_statement;
 pub mod endpoint;
@@ -33,6 +34,14 @@ pub mod user_role;
 pub mod value_object;
 
 pub use audit_anchor::{AnchorStamp, SecurityAuditAnchored};
+pub use bulk_operation::chunker::{
+    BulkChange, BulkChunk, BulkChunker, BulkPacing, ChangeDirection, InvalidBulkChunking,
+};
+pub use bulk_operation::event::BulkOperationCompleted;
+pub use bulk_operation::{
+    BulkKind, BulkOperation, BulkOperationParts, BulkOperationRefused, BulkStamp, BulkStatus,
+    InvalidBulkOperation,
+};
 pub use catalogue_event::{GraphQlPermissionsCreated, PermissionsOrphaned, RestPermissionsCreated};
 pub use catalogue_statement::{
     CatalogueStatement, CatalogueStatementParts, EntryFlags, EntryInsert, SpecTransition,
@@ -80,10 +89,15 @@ pub use policy::caller_token_rule::CallerTokenRule;
 pub use policy::catalogue_activation::{
     CatalogueActivation, FlagChange, GrantRecord, KeyRename, OrphanedGrant,
 };
+pub use policy::change_guard::GuardCheck;
 pub use policy::compiled_role_set::{CompiledRoleSet, GrantStatus};
 pub use policy::decision_policy::{
     DecisionPolicy, DecisionRequest, RequiredKey, RoleAssignment, RoleSets,
 };
+pub use policy::effective_permission_composer::{
+    EffectivePermission, EffectivePermissionComposer, EffectivePermissionFilter, UserRolePermission,
+};
+pub use policy::escalation_guard::{EscalationDenied, EscalationGuard, GrantedKey, GrantedKind};
 pub use policy::last_administrator_guard::{LastAdministratorGuard, LastAdministratorRefused};
 pub use policy::orphan_policy::{OrphanPolicy, RenameMap};
 pub use policy::path_normalizer::{MalformedPath, PathNormalizer};
@@ -98,6 +112,7 @@ pub use policy::route_revocation_rule::{RouteChangeClass, RouteRevocationRule};
 pub use policy::route_scope_guard::{RouteScopeGuard, RouteScopeRefused};
 pub use policy::service_catalog::ServiceCatalog;
 pub use policy::spec_diff::{FlagDowngrade, RemovedGrant, RoleGrants, SpecDiff, WildcardGain};
+pub use policy::spec_scope_guard::{SpecScopeDenied, SpecScopeGuard};
 pub use policy::subject_policy::SubjectPolicy;
 pub use policy::token_lifetime_rule::{TokenLifetimeRule, TokenTimes};
 pub use policy::wildcard_matcher::WildcardMatcher;
@@ -105,6 +120,8 @@ pub use port::RepositoryError;
 pub use port::access_token_verifier::AccessTokenVerifier;
 pub use port::anti_entropy_store::{AntiEntropyStore, PublishedRecord, StoredHead, WrittenKey};
 pub use port::boot_clock::BootClock;
+pub use port::bulk_chunk_committer::{BulkChunkCommitter, ChunkCommitError, CommittedChunk};
+pub use port::bulk_operation_repository::BulkOperationRepository;
 pub use port::change_receipt_repository::ChangeReceiptRepository;
 pub use port::endpoint_watch::{
     EndpointListing, EndpointSlice, EndpointWatch, EndpointWatchError, SliceChange, WatchBatch,
@@ -247,7 +264,7 @@ pub use value_object::graphql_type_graph::{GraphQlField, GraphQlTypeGraph};
 pub use value_object::http_method::HttpMethod;
 pub use value_object::idempotency_key::IdempotencyKey;
 pub use value_object::identifier::{
-    ChangeId, DecisionId, PermissionId, ProjectId, RatePolicyId, RoleId, RouteId,
+    BulkOperationId, ChangeId, DecisionId, PermissionId, ProjectId, RatePolicyId, RoleId, RouteId,
     SecurityAuditEventId, SessionRevocationId, SpecId, UpstreamId, UserRoleId,
 };
 pub use value_object::log_epoch::LogEpoch;

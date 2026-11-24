@@ -650,3 +650,38 @@ async fn a_policy_version_that_moved_since_it_was_read_refuses_the_change() {
         Vec::<iam_domain::IamChange>::new()
     );
 }
+
+#[tokio::test]
+async fn an_activation_asks_for_the_specification_scope_check_of_its_service() {
+    let world = World::new(&[spec(1, SpecStatus::Draft, &[INVOICES, PAY])]);
+    let (handler, unit_of_work) = world.handler();
+
+    handler.handle(command(1)).await.unwrap();
+
+    assert_eq!(
+        unit_of_work.committed()[0].guard(),
+        Some(&iam_domain::GuardCheck::Spec {
+            service: ServiceName::new("billing").unwrap(),
+            flag_downgrade: false,
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_confirmed_flag_downgrade_asks_for_the_check_that_includes_the_downgrade() {
+    let (handler, unit_of_work) = downgrading_world().handler();
+    let confirmed = CreateRestPermissionsCommand {
+        confirm_flag_downgrade: true,
+        ..command(1)
+    };
+
+    handler.handle(confirmed).await.unwrap();
+
+    assert_eq!(
+        unit_of_work.committed()[0].guard(),
+        Some(&iam_domain::GuardCheck::Spec {
+            service: ServiceName::new("billing").unwrap(),
+            flag_downgrade: true,
+        })
+    );
+}

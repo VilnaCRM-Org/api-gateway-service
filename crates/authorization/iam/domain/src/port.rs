@@ -3,6 +3,8 @@
 pub mod access_token_verifier;
 pub mod anti_entropy_store;
 pub mod boot_clock;
+pub mod bulk_chunk_committer;
+pub mod bulk_operation_repository;
 pub mod change_receipt_repository;
 pub mod endpoint_watch;
 pub mod graphql_document_analyzer;
@@ -61,6 +63,10 @@ pub enum RepositoryError {
     /// The record was changed by another writer since it was read.
     #[error("the record was changed concurrently")]
     Conflict,
+    /// A guard of the change refused it: its actor lacks the administrative rights the change
+    /// needs (the application answers 403).
+    #[error("the actor lacks the administrative rights of the change")]
+    Forbidden,
     /// The storage cannot be reached, answered with a failure or holds unusable data.
     #[error("the repository is unavailable")]
     Unavailable(#[source] BoxError),

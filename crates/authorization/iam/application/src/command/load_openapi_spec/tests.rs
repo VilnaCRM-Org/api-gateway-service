@@ -212,3 +212,21 @@ async fn a_storage_failure_is_a_storage_error() {
 
     assert!(matches!(error, IamError::Storage(_)));
 }
+
+#[tokio::test]
+async fn a_load_asks_for_the_specification_scope_check_of_its_service() {
+    let unit_of_work = Arc::new(FakeIamUnitOfWork::new());
+
+    handler(&unit_of_work)
+        .handle(command("billing", DOCUMENT_FIXTURE, user()))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        unit_of_work.committed()[0].guard(),
+        Some(&iam_domain::GuardCheck::Spec {
+            service: ServiceName::new("billing").unwrap(),
+            flag_downgrade: false,
+        })
+    );
+}

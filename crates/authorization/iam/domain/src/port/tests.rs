@@ -8,6 +8,10 @@ use super::RepositoryError;
 #[case(RepositoryError::AlreadyExists, "the record already exists")]
 #[case(RepositoryError::NotFound, "the record was not found")]
 #[case(RepositoryError::Conflict, "the record was changed concurrently")]
+#[case(
+    RepositoryError::Forbidden,
+    "the actor lacks the administrative rights of the change"
+)]
 fn displays_its_errors_without_a_source(#[case] error: RepositoryError, #[case] message: &str) {
     assert_eq!(error.to_string(), message);
     assert!(error.source().is_none());

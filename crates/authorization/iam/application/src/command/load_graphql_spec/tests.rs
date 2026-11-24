@@ -206,3 +206,21 @@ fn a_loadable_service_is_the_validated_name() {
 
     assert_eq!(service.as_str(), "billing");
 }
+
+#[tokio::test]
+async fn a_load_asks_for_the_specification_scope_check_of_its_service() {
+    let unit_of_work = Arc::new(FakeIamUnitOfWork::new());
+
+    handler(&unit_of_work)
+        .handle(command("billing", SDL_FIXTURE, user()))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        unit_of_work.committed()[0].guard(),
+        Some(&iam_domain::GuardCheck::Spec {
+            service: ServiceName::new("billing").unwrap(),
+            flag_downgrade: false,
+        })
+    );
+}

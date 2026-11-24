@@ -17,6 +17,11 @@ const POLLS: u32 = 30;
 const FORBIDDEN_RECORDS: &str = "SELECT count(*) FROM iam_security_audit_events \
      WHERE outcome = 'rejected' AND action = $1 AND reason = 'forbidden'";
 
+/// The rejected audit records of the action that the escalation guard refused: they are written
+/// in the request, not by the buffered writer.
+const ESCALATION_RECORDS: &str = "SELECT count(*) FROM iam_security_audit_events \
+     WHERE outcome = 'rejected' AND action = $1 AND reason = 'escalation.denied'";
+
 /// Every rejected audit record, whatever the action; the value is not used.
 const ANY_REJECTED_RECORDS: &str = "SELECT count(*) FROM iam_security_audit_events WHERE outcome = 'rejected' AND $1::text = $1::text";
 
@@ -44,4 +49,9 @@ async fn no_rejected_record(world: &mut AppWorld) {
     // there.
     tokio::time::sleep(Duration::from_millis(2200)).await;
     assert_eq!(world.count(ANY_REJECTED_RECORDS, "").await, 0);
+}
+
+#[then(expr = "the audit log should hold {int} escalation-denied {string} record(s)")]
+async fn escalation_denied_records(world: &mut AppWorld, count: i64, action: String) {
+    assert_eq!(world.count(ESCALATION_RECORDS, &action).await, count);
 }

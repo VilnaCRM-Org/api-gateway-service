@@ -392,3 +392,21 @@ async fn a_stale_version_wins_over_the_last_administrator_refusal() {
     assert!(matches!(error, IamError::PreconditionFailed), "{error:?}");
     assert_eq!(audit.recorded().len(), 0);
 }
+
+#[tokio::test]
+async fn an_expiry_change_asks_for_the_escalation_check_of_the_stored_subject_and_role() {
+    let unit_of_work = Arc::new(FakeIamUnitOfWork::new());
+
+    handler(holding(None), &unit_of_work)
+        .handle(command(Some(later())))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        unit_of_work.committed()[0].guard(),
+        Some(&iam_domain::GuardCheck::Assignment {
+            subject: stored(None).subject,
+            role_id: stored(None).role_id,
+        })
+    );
+}

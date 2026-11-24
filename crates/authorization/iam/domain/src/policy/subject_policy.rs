@@ -2,12 +2,18 @@
 //! stamped with the policy version of the snapshot they were read in.
 
 use std::collections::BTreeMap;
+use std::time::SystemTime;
 
 use crate::policy::compiled_role_set::CompiledRoleSet;
-use crate::policy::decision_policy::RoleAssignment;
+use crate::policy::decision_policy::{
+    DecisionPolicy, DecisionRequest, RequiredKey, RoleAssignment,
+};
 use crate::value_object::identifier::RoleId;
+use crate::value_object::permission_flags::PermissionFlags;
+use crate::value_object::permission_key::PermissionKey;
 use crate::value_object::policy_epoch::PolicyEpoch;
 use crate::value_object::policy_version::PolicyVersion;
+use crate::value_object::reserved_permission::ReservedPermission;
 
 /// The policy data of a subject.
 ///
@@ -57,6 +63,26 @@ impl SubjectPolicy {
     #[must_use]
     pub const fn role_sets(&self) -> &BTreeMap<RoleId, CompiledRoleSet> {
         &self.role_sets
+    }
+
+    /// Whether an active global assignment of the subject holds the reserved `key` at `now`: a
+    /// reserved key held only through a project assignment does not count, and `iam:grant:*`
+    /// holds every `iam:grant:{service}`, which the decision rule decides.
+    #[must_use]
+    pub fn holds_reserved(&self, key: &ReservedPermission, now: SystemTime) -> bool {
+        let required = [RequiredKey::new(
+            PermissionKey::Reserved(key.clone()),
+            PermissionFlags::NONE,
+        )];
+        DecisionPolicy::decide(&DecisionRequest {
+            assignments: &self.assignments,
+            role_sets: &self.role_sets,
+            required: &required,
+            project: None,
+            now,
+        })
+        .decision()
+        .is_allow()
     }
 }
 

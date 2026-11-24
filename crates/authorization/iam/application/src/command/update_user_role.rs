@@ -5,9 +5,9 @@ use std::time::SystemTime;
 
 use iam_domain::{
     ActorRef, AuditAction, AuditOutcome, AuditSummary, AuditTarget, ChangeId, ChangeStatement,
-    DecisionEffect, EntityVersion, IamChange, IamChangeParts, IamUnitOfWork, IdempotencyRequest,
-    SecurityAuditEvent, SecurityAuditEventId, SecurityAuditEventParts, UserRole, UserRoleId,
-    UserRoleParts, UserRoleRepository, UserRoleStamp, UserRoleStatement,
+    DecisionEffect, EntityVersion, GuardCheck, IamChange, IamChangeParts, IamUnitOfWork,
+    IdempotencyRequest, SecurityAuditEvent, SecurityAuditEventId, SecurityAuditEventParts,
+    UserRole, UserRoleId, UserRoleParts, UserRoleRepository, UserRoleStamp, UserRoleStatement,
 };
 use shared_domain::{Clock, Command, CommandHandler, UuidGenerator};
 
@@ -113,6 +113,10 @@ impl UpdateUserRoleCommandHandler {
             ..
         } = command;
         let before = user_role.parts().clone();
+        let guard = GuardCheck::Assignment {
+            subject: before.subject.clone(),
+            role_id: before.role_id,
+        };
         let stamp = UserRoleStamp {
             event_id: self.uuid_generator.generate(),
             actor,
@@ -130,7 +134,8 @@ impl UpdateUserRoleCommandHandler {
             audit,
             entity_version: user_role.parts().version,
             idempotency,
-        })?)
+        })?
+        .with_guard(guard))
     }
 
     /// The committed audit record of the update: the expiry and the version before and after.

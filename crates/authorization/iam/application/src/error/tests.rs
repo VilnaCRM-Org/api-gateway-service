@@ -445,3 +445,11 @@ fn the_last_administrator_is_the_409_problem_of_its_own_type() {
     );
     assert_eq!(recorder.lines().len(), 0);
 }
+
+#[test]
+fn a_change_that_a_guard_refused_is_forbidden() {
+    let error = IamError::from(RepositoryError::Forbidden);
+
+    assert!(matches!(error, IamError::Forbidden));
+    assert_eq!(Problem::from(error).status, 403);
+}

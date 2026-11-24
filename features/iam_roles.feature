@@ -659,6 +659,68 @@ Feature: IAM roles
     And the JSON array at "/data/role/permissions" should have 2 items
     And the JSON pointer "/data/role/permissions/1/key" should equal "rest:orders:*"
 
+  Scenario: The administrator grants a key and a sensitive key of a service over REST and GraphQL
+    Given a caller authenticated as the bootstrapped administrator
+    And an assignable role "Custom grantor"
+    And the If-Match header '"1"'
+    When POST request is sent to "/api/openapi-specs" with body:
+      """
+      {"service": "core", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Core\",\"version\":\"1\"},\"paths\":{\"/users\":{\"get\":{}},\"/users/{userId}/ban\":{\"post\":{\"x-iam-sensitive\":true}}}}"}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/openapi-specs/{id}/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 201
+    When PUT request is sent to "/api/roles/{role}/permissions" with body:
+      """
+      {"keys": ["rest:core:GET /users", "rest:core:POST /users/{}/ban"]}
+      """
+    Then the response status code should be 200
+    And the JSON array at "/permissions" should have 2 items
+    When the GraphQL operation is sent:
+      """
+      mutation { setRolePermissions(input: {id: "{role}", expectedVersion: 2, keys: []}) { id version grantCount } }
+      """
+    Then the GraphQL response should have no errors
+    When the GraphQL operation is sent:
+      """
+      mutation { setRolePermissions(input: {id: "{role}", expectedVersion: 3, keys: ["rest:core:GET /users", "rest:core:POST /users/{}/ban"]}) { id version grantCount } }
+      """
+    Then the GraphQL response should have no errors
+    And the JSON pointer "/data/setRolePermissions/grantCount" should equal the number 2
+    And the audit log should hold 3 committed "role.permissions.set" records
+
+  Scenario: A wildcard grant without iam:grant:wildcard is refused over REST and GraphQL and audited
+    Given a caller authenticated as an administrator that lacks iam:grant:wildcard
+    And an assignable role "Custom grantor"
+    And the If-Match header '"1"'
+    When POST request is sent to "/api/graphql-specs" with body:
+      """
+      {"service": "billing", "sdl": "type Query {\n  invoices: [String!]!\n}\n"}
+      """
+    Then the response status code should be 201
+    When POST request is sent to "/api/graphql-specs/{id}/permissions" with body:
+      """
+      {}
+      """
+    Then the response status code should be 201
+    When PUT request is sent to "/api/roles/{role}/permissions" with body:
+      """
+      {"keys": ["gql:billing:*"]}
+      """
+    Then the response status code should be 403
+    And the response header "content-type" should contain "application/problem+json"
+    When the GraphQL operation is sent:
+      """
+      mutation { setRolePermissions(input: {id: "{role}", expectedVersion: 1, keys: ["gql:billing:*"]}) { id } }
+      """
+    Then the GraphQL error code should be "FORBIDDEN"
+    And the audit log should hold 2 escalation-denied "role.permissions.set" records
+    And the audit log should hold 0 committed "role.permissions.set" records
+    And the outbox should hold 0 "iam.role_permissions.changed" events
+
   Scenario: A wildcard grant of an existing service is audited as covering future elements
     Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"

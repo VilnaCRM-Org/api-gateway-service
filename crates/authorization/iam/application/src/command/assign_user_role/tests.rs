@@ -389,3 +389,21 @@ async fn a_failing_unit_of_work_is_a_storage_failure() {
 
     assert!(matches!(error, IamError::Storage(_)), "{error:?}");
 }
+
+#[tokio::test]
+async fn an_assignment_asks_for_the_escalation_check_of_its_subject_and_role() {
+    let unit_of_work = Arc::new(FakeIamUnitOfWork::new());
+
+    plain_handler(&unit_of_work)
+        .handle(command())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        unit_of_work.committed()[0].guard(),
+        Some(&iam_domain::GuardCheck::Assignment {
+            subject: command().subject,
+            role_id: command().role_id,
+        })
+    );
+}
