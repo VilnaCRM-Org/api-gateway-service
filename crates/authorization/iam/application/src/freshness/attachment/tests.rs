@@ -126,3 +126,12 @@ fn only_the_newest_proofs_wait() {
 
     assert_eq!(attachment.waiting(), 16);
 }
+
+#[test]
+fn without_an_idle_proof_the_cover_stops_at_the_applied_records() {
+    let mut attachment = ProofAttachment::starting_at(0);
+    attachment.record_complete(3);
+    attachment.offer(proof(1, 5));
+
+    assert_eq!(attachment.take_attachable(), None);
+}

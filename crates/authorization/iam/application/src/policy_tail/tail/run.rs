@@ -36,7 +36,8 @@ pub trait TailApplier: std::fmt::Debug + Send + Sync {
 /// Learns how far the committed log reaches without a record: the apply thread uses it to cover
 /// the commit markers behind the last record (FR-73).
 pub trait TailProgress: std::fmt::Debug + Send + Sync {
-    /// The tail polled at `position` and found no record before `high`, the last stable offset.
+    /// The tail polled at `position` and found no record before `high`, the last stable offset; the
+    /// reader proved that only transaction control markers or aborted records lie between.
     fn caught_up(&self, position: i64, high: i64);
 }
 
@@ -140,7 +141,7 @@ fn stalled() -> TailInput {
 async fn poll(ports: &TailPorts, position: i64) -> TailInput {
     match ports.log.poll(position).await {
         Ok(batch) => {
-            if batch.records.is_empty() {
+            if batch.records.is_empty() && batch.idle_consistent {
                 ports.progress.caught_up(position, batch.high);
             }
             TailInput::Polled {

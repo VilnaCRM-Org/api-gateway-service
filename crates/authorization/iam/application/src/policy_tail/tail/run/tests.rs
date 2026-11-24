@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime};
 use iam_domain::{FramedRecord, PolicyDigestValue};
 use test_support::clock::FixedClock;
 use test_support::policy_bootstrap_log::framed_row;
-use test_support::policy_tail_log::{FakePolicyTailLog, PollStep, batch, timed};
+use test_support::policy_tail_log::{FakePolicyTailLog, PollStep, batch, consistent_idle, timed};
 use tokio::sync::watch;
 
 use super::*;
@@ -237,8 +237,8 @@ async fn an_applier_without_a_fault_of_its_own_never_stops_the_tail() {
 async fn an_idle_poll_tells_the_progress_sink_where_the_committed_log_ends() {
     let steps = vec![
         PollStep::Batch(batch(vec![timed(row(3), None)], 0, 4)),
-        PollStep::Batch(batch(Vec::new(), 0, 5)),
-        PollStep::Batch(batch(Vec::new(), 0, 4)),
+        PollStep::Batch(consistent_idle(0, 5)),
+        PollStep::Batch(consistent_idle(0, 4)),
     ];
     let log = Arc::new(FakePolicyTailLog::scripted(steps, 6));
     let applier = Arc::new(ScriptedApplier::answering(Vec::new()));
@@ -259,4 +259,36 @@ async fn an_idle_poll_tells_the_progress_sink_where_the_committed_log_ends() {
         TailEnd::Fenced(FenceCause::WatermarkRegression { seen: 5, high: 4 })
     );
     assert_eq!(*progress.0.lock().unwrap(), vec![(4, 5), (4, 4)]);
+}
+
+#[tokio::test]
+async fn an_idle_poll_that_missed_records_does_not_tell_the_progress_sink() {
+    let steps = vec![
+        PollStep::Batch(batch(vec![timed(row(3), None)], 0, 4)),
+        PollStep::Batch(batch(Vec::new(), 0, 5)),
+        PollStep::Batch(consistent_idle(0, 4)),
+    ];
+    let log = Arc::new(FakePolicyTailLog::scripted(steps, 6));
+    let applier = Arc::new(ScriptedApplier::answering(Vec::new()));
+    let progress = Arc::new(RecordedProgress::default());
+    let (_stop, stopping) = watch::channel(false);
+    let sink: Arc<dyn TailProgress> = Arc::<RecordedProgress>::clone(&progress);
+
+    let end = run_tail(
+        TailMachine::new(3, 3),
+        &ports_with(&log, &applier, sink),
+        Duration::ZERO,
+        &stopping,
+    )
+    .await;
+
+    assert_eq!(
+        end,
+        TailEnd::Fenced(FenceCause::WatermarkRegression { seen: 5, high: 4 })
+    );
+    assert_eq!(
+        *progress.0.lock().unwrap(),
+        vec![(4, 4)],
+        "only the consistent idle poll counts"
+    );
 }

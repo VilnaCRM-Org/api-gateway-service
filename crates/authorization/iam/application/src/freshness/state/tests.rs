@@ -73,6 +73,7 @@ fn a_jump_larger_than_the_ready_bound_invalidates_the_proof_until_a_new_one_is_a
         Some(StaleCause::Gap(READY + Duration::from_millis(1)))
     );
 
+    clock.advance(Duration::from_millis(1));
     state.attach(proof_at(&clock), version(4));
     assert!(state.is_fresh());
 }
@@ -119,4 +120,77 @@ fn a_fresh_pod_has_no_stale_cause() {
     state.attach(proof_at(&clock), version(3));
 
     assert_eq!(state.stale_cause(), None);
+}
+
+#[test]
+fn a_proof_taken_before_an_invalidation_is_refused() {
+    let (state, clock) = state();
+    let early = proof_at(&clock);
+    clock.advance(Duration::from_millis(5));
+    state.invalidate();
+
+    assert!(!state.attach(early, version(3)));
+
+    assert_eq!(state.stale_cause(), Some(StaleCause::NoProof));
+    assert_eq!(state.reading().proven_version, None);
+}
+
+#[test]
+fn a_proof_taken_at_the_instant_of_an_invalidation_is_refused_and_a_later_one_accepted() {
+    let (state, clock) = state();
+    state.invalidate();
+
+    assert!(!state.attach(proof_at(&clock), version(3)));
+
+    clock.advance(Duration::from_millis(1));
+    assert!(state.attach(proof_at(&clock), version(3)));
+    assert!(state.is_fresh());
+}
+
+#[test]
+fn a_proof_taken_before_a_gap_above_the_ready_bound_is_refused() {
+    let (state, clock) = state();
+    state.tick();
+    let early = proof_at(&clock);
+    clock.jump(READY + Duration::from_millis(1));
+    state.tick();
+
+    assert!(!state.attach(early, version(3)));
+    assert_eq!(state.stale_cause(), Some(StaleCause::NoProof));
+
+    clock.advance(Duration::from_millis(1));
+    assert!(state.attach(proof_at(&clock), version(3)));
+    assert!(state.is_fresh());
+}
+
+#[test]
+fn a_proof_taken_before_the_watchdog_was_found_silent_is_refused() {
+    let (state, clock) = state();
+    state.tick();
+    let early = proof_at(&clock);
+    clock.advance(READY + Duration::from_secs(1));
+
+    assert!(!state.attach(early, version(3)));
+    assert!(!state.attach(proof_at(&clock), version(3)));
+    assert!(!state.is_fresh());
+}
+
+#[test]
+fn a_gap_within_the_ready_bound_after_the_proof_still_counts_for_the_verdict() {
+    let (state, clock) = state();
+    state.tick();
+    clock.advance(Duration::from_millis(1));
+    assert!(state.attach(proof_at(&clock), version(3)));
+    state.tick();
+
+    clock.advance(READY);
+    state.tick();
+    assert!(state.is_fresh());
+
+    clock.advance(READY + Duration::from_millis(1));
+    state.tick();
+    assert_eq!(
+        state.stale_cause(),
+        Some(StaleCause::Gap(READY + Duration::from_millis(1)))
+    );
 }

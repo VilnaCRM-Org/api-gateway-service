@@ -47,6 +47,10 @@ pub struct KrafkaPolicyLogTail {
     /// `KAFKA_FETCH_MAX_WAIT` in tail mode; `None` for the bounded reads.
     fetch_wait: Option<Duration>,
     consumer: Mutex<Option<Arc<Consumer>>>,
+    /// The tail position and the consumer position of the last idle poll that proved the log
+    /// between them holds no record; the consumer may stay ahead of the caller's position only
+    /// there.
+    idle_proven: Mutex<Option<(i64, i64)>>,
 }
 
 impl std::fmt::Debug for KrafkaPolicyLogTail {
@@ -71,6 +75,7 @@ impl KrafkaPolicyLogTail {
             reset: AutoOffsetReset::Earliest,
             fetch_wait: None,
             consumer: Mutex::new(None),
+            idle_proven: Mutex::new(None),
         }
     }
 
@@ -84,6 +89,7 @@ impl KrafkaPolicyLogTail {
             reset: AutoOffsetReset::None,
             fetch_wait: None,
             consumer: Mutex::new(None),
+            idle_proven: Mutex::new(None),
         }
     }
 
@@ -98,6 +104,7 @@ impl KrafkaPolicyLogTail {
             reset: AutoOffsetReset::None,
             fetch_wait: Some(fetch_max_wait),
             consumer: Mutex::new(None),
+            idle_proven: Mutex::new(None),
         }
     }
 
@@ -113,6 +120,7 @@ impl KrafkaPolicyLogTail {
 
     /// Takes the cached consumer, if any, and closes it, so it is never dropped open.
     async fn release(&self) {
+        *locked(&self.idle_proven) = None;
         let open = locked(&self.consumer).take();
         if let Some(consumer) = open {
             report_close(consumer.close().await);
@@ -225,6 +233,7 @@ impl KrafkaPolicyLogTail {
                 records: Vec::new(),
                 low,
                 high,
+                idle_consistent: false,
             }),
             _ => {
                 self.release().await;
@@ -233,19 +242,34 @@ impl KrafkaPolicyLogTail {
         }
     }
 
+    /// Seeks the consumer to `position` unless it already reads from there.
+    async fn align(&self, position: i64) -> Result<(), PolicyLogTailError> {
+        let consumer = self.consumer().await.map_err(into_unavailable)?;
+        let held = consumer
+            .position(&self.settings.policy_topic, STATE_PARTITION)
+            .await;
+        drop(consumer);
+        let proven = *locked(&self.idle_proven);
+        self.seek_if(!at_position(held, position, proven), position)
+            .await
+    }
+
+    /// Seeks the consumer to `position` when `wanted`.
+    async fn seek_if(&self, wanted: bool, position: i64) -> Result<(), PolicyLogTailError> {
+        if !wanted {
+            return Ok(());
+        }
+        let consumer = self.consumer().await.map_err(into_unavailable)?;
+        consumer
+            .seek(&self.settings.policy_topic, STATE_PARTITION, position)
+            .await
+            .map_err(into_unavailable)
+    }
+
     async fn tail_attempt(&self, position: i64) -> Result<TailBatch, PolicyLogTailError> {
         let consumer = self.consumer().await.map_err(into_unavailable)?;
         let topic = &self.settings.policy_topic;
-        let behind = consumer
-            .position(topic, STATE_PARTITION)
-            .await
-            .is_none_or(|held| held < position);
-        if behind {
-            consumer
-                .seek(topic, STATE_PARTITION, position)
-                .await
-                .map_err(into_unavailable)?;
-        }
+        self.align(position).await?;
         let wait = self
             .fetch_wait
             .unwrap_or(POLL_TIMEOUT)
@@ -263,30 +287,58 @@ impl KrafkaPolicyLogTail {
                 records,
                 low: position.min(high),
                 high,
+                idle_consistent: false,
             });
         }
+        let after = consumer.position(topic, STATE_PARTITION).await;
         drop(consumer);
-        self.idle_bounds(position).await
+        self.idle_bounds(position, after).await
     }
 
-    /// The bounds of an idle tail; a watermark above the position means the consumer missed
-    /// records, so it is seeked to the position again.
-    async fn idle_bounds(&self, position: i64) -> Result<TailBatch, PolicyLogTailError> {
+    /// The bounds of an idle tail. The batch is a proof that the log up to `high` holds no record
+    /// only when the consumer read from `position` and its position `after` the empty poll reached
+    /// `high`; otherwise a watermark above the position means the consumer missed records, so it
+    /// is seeked to the position again.
+    async fn idle_bounds(
+        &self,
+        position: i64,
+        after: Option<i64>,
+    ) -> Result<TailBatch, PolicyLogTailError> {
         let (low, high) = self.bounds().await.map_err(unavailable)?;
-        if high > position && position >= low {
-            let consumer = self.consumer().await.map_err(into_unavailable)?;
-            consumer
-                .seek(&self.settings.policy_topic, STATE_PARTITION, position)
-                .await
-                .map_err(into_unavailable)?;
-            drop(consumer);
-        }
+        let reached = after.filter(|held| *held >= high);
+        let idle_consistent = reached.is_some();
+        *locked(&self.idle_proven) = reached.map(|held| (position, held));
+        self.seek_if(
+            missed_records(position, (low, high), idle_consistent),
+            position,
+        )
+        .await?;
         Ok(TailBatch {
             records: Vec::new(),
             low,
             high,
+            idle_consistent,
         })
     }
+}
+
+/// Whether the consumer, at `held`, reads exactly from the tail `position`: it is there, or it is
+/// ahead only by what the last idle poll proved holds no record (`proven` is that poll's position
+/// and consumer position). A consumer anywhere else must be seeked.
+const fn at_position(held: Option<i64>, position: i64, proven: Option<(i64, i64)>) -> bool {
+    match (held, proven) {
+        (Some(held), _) if held == position => true,
+        (Some(held), Some((from, through))) => from == position && held == through,
+        _ => false,
+    }
+}
+
+/// Whether an idle poll at `position` over the bounds `low..high` missed records: the watermark
+/// lies above the position, which the partition still holds, and the consumer did not read up to
+/// it.
+const fn missed_records(position: i64, bounds: (i64, i64), idle_consistent: bool) -> bool {
+    let (low, high) = bounds;
+    high > position && position >= low && !idle_consistent
 }
 
 /// Logs a consumer that did not close cleanly; it is closed either way.

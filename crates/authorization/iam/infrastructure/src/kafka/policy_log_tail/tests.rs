@@ -5,8 +5,8 @@ use krafka::consumer::ConsumerRecord;
 use std::time::Duration;
 
 use super::{
-    KrafkaPolicyLogTail, completed, finished, framed_of, into_unavailable, polls_within, record_of,
-    report_close, take_converted,
+    KrafkaPolicyLogTail, at_position, completed, finished, framed_of, into_unavailable,
+    missed_records, polls_within, record_of, report_close, take_converted,
 };
 use crate::kafka::settings::{KafkaSecurity, KafkaSettings};
 use iam_domain::TAIL_READ_LIMIT;
@@ -312,4 +312,39 @@ fn a_record_that_is_not_framed_is_not_a_timed_record() {
         super::timed_of(&consumed(6, Some(ROLE_KEY), Some("{}"))),
         Err(PolicyLogTailError::Malformed { offset: 6 })
     ));
+}
+
+#[test]
+fn a_consumer_at_the_tail_position_needs_no_seek() {
+    assert!(at_position(Some(5), 5, None));
+}
+
+#[test]
+fn a_consumer_without_a_position_or_behind_it_is_seeked() {
+    assert!(!at_position(None, 5, None));
+    assert!(!at_position(Some(4), 5, Some((5, 7))));
+}
+
+#[test]
+fn a_consumer_ahead_of_the_position_is_seeked_unless_an_idle_poll_proved_the_gap_empty() {
+    assert!(!at_position(Some(7), 5, None));
+    assert!(!at_position(Some(8), 5, Some((5, 7))));
+    assert!(!at_position(Some(7), 6, Some((5, 7))));
+    assert!(at_position(Some(7), 5, Some((5, 7))));
+}
+
+#[test]
+fn an_idle_poll_below_the_watermark_that_did_not_read_up_to_it_missed_records() {
+    assert!(missed_records(4, (0, 6), false));
+}
+
+#[test]
+fn an_idle_poll_that_read_up_to_the_watermark_or_sits_at_it_missed_nothing() {
+    assert!(!missed_records(4, (0, 6), true));
+    assert!(!missed_records(6, (0, 6), false));
+}
+
+#[test]
+fn a_position_below_the_first_offset_is_no_missed_read() {
+    assert!(!missed_records(1, (3, 6), false));
 }

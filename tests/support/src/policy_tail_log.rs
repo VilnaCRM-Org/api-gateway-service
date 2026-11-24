@@ -50,10 +50,27 @@ pub const fn timed(framed: FramedRecord, appended_at_ms: Option<i64>) -> TimedRe
     }
 }
 
-/// A batch of `records` over the partition bounds `low..high`.
+/// A batch of `records` over the partition bounds `low..high`; an empty one is not a proof that
+/// the log up to `high` holds no record.
 #[must_use]
 pub const fn batch(records: Vec<TimedRecord>, low: i64, high: i64) -> TailBatch {
-    TailBatch { records, low, high }
+    TailBatch {
+        records,
+        low,
+        high,
+        idle_consistent: false,
+    }
+}
+
+/// An empty batch over the bounds `low..high` whose reader consumed the log up to `high`.
+#[must_use]
+pub const fn consistent_idle(low: i64, high: i64) -> TailBatch {
+    TailBatch {
+        records: Vec::new(),
+        low,
+        high,
+        idle_consistent: true,
+    }
 }
 
 #[derive(Debug)]
@@ -114,11 +131,7 @@ impl PolicyTailLog for FakePolicyTailLog {
             Ok(PollStep::Malformed(offset)) => Err(PolicyLogTailError::Malformed { offset }),
             Err(high) => {
                 YieldOnce(false).await;
-                Ok(TailBatch {
-                    records: Vec::new(),
-                    low: 0,
-                    high,
-                })
+                Ok(consistent_idle(0, high))
             }
         }
     }

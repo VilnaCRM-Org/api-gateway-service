@@ -305,6 +305,15 @@ async fn the_tail_reads_from_its_position_and_reports_the_bounds_while_idle() {
         "the commit marker lies at or after {after}"
     );
     assert_eq!(idle.low, 0);
+    assert!(
+        idle.idle_consistent && again.idle_consistent,
+        "the reader consumed the commit marker, so the idle poll proves the log is read to {}",
+        idle.high
+    );
+    assert!(
+        !first.idle_consistent,
+        "a batch with records proves nothing"
+    );
 }
 
 #[tokio::test]

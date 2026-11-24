@@ -28,6 +28,12 @@ pub struct TailBatch {
     pub low: i64,
     /// The offset after the last record a `read_committed` reader can see.
     pub high: i64,
+    /// Whether an empty batch proves that nothing but transaction control markers or aborted
+    /// records lies between the polled position and `high`: the empty result and `high` come from
+    /// the same fetch, and the reader's own position after that fetch reached `high`. It is `false`
+    /// for a batch with records and for every empty batch whose `high` lies beyond what the reader
+    /// consumed (it missed records and reseeks), so that a freshness proof never covers them.
+    pub idle_consistent: bool,
 }
 
 /// Follows the committed records of the state topic from a position kept by the caller.
