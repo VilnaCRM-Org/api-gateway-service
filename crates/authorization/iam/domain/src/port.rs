@@ -22,6 +22,7 @@ pub mod openapi_document_parser;
 pub mod openapi_spec_repository;
 pub mod outbox_store;
 pub mod peer_freshness_client;
+pub mod peer_freshness_reader;
 pub mod permission_page_query;
 pub mod policy_bootstrap_log;
 pub mod policy_digest;
@@ -53,6 +54,7 @@ pub mod task_state_repository;
 pub mod token_lifetime_floor;
 pub mod token_memo;
 pub mod token_repository;
+pub mod upstream_forwarder;
 pub mod upstream_repository;
 pub mod user_role_repository;
 

@@ -35,8 +35,10 @@ async fn bound_sockets_report_their_own_addresses() {
     assert_ne!(bound.public.port(), 0);
     assert_ne!(bound.internal.port(), 0);
     assert_ne!(bound.probe.port(), 0);
+    assert_ne!(bound.decision.port(), 0);
     assert_ne!(bound.public, bound.internal);
     assert_ne!(bound.internal, bound.probe);
+    assert_ne!(bound.probe, bound.decision);
 }
 
 #[tokio::test]
@@ -59,6 +61,7 @@ fn config_on(address: SocketAddr) -> GatewayConfig {
     let text = address.to_string();
     args.listen = Some(text.clone());
     args.internal_listen = Some(text.clone());
+    args.decision_listen = Some(text.clone());
     args.probe_listen = Some(text);
     GatewayConfig::from_args(&args).unwrap()
 }
@@ -115,7 +118,8 @@ async fn the_plain_public_server_answers_503_and_ends_on_the_stop_flag() {
     let address = socket.local_addr().unwrap();
 
     let router = listener::stale_router();
-    let server = start_public(socket, None, router, &mut tasks, &stopping).unwrap();
+    let signals = ConnectionSignals::new(stopping, None);
+    let server = start_public(socket, None, router, &mut tasks, signals).unwrap();
     let answer = raw_get(address).await;
     stop.send_replace(true);
 
@@ -125,23 +129,33 @@ async fn the_plain_public_server_answers_503_and_ends_on_the_stop_flag() {
     assert!(tasks.is_empty());
 }
 
-#[test]
-fn a_gateway_without_a_freshness_state_wires_the_stale_router_and_the_bare_internal_router() {
+#[tokio::test]
+async fn a_gateway_without_a_freshness_state_wires_the_stale_router_and_the_bare_internal_router() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
     use test_support::boot_clock::FakeBootClock;
     use test_support::policy_bootstrap_log::FakePolicyBootstrapLog;
+    use tower::ServiceExt as _;
 
     let policy = policy::PolicyAdapters::with(
         Arc::new(FakePolicyBootstrapLog::with(Vec::new())),
         Arc::new(FakeBootClock::new()),
     );
+    let clock: Arc<dyn Clock> = Arc::new(shared_infrastructure::clock::SystemClock);
 
-    let (_public, _internal) = routers(&policy);
+    let public = public_router(&config_on(loopback()), &policy, &clock).unwrap();
+    let _internal = internal_router(&policy);
+    let answer = public
+        .oneshot(Request::get("/anything").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
 
     assert!(policy.freshness.is_none());
+    assert_eq!(answer.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]
-async fn a_gateway_with_a_freshness_state_serves_the_freshness_endpoint_and_gates_the_public_listener()
+async fn a_gateway_with_a_freshness_state_serves_the_freshness_endpoint_and_the_pipeline_gates_the_public_listener()
  {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -170,7 +184,9 @@ async fn a_gateway_with_a_freshness_state_serves_the_freshness_endpoint_and_gate
         policy::PolicyAdapters::with(Arc::new(FakePolicyBootstrapLog::with(Vec::new())), clock)
             .proving(freshness);
 
-    let (public, internal) = routers(&policy);
+    let clock: Arc<dyn Clock> = Arc::new(shared_infrastructure::clock::SystemClock);
+    let public = public_router(&config_on(loopback()), &policy, &clock).unwrap();
+    let internal = internal_router(&policy);
     let gated = public
         .oneshot(Request::get("/anything").body(Body::empty()).unwrap())
         .await
@@ -212,6 +228,34 @@ async fn a_gateway_without_a_freshness_state_serves_only_ping_on_the_probe_liste
 
     assert_eq!(ping.status(), StatusCode::OK);
     assert_eq!(ready.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_gateway_without_a_freshness_state_serves_only_the_404_problem_on_the_decision_listener()
+{
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use shared_infrastructure::clock::SystemClock;
+    use test_support::boot_clock::FakeBootClock;
+    use test_support::policy_bootstrap_log::FakePolicyBootstrapLog;
+    use tower::ServiceExt as _;
+
+    let policy = policy::PolicyAdapters::with(
+        Arc::new(FakePolicyBootstrapLog::with(Vec::new())),
+        Arc::new(FakeBootClock::new()),
+    );
+    let router = decision_router(&config_on(loopback()), &policy, Arc::new(SystemClock)).unwrap();
+
+    let answer = router
+        .oneshot(
+            Request::post("/api/access-validations")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(answer.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -260,6 +304,25 @@ async fn a_gateway_with_a_freshness_state_serves_the_three_probes_over_the_statu
             StatusCode::SERVICE_UNAVAILABLE
         ]
     );
+
+    let decision = decision_router(
+        &config_on(loopback()),
+        &policy,
+        Arc::new(shared_infrastructure::clock::SystemClock),
+    )
+    .unwrap()
+    .oneshot(
+        Request::post("/api/access-validations")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"credential":"x","service":"orders","permissions":["rest:orders:GET /api/orders"],"requestId":"r1"}"#,
+            ))
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(decision.status(), StatusCode::OK);
 }
 
 async fn raw_get(address: SocketAddr) -> String {
@@ -286,6 +349,7 @@ fn the_listening_and_runtime_entries_name_the_addresses_the_mode_and_the_workers
         public: SocketAddr::from(([127, 0, 0, 1], 8443)),
         internal: SocketAddr::from(([127, 0, 0, 1], 8444)),
         probe: SocketAddr::from(([127, 0, 0, 1], 8445)),
+        decision: SocketAddr::from(([127, 0, 0, 1], 8446)),
     };
     let runtime = runtime().unwrap();
 
@@ -338,4 +402,61 @@ async fn an_apply_thread_that_ended_cleanly_never_completes_the_wait() {
     let waited = tokio::time::timeout(Duration::from_millis(50), apply_thread_died(death)).await;
 
     assert!(waited.is_err());
+}
+
+#[tokio::test]
+async fn a_gateway_with_peer_readiness_serves_the_probes_over_the_gate_of_the_comparison() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use iam_application::{EndpointDirectory, FreshnessState, ZoneSource};
+    use iam_domain::{FreshnessRule, WatchTarget};
+    use test_support::boot_clock::FakeBootClock;
+    use test_support::peer_freshness_client::FakePeerFreshnessClient;
+    use test_support::peer_freshness_reader::FakePeerFreshnessReader;
+    use test_support::policy_bootstrap_log::FakePolicyBootstrapLog;
+    use test_support::policy_log_probe::FakePolicyLogProbe;
+    use test_support::rng::FakeRng;
+    use tower::ServiceExt as _;
+
+    use crate::bootstrap::gateway::freshness::FreshnessAdapters;
+    use crate::bootstrap::gateway::readiness::ReadinessAdapters;
+
+    let clock = Arc::new(FakeBootClock::new());
+    let freshness = FreshnessAdapters {
+        state: Arc::new(FreshnessState::new(
+            FreshnessRule::new(Duration::from_secs(15), Duration::from_secs(2)),
+            Arc::<FakeBootClock>::clone(&clock),
+        )),
+        probe: Arc::new(FakePolicyLogProbe::scripted(Vec::new())),
+        peers: Arc::new(FakePeerFreshnessClient::new()),
+        clock: Arc::<FakeBootClock>::clone(&clock),
+        probe_interval: Duration::from_secs(1),
+    };
+    let peers = WatchTarget {
+        namespace: "iam".to_owned(),
+        service: "iam-gateway-peers".to_owned(),
+    };
+    let directory = EndpointDirectory::new(ZoneSource {
+        peers: peers.clone(),
+        pod: None,
+        explicit: None,
+    });
+    let readiness = ReadinessAdapters::with(
+        &config_on(loopback()),
+        &directory,
+        peers,
+        Arc::new(FakePeerFreshnessReader::new()),
+        Arc::new(FakeRng::seeded(1)),
+    );
+    let policy =
+        policy::PolicyAdapters::with(Arc::new(FakePolicyBootstrapLog::with(Vec::new())), clock)
+            .proving(freshness)
+            .comparing(readiness);
+
+    let ready = probe_router(&policy)
+        .oneshot(Request::get("/internal/ready").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(ready.status(), StatusCode::SERVICE_UNAVAILABLE);
 }

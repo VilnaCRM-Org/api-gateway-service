@@ -123,7 +123,12 @@ fn handlers_use_only_the_problem_aware_extractors() {
         (include_str!("../handler.rs"), vec!["resolve"]),
         (
             include_str!("../access_validation.rs"),
-            vec!["validate", "validate_batch"],
+            vec![
+                "validate",
+                "validate_batch",
+                "validate_unauthenticated",
+                "validate_batch_unauthenticated",
+            ],
         ),
         (
             include_str!("../graphql_spec.rs"),

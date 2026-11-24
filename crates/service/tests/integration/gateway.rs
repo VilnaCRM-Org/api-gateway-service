@@ -121,9 +121,11 @@ fn without_a_snapshot_the_public_listener_answers_503_iam_stale_and_ping_answers
     let public_ping = server.get("/ping");
     let internal = get_on(ports.internal, "/internal/freshness");
     let unknown_probe = get_on(ports.probe, "/nothing");
+    let unknown_decision = get_on(ports.decision, "/nothing");
     let finished = server.terminate();
 
     assert_eq!(public.status, 503);
+    assert_eq!(unknown_decision.status, 404);
     assert!(public.head.contains("retry-after: 1"), "{}", public.head);
     assert!(
         public
@@ -200,6 +202,7 @@ fn an_unparsable_key_file_keeps_the_gateway_from_listening_so_startup_never_pass
             ("GATEWAY_LISTEN", "127.0.0.1:0"),
             ("GATEWAY_INTERNAL_LISTEN", "127.0.0.1:0"),
             ("GATEWAY_PROBE_LISTEN", "127.0.0.1:0"),
+            ("GATEWAY_DECISION_LISTEN", "127.0.0.1:0"),
             ("JWT_PUBLIC_KEYS_FILE", keys.to_str().unwrap()),
         ],
     );
@@ -337,6 +340,7 @@ fn a_taken_listener_address_is_one_failure_entry_with_exit_status_1() {
             ("GATEWAY_LISTEN", taken.as_str()),
             ("GATEWAY_INTERNAL_LISTEN", "127.0.0.1:0"),
             ("GATEWAY_PROBE_LISTEN", "127.0.0.1:0"),
+            ("GATEWAY_DECISION_LISTEN", "127.0.0.1:0"),
         ],
     );
     drop(first.terminate());

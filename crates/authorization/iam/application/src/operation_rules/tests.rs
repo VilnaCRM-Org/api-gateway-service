@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 
 use iam_domain::{
-    AuditAction, HttpMethod, PermissionKey, PermissionKeyKind, ReservedPermission, ServiceScope,
+    AuditAction, HttpMethod, PathNormalizer, PermissionKey, PermissionKeyKind, ReservedPermission,
+    ServiceScope,
 };
 
 use super::{
@@ -453,4 +454,23 @@ fn there_is_no_cache_flush_operation_on_either_interface() {
     for rule in OperationRules::graphql() {
         assert!(!rule.coordinate.to_lowercase().contains("flush"));
     }
+}
+
+#[test]
+fn a_request_path_resolves_to_the_row_of_its_operation_and_a_literal_beats_a_parameter() {
+    let resolve = |method, path: &str| {
+        OperationRules::resolve(method, &PathNormalizer::normalize(path).unwrap())
+            .map(|rule| (rule.method.as_str(), rule.template))
+    };
+
+    assert_eq!(
+        resolve(HttpMethod::Get, "/api/roles/0190/permissions"),
+        Some(("GET", "/api/roles/{id}/permissions"))
+    );
+    assert_eq!(
+        resolve(HttpMethod::Post, "/api/roles"),
+        Some(("POST", "/api/roles"))
+    );
+    assert_eq!(resolve(HttpMethod::Post, "/api/cache-flushes"), None);
+    assert_eq!(resolve(HttpMethod::Delete, "/api/roles"), None);
 }

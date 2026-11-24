@@ -6,7 +6,7 @@
 //! of grants and assignments (FR-25) and of specification changes (FR-30) depend on the content of
 //! the request and are applied by the use cases of Story 6.14, not by this table.
 
-use iam_domain::HttpMethod;
+use iam_domain::{HttpMethod, NormalizedPath, PathTemplate, RestOperationMatcher, ServiceName};
 
 use crate::caller_rule::CallerRule;
 
@@ -751,6 +751,29 @@ impl OperationRules {
         RULES
             .iter()
             .find(|rule| rule.method.as_str() == method && rule.template == template)
+    }
+
+    /// The row of the operation that `method` and the normalised `path` of a request name, found by
+    /// the matcher of the decision path over the templates of the table, so that a literal segment
+    /// wins over a parameter; `None` for an operation without a row.
+    #[must_use]
+    pub fn resolve(method: HttpMethod, path: &NormalizedPath) -> Option<&'static OperationRule> {
+        let rows: Vec<(&'static OperationRule, PathTemplate)> = RULES
+            .iter()
+            .filter(|rule| rule.method == method)
+            .filter_map(|rule| Some((rule, PathTemplate::from_openapi_path(rule.template)?)))
+            .collect();
+        let key = RestOperationMatcher::match_operation(
+            ServiceName::iam(),
+            method,
+            path,
+            rows.iter().map(|(_, template)| template),
+        )
+        .ok()?;
+        let (_, matched) = key.rest_operation()?;
+        rows.into_iter()
+            .find(|(_, template)| template.as_rest_template() == matched)
+            .map(|(rule, _)| rule)
     }
 
     /// Every row of the GraphQL root fields that IAM owns; a root field of the served schema that

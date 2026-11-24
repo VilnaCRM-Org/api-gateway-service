@@ -1,6 +1,8 @@
 //! The catalogue of one service as the decision path reads it: its active REST operations and
 //! GraphQL type graphs, stamped with the policy version of the snapshot they were read in.
 
+use std::sync::Arc;
+
 use crate::value_object::graphql_type_graph::GraphQlTypeGraph;
 use crate::value_object::policy_epoch::PolicyEpoch;
 use crate::value_object::policy_version::PolicyVersion;
@@ -10,19 +12,20 @@ use crate::value_object::service_name::ServiceName;
 /// What the active specification versions of a service say.
 ///
 /// It is read in one snapshot with the policy epoch: one operation set per active `OpenAPI`
-/// version and one type graph per active GraphQL version, in the order of their identifiers.
+/// version and one type graph per active GraphQL version, in the order of their identifiers. The
+/// operation sets and the type graphs are shared, so a clone costs no copy of them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceCatalog {
     service: ServiceName,
     epoch: PolicyEpoch,
-    rest_operations: Vec<RestOperationSet>,
-    type_graphs: Vec<GraphQlTypeGraph>,
+    rest_operations: Arc<[RestOperationSet]>,
+    type_graphs: Arc<[GraphQlTypeGraph]>,
 }
 
 impl ServiceCatalog {
     /// The catalogue of `service`, read at `epoch`.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         service: ServiceName,
         epoch: PolicyEpoch,
         rest_operations: Vec<RestOperationSet>,
@@ -31,8 +34,8 @@ impl ServiceCatalog {
         Self {
             service,
             epoch,
-            rest_operations,
-            type_graphs,
+            rest_operations: rest_operations.into(),
+            type_graphs: type_graphs.into(),
         }
     }
 

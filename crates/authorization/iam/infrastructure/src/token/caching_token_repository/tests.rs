@@ -213,3 +213,24 @@ async fn the_log_names_the_digest_and_never_the_raw_credential() {
     assert!(lines.contains(&digest(&credential()).prefix()));
     assert!(!lines.contains(RAW));
 }
+
+#[tokio::test]
+async fn a_credential_resolved_with_another_view_is_checked_against_that_view_and_shares_the_memos()
+{
+    let fixture = accepting();
+    let revoking = FakeRevocationView::default();
+    revoking.answer(Some(RevocationStatus {
+        session_revoked: true,
+        ..RevocationStatus::default()
+    }));
+
+    let refused = fixture
+        .repository
+        .resolve_with(&revoking, &credential())
+        .await;
+    let accepted = fixture.repository.resolve(&credential()).await;
+
+    assert_eq!(refused, Err(TokenRejection::Revoked));
+    assert_eq!(accepted, Ok(TokenIdentity::from(&token())));
+    assert_eq!(fixture.verifier.calls(), 1);
+}

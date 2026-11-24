@@ -15,16 +15,21 @@ use tokio::sync::watch;
 
 use self::endpoints::{EndpointAdapters, EndpointSetupError};
 use self::policy::PolicyAdapters;
+use self::readiness::ReadinessAdapters;
 use super::{TaskMode, TaskSupervisor};
 use crate::config::GatewayConfig;
 
 pub mod apply_thread;
+pub mod decision;
 pub mod endpoints;
 pub mod freshness;
 pub mod internal;
 pub mod listener;
+pub mod pipeline;
 pub mod policy;
 pub mod probe;
+pub mod readiness;
+pub mod shedding;
 
 /// Every driven port of the gateway.
 pub struct GatewayAdapters {
@@ -62,13 +67,21 @@ impl GatewayAdapters {
     /// endpoint discovery.
     pub fn from_config(config: &GatewayConfig) -> Result<Self, GatewayAdapterError> {
         let keys = JwtKeySet::load(&config.tokens.public_keys_file)?;
-        let policy = PolicyAdapters::from_config(config);
+        let endpoints = EndpointAdapters::from_config(config)?;
+        let rng: Arc<dyn Rng> = Arc::new(SeededRng::from_os());
+        let readiness = ReadinessAdapters::from_config(
+            config,
+            &endpoints.directory,
+            endpoints::peers_target(config),
+            Arc::clone(&rng),
+        );
+        let policy = PolicyAdapters::from_config(config).comparing(readiness);
         policy.status.mark_keys_parsed();
         Ok(Self {
-            rng: Arc::new(SeededRng::from_os()),
+            rng,
             clock: Arc::new(SystemClock),
             keys,
-            endpoints: EndpointAdapters::from_config(config)?,
+            endpoints,
             policy,
         })
     }

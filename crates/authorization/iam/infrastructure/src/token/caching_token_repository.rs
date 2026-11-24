@@ -39,8 +39,26 @@ impl CachingTokenRepository {
         }
     }
 
+    /// Resolves `credential` like [`TokenRepository::resolve`], reading the revocation state from
+    /// `revocations` instead of the view this repository was built with.
+    ///
+    /// The gateway passes a view over the snapshot that the request loaded, so the revocation check
+    /// reads the same version as the decision that follows; the memos stay shared.
+    ///
+    /// # Errors
+    ///
+    /// The same rejections as [`TokenRepository::resolve`].
+    pub async fn resolve_with(
+        &self,
+        revocations: &dyn RevocationView,
+        credential: &Credential,
+    ) -> Result<TokenIdentity, TokenRejection> {
+        self.resolve_credential(revocations, credential).await
+    }
+
     async fn resolve_credential(
         &self,
+        revocations: &dyn RevocationView,
         credential: &Credential,
     ) -> Result<TokenIdentity, TokenRejection> {
         if credential.is_blank() {
@@ -48,7 +66,7 @@ impl CachingTokenRepository {
         }
         self.flush_when_the_key_set_changed().await;
         let identity = self.memoized_identity(credential).await?;
-        self.check_revocation(&identity).await?;
+        Self::check_revocation(revocations, &identity).await?;
         Ok(identity)
     }
 
@@ -70,8 +88,11 @@ impl CachingTokenRepository {
     }
 
     /// Applies the [`RevocationRule`] to the current revocation state.
-    async fn check_revocation(&self, identity: &TokenIdentity) -> Result<(), TokenRejection> {
-        let status = self.revocations.status(identity).await.map_err(|error| {
+    async fn check_revocation(
+        revocations: &dyn RevocationView,
+        identity: &TokenIdentity,
+    ) -> Result<(), TokenRejection> {
+        let status = revocations.status(identity).await.map_err(|error| {
             tracing::warn!(error = %error, "the revocation state cannot be read");
             TokenRejection::Unavailable
         })?;
@@ -102,7 +123,8 @@ pub fn digest(credential: &Credential) -> CredentialDigest {
 #[async_trait::async_trait]
 impl TokenRepository for CachingTokenRepository {
     async fn resolve(&self, credential: &Credential) -> Result<TokenIdentity, TokenRejection> {
-        self.resolve_credential(credential).await
+        self.resolve_credential(self.revocations.as_ref(), credential)
+            .await
     }
 }
 

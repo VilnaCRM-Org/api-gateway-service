@@ -7,6 +7,8 @@ mod bootstrap;
 #[cfg(test)]
 mod check_config;
 #[cfg(test)]
+mod decision;
+#[cfg(test)]
 mod derived_state;
 #[cfg(test)]
 mod export;
@@ -14,6 +16,8 @@ mod export;
 mod gateway;
 #[cfg(test)]
 mod gateway_bootstrap;
+#[cfg(test)]
+mod gateway_pipeline;
 #[cfg(test)]
 mod healthcheck;
 #[cfg(test)]
@@ -26,6 +30,8 @@ mod migrate;
 mod outbox_listener;
 #[cfg(test)]
 mod panic;
+#[cfg(test)]
+mod peer_readiness;
 #[cfg(test)]
 mod policy_resync;
 #[cfg(test)]

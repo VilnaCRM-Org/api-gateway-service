@@ -104,7 +104,7 @@ fn refusal(problem: Problem) -> Response {
 /// The token of `Authorization: Bearer`, or of the cookie when that header is absent.
 ///
 /// It is blank when the request carries none or an `Authorization` header of another scheme.
-fn credential(headers: &HeaderMap) -> Credential {
+pub(crate) fn credential(headers: &HeaderMap) -> Credential {
     let raw = headers
         .get(AUTHORIZATION)
         .map_or_else(|| cookie(headers), bearer);

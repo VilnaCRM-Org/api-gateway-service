@@ -1,4 +1,4 @@
-//! `service gateway`: binds the public, internal and probe listeners, serves until SIGTERM or
+//! `service gateway`: binds the public, internal, decision and probe listeners, serves until SIGTERM or
 //! SIGINT and drains (ADR 0015).
 //!
 //! The data plane needs no database: nothing here opens a PostgreSQL pool. Every line it writes is
@@ -13,7 +13,7 @@ use axum::Router;
 use axum::serve::Listener;
 use iam_application::PodProbes;
 use iam_domain::PolicyView;
-use shared_domain::BoxError;
+use shared_domain::{BoxError, Clock};
 use tokio::net::TcpListener;
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::{oneshot, watch};
@@ -22,8 +22,10 @@ use tokio::task::JoinHandle;
 use super::serve::{
     FORCED_EXIT_LIMIT, Shutdown, Signals, log_forced, log_signal, log_stopped, mode, stopped,
 };
+use crate::bootstrap::gateway::decision::{self, DecisionPorts};
 use crate::bootstrap::gateway::listener::{self, ReloadableCertificate, TlsListener};
-use crate::bootstrap::gateway::{self, GatewayAdapters, internal, policy, probe};
+use crate::bootstrap::gateway::shedding::{self, ConnectionSignals};
+use crate::bootstrap::gateway::{self, GatewayAdapters, internal, pipeline, policy, probe};
 use crate::bootstrap::{TaskStop, TaskSupervisor};
 use crate::config::{GatewayConfig, TlsFiles};
 use crate::telemetry;
@@ -34,11 +36,12 @@ pub const MAX_BLOCKING_THREADS: usize = 16;
 /// A running listener.
 type Server = JoinHandle<std::io::Result<()>>;
 
-/// The three bound sockets of the gateway.
+/// The four bound sockets of the gateway.
 struct Sockets {
     public: TcpListener,
     internal: TcpListener,
     probe: TcpListener,
+    decision: TcpListener,
 }
 
 /// The multi-thread runtime of the gateway. Tokio reads `TOKIO_WORKER_THREADS` itself, so the
@@ -68,6 +71,7 @@ async fn bind_all(config: &GatewayConfig) -> std::io::Result<Sockets> {
         public: bind(config.listen).await?,
         internal: bind(config.internal_listen).await?,
         probe: bind(config.probe_listen).await?,
+        decision: bind(config.decision_listen).await?,
     })
 }
 
@@ -83,6 +87,15 @@ where
     })
 }
 
+/// Serves the public listener with connection shedding: while the pod is not ready, its HTTP/2
+/// connections receive `GOAWAY` and its HTTP/1.1 responses `Connection: close` (Story 15.1).
+fn spawn_shedding_server<L>(listener: L, router: Router, signals: ConnectionSignals) -> Server
+where
+    L: Listener,
+{
+    tokio::spawn(shedding::serve(listener, router, signals))
+}
+
 /// Starts the public server: over TLS with the certificate watcher when the files are
 /// configured, over plain HTTP otherwise (the configuration allows that only in `dev` and `test`).
 fn start_public(
@@ -90,10 +103,10 @@ fn start_public(
     tls: Option<&TlsFiles>,
     router: Router,
     tasks: &mut TaskSupervisor,
-    stopping: &watch::Receiver<bool>,
+    signals: ConnectionSignals,
 ) -> Result<Server, BoxError> {
     let Some(files) = tls else {
-        return Ok(spawn_server(socket, router, stopping.clone()));
+        return Ok(spawn_shedding_server(socket, router, signals));
     };
     let (key, loaded) = listener::load_with_source(files)?;
     let resolver = Arc::new(ReloadableCertificate::new(key));
@@ -108,23 +121,63 @@ fn start_public(
         )
     });
     let secured = TlsListener::new(socket, listener::server_config(resolver)?)?;
-    Ok(spawn_server(secured, router, stopping.clone()))
+    Ok(spawn_shedding_server(secured, router, signals))
 }
 
-/// The routers of the public and the internal listener: with a freshness state, the public one
-/// allows only while the pod is fresh and the internal one serves `/internal/freshness`.
-fn routers(policy: &policy::PolicyAdapters) -> (Router, Router) {
-    policy.freshness.as_ref().map_or_else(
-        || (listener::stale_router(), internal::router()),
-        |freshness| {
+/// The router of the public listener: with a freshness state it is the request pipeline of Story
+/// 10.2, without one every request is answered 503 `iam_stale`.
+///
+/// # Errors
+///
+/// The error of wiring the pipeline, such as an unreadable key file.
+fn public_router(
+    config: &GatewayConfig,
+    policy: &policy::PolicyAdapters,
+    clock: &Arc<dyn Clock>,
+) -> Result<Router, BoxError> {
+    let Some(freshness) = policy.freshness.as_ref() else {
+        return Ok(listener::stale_router());
+    };
+    let view: Arc<dyn PolicyView> =
+        Arc::<iam_infrastructure::ArcSwapPolicySnapshot>::clone(&policy.cell);
+    let pipeline = pipeline::from_config(config, view, Arc::clone(&freshness.state), clock)?;
+    Ok(pipeline::router(pipeline))
+}
+
+/// The router of the internal listener: with a freshness state it serves `/internal/freshness`.
+fn internal_router(policy: &policy::PolicyAdapters) -> Router {
+    policy
+        .freshness
+        .as_ref()
+        .map_or_else(internal::router, |freshness| {
             let view: Arc<dyn PolicyView> =
                 Arc::<iam_infrastructure::ArcSwapPolicySnapshot>::clone(&policy.cell);
-            (
-                listener::public_router(Arc::clone(&freshness.state), Arc::clone(&view)),
-                internal::router_with_freshness(Arc::clone(&freshness.state), view),
-            )
-        },
-    )
+            internal::router_with_freshness(Arc::clone(&freshness.state), view)
+        })
+}
+
+/// The router of the decision listener: with a freshness state it serves the decision API from the
+/// snapshot, without one only the 404 problem.
+///
+/// # Errors
+///
+/// The error of setting the decision API up, such as an unreadable key file.
+fn decision_router(
+    config: &GatewayConfig,
+    policy: &policy::PolicyAdapters,
+    clock: Arc<dyn Clock>,
+) -> Result<Router, BoxError> {
+    let Some(freshness) = policy.freshness.as_ref() else {
+        return Ok(internal::router());
+    };
+    let view: Arc<dyn PolicyView> =
+        Arc::<iam_infrastructure::ArcSwapPolicySnapshot>::clone(&policy.cell);
+    let ports = DecisionPorts {
+        view,
+        freshness: Arc::clone(&freshness.state),
+        clock,
+    };
+    Ok(decision::router(config, ports)?)
 }
 
 /// The router of the probe listener: with a freshness state it serves the three probes of the pod
@@ -136,27 +189,43 @@ fn probe_router(policy: &policy::PolicyAdapters) -> Router {
         .map_or_else(probe::router, |freshness| {
             let view: Arc<dyn PolicyView> =
                 Arc::<iam_infrastructure::ArcSwapPolicySnapshot>::clone(&policy.cell);
-            probe::router_with_probes(Arc::new(PodProbes::new(
+            let probes = PodProbes::new(
                 Arc::clone(&policy.status),
                 Arc::clone(&freshness.state),
                 view,
-            )))
+            );
+            let probes = match policy.readiness.as_ref() {
+                Some(readiness) => probes.with_peer_readiness(Arc::clone(&readiness.gate)),
+                None => probes,
+            };
+            probe::router_with_probes(Arc::new(probes))
         })
 }
 
 fn start_servers(
     config: &GatewayConfig,
     sockets: Sockets,
-    policy: &policy::PolicyAdapters,
+    adapters: &GatewayAdapters,
     tasks: &mut TaskSupervisor,
     stopping: &watch::Receiver<bool>,
 ) -> Result<Vec<Server>, BoxError> {
-    let (public_router, internal_router) = routers(policy);
+    let policy = &adapters.policy;
+    let public_router = public_router(config, policy, &adapters.clock)?;
+    let internal_router = internal_router(policy);
+    let decision_router = decision_router(config, policy, Arc::clone(&adapters.clock))?;
     let tls = config.tls.as_ref();
-    let public = start_public(sockets.public, tls, public_router, tasks, stopping)?;
+    let signals = ConnectionSignals::new(
+        stopping.clone(),
+        policy
+            .readiness
+            .as_ref()
+            .map(|readiness| readiness.gate.shedding()),
+    );
+    let public = start_public(sockets.public, tls, public_router, tasks, signals)?;
     let internal = spawn_server(sockets.internal, internal_router, stopping.clone());
     let probe = spawn_server(sockets.probe, probe_router(policy), stopping.clone());
-    Ok(vec![public, internal, probe])
+    let decision = spawn_server(sockets.decision, decision_router, stopping.clone());
+    Ok(vec![public, internal, probe, decision])
 }
 
 /// The addresses the sockets are bound to.
@@ -164,6 +233,7 @@ struct Bound {
     public: SocketAddr,
     internal: SocketAddr,
     probe: SocketAddr,
+    decision: SocketAddr,
 }
 
 impl Sockets {
@@ -172,6 +242,7 @@ impl Sockets {
             public: self.public.local_addr()?,
             internal: self.internal.local_addr()?,
             probe: self.probe.local_addr()?,
+            decision: self.decision.local_addr()?,
         })
     }
 }
@@ -187,6 +258,7 @@ fn log_listening(config: &GatewayConfig, bound: &Bound) {
         public_addr = %bound.public,
         internal_addr = %bound.internal,
         probe_addr = %bound.probe,
+        decision_addr = %bound.decision,
         tls,
         env,
         pod,
@@ -254,7 +326,7 @@ async fn gateway(config: &GatewayConfig) -> Result<Shutdown, BoxError> {
     let death = policy::start_policy(&adapters.policy, &mut tasks)?;
     let sockets = bind_all(config).await?;
     let bound = sockets.addresses()?;
-    let servers = start_servers(config, sockets, &adapters.policy, &mut tasks, &stopping)?;
+    let servers = start_servers(config, sockets, &adapters, &mut tasks, &stopping)?;
     log_listening(config, &bound);
     let outcome = tokio::select! {
         received = signals.received() => {

@@ -118,3 +118,15 @@ async fn a_cutoff_before_1970_is_unusable() {
 
     assert!(matches!(status, Err(RepositoryError::Unavailable(_))));
 }
+
+#[tokio::test]
+async fn a_view_over_a_snapshot_reads_that_snapshot_and_asks_nothing_else() {
+    let snapshot = RevocationSnapshot::new().with_revoked_session(SessionId::new("sid-1").unwrap());
+
+    let status = SnapshotRevocationView::over(Arc::new(snapshot))
+        .status(&identity(user(), Some("sid-1")))
+        .await
+        .unwrap();
+
+    assert!(status.session_revoked);
+}

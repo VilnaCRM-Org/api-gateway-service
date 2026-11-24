@@ -73,7 +73,12 @@ pub use error::{
 };
 pub use error::{InvalidCatalogueEntry, InvalidStateRecord, RenameRefused};
 pub use error::{InvalidSpec, SpecPosition, SpecTransitionRefused};
+pub use freshness::hysteresis::{
+    RESTORE_AFTER, ReadinessHysteresis, ReadinessPressure, ReadinessTransition, SHED_AFTER,
+};
+pub use freshness::peer_report::{PeerObservation, PeerReport};
 pub use freshness::probe_error::ProbeError;
+pub use freshness::readiness::{AzFloor, ReadinessVerdict, ZoneRoster};
 pub use freshness::rule::{Freshness, FreshnessRule, StaleCause};
 pub use gateway_seed::IamGatewaySeed;
 pub use gateway_statement::{GatewayPrecondition, GatewayStatement};
@@ -154,6 +159,7 @@ pub use port::openapi_document_parser::OpenApiDocumentParser;
 pub use port::openapi_spec_repository::{OpenApiSpecPageQuery, OpenApiSpecRepository};
 pub use port::outbox_store::{OutboxKind, OutboxRow, OutboxStore, PublishedRow, RelayTakeover};
 pub use port::peer_freshness_client::PeerFreshnessClient;
+pub use port::peer_freshness_reader::PeerFreshnessReader;
 pub use port::permission_page_query::PermissionPageQuery;
 pub use port::policy_bootstrap_log::{FramedRecord, PolicyBootstrapLog};
 pub use port::policy_digest::PolicyDigest;
@@ -191,6 +197,7 @@ pub use port::task_state_repository::{TaskState, TaskStateRepository};
 pub use port::token_lifetime_floor::TokenLifetimeFloor;
 pub use port::token_memo::{TokenMemo, Verification};
 pub use port::token_repository::TokenRepository;
+pub use port::upstream_forwarder::{ForwardError, UpstreamForwarder, UpstreamTarget};
 pub use port::upstream_repository::{UpstreamPageQuery, UpstreamRepository};
 pub use port::user_role_repository::{UserRolePageQuery, UserRoleRepository};
 pub use rate_limit::decision::RateDecision;

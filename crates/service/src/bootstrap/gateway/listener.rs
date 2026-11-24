@@ -4,8 +4,8 @@
 //! The certificate lives in an [`ArcSwap`] behind a certificate resolver, so a handshake takes
 //! whichever pair is current when it starts. [`watch_files`] polls the two files and replaces the
 //! pair when their content changed and parses; a pair that does not parse is logged and the last
-//! valid one stays in force. Until the pipeline of Story 10.2 exists, the public router answers
-//! every request with 503 `iam_stale`, because no snapshot is published.
+//! valid one stays in force. The requests that arrive on it are served by the pipeline
+//! of Story 10.2 (`super::pipeline`).
 
 use std::io;
 use std::net::SocketAddr;
@@ -14,13 +14,10 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use axum::Router;
-use axum::extract::State;
 use axum::http::header::RETRY_AFTER;
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse as _, Response};
 use axum::serve::Listener;
-use iam_application::FreshnessState;
-use iam_domain::PolicyView;
 use rustls::ServerConfig;
 use rustls::crypto::aws_lc_rs::default_provider;
 use rustls::crypto::aws_lc_rs::sign::any_supported_type;
@@ -29,7 +26,6 @@ use rustls::sign::CertifiedKey;
 use rustls_pki_types::pem::PemObject as _;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use shared_application::http::Problem;
-use shared_application::http::fallback::not_found;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tokio_rustls::TlsAcceptor;
@@ -373,8 +369,8 @@ impl Listener for TlsListener {
     }
 }
 
-/// The router of the public listener until the pipeline of Story 10.2 exists: every request is
-/// answered with 503 `iam_stale` and `Retry-After: 1`, because no snapshot is published.
+/// The router of a public listener that has no proof of freshness to serve with: every request is
+/// answered with 503 `iam_stale` and `Retry-After: 1`, because nothing is proven current.
 pub fn stale_router() -> Router {
     Router::new().fallback(iam_stale)
 }
@@ -384,7 +380,7 @@ async fn iam_stale() -> Response {
 }
 
 /// 503 `iam_stale` with `Retry-After: 1`.
-fn stale_response(detail: &'static str) -> Response {
+pub fn stale_response(detail: &'static str) -> Response {
     let problem = Problem {
         r#type: TYPE_IAM_STALE,
         ..Problem::new(StatusCode::SERVICE_UNAVAILABLE).with_detail(detail)
@@ -394,35 +390,6 @@ fn stale_response(detail: &'static str) -> Response {
         .headers_mut()
         .insert(RETRY_AFTER, HeaderValue::from_static("1"));
     response
-}
-
-/// What the snapshot step of the public listener reads: the published snapshot and the freshness of
-/// the pod (Story 9.5).
-#[derive(Debug, Clone)]
-struct Gate {
-    freshness: Arc<FreshnessState>,
-    view: Arc<dyn PolicyView>,
-}
-
-/// The router of the public listener until the pipeline of Story 10.2 exists.
-///
-/// Its snapshot step is the one the pipeline will have: a request is allowed to proceed only while a snapshot is
-/// published and `FreshnessRule` finds the pod fresh, that is, a proof no older than
-/// `FRESHNESS_HARD_BOUND` and no gap above `FRESHNESS_READY_BOUND` since it; any other request is
-/// answered 503 `iam_stale` with `Retry-After: 1`. A request that proceeds meets no route yet and
-/// is answered with the 404 problem.
-pub fn public_router(freshness: Arc<FreshnessState>, view: Arc<dyn PolicyView>) -> Router {
-    Router::new()
-        .fallback(snapshot_step)
-        .with_state(Gate { freshness, view })
-}
-
-async fn snapshot_step(State(gate): State<Gate>) -> Response {
-    if gate.view.current().is_some() && gate.freshness.is_fresh() {
-        not_found().await.into_response()
-    } else {
-        stale_response("The policy snapshot is not proven fresh.")
-    }
 }
 
 fn log_reloaded() {

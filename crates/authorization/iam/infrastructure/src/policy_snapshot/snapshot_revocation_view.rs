@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use iam_domain::{
-    PolicyView, RepositoryError, RevocationStatus, RevocationView, SubjectId, TokenIdentity,
+    PolicySnapshot, PolicyView, RepositoryError, RevocationStatus, RevocationView, SubjectId,
+    TokenIdentity,
 };
 
 /// Why the snapshot cannot answer.
@@ -16,6 +17,16 @@ pub enum SnapshotRevocationError {
     /// A stored cut-off holds a negative number of microseconds.
     #[error("a revocation record holds an instant before 1970")]
     InstantBeforeEpoch,
+}
+
+/// A policy view that always hands out the one snapshot it was given.
+#[derive(Debug)]
+struct PinnedSnapshot(Arc<dyn PolicySnapshot>);
+
+impl PolicyView for PinnedSnapshot {
+    fn current(&self) -> Option<Arc<dyn PolicySnapshot>> {
+        Some(Arc::clone(&self.0))
+    }
 }
 
 /// Answers `RevocationView::status` from the revocation sets of the current snapshot.
@@ -32,6 +43,13 @@ impl SnapshotRevocationView {
     #[must_use]
     pub fn new(policy: Arc<dyn PolicyView>) -> Self {
         Self { policy }
+    }
+
+    /// A view over `snapshot` itself, the one a request loaded: it never loads another, so the
+    /// revocation check and the decision of the request read the same version.
+    #[must_use]
+    pub fn over(snapshot: Arc<dyn PolicySnapshot>) -> Self {
+        Self::new(Arc::new(PinnedSnapshot(snapshot)))
     }
 
     fn read(&self, identity: &TokenIdentity) -> Result<RevocationStatus, RepositoryError> {

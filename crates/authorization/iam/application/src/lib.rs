@@ -27,6 +27,8 @@ pub mod error;
 #[cfg(test)]
 mod fixtures;
 pub mod freshness;
+pub mod gateway;
+pub mod gateway_decision;
 pub mod graphql;
 #[cfg(test)]
 mod graphql_activation_fixtures;
@@ -41,6 +43,7 @@ pub mod iam_access_guard;
 mod openapi_spec_fixtures;
 pub mod operation_rules;
 pub mod outbox_relay;
+pub mod peer_readiness;
 pub mod policy_maintenance;
 #[cfg(test)]
 mod policy_resync_fixtures;
@@ -78,6 +81,7 @@ mod security_audit_fixtures;
 pub(crate) mod security_audit_reads;
 pub mod service_catalog_loader;
 pub mod singleton_loop;
+pub mod snapshot_policy_reads;
 #[cfg(test)]
 mod spec_retirement_fixtures;
 pub mod subscriber;
@@ -163,12 +167,21 @@ pub use freshness::{
     FreshnessProber, FreshnessReading, FreshnessState, PEER_LAG_TOLERANCE, PeerLag, PeerLagTracker,
     ProberPorts, ProberSettings, ProofAttachment, ProofSink, WATCHDOG_INTERVAL,
 };
+pub use gateway::request_authorizer::{Authorization, RequestAuthorizer, RouteRequest};
+pub use gateway::snapshot_reads::{CatalogueCache, LoadedSnapshotReads};
+pub use gateway_decision::{
+    GatewayValidateAccessBatchQueryHandler, GatewayValidateAccessQueryHandler,
+};
 pub use guarded_unit_of_work::{GuardReads, GuardedUnitOfWork};
 pub use iam_access_guard::{
     AuthorizationUnavailable, GraphQlOperationRequest, IamAccessGuard, OperationRequest,
 };
 pub use operation_rules::{GraphQlRule, OperationRule, OperationRules, Requirement};
 pub use outbox_relay::{OutboxRelay, OutboxRelayPorts, OutboxRelaySettings};
+pub use peer_readiness::{
+    CHECK_INTERVAL, FULL_FLEET_BELOW, OWN_ZONE_SAMPLE, PEER_READ_TIMEOUT, PeerReadinessChecker,
+    PeerSet, PeerSetPorts, ReadinessGate, SAMPLE_SIZE, select_peers,
+};
 pub use policy_maintenance::{MaintenanceSettings, PolicyMaintenance};
 pub use policy_tail::{
     ApplyResult, FenceCause, IgnoredProgress, MAX_APPEND_AGE_MS, TailAction, TailApplier, TailEnd,
@@ -284,3 +297,4 @@ pub use singleton_loop::{
     BatchOutcome, InvalidSingletonInterval, MAX_SINGLETON_INTERVAL, SingletonInterval,
     SingletonLoop, SingletonWork,
 };
+pub use snapshot_policy_reads::{FreshPolicyView, SnapshotPolicyReads, SnapshotUnavailable};
