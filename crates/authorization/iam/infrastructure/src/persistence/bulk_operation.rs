@@ -68,6 +68,34 @@ pub async fn save_progress_within(
     updated(done.rows_affected())
 }
 
+/// Stores a new operation inside the transaction of the change that starts it.
+///
+/// # Errors
+///
+/// [`RepositoryError::AlreadyExists`] for a known id and [`RepositoryError::Unavailable`] when the
+/// storage fails or a value cannot be stored.
+pub async fn insert_within(
+    connection: &mut PgConnection,
+    parts: &BulkOperationParts,
+) -> Result<(), RepositoryError> {
+    sqlx::query(INSERT)
+        .bind(parts.id.as_uuid().as_uuid())
+        .bind(parts.kind.as_str())
+        .bind(parts.status.as_str())
+        .bind(count(parts.total_records)?)
+        .bind(count(parts.applied_records)?)
+        .bind(parts.first_version.map(PolicyVersion::value))
+        .bind(parts.last_version.map(PolicyVersion::value))
+        .bind(parts.requester.to_string())
+        .bind(parts.error.as_deref())
+        .bind(OffsetDateTime::from(parts.created_at))
+        .bind(OffsetDateTime::from(parts.updated_at))
+        .execute(&mut *connection)
+        .await
+        .map(|_done| ())
+        .map_err(translate)
+}
+
 /// The stored bulk operation row; it never leaves this module.
 #[derive(sqlx::FromRow)]
 struct BulkOperationRow {

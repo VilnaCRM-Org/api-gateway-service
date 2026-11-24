@@ -41,6 +41,7 @@ use test_support::outbox_store::FakeOutboxStore;
 use test_support::policy_epoch::{FakePolicyEpochRepository, seeded_policy_epoch};
 use test_support::policy_log_producer::FakePolicyLogProducer;
 use test_support::policy_read::FakePolicyReadRepository;
+use test_support::policy_state_inventory::FakePolicyStateInventory;
 use test_support::probe::StubProbe;
 use test_support::rate_policy::FakeRatePolicyRepository;
 use test_support::repository::InMemoryExampleApiResourceRepository;
@@ -120,6 +121,8 @@ fn adapters() -> Adapters {
             chunker: BulkChunker::new(1_000).unwrap(),
             pacing: BulkPacing::new(2_000).unwrap(),
         },
+        policy_inventory: Arc::new(FakePolicyStateInventory::new()),
+        policy_tail: Arc::new(FakePolicyLogTail::with(Vec::new())),
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
         rejected_attempts: Arc::new(BufferedRejectedAttemptLog::new()),
         startup_lock: Arc::new(FakeStartupLock::new()),

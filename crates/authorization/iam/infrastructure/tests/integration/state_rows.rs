@@ -5,10 +5,11 @@ use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime};
 
 use iam_domain::{
-    AssignmentScope, ChangeStatement, DecisionEffect, EntityVersion, IamUnitOfWork as _,
-    PolicyDigest as _, PolicyDigestValue, PolicyState, PolicyVersion, RepositoryError, Role,
-    RoleId, RoleKind, RoleParts, RoleStatement, StateKey, StateRecordCodec as _, SubjectRef,
-    UserRole, UserRoleParts, UserRoleStatement,
+    ActorRef, AssignmentScope, BulkKind, BulkOperation, BulkOperationId, ChangeStatement,
+    DecisionEffect, EntityVersion, EpochChange, IamUnitOfWork as _, LogEpoch, PolicyDigest as _,
+    PolicyDigestValue, PolicyState, PolicyVersion, RepositoryError, Republication, ResyncStart,
+    Role, RoleId, RoleKind, RoleParts, RoleStatement, StateKey, StateRecordCodec as _, SubjectRef,
+    SystemComponent, UserRole, UserRoleParts, UserRoleStatement,
 };
 use iam_infrastructure::{JsonStateRecordCodec, PgIamUnitOfWork, Sha256PolicyDigest};
 use sqlx::PgPool;
@@ -412,4 +413,135 @@ async fn a_change_that_changes_no_entity_writes_only_the_head(pool: PgPool) {
     };
     assert_eq!((head.key.as_str(), head.seq, head.count), ("__head", 1, 1));
     assert_eq!(head.digest_after, vec![0; 16]);
+}
+
+/// The log epoch and the version of the policy epoch row.
+async fn epoch_row(pool: &PgPool) -> (i64, i64) {
+    sqlx::query_as("SELECT log_epoch, version FROM iam_policy_epoch WHERE id = 1")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// The start of a resync from the log epoch `from` with the version floor `floor`.
+fn resync_start(from: i64, floor: i64) -> ChangeStatement {
+    let epoch = EpochChange::new(
+        LogEpoch::new(from).unwrap(),
+        PolicyVersion::new(floor).unwrap(),
+    )
+    .unwrap();
+    let operation = BulkOperation::pending(
+        BulkOperationId::parse("0190f2a8-7b3c-7d4e-8f10-000000000001").unwrap(),
+        BulkKind::Resync,
+        3,
+        ActorRef::System(SystemComponent::Startup),
+        at(),
+    )
+    .unwrap();
+    ChangeStatement::StartResync(Box::new(ResyncStart::new(epoch, operation.parts().clone())))
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn a_republication_writes_the_unchanged_state_again_under_the_next_version(pool: PgPool) {
+    let mut rng = TestRng::from_env();
+    let world = seeded(&pool, &mut rng).await;
+    let before = rows(&pool).await;
+    let digest = epoch_digest(&pool).await;
+    let keys = vec![
+        StateKey::Role(world.kept.parts().id),
+        StateKey::Subject(world.first.clone()),
+    ];
+    let change = with_statements(
+        &mut rng,
+        vec![ChangeStatement::RepublishState(Box::new(
+            Republication::new(keys.clone(), Vec::new()),
+        ))],
+    );
+
+    PgIamUnitOfWork::new(pool.clone())
+        .commit(change, iam_domain::WriteMode::Published)
+        .await
+        .unwrap();
+
+    let again: Vec<Row> = rows(&pool).await.split_off(before.len());
+    let written: Vec<&str> = again.iter().map(|row| row.key.as_str()).collect();
+    assert_eq!(again.len(), 3);
+    assert!(
+        keys.iter()
+            .all(|key| written.contains(&key.to_string().as_str()))
+    );
+    assert_eq!(written.last(), Some(&"__head"));
+    assert!(again.iter().all(|row| row.version == 3 && row.count == 3));
+    assert_eq!(epoch_digest(&pool).await, digest);
+    assert_eq!(replayed_digest(&rows(&pool).await), digest);
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn a_new_log_epoch_raises_the_version_above_the_floor_and_stamps_the_rows(pool: PgPool) {
+    let mut rng = TestRng::from_env();
+    let world = seeded(&pool, &mut rng).await;
+    let statements = vec![
+        resync_start(0, 500),
+        ChangeStatement::RepublishState(Box::new(Republication::new(
+            vec![StateKey::Role(world.kept.parts().id)],
+            Vec::new(),
+        ))),
+    ];
+    let change = with_statements(&mut rng, statements);
+
+    let receipt = PgIamUnitOfWork::new(pool.clone())
+        .commit(change, iam_domain::WriteMode::Published)
+        .await
+        .unwrap();
+
+    assert_eq!(epoch_row(&pool).await, (1, 501));
+    assert_eq!(receipt.policy_version(), PolicyVersion::new(501).ok());
+    let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM iam_bulk_operations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, 1);
+    let epochs: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT log_epoch, policy_version FROM iam_outbox WHERE kind = 'state'
+        AND policy_version > 2 ORDER BY position",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_ne!(epochs.len(), 0);
+    assert!(epochs.iter().all(|row| *row == (1, 501)));
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn a_version_already_above_the_floor_keeps_counting_from_where_it_is(pool: PgPool) {
+    let mut rng = TestRng::from_env();
+    seeded(&pool, &mut rng).await;
+    let change = with_statements(&mut rng, vec![resync_start(0, 1)]);
+
+    PgIamUnitOfWork::new(pool.clone())
+        .commit(change, iam_domain::WriteMode::Published)
+        .await
+        .unwrap();
+
+    assert_eq!(epoch_row(&pool).await, (1, 3));
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn a_new_log_epoch_from_a_stale_epoch_is_a_conflict_and_writes_nothing(pool: PgPool) {
+    let mut rng = TestRng::from_env();
+    seeded(&pool, &mut rng).await;
+    let change = with_statements(&mut rng, vec![resync_start(4, 9)]);
+
+    let refused = PgIamUnitOfWork::new(pool.clone())
+        .commit(change, iam_domain::WriteMode::Published)
+        .await
+        .unwrap_err();
+
+    assert!(matches!(refused, RepositoryError::Conflict));
+    assert_eq!(epoch_row(&pool).await, (0, 2));
+    let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM iam_bulk_operations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, 0);
 }

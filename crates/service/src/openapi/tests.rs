@@ -105,6 +105,7 @@ fn documents_exactly_the_twenty_four_operations() {
             "get /api/openapi-specs/{id}/diff",
             "post /api/openapi-specs/{id}/permissions",
             "post /api/openapi-specs/{id}/retirement",
+            "post /api/policy-resyncs",
             "get /api/rate-policies",
             "post /api/rate-policies",
             "get /api/rate-policies/{id}",
@@ -119,6 +120,8 @@ fn documents_exactly_the_twenty_four_operations() {
             "patch /api/roles/{id}",
             "get /api/roles/{id}/permissions",
             "put /api/roles/{id}/permissions",
+            "get /api/route-configurations/{host}",
+            "put /api/route-configurations/{host}",
             "get /api/routes",
             "post /api/routes",
             "get /api/routes/{id}",
@@ -827,6 +830,63 @@ fn the_retirements_document_their_responses_headers_and_schemas(
 }
 
 #[test]
+fn the_policy_resync_documents_its_responses_headers_and_schemas() {
+    let json = json_document();
+    let operation = &json["paths"]["/api/policy-resyncs"]["post"];
+
+    assert_eq!(operation["operationId"], "api_policy_resyncs_post");
+    assert_eq!(operation["tags"], json!(["iam"]));
+    assert_eq!(operation["security"], json!([{ "bearerAuth": [] }]));
+    let mut documented: Vec<&str> = operation["responses"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    documented.sort_unstable();
+    assert_eq!(
+        documented,
+        [
+            "202", "400", "401", "403", "409", "413", "415", "422", "default"
+        ]
+    );
+    assert_eq!(
+        operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/ResyncPolicyRequest"
+    );
+    assert_eq!(
+        operation["responses"]["202"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/BulkOperation"
+    );
+    assert!(operation["responses"]["202"]["headers"]["location"].is_object());
+    let names: Vec<&str> = operation["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|parameter| parameter["name"].as_str())
+        .collect();
+    assert_eq!(names, ["Idempotency-Key"]);
+    let request = &json["components"]["schemas"]["ResyncPolicyRequest"];
+    assert_eq!(request["additionalProperties"], false);
+    assert_eq!(request["properties"]["reason"]["minLength"], 1);
+    assert_eq!(request["properties"]["reason"]["maxLength"], 500);
+}
+
+#[test]
+fn there_is_no_cache_flush_operation_in_the_contract() {
+    let json = json_document();
+
+    assert!(
+        json["paths"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|path| !path.contains("flush"))
+    );
+    assert!(json["paths"]["/api/authorization-cache/flushes"].is_null());
+}
+
+#[test]
 fn the_graphql_specification_reads_document_their_query_parameters() {
     let json = json_document();
     let names = |path: &str| -> Vec<String> {
@@ -1226,6 +1286,7 @@ fn defines_exactly_the_documented_schemas() {
             "AccessValidationGraphQlTarget",
             "AccessValidationRestTarget",
             "AllProjects",
+            "ApplyRouteConfigurationRequest",
             "AssignUserRoleRequest",
             "AssignmentScope",
             "AssignmentSubject",
@@ -1272,13 +1333,18 @@ fn defines_exactly_the_documented_schemas() {
             "RestPermission",
             "RestPermissionPage",
             "RestPermissionsActivation",
+            "ResyncPolicyRequest",
             "RetireSpecRequest",
             "Role",
             "RolePage",
             "RolePermission",
             "RolePermissions",
             "Route",
+            "RouteConfiguration",
+            "RouteConfigurationChange",
+            "RouteConfigurationDiff",
             "RouteCorsPolicy",
+            "RouteDeclaration",
             "RouteEnforcement",
             "RouteMethod",
             "RoutePage",
@@ -1784,4 +1850,84 @@ fn the_route_schemas_name_the_members_of_fr_57() {
             ["schema"]["$ref"],
         "#/components/schemas/Route"
     );
+}
+
+#[test]
+fn documents_the_route_configuration_operations_with_the_bearer_requirement_and_the_iam_tag() {
+    let json = json_document();
+    let cases = [
+        ("get", "api_route_configurations_host_get"),
+        ("put", "api_route_configurations_host_put"),
+    ];
+
+    for (method, operation_id) in cases {
+        let operation = &json["paths"]["/api/route-configurations/{host}"][method];
+        assert_eq!(operation["operationId"], operation_id);
+        assert_eq!(operation["tags"], json!(["iam"]), "{operation_id}");
+        assert_eq!(
+            operation["security"],
+            json!([{ "bearerAuth": [] }]),
+            "{operation_id}"
+        );
+        assert_eq!(
+            operation["responses"]["401"]["content"]["application/problem+json"]["schema"]["$ref"],
+            "#/components/schemas/Problem",
+            "{operation_id}"
+        );
+    }
+}
+
+#[test]
+fn the_route_configuration_replacement_documents_its_preconditions_and_statuses() {
+    let json = json_document();
+    let operation = &json["paths"]["/api/route-configurations/{host}"]["put"];
+
+    let parameters: Vec<(&str, &str)> = operation["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|parameter| {
+            (
+                parameter["name"].as_str().unwrap(),
+                parameter["in"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    for expected in [
+        ("host", "path"),
+        ("If-Match", "header"),
+        ("Prefer", "header"),
+        ("dryRun", "query"),
+    ] {
+        assert!(parameters.contains(&expected), "{expected:?}");
+    }
+    for status in ["200", "202", "403", "409", "412", "422", "428"] {
+        assert!(operation["responses"][status].is_object(), "{status}");
+    }
+    assert_eq!(
+        operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/ApplyRouteConfigurationRequest"
+    );
+    let schemas = &json["components"]["schemas"];
+    assert_eq!(
+        schemas["ApplyRouteConfigurationRequest"]["required"],
+        json!(["routes"])
+    );
+    assert_eq!(
+        schemas["RouteDeclaration"]["required"],
+        json!(["methods", "pathPattern", "service", "upstreamId"])
+    );
+    for member in [
+        "added",
+        "changed",
+        "removed",
+        "dryRun",
+        "version",
+        "revocation",
+    ] {
+        assert!(
+            schemas["RouteConfigurationDiff"]["properties"][member].is_object(),
+            "{member}"
+        );
+    }
 }

@@ -54,7 +54,63 @@ pub(crate) struct Versioned {
 pub(crate) struct StateCapture {
     keys: BTreeSet<StateKey>,
     services: BTreeSet<ServiceName>,
+    republished: Republished,
     before: States,
+}
+
+/// The entities whose unchanged state a transaction writes again: a resync publishes the whole
+/// policy under its new log epoch.
+#[derive(Debug, Default)]
+struct Republished {
+    keys: BTreeSet<StateKey>,
+    services: BTreeSet<ServiceName>,
+}
+
+impl Republished {
+    /// What `statements` ask to publish again.
+    fn of(statements: &[ChangeStatement]) -> Self {
+        Self {
+            keys: statements
+                .iter()
+                .flat_map(|statement| statement.republished_keys().iter().cloned())
+                .collect(),
+            services: statements
+                .iter()
+                .flat_map(|statement| statement.republished_services().iter().cloned())
+                .collect(),
+        }
+    }
+
+    /// The keys of the republished entities among the entities of `after`: the listed keys and
+    /// every catalogue record of a listed service.
+    fn among(&self, after: &States) -> BTreeSet<StateKey> {
+        after
+            .keys()
+            .filter(|key| {
+                self.keys.contains(*key)
+                    || catalogue_service(key).is_some_and(|service| self.services.contains(service))
+            })
+            .cloned()
+            .collect()
+    }
+}
+
+/// The service whose catalogue holds the record of `key`; none for every other key.
+const fn catalogue_service(key: &StateKey) -> Option<&ServiceName> {
+    match key {
+        StateKey::CatalogueManifest(service) | StateKey::CatalogueChunk { service, .. } => {
+            Some(service)
+        }
+        StateKey::Role(_)
+        | StateKey::Subject(_)
+        | StateKey::Route(_)
+        | StateKey::Upstream(_)
+        | StateKey::RatePolicy(_)
+        | StateKey::SessionRevocation(_)
+        | StateKey::UserRevocation(_)
+        | StateKey::GlobalRevocation
+        | StateKey::Head => None,
+    }
 }
 
 impl StateCapture {
@@ -67,15 +123,18 @@ impl StateCapture {
             .iter()
             .flat_map(ChangeStatement::state_keys)
             .collect();
+        let republished = Republished::of(statements);
         let services: BTreeSet<ServiceName> = statements
             .iter()
             .filter_map(ChangeStatement::catalogue_service)
             .cloned()
+            .chain(republished.services.iter().cloned())
             .collect();
         let before = read_all(connection, &keys, &services).await?;
         Ok(Self {
             keys,
             services,
+            republished,
             before,
         })
     }
@@ -94,10 +153,12 @@ impl StateCapture {
             before: self.before.get(key).cloned(),
             after: after.get(key).cloned(),
         });
-        let batch = StateBatch::assemble(
+        let republished = self.republished.among(&after);
+        let batch = StateBatch::assemble_republishing(
             target.version,
             read_digest(connection).await?,
             changes,
+            &republished,
             (&JsonStateRecordCodec, &Sha256PolicyDigest),
         )
         .map_err(unusable)?;

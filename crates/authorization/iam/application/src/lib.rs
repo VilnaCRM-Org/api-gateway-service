@@ -11,6 +11,7 @@ pub mod access_decision_service;
 mod access_validation_fixtures;
 pub mod administrator_safeguard;
 pub mod anti_entropy;
+pub mod bulk_chunk_router;
 #[cfg(test)]
 mod bulk_operation_fixtures;
 pub mod bulk_operation_runner;
@@ -37,7 +38,10 @@ mod openapi_spec_fixtures;
 pub mod operation_rules;
 pub mod outbox_relay;
 pub mod policy_maintenance;
+#[cfg(test)]
+mod policy_resync_fixtures;
 pub mod policy_tail;
+pub mod policy_topic_head;
 pub mod principal;
 pub mod publishing_unit_of_work;
 pub mod query;
@@ -52,8 +56,11 @@ pub mod required_key_resolver;
 mod rest_activation_fixtures;
 #[cfg(test)]
 mod rest_permission_fixtures;
+pub mod resync_chunks;
 #[cfg(test)]
 mod role_permission_fixtures;
+#[cfg(test)]
+mod route_configuration_fixtures;
 #[cfg(test)]
 mod route_fixtures;
 pub mod service_catalog_loader;
@@ -74,9 +81,13 @@ pub use anti_entropy::{
     AntiEntropyAlert, AntiEntropyChecker, AntiEntropyCounters, AntiEntropyPorts,
     AntiEntropySettings, InvalidAntiEntropySettings, TopicAheadHold,
 };
+pub use bulk_chunk_router::BulkChunkRouter;
 pub use bulk_operation_runner::{BulkOperationRunner, BulkRunnerPorts};
 pub use bulk_role_deletion::{RoleDeletionChunkCommitter, RoleDeletionPorts};
 pub use caller_rule::{CallerRule, target_services};
+pub use command::apply_route_configuration::{
+    ApplyRouteConfigurationCommand, ApplyRouteConfigurationCommandHandler,
+};
 pub use command::assign_user_role::{AssignUserRoleCommand, AssignUserRoleCommandHandler};
 pub use command::bootstrap_iam::{BootstrapIamCommand, BootstrapIamCommandHandler};
 pub use command::create_graphql_permissions::{
@@ -101,6 +112,9 @@ pub use command::record_rejected_attempt::{
     RecordRejectedAttemptCommand, RecordRejectedAttemptCommandHandler,
 };
 pub use command::register_own_specs::{RegisterOwnSpecsCommand, RegisterOwnSpecsCommandHandler};
+pub use command::resync_policy::{
+    ResyncPolicyCommand, ResyncPolicyCommandHandler, ResyncPolicyPorts,
+};
 pub use command::retire_graphql_spec::{RetireGraphQlSpecCommand, RetireGraphQlSpecCommandHandler};
 pub use command::retire_openapi_spec::{RetireOpenApiSpecCommand, RetireOpenApiSpecCommandHandler};
 pub use command::revoke_user_role::{
@@ -108,6 +122,9 @@ pub use command::revoke_user_role::{
 };
 pub use command::route_checks::RoutePorts;
 pub use command::run_maintenance::{RunMaintenanceCommand, RunMaintenanceCommandHandler};
+pub use command::seed_iam_gateway::{
+    SeedIamGatewayCommand, SeedIamGatewayCommandHandler, SeedMode,
+};
 pub use command::set_role_permissions::{
     SetRolePermissionsCommand, SetRolePermissionsCommandHandler, SetRolePermissionsReads,
 };
@@ -132,6 +149,7 @@ pub use policy_tail::{
     BootstrapAction, BootstrapEntry, BootstrapFailure, BootstrapInput, BootstrapMachine,
     BootstrapOutcome, BootstrapPorts, BootstrapSnapshot, run_bootstrap,
 };
+pub use policy_topic_head::PolicyTopicHead;
 pub use principal::Principal;
 pub use publishing_unit_of_work::PublishingUnitOfWork;
 pub use query::find_graphql_spec::{FindGraphQlSpecQuery, FindGraphQlSpecQueryHandler};
@@ -178,6 +196,9 @@ pub use query::get_role_permissions::{
     GetRolePermissionsQuery, GetRolePermissionsQueryHandler, RolePermissions,
 };
 pub use query::get_route::{GetRouteQuery, GetRouteQueryHandler};
+pub use query::get_route_configuration::{
+    GetRouteConfigurationQuery, GetRouteConfigurationQueryHandler, RouteConfiguration,
+};
 pub use query::get_upstream::{GetUpstreamQuery, GetUpstreamQueryHandler};
 pub use query::get_user_role::{GetUserRoleQuery, GetUserRoleQueryHandler, UserRoleView};
 pub use query::get_user_role_permissions::{
@@ -193,6 +214,10 @@ pub use query::list_roles::{ListRolesQuery, ListRolesQueryHandler, RolePage};
 pub use query::list_routes::{ListRoutesQuery, ListRoutesQueryHandler, RoutePage};
 pub use query::list_upstreams::{ListUpstreamsQuery, ListUpstreamsQueryHandler, UpstreamPage};
 pub use query::list_user_roles::{ListUserRolesQuery, ListUserRolesQueryHandler, UserRolePage};
+pub use query::preview_route_configuration::{
+    PreviewRouteConfigurationQuery, PreviewRouteConfigurationQueryHandler,
+    RouteConfigurationPreview,
+};
 pub use query::resolve_subject_token::{
     ResolveSubjectTokenQuery, ResolveSubjectTokenQueryHandler, TokenResolution,
 };
@@ -204,6 +229,7 @@ pub use query::validate_access_batch::{
 pub use rate_policy_values::{RatePolicyPatch, RatePolicyValues};
 pub use rejected_attempt_writer::{FLUSH_INTERVAL, FlushOutcome, RejectedAttemptWriter};
 pub use required_key_resolver::RequiredKeyResolver;
+pub use resync_chunks::{ResyncChunkCommitter, ResyncPorts};
 pub use service_catalog_loader::ServiceCatalogLoader;
 pub use singleton_loop::{
     BatchOutcome, InvalidSingletonInterval, MAX_SINGLETON_INTERVAL, SingletonInterval,

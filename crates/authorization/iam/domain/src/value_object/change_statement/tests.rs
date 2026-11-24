@@ -5,6 +5,7 @@ use shared_domain::Uuid;
 use super::ChangeStatement;
 use crate::bulk_operation::statement::BulkProgressStatement;
 use crate::bulk_operation::{BulkKind, BulkOperation};
+use crate::resync::{EpochChange, Republication, ResyncStart};
 use crate::role::statement::RoleStatement;
 use crate::role::{Role, RoleFields, RoleStamp};
 use crate::state::key::StateKey;
@@ -14,8 +15,10 @@ use crate::value_object::actor_ref::ActorRef;
 use crate::value_object::assignment_scope::AssignmentScope;
 use crate::value_object::identifier::BulkOperationId;
 use crate::value_object::identifier::{RoleId, UserRoleId};
+use crate::value_object::log_epoch::LogEpoch;
 use crate::value_object::policy_version::PolicyVersion;
 use crate::value_object::role_name::RoleName;
+use crate::value_object::service_name::ServiceName;
 use crate::value_object::subject::SubjectRef;
 
 #[test]
@@ -432,5 +435,45 @@ fn a_bulk_progress_write_holds_everywhere_and_names_no_state_key_or_service() {
     assert!(statement.holds(PolicyVersion::new(1).unwrap()));
     assert!(statement.holds(PolicyVersion::new(9).unwrap()));
     assert_eq!(statement.state_keys().len(), 0);
+    assert_eq!(statement.catalogue_service(), None);
+}
+
+#[test]
+fn a_resync_start_changes_no_entity_and_holds_under_every_locked_version() {
+    let change = EpochChange::new(LogEpoch::ZERO, PolicyVersion::new(9).unwrap()).unwrap();
+    let operation = BulkOperation::pending(
+        BulkOperationId::parse("0190f2a8-7b3c-7d4e-8f10-000000000001").unwrap(),
+        BulkKind::Resync,
+        3,
+        ActorRef::User(Uuid::parse("3d9b7c1e-5a2f-4e8d-b6c0-9f1e2d3c4b5a").unwrap()),
+        SystemTime::UNIX_EPOCH,
+    )
+    .unwrap();
+    let statement = ChangeStatement::StartResync(Box::new(ResyncStart::new(
+        change.clone(),
+        operation.parts().clone(),
+    )));
+
+    assert!(statement.holds(PolicyVersion::new(1).unwrap()));
+    assert_eq!(statement.state_keys().len(), 0);
+    assert_eq!(statement.epoch_change(), Some(&change));
+    assert_eq!(statement.republished_keys().len(), 0);
+    assert_eq!(statement.republished_services().len(), 0);
+}
+
+#[test]
+fn a_republication_names_the_keys_and_the_services_it_writes_again() {
+    let key = StateKey::Role(RoleId::parse("7f1c2a4e-1d0b-4f5e-9a3c-2b6d8e0f1a2b").unwrap());
+    let service = ServiceName::new("billing").unwrap();
+    let statement = ChangeStatement::RepublishState(Box::new(Republication::new(
+        vec![key.clone()],
+        vec![service.clone()],
+    )));
+
+    assert!(statement.holds(PolicyVersion::new(1).unwrap()));
+    assert_eq!(statement.state_keys(), vec![key.clone()]);
+    assert_eq!(statement.republished_keys(), [key]);
+    assert_eq!(statement.republished_services(), [service]);
+    assert_eq!(statement.epoch_change(), None);
     assert_eq!(statement.catalogue_service(), None);
 }

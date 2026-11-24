@@ -7,6 +7,7 @@ Runbooks for operating the service and for maintaining the repository that hosts
 - [Migrations and rollback](#migrations-and-rollback)
 - [Health-probe runbook](#health-probe-runbook)
 - [Anti-entropy alerts](#anti-entropy-alerts)
+- [Resync the policy state](#resync-the-policy-state)
 - [The first IAM administrator](#the-first-iam-administrator)
 - [Logs and request ids](#logs-and-request-ids)
 - [Shutdown sequence](#shutdown-sequence)
@@ -58,17 +59,34 @@ IAM has no API operation that creates its first administrator, so a new environm
 ```bash
 service iam-bootstrap --admin-user <uuid>
 service iam-bootstrap --admin-service <service-name>
+service iam-bootstrap --admin-user <uuid> --iam-host <host>
+service iam-bootstrap --repair-routes --iam-host <host>
 ```
 
-Exactly one of the two options is required. The tables must exist, so run `service migrate` first. Under a PostgreSQL transaction-level advisory lock it registers IAM's own specifications (as `serve` does), creates the system role `iam-platform-admin` with `rest:iam:*`, `gql:iam:*` and every reserved key (`iam:validate:*`, `iam:grant:*`, `iam:grant:sensitive`, `iam:grant:wildcard`, `iam:spec:*`, `iam:audit:read`, `iam:revoke:sessions`, `iam:revoke:global`, `iam:policy:resync`, `iam:route:anonymous` and `iam:route:*`), assigns it at global scope to the user or the service principal and commits one audit record with the actor `system:bootstrap`. A system role cannot be renamed, changed or deleted through the API.
+Exactly one of `--admin-user` and `--admin-service` is required, except with `--repair-routes`, which takes neither. The tables must exist, so run `service migrate` first. Under a PostgreSQL transaction-level advisory lock it registers IAM's own specifications (as `serve` does), creates the system role `iam-platform-admin` with `rest:iam:*`, `gql:iam:*` and every reserved key (`iam:validate:*`, `iam:grant:*`, `iam:grant:sensitive`, `iam:grant:wildcard`, `iam:spec:*`, `iam:audit:read`, `iam:revoke:sessions`, `iam:revoke:global`, `iam:policy:resync`, `iam:route:anonymous` and `iam:route:*`), assigns it at global scope to the user or the service principal and commits one audit record with the actor `system:bootstrap`. A system role cannot be renamed, changed or deleted through the API.
 
 | Exit status | Meaning |
 | --- | --- |
-| 0 | The administrator was created; the command prints `bootstrapped user:<uuid>` or `bootstrapped service:<name>`. |
+| 0 | The administrator was created; the command prints `bootstrapped user:<uuid>` or `bootstrapped service:<name>`, then `seeded the IAM upstream and routes of <host>` or, without `--iam-host`, `no IAM routes seeded: --iam-host is absent`. With `--repair-routes` it prints `repaired the IAM upstream and routes of <host>`. |
 | 1 | An active global assignment of `iam-platform-admin` exists already (nothing changed), or the database is not reachable or not migrated (`error: <message>` on standard error). |
-| 2 | Both or neither of the options, a value that is no UUID (`--admin-user`) or no service name (`--admin-service`), or an invalid configuration (one line `<VARIABLE>: <reason>` per problem). |
+| 2 | Both or neither of the options, a value that is no UUID (`--admin-user`) or no service name (`--admin-service`), a value of `--iam-host` that is no lower-case host name, `--repair-routes` without `--iam-host` or together with a subject option, or an invalid configuration (one line `<VARIABLE>: <reason>` per problem). Nothing changes. |
 
 Of two runs that start together on an empty database exactly one exits 0 and the other exits 1.
+
+### The seeded IAM upstream and routes
+
+With the optional `--iam-host <host>`, the run that creates the first administrator also seeds, after the administrator and under the same advisory lock, the entries that make IAM's management API reachable through the gateway on `<host>`. Each entry is a change of its own: its write, its event, its `upstream/<name>` or `route/<id>` state record in the outbox of the same transaction, and one audit record with the actor `system:bootstrap`. Every entry belongs to the catalogue service `iam`, enforces its decisions and is a `system` entry, which the API refuses to change or delete with 409 `system_entry` (GraphQL `CONFLICT`), audited as a rejected attempt.
+
+| Entry | Configuration |
+| --- | --- |
+| Upstream `iam-control` | namespace `iam`, Service `iam-control`, port 80, protocol `http1`, `catalogService` `iam`, `forwardCredentials` true. |
+| Route `/api/{rest:*}` | `GET`, `HEAD`, `POST`, `PUT`, `PATCH` and `DELETE`: the REST management paths under `/api`; body limit 1 MiB. |
+| Route `POST /api/graphql` | flagged `graphql`; body limit 6 MiB. |
+| Routes `POST /api/openapi-specs` and `POST /api/graphql-specs` | the specification uploads; body limit 6 MiB. |
+
+All routes forward to `iam-control` with a request timeout of 30 s and an idle timeout of 60 s and retry nothing. The seed only inserts what is absent and never changes an existing upstream or route, so a break-glass re-run (below) leaves the entries as they are. Without `--iam-host` the seed is skipped and the command says so. A run that finds an active administrator exits 1 before it writes anything, so it seeds nothing either: use the repair for that case.
+
+`service iam-bootstrap --repair-routes --iam-host <host>` restores the seeded upstream and routes to their seeded state, whether or not an administrator exists, under the same advisory lock: an absent entry is inserted again and an entry whose configuration differs is updated to the seeded one, each as a revocation-class change audited as `system:bootstrap`. Run it after a failed seed, after a route was deleted or changed directly in the database, and without `--iam-host` it exits 2.
 
 The platform refuses every change that would leave it without an active global administrator: revoking the last active global assignment of `iam-platform-admin`, or giving it an earlier expiry than it has, answers `409` with the problem type `/problems/last-administrator` over REST and the code `LAST_ADMINISTRATOR` over GraphQL, changes nothing and appends an audit record with the outcome `rejected` and the reason `last_administrator`. An expired assignment counts as no administrator.
 
@@ -201,14 +219,39 @@ Checks:
 
 1. Read the `alert` field: it names the topic version and the PostgreSQL version.
 2. Find out why the database is behind: a restore from a backup, a failover to a replica that lagged, or a topic shared with another environment.
-3. If the database lost committed versions, restore it from the most recent consistent state and run the resync of Story 7.10, which republishes the full state as a new log epoch with versions above the highest `__head` of the topic.
+3. If the database lost committed versions, restore it from the most recent consistent state and run the [resync](#resync-the-policy-state) (Story 7.10), which republishes the full state as a new log epoch with versions above the highest `__head` of the topic.
 4. If the topic belongs to another environment, point `POLICY_TOPIC` at the right topic and restart the replicas.
 
 The hold ends by itself at the next head check that finds the topic no longer ahead.
 
 ### resync
 
-The `runbook` field is `resync`: a digest mismatch, a loss older than the 7-day outbox retention, an unreadable record, or a topic that stays behind PostgreSQL with nothing left to publish. The task cannot repair these from the outbox. Run the resync of Story 7.10 (`POST /api/policy-resyncs` or the GraphQL mutation `resyncPolicy`), which republishes the complete current policy as a new log epoch, and check that the next shadow bootstrap raises no alert.
+The `runbook` field is `resync`: a digest mismatch, a loss older than the 7-day outbox retention, an unreadable record, or a topic that stays behind PostgreSQL with nothing left to publish. The task cannot repair these from the outbox. Run the [resync](#resync-the-policy-state) of Story 7.10 (`POST /api/policy-resyncs` or the GraphQL mutation `resyncPolicy`), which republishes the complete current policy as a new log epoch, and check that the next shadow bootstrap raises no alert.
+
+## Resync the policy state
+
+A resync republishes the complete current policy as a new log epoch (Story 7.10). It repairs the state topic `POLICY_TOPIC` after an incident without touching a gateway pod by hand, and it is the only operator action on the topic: there is no cache flush, so `POST /api/authorization-cache/flushes` and the mutation `flushAuthorizationCache` do not exist. A pod that bootstraps or reseeks reads the topic again and rebuilds its state from it.
+
+When to resync:
+
+- the anti-entropy task raised the `resync` alert: a digest mismatch, a loss older than the 7-day outbox retention, an unreadable record, or a topic that stays behind PostgreSQL with nothing left to publish (see [Anti-entropy alerts](#anti-entropy-alerts));
+- the topic was deleted, recreated or compacted by hand, or restored from a backup that lags the database;
+- PostgreSQL was restored and the `topic-ahead` alert stands: restore the database first, then resync, so the new versions continue above the highest `__head` of the topic.
+
+Do not resync to refresh one pod or to apply a change that is already committed: committed changes reach the topic through the outbox relay on their own.
+
+How to resync:
+
+1. Call `POST /api/policy-resyncs` with `{"reason": "<why>"}` or the GraphQL mutation `resyncPolicy(input: {reason: "<why>"})`. The caller needs the reserved key `iam:policy:resync`, and `reason` is required (one line of 1 to 500 characters; a missing or blank reason is refused with 422, `VALIDATION_FAILED`). Send an `Idempotency-Key` (`idempotencyKey` in GraphQL) so that a retry returns the original operation and starts no second resync.
+2. The answer is 202 with the bulk operation (`kind` `resync`) and its `Location`. In one transaction the handler moved `iam_policy_epoch.log_epoch` on, raised the policy version above both the stored version and the highest `__head` version of the topic (read through the bounded reads of `KrafkaPolicyLogTail`), stored the pending operation and wrote the audit record `policy.resync` and the event `iam.policy.resynced` (`logEpoch`, `fromVersion`, `toVersion`, `reason`, `bulkOperationId`).
+3. The `BulkOperationRunner` then publishes the unchanged state of every entity (roles, subjects, upstreams, routes, rate policies and the catalogue of every service) under the new log epoch, at most `BULK_CHUNK_ENTITIES` entities per policy version and `BULK_MAX_RECORDS_PER_SECOND` records per second. Follow `GET /api/bulk-operations/{id}` until `status` is `completed`; `firstVersion` is above the previous topic maximum, and every later chunk continues above it. A chunk writes no entity, so the policy digest does not change.
+4. Check that the next shadow bootstrap of the anti-entropy task raises no alert. The records of the previous epoch stay on the topic until compaction removes them; the shadow bootstrap and a pod take the highest version of every key.
+
+Notes:
+
+- A change that commits while the resync runs is published under the new epoch by its own transaction. A resync of a policy that is changing fast can miss an entity that moved in the order of the listing between two chunks; the anti-entropy task republishes such a key, or run the resync again.
+- A resync is refused with 409 when the policy holds no entity, when the log epoch changed while it started, and when the highest version of the topic is at the end of the range of a policy version.
+- Revocation records (`revocation/...`) are not part of a resync; the revocation story owns their republication and tombstones.
 
 ## Logs and request ids
 

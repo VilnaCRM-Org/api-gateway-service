@@ -256,3 +256,64 @@ fn a_digest_replayed_from_the_rows_equals_the_digest_of_the_batch() {
 
     assert_eq!(replayed, second.digest());
 }
+
+fn republish(
+    before: PolicyDigestValue,
+    changes: Vec<StateChange>,
+    republished: &[StateKey],
+) -> StateBatch {
+    let keys: BTreeSet<StateKey> = republished.iter().cloned().collect();
+    StateBatch::assemble_republishing(
+        PolicyVersion::new(7).unwrap(),
+        before,
+        changes,
+        &keys,
+        (&TextCodec, &HashDigest),
+    )
+    .unwrap()
+}
+
+#[test]
+fn an_unchanged_entity_is_written_again_when_it_is_republished_and_the_digest_stays() {
+    let state = role_state(1, "editor");
+    let key = StateKey::Role(RoleId::from_uuid(uuid(1)));
+    let digest = hash_of(&key, &state);
+    let changes = vec![role_change(1, Some(state.clone()), Some(state.clone()))];
+
+    let batch = republish(digest, changes, std::slice::from_ref(&key));
+
+    let [role, head] = batch.rows() else {
+        panic!("expected two rows");
+    };
+    assert_eq!(role.key(), &key);
+    assert_eq!(
+        role.payload(),
+        Some(TextCodec.encode(&state).unwrap().as_str())
+    );
+    assert_eq!(role.digest_after(), digest);
+    assert_eq!(head.key(), &StateKey::Head);
+    assert_eq!(batch.digest(), digest);
+}
+
+#[test]
+fn an_unchanged_entity_that_is_not_republished_writes_no_row() {
+    let state = role_state(1, "editor");
+    let key = StateKey::Role(RoleId::from_uuid(uuid(1)));
+    let digest = hash_of(&key, &state);
+    let changes = vec![role_change(1, Some(state.clone()), Some(state))];
+
+    let batch = republish(digest, changes, &[]);
+
+    assert_eq!(batch.rows().len(), 1);
+}
+
+#[test]
+fn a_republished_entity_that_does_not_exist_writes_no_tombstone() {
+    let key = StateKey::Role(RoleId::from_uuid(uuid(1)));
+    let changes = vec![role_change(1, None, None)];
+
+    let batch = republish(PolicyDigestValue::ZERO, changes, std::slice::from_ref(&key));
+
+    assert_eq!(batch.rows().len(), 1);
+    assert_eq!(batch.digest(), PolicyDigestValue::ZERO);
+}

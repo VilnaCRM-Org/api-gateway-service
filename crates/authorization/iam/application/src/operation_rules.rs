@@ -16,6 +16,9 @@ use crate::caller_rule::CallerRule;
 /// service it validates for, or for its own name when it resolves a token.
 pub const VALIDATE_ALL: &str = "iam:validate:*";
 
+/// `iam:policy:resync`: the reserved key of the operation that resyncs the policy state.
+pub const POLICY_RESYNC: &str = "iam:policy:resync";
+
 /// What an operation requires of its caller.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Requirement {
@@ -231,9 +234,24 @@ const GRAPHQL_RULES: &[GraphQlRule] = &[
         "route.delete",
         Requirement::Catalogue,
     ),
+    field(
+        "Query.routeConfiguration",
+        "route_configuration.read",
+        Requirement::Catalogue,
+    ),
+    field(
+        "Mutation.applyRouteConfiguration",
+        "route_configuration.apply",
+        Requirement::Catalogue,
+    ),
     field("Mutation.createRole", "role.create", Requirement::Catalogue),
     field("Mutation.updateRole", "role.update", Requirement::Catalogue),
     field("Mutation.deleteRole", "role.delete", Requirement::Catalogue),
+    field(
+        "Mutation.resyncPolicy",
+        "policy.resync",
+        Requirement::Reserved(&[POLICY_RESYNC]),
+    ),
     field(
         "Mutation.createRatePolicy",
         "rate_policy.create",
@@ -398,6 +416,12 @@ const RULES: &[OperationRule] = &[
         "/api/users/{userId}/role-permissions",
         "user_role_permission.list",
         Requirement::Catalogue,
+    ),
+    row(
+        HttpMethod::Post,
+        "/api/policy-resyncs",
+        "policy.resync",
+        Requirement::Reserved(&[POLICY_RESYNC]),
     ),
     row(
         HttpMethod::Post,
@@ -595,6 +619,18 @@ const RULES: &[OperationRule] = &[
         HttpMethod::Delete,
         "/api/routes/{id}",
         "route.delete",
+        Requirement::Catalogue,
+    ),
+    row(
+        HttpMethod::Get,
+        "/api/route-configurations/{host}",
+        "route_configuration.read",
+        Requirement::Catalogue,
+    ),
+    row(
+        HttpMethod::Put,
+        "/api/route-configurations/{host}",
+        "route_configuration.apply",
         Requirement::Catalogue,
     ),
 ];

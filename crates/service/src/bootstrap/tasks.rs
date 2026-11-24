@@ -12,9 +12,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iam_application::{
-    AntiEntropyChecker, BulkOperationRunner, BulkRunnerPorts, InvalidSingletonInterval,
-    OutboxRelay, PolicyMaintenance, RejectedAttemptWriter, RoleDeletionChunkCommitter,
-    RoleDeletionPorts, RunMaintenanceCommandHandler, SingletonLoop,
+    AntiEntropyChecker, BulkChunkRouter, BulkOperationRunner, BulkRunnerPorts,
+    InvalidSingletonInterval, OutboxRelay, PolicyMaintenance, RejectedAttemptWriter,
+    ResyncChunkCommitter, ResyncPorts, RoleDeletionChunkCommitter, RoleDeletionPorts,
+    RunMaintenanceCommandHandler, SingletonLoop,
 };
 use tokio::sync::watch;
 use tokio::task::JoinSet;
@@ -171,10 +172,19 @@ fn bulk_loop(adapters: &Adapters) -> SingletonLoop {
         },
         adapters.bulk.chunker,
     );
+    let resync = ResyncChunkCommitter::new(
+        ResyncPorts {
+            policy_epochs: Arc::clone(&adapters.policy_epochs),
+            inventory: Arc::clone(&adapters.policy_inventory),
+            unit_of_work: Arc::clone(&adapters.unit_of_work),
+            ids: Arc::clone(&adapters.uuid_generator),
+        },
+        adapters.bulk.chunker,
+    );
     BulkOperationRunner::new(
         BulkRunnerPorts {
             operations: Arc::clone(&adapters.bulk_operations),
-            committer: Arc::new(committer),
+            committer: Arc::new(BulkChunkRouter::new(Arc::new(committer), Arc::new(resync))),
             clock: Arc::clone(&adapters.clock),
             ids: Arc::clone(&adapters.uuid_generator),
         },

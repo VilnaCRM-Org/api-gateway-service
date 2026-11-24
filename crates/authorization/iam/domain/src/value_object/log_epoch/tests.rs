@@ -43,3 +43,9 @@ fn zero_is_the_value_zero() {
     assert_eq!(LogEpoch::ZERO.value(), 0);
     assert_eq!(LogEpoch::new(0), Ok(LogEpoch::ZERO));
 }
+
+#[test]
+fn the_next_epoch_is_one_higher_and_the_counter_has_an_end() {
+    assert_eq!(LogEpoch::ZERO.next().map(LogEpoch::value), Some(1));
+    assert_eq!(LogEpoch::new(i64::MAX).unwrap().next(), None);
+}

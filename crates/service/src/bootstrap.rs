@@ -27,6 +27,10 @@ use iam_application::{
 };
 use iam_application::{AdministratorSafeguard, RevokeUserRoleReads, SafeguardPorts};
 use iam_application::{
+    ApplyRouteConfigurationCommandHandler, GetRouteConfigurationQueryHandler,
+    PreviewRouteConfigurationQueryHandler,
+};
+use iam_application::{
     AssignUserRoleCommandHandler, GetUserRolePermissionsQueryHandler, GetUserRoleQueryHandler,
     ListUserRolesQueryHandler, RevokeUserRoleCommandHandler, UpdateUserRoleCommandHandler,
 };
@@ -72,6 +76,7 @@ use iam_application::{
 };
 use iam_application::{GuardReads, GuardedUnitOfWork};
 use iam_application::{IamAccessGuard, RecordRejectedAttemptCommandHandler};
+use iam_application::{PolicyTopicHead, ResyncPolicyCommandHandler, ResyncPolicyPorts};
 use iam_application::{RegisterOwnSpecsCommand, RegisterOwnSpecsCommandHandler};
 use iam_application::{ResolveSubjectTokenQueryHandler, ResolveTokenQueryHandler};
 use iam_application::{RetireGraphQlSpecCommandHandler, RetireOpenApiSpecCommandHandler};
@@ -93,6 +98,7 @@ use iam_domain::{
 use iam_domain::{BulkOperationRepository, BulkRoleTargetStore};
 use iam_domain::{IamUnitOfWork, OWN_SPECIFICATIONS_LOCK, RepositoryError, RequestDigester};
 use iam_domain::{MaintenanceStore, TaskStateRepository};
+use iam_domain::{PolicyLogTail, PolicyStateInventory};
 use iam_domain::{RevocationRepository, RevocationView, TokenMemo, TokenRepository};
 use iam_infrastructure::BufferedRejectedAttemptLog;
 use iam_infrastructure::KrafkaTopicInspector;
@@ -113,6 +119,7 @@ use iam_infrastructure::{
 use iam_infrastructure::{
     CachingTokenRepository, MokaTokenMemo, PgRevocationRepository, PgRevocationView,
 };
+use iam_infrastructure::{JsonStateRecordCodec, KrafkaPolicyLogTail, PgPolicyStateInventory};
 use iam_infrastructure::{
     JwtAccessTokenVerifier, JwtKeyFileError, PgBulkOperationRepository, PgBulkRoleTargetStore,
     PgChangeReceiptRepository, PgIdempotencyRepository, PgPolicyEpochRepository,
@@ -142,7 +149,9 @@ use crate::http::AppState;
 use crate::http::router::assemble_with_iam_routes;
 use crate::openapi::{self, ExportError};
 
-pub use administrator::{AdministratorError, bootstrap_administrator};
+pub use administrator::{
+    AdministratorError, bootstrap_administrator, bootstrap_with_routes, repair_gateway_routes,
+};
 pub use anti_entropy::AntiEntropyAdapters;
 pub use kafka_probe::KafkaProbe;
 pub use outbox_relay::{OutboxRelayAdapters, forward_notifications};
@@ -163,6 +172,10 @@ pub struct Adapters {
     pub bulk_targets: Arc<dyn BulkRoleTargetStore>,
     /// The chunk size and the rate cap of the bulk operation runner.
     pub bulk: BulkSettings,
+    /// Lists the entities of the policy that a resync publishes.
+    pub policy_inventory: Arc<dyn PolicyStateInventory>,
+    /// The bounded reads of the state topic that a resync starts above.
+    pub policy_tail: Arc<dyn PolicyLogTail>,
     /// The hash-chained IAM security audit log.
     pub security_audit_log: Arc<dyn SecurityAuditLog>,
     /// The per-replica buffer of refused IAM requests that the rejected-attempt writer appends to
@@ -276,6 +289,8 @@ impl Adapters {
             bulk_operations: Arc::new(PgBulkOperationRepository::new(pool.clone())),
             bulk_targets: Arc::new(PgBulkRoleTargetStore::new(pool.clone())),
             bulk: config.bulk,
+            policy_inventory: Arc::new(PgPolicyStateInventory::new(pool.clone())),
+            policy_tail: Arc::new(KrafkaPolicyLogTail::new(config.kafka.clone())),
             security_audit_log: Arc::new(PgSecurityAuditLog::new(pool.clone())),
             rejected_attempts: Arc::new(BufferedRejectedAttemptLog::new()),
             startup_lock: Arc::new(PgStartupLock::new(pool.clone())),
@@ -504,6 +519,26 @@ fn register_rate_policy_commands(
     Ok(bus.register(create)?.register(update)?.register(delete)?)
 }
 
+/// Registers the command handler of the policy resync.
+fn register_resync_commands(
+    bus: InMemoryCommandBus,
+    adapters: &Adapters,
+    unit_of_work: &Arc<dyn IamUnitOfWork>,
+) -> Result<InMemoryCommandBus, BootstrapError> {
+    let resync = ResyncPolicyCommandHandler::new(ResyncPolicyPorts {
+        epochs: Arc::clone(&adapters.policy_epochs),
+        inventory: Arc::clone(&adapters.policy_inventory),
+        topic: PolicyTopicHead::new(
+            Arc::clone(&adapters.policy_tail),
+            Arc::new(JsonStateRecordCodec),
+        ),
+        unit_of_work: Arc::clone(unit_of_work),
+        clock: Arc::clone(&adapters.clock),
+        ids: Arc::clone(&adapters.uuid_generator),
+    });
+    Ok(bus.register(resync)?)
+}
+
 /// Registers the query handlers of the rate policies of the gateway configuration.
 fn register_rate_policy_queries(
     bus: InMemoryQueryBus,
@@ -546,13 +581,9 @@ fn register_upstream_commands(
     Ok(bus.register(create)?.register(update)?.register(delete)?)
 }
 
-/// Registers the command handlers of the routes of the gateway configuration.
-fn register_route_commands(
-    bus: InMemoryCommandBus,
-    adapters: &Adapters,
-    unit_of_work: &Arc<dyn IamUnitOfWork>,
-) -> Result<InMemoryCommandBus, BootstrapError> {
-    let ports = || RoutePorts {
+/// The ports that the commands and the dry run of the routes read and write.
+fn route_ports(adapters: &Adapters, unit_of_work: &Arc<dyn IamUnitOfWork>) -> RoutePorts {
+    RoutePorts {
         upstreams: Arc::clone(&adapters.upstreams),
         rate_policies: Arc::clone(&adapters.rate_policies),
         routes: Arc::clone(&adapters.routes),
@@ -560,7 +591,24 @@ fn register_route_commands(
         policies: Arc::clone(&adapters.policy_reads),
         unit_of_work: Arc::clone(unit_of_work),
         rejected_attempts: Arc::clone(&adapters.rejected_attempts),
-    };
+    }
+}
+
+/// Registers the command handlers of the routes of the gateway configuration; a route
+/// configuration holds at most `max_routes` routes.
+fn register_route_commands(
+    bus: InMemoryCommandBus,
+    adapters: &Adapters,
+    unit_of_work: &Arc<dyn IamUnitOfWork>,
+    max_routes: usize,
+) -> Result<InMemoryCommandBus, BootstrapError> {
+    let ports = || route_ports(adapters, unit_of_work);
+    let apply = ApplyRouteConfigurationCommandHandler::new(
+        ports(),
+        max_routes,
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
     let create = CreateRouteCommandHandler::new(
         ports(),
         Arc::clone(&adapters.clock),
@@ -580,17 +628,36 @@ fn register_route_commands(
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
     );
-    Ok(bus.register(create)?.register(update)?.register(delete)?)
+    Ok(bus
+        .register(create)?
+        .register(update)?
+        .register(delete)?
+        .register(apply)?)
 }
 
-/// Registers the query handlers of the routes of the gateway configuration.
+/// Registers the query handlers of the routes of the gateway configuration; the dry run of a route
+/// configuration accepts at most `max_routes` routes.
 fn register_route_queries(
     bus: InMemoryQueryBus,
-    routes: &Arc<dyn RouteRepository>,
+    adapters: &Adapters,
+    unit_of_work: &Arc<dyn IamUnitOfWork>,
+    max_routes: usize,
 ) -> Result<InMemoryQueryBus, BootstrapError> {
+    let routes = &adapters.routes;
     let get = GetRouteQueryHandler::new(Arc::clone(routes));
     let list = ListRoutesQueryHandler::new(Arc::clone(routes));
-    Ok(bus.register(get)?.register(list)?)
+    let configuration = GetRouteConfigurationQueryHandler::new(Arc::clone(routes));
+    let preview = PreviewRouteConfigurationQueryHandler::new(
+        route_ports(adapters, unit_of_work),
+        max_routes,
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    Ok(bus
+        .register(get)?
+        .register(list)?
+        .register(configuration)?
+        .register(preview)?)
 }
 
 /// Registers the query handlers of the upstreams of the gateway configuration.
@@ -964,8 +1031,10 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
     let guarded = guarded_unit_of_work(adapters);
     let commands = register_role_commands(commands, adapters, &guarded)?;
     let commands = register_upstream_commands(commands, adapters, &guarded)?;
-    let commands = register_route_commands(commands, adapters, &guarded)?;
+    let max_routes = config.route_configuration_max_routes;
+    let commands = register_route_commands(commands, adapters, &guarded, max_routes)?;
     let commands = register_rate_policy_commands(commands, adapters, &guarded)?;
+    let commands = register_resync_commands(commands, adapters, &guarded)?;
     let commands = register_graphql_spec_commands(commands, adapters, &guarded)?;
     let commands = register_graphql_activation_commands(commands, adapters, &guarded)?;
     let commands = register_openapi_spec_commands(commands, adapters, &guarded)?;
@@ -978,7 +1047,7 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
     let queries = register_change_queries(queries, receipts, keys, &adapters.clock)?;
     let queries = register_role_queries(queries, &adapters.roles)?;
     let queries = register_upstream_queries(queries, &adapters.upstreams)?;
-    let queries = register_route_queries(queries, &adapters.routes)?;
+    let queries = register_route_queries(queries, adapters, &guarded, max_routes)?;
     let queries = register_rate_policy_queries(queries, &adapters.rate_policies)?;
     let queries = register_graphql_spec_queries(queries, adapters)?;
     let queries = register_graphql_activation_queries(queries, adapters)?;

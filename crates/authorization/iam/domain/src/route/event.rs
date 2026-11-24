@@ -122,8 +122,14 @@ pub struct RouteConfigurationApplied {
     pub change_id: ChangeId,
     /// The host whose routes were applied.
     pub host: RouteHost,
-    /// The number of routes of the host.
+    /// The number of routes of the host after the application.
     pub route_count: u32,
+    /// The routes that the application created.
+    pub created: Vec<RouteId>,
+    /// The routes that the application changed.
+    pub updated: Vec<RouteId>,
+    /// The routes that the application deleted.
+    pub deleted: Vec<RouteId>,
     /// Who caused the application.
     pub actor: ActorRef,
     /// When the configuration was applied.
@@ -132,14 +138,21 @@ pub struct RouteConfigurationApplied {
 
 impl RouteConfigurationApplied {
     /// The type of the event on `iam.events.v1`.
-    pub const NAME: &'static str = "iam.route.configuration_applied";
+    pub const NAME: &'static str = "iam.route_configuration.applied";
 
-    /// `host` and `routeCount`.
+    /// `host`, `routeCount`, the route ids `created`, `updated` and `deleted` (the first 400 of
+    /// each) and their exact counts.
     fn event_data(&self) -> Result<EventData, InvalidEventEnvelope> {
-        EventData::new().with("host", text(&self.host))?.with(
-            "routeCount",
-            EventValue::Integer(i64::from(self.route_count)),
-        )
+        let route_count = EventValue::Integer(i64::from(self.route_count));
+        EventData::new()
+            .with("host", text(&self.host))?
+            .with("routeCount", route_count)?
+            .with("created", id_list(&self.created))?
+            .with("updated", id_list(&self.updated))?
+            .with("deleted", id_list(&self.deleted))?
+            .with("createdCount", count(self.created.len()))?
+            .with("updatedCount", count(self.updated.len()))?
+            .with("deletedCount", count(self.deleted.len()))
     }
 }
 
@@ -185,6 +198,20 @@ fn route_identity(
         .with("routeId", text(&id))?
         .with("host", text(host))?
         .with("pathPattern", text(path_pattern))
+}
+
+/// The most route ids that one list of the event names, so that the envelope of a set of 1,000
+/// routes stays below the size limit of an envelope; the counts are always exact.
+const MAX_LISTED_IDS: usize = 400;
+
+/// The first route ids as a list of texts.
+fn id_list(ids: &[RouteId]) -> EventValue {
+    EventValue::List(ids.iter().take(MAX_LISTED_IDS).map(text).collect())
+}
+
+/// A count as an integer value.
+fn count(length: usize) -> EventValue {
+    EventValue::Integer(i64::try_from(length).unwrap_or(i64::MAX))
 }
 
 /// The text form of a value.

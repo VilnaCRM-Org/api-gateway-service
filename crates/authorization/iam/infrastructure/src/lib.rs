@@ -41,6 +41,7 @@ pub use persistence::openapi_spec::PgOpenApiSpecRepository;
 pub use persistence::outbox_listener::PgOutboxListener;
 pub use persistence::outbox_store::PgOutboxStore;
 pub use persistence::policy_read::{PgPolicyReadRepository, PolicyReadHook};
+pub use persistence::policy_state_inventory::PgPolicyStateInventory;
 pub use persistence::propagation_store::PgPropagationStore;
 pub use persistence::rate_policy::PgRatePolicyRepository;
 pub use persistence::rest_permission::PgRestPermissionRepository;

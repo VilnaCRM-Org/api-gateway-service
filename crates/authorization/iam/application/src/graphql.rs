@@ -16,6 +16,7 @@ pub mod graphql_activation;
 pub mod graphql_permission;
 pub mod graphql_spec;
 pub mod openapi_spec;
+pub mod policy_resync;
 pub mod propagation;
 pub mod rate_policy;
 pub mod rest_activation;
@@ -23,6 +24,7 @@ pub mod rest_permission;
 pub mod role_deletion;
 pub mod role_permission;
 pub mod route;
+pub mod route_configuration;
 pub mod schema_parser;
 pub mod spec_retirement;
 pub mod upstream;
@@ -75,6 +77,7 @@ use openapi_spec::{
     LoadOpenApiSpecInput, OpenApiSpecFilterInput, OpenApiSpecObject, OpenApiSpecPageObject,
     load_openapi_spec_field, openapi_spec_field, openapi_specs_field,
 };
+use policy_resync::{ResyncPolicyInput, resync_policy_field};
 use rate_policy::{
     CreateRatePolicyInput, DeleteRatePolicyInput, DeleteRatePolicyPayload, RatePolicyObject,
     RatePolicyPageObject, UpdateRatePolicyInput, create_rate_policy_field,
@@ -96,6 +99,10 @@ use route::{
     CreateRouteInput, DeleteRouteInput, DeleteRoutePayload, RouteFilterInput, RouteObject,
     RoutePageObject, UpdateRouteInput, create_route_field, delete_route_field, route_field,
     routes_field, update_route_field,
+};
+use route_configuration::{
+    ApplyRouteConfigurationInput, ApplyRouteConfigurationPayload, RouteConfigurationObject,
+    apply_route_configuration_field, route_configuration_field,
 };
 use spec_retirement::{
     RetireGraphQlSpecInput, RetireOpenApiSpecInput, SpecRetirementObject,
@@ -472,6 +479,17 @@ impl IamMutation {
             .map_err(iam_problem_to_graphql_error)
     }
 
+    /// Replaces the full route set of one host atomically when `expectedVersion` is the version that `routeConfiguration` returned: routes of the set that the host lacks are created, routes whose methods and path pattern match a stored route are updated, and stored routes that the set omits are deleted, all in one transaction under one policy version, with their `route/<id>` state records, `iam.route.*` events, `iam.route_configuration.applied` and an audit record. The whole set is validated first: one violation, conflict or route the caller may not write rejects it (`VALIDATION_FAILED`, `CONFLICT`, `FORBIDDEN`), and the candidate route table of the host must build. A set larger than `ROUTE_CONFIGURATION_MAX_ROUTES` routes is refused with `VALIDATION_FAILED`. With `dryRun` the mutation runs every check and returns the diff without writing anything. A set whose diff deletes a route, clears `anonymous` or moves `enforcement` from `audit` to `enforce` is revocation-class. The caller needs `iam:route:{service}` or `iam:route:*` for every service the set touches, and `iam:route:anonymous` to create an anonymous or audit-only route or change either flag.
+    async fn apply_route_configuration(
+        &self,
+        ctx: &Context<'_>,
+        input: ApplyRouteConfigurationInput,
+    ) -> async_graphql::Result<ApplyRouteConfigurationPayload> {
+        apply_route_configuration_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
     /// Assigns an existing role to a user or a service principal at global or project scope, takes the next policy version and records `iam.user_role.assigned`, and `iam.privileged_role.assigned` as well when the role grants a wildcard or a reserved key.
     async fn assign_user_role(
         &self,
@@ -593,6 +611,17 @@ impl IamMutation {
             .map_err(iam_problem_to_graphql_error)
     }
 
+    /// Resyncs the policy state: republishes the complete current policy as a new log epoch, with versions continuing above the highest version of the state topic, as a bulk operation of kind `resync`, and records `iam.policy.resynced`. `reason` is required. Needs `iam:policy:resync`. Returns the bulk operation; follow it with `bulkOperation(id)` until it is `completed`. A repeated `idempotencyKey` with the same input within 24 hours returns the original operation.
+    async fn resync_policy(
+        &self,
+        ctx: &Context<'_>,
+        input: ResyncPolicyInput,
+    ) -> async_graphql::Result<BulkOperationObject> {
+        resync_policy_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
     /// Retires an active GraphQL specification version: its fields leave the catalogue of the service unless another active version holds them, the next policy version is taken and `iam.graphql_spec.retired` is recorded. A retirement that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED` unless `confirmOrphans` is true; with the confirmation the grants become inactive and `iam.permissions.orphaned` is recorded.
     async fn retire_graphql_spec(
         &self,
@@ -689,6 +718,17 @@ impl IamQuery {
         filter: Option<RouteFilterInput>,
     ) -> async_graphql::Result<RoutePageObject> {
         routes_field(ctx, first, after, filter.unwrap_or_default())
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves the route configuration of a host: every route of the host that is not deleted, in the form that `applyRouteConfiguration` accepts, and the version of the set; a host without routes has an empty set.
+    async fn route_configuration(
+        &self,
+        ctx: &Context<'_>,
+        host: String,
+    ) -> async_graphql::Result<RouteConfigurationObject> {
+        route_configuration_field(ctx, &host)
             .await
             .map_err(iam_problem_to_graphql_error)
     }

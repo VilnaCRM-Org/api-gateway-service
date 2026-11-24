@@ -21,6 +21,7 @@ use service::cli::{Cli, Command};
 use service::config::{BulkSettings, Config};
 use service::telemetry;
 use test_support::access_token::{DEVELOPMENT_PUBLIC_KEYS_FILE, FakeAccessTokenVerifier};
+use test_support::anti_entropy::FakePolicyLogTail;
 use test_support::bulk_operation::{FakeBulkOperationRepository, FakeBulkRoleTargetStore};
 use test_support::change_receipt::FakeChangeReceiptRepository;
 use test_support::clock::FixedClock;
@@ -32,6 +33,7 @@ use test_support::maintenance_store::FakeMaintenanceStore;
 use test_support::openapi_spec::FakeOpenApiSpecRepository;
 use test_support::policy_epoch::FakePolicyEpochRepository;
 use test_support::policy_read::FakePolicyReadRepository;
+use test_support::policy_state_inventory::FakePolicyStateInventory;
 use test_support::probe::StubProbe;
 use test_support::rate_policy::FakeRatePolicyRepository;
 use test_support::repository::InMemoryExampleApiResourceRepository;
@@ -95,6 +97,8 @@ async fn a_panic_is_one_json_line_with_the_request_id_and_a_500_problem() {
             chunker: BulkChunker::new(1_000).unwrap(),
             pacing: BulkPacing::new(2_000).unwrap(),
         },
+        policy_inventory: Arc::new(FakePolicyStateInventory::new()),
+        policy_tail: Arc::new(FakePolicyLogTail::with(Vec::new())),
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
         startup_lock: Arc::new(FakeStartupLock::new()),
         singleton_leadership: Arc::new(FakeSingletonLeadership::leading()),

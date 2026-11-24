@@ -5,6 +5,7 @@ use crate::catalogue_statement::CatalogueStatement;
 use crate::gateway_statement::GatewayStatement;
 use crate::graphql_spec::statement::GraphQlSpecStatement;
 use crate::openapi_spec::statement::OpenApiSpecStatement;
+use crate::resync::{EpochChange, Republication, ResyncStart};
 use crate::role::statement::RoleStatement;
 use crate::state::key::StateKey;
 use crate::user_role::statement::UserRoleStatement;
@@ -50,6 +51,14 @@ pub enum ChangeStatement {
     /// Store the progress of a bulk operation after a committed chunk; stored progress that differs
     /// from the expected applied records refuses the change as a conflict.
     SaveBulkProgress(Box<BulkProgressStatement>),
+    /// Start a resync: the stored log epoch must be the one the statement names, which becomes the
+    /// next one, the policy version rises to the floor of the statement before the transaction
+    /// takes the next version, and the pending bulk operation is stored; a stored log epoch that
+    /// differs refuses the change as a conflict and a known operation as a duplicate.
+    StartResync(Box<ResyncStart>),
+    /// Publish the unchanged state of the named entities and catalogues again under the version of
+    /// the change; no entity changes and the digest stays.
+    RepublishState(Box<Republication>),
 }
 
 impl ChangeStatement {
@@ -65,7 +74,9 @@ impl ChangeStatement {
             | Self::SaveOpenApiSpec(_)
             | Self::ApplyCatalogue(_)
             | Self::SaveGateway(_)
-            | Self::SaveBulkProgress(_) => true,
+            | Self::SaveBulkProgress(_)
+            | Self::StartResync(_)
+            | Self::RepublishState(_) => true,
         }
     }
 
@@ -78,7 +89,9 @@ impl ChangeStatement {
             Self::ExpectPolicyVersion(_)
             | Self::SaveGraphQlSpec(_)
             | Self::SaveOpenApiSpec(_)
-            | Self::SaveBulkProgress(_) => Vec::new(),
+            | Self::SaveBulkProgress(_)
+            | Self::StartResync(_) => Vec::new(),
+            Self::RepublishState(republication) => republication.keys().to_vec(),
             Self::SaveRole(statement) => vec![StateKey::Role(statement.role().id)],
             Self::SaveUserRole(statement) => {
                 vec![StateKey::Subject(statement.user_role().subject.clone())]
@@ -114,7 +127,53 @@ impl ChangeStatement {
             | Self::SaveGraphQlSpec(_)
             | Self::SaveOpenApiSpec(_)
             | Self::SaveGateway(_)
-            | Self::SaveBulkProgress(_) => None,
+            | Self::SaveBulkProgress(_)
+            | Self::StartResync(_)
+            | Self::RepublishState(_) => None,
+        }
+    }
+
+    /// The services whose catalogue records the statement writes again without changing them.
+    #[must_use]
+    pub fn republished_services(&self) -> &[ServiceName] {
+        match self {
+            Self::RepublishState(republication) => republication.services(),
+            Self::ExpectPolicyVersion(_)
+            | Self::SaveRole(_)
+            | Self::SaveUserRole(_)
+            | Self::SaveGraphQlSpec(_)
+            | Self::SaveOpenApiSpec(_)
+            | Self::ApplyCatalogue(_)
+            | Self::SaveGateway(_)
+            | Self::SaveBulkProgress(_)
+            | Self::StartResync(_) => &[],
+        }
+    }
+
+    /// The log epoch change the statement makes, when it starts a new log epoch.
+    #[must_use]
+    pub fn epoch_change(&self) -> Option<&EpochChange> {
+        match self {
+            Self::StartResync(start) => Some(start.epoch()),
+            Self::ExpectPolicyVersion(_)
+            | Self::SaveRole(_)
+            | Self::SaveUserRole(_)
+            | Self::SaveGraphQlSpec(_)
+            | Self::SaveOpenApiSpec(_)
+            | Self::ApplyCatalogue(_)
+            | Self::SaveGateway(_)
+            | Self::SaveBulkProgress(_)
+            | Self::RepublishState(_) => None,
+        }
+    }
+
+    /// The keys of the entities the statement writes again without changing them.
+    #[must_use]
+    pub fn republished_keys(&self) -> &[StateKey] {
+        if let Self::RepublishState(republication) = self {
+            republication.keys()
+        } else {
+            &[]
         }
     }
 }

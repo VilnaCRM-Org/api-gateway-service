@@ -34,6 +34,8 @@ mod policy_log_tail;
 #[cfg(test)]
 mod policy_read_repository;
 #[cfg(test)]
+mod policy_state_inventory;
+#[cfg(test)]
 mod propagation_store;
 #[cfg(test)]
 mod replay;

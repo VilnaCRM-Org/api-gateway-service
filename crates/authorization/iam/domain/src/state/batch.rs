@@ -1,7 +1,7 @@
 //! The state rows of one versioned transaction: one row per changed entity, framed with the
 //! version, the sequence, the count and the digest after the row, then the head of the version.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::error::InvalidStateRecord;
 use crate::port::policy_digest::PolicyDigest;
@@ -94,6 +94,24 @@ impl StateBatch {
         changes: I,
         ports: (&dyn StateRecordCodec, &dyn PolicyDigest),
     ) -> Result<Self, InvalidStateRecord> {
+        Self::assemble_republishing(version, before, changes, &BTreeSet::new(), ports)
+    }
+
+    /// Frames the changes like [`Self::assemble`], and writes a row for every key of `republished`
+    /// that exists after the transaction even when its encoding did not change: a resync
+    /// publishes the unchanged state of each entity again under a new version, and the digest does
+    /// not move by it.
+    ///
+    /// # Errors
+    ///
+    /// The error of the codec when a state cannot be encoded.
+    pub fn assemble_republishing<I: IntoIterator<Item = StateChange>>(
+        version: PolicyVersion,
+        before: PolicyDigestValue,
+        changes: I,
+        republished: &BTreeSet<StateKey>,
+        ports: (&dyn StateRecordCodec, &dyn PolicyDigest),
+    ) -> Result<Self, InvalidStateRecord> {
         let (codec, digest) = ports;
         let by_key: BTreeMap<StateKey, StateChange> = changes
             .into_iter()
@@ -101,7 +119,10 @@ impl StateBatch {
             .collect();
         let movements = by_key
             .values()
-            .filter_map(|change| movement(change, codec, digest).transpose())
+            .filter_map(|change| {
+                let forced = republished.contains(&change.key);
+                movement(change, forced, codec, digest).transpose()
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let count = u32::try_from(movements.len())
             .ok()
@@ -156,9 +177,11 @@ impl StateBatch {
     }
 }
 
-/// The move that `change` makes, or `None` when the entity encodes the same before and after.
+/// The move that `change` makes, or `None` when the entity encodes the same before and after and
+/// is not `forced` to be written again; a forced entity that does not exist writes nothing.
 fn movement(
     change: &StateChange,
+    forced: bool,
     codec: &dyn StateRecordCodec,
     digest: &dyn PolicyDigest,
 ) -> Result<Option<Movement>, InvalidStateRecord> {
@@ -172,7 +195,7 @@ fn movement(
         .as_ref()
         .map(|state| codec.encode(state))
         .transpose()?;
-    if before == after {
+    if before == after && !(forced && after.is_some()) {
         return Ok(None);
     }
     let hash = |canonical: &Option<String>| {

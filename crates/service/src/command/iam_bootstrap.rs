@@ -2,23 +2,33 @@
 //!
 //! The command connects as `serve` does, so it reads the same configuration. It registers IAM's own
 //! specifications, creates the system role `iam-platform-admin` and assigns it globally to the
-//! subject named by `--admin-user <uuid>` or `--admin-service <service-name>`.
+//! subject named by `--admin-user <uuid>` or `--admin-service <service-name>`. With
+//! `--iam-host <host>` it also seeds the upstream `iam-control` and the routes of IAM's management
+//! API on that host; `--repair-routes --iam-host <host>` restores that seed and creates no
+//! administrator.
 
 use std::io::{self, Write};
 use std::process::ExitCode;
 
-use iam_domain::{SubjectKind, SubjectRef};
+use iam_domain::{RouteHost, SubjectKind, SubjectRef};
 
-use crate::bootstrap::{Adapters, AdministratorError, bootstrap_administrator};
+use crate::bootstrap::{
+    Adapters, AdministratorError, bootstrap_with_routes, repair_gateway_routes,
+};
 use crate::cli::IamBootstrapArgs;
 use crate::command::{self, REJECTED};
 use crate::config::Config;
 
-/// Creates the first administrator and prints `bootstrapped <subject>`.
+/// Runs `iam-bootstrap`: creates the first administrator or repairs the seeded IAM routes.
+///
+/// It prints `bootstrapped <subject>`, followed by a line that says whether the IAM routes were
+/// seeded; with `--repair-routes` it restores the seeded upstream and routes and prints
+/// `repaired the IAM upstream and routes of <host>`.
 ///
 /// Returns 0 on success, 1 when an active administrator assignment exists already or the database
 /// or a migration is not ready (the error is printed as `error: <message>`), and 2 for an invalid
-/// subject option or invalid configuration, reported as one line per problem.
+/// subject or host option, a `--repair-routes` without `--iam-host` or with a subject option, or
+/// an invalid configuration, reported as one line per problem.
 pub fn run(args: IamBootstrapArgs, stdout: &mut dyn Write, stderr: &mut dyn Write) -> ExitCode {
     match execute(args, stdout, stderr) {
         Ok(status) => status,
@@ -31,8 +41,8 @@ fn execute(
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
 ) -> io::Result<ExitCode> {
-    let subject = match subject_of(args.admin_user.as_deref(), args.admin_service.as_deref()) {
-        Ok(subject) => subject,
+    let plan = match plan_of(&args) {
+        Ok(plan) => plan,
         Err(message) => {
             writeln!(stderr, "{message}")?;
             return Ok(ExitCode::from(REJECTED));
@@ -47,13 +57,85 @@ fn execute(
             return Ok(ExitCode::from(REJECTED));
         }
     };
-    match create(&config, subject.clone()) {
+    match carry_out(&config, plan.clone()) {
         Ok(()) => {
-            writeln!(stdout, "bootstrapped {subject}")?;
+            report(&plan, stdout)?;
             Ok(ExitCode::SUCCESS)
         }
         Err(failure) => Ok(command::failure(&failure, stderr)),
     }
+}
+
+/// What the command does.
+#[derive(Debug, Clone)]
+enum Plan {
+    /// Creates the first administrator and, with a host, seeds the IAM routes.
+    Create {
+        subject: SubjectRef,
+        iam_host: Option<RouteHost>,
+    },
+    /// Restores the seeded upstream and routes of the host.
+    Repair { iam_host: RouteHost },
+}
+
+/// Prints what the successful `plan` did.
+fn report(plan: &Plan, stdout: &mut dyn Write) -> io::Result<()> {
+    match plan {
+        Plan::Create {
+            subject,
+            iam_host: Some(host),
+        } => {
+            writeln!(stdout, "bootstrapped {subject}")?;
+            writeln!(stdout, "seeded the IAM upstream and routes of {host}")
+        }
+        Plan::Create {
+            subject,
+            iam_host: None,
+        } => {
+            writeln!(stdout, "bootstrapped {subject}")?;
+            writeln!(stdout, "no IAM routes seeded: --iam-host is absent")
+        }
+        Plan::Repair { iam_host } => {
+            writeln!(stdout, "repaired the IAM upstream and routes of {iam_host}")
+        }
+    }
+}
+
+/// The plan that the options name.
+///
+/// # Errors
+///
+/// The message to print when the subject options are wrong (see [`subject_of`]), the host is no
+/// host name, `--repair-routes` lacks `--iam-host` or comes with a subject option.
+fn plan_of(args: &IamBootstrapArgs) -> Result<Plan, String> {
+    let (user, service) = (args.admin_user.as_deref(), args.admin_service.as_deref());
+    if args.repair_routes {
+        if user.is_some() || service.is_some() {
+            return Err(
+                "--repair-routes cannot be used with --admin-user or --admin-service".to_owned(),
+            );
+        }
+        return host_of(args.iam_host.as_deref())?
+            .map(|iam_host| Plan::Repair { iam_host })
+            .ok_or_else(|| "--repair-routes requires --iam-host".to_owned());
+    }
+    let subject = subject_of(user, service)?;
+    let iam_host = host_of(args.iam_host.as_deref())?;
+    Ok(Plan::Create { subject, iam_host })
+}
+
+/// The host that `--iam-host` names, when it is given.
+///
+/// # Errors
+///
+/// The message to print when the value is no lower-case DNS name.
+fn host_of(value: Option<&str>) -> Result<Option<RouteHost>, String> {
+    value
+        .map(|host| {
+            RouteHost::new(host)
+                .map_err(|_error| format!("--iam-host: {host:?} is not a lower-case host name"))
+        })
+        .transpose()
 }
 
 /// Why the administrator could not be created.
@@ -67,8 +149,8 @@ enum CreateError {
     Administrator(#[from] AdministratorError),
 }
 
-/// Runs the creation on a runtime of its own.
-fn create(config: &Config, subject: SubjectRef) -> Result<(), CreateError> {
+/// Runs the plan on a runtime of its own.
+fn carry_out(config: &Config, plan: Plan) -> Result<(), CreateError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -77,9 +159,13 @@ fn create(config: &Config, subject: SubjectRef) -> Result<(), CreateError> {
         let adapters = Adapters::connect(config)
             .await
             .map_err(CreateError::Wiring)?;
-        bootstrap_administrator(&adapters, subject)
-            .await
-            .map_err(CreateError::from)
+        let outcome = match plan {
+            Plan::Create { subject, iam_host } => {
+                bootstrap_with_routes(&adapters, subject, iam_host).await
+            }
+            Plan::Repair { iam_host } => repair_gateway_routes(&adapters, iam_host).await,
+        };
+        outcome.map_err(CreateError::from)
     })
 }
 

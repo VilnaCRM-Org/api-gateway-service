@@ -27,6 +27,15 @@ impl LogEpoch {
     pub const fn value(self) -> i64 {
         self.0
     }
+
+    /// The epoch that follows this one, or `None` when the counter cannot grow.
+    #[must_use]
+    pub const fn next(self) -> Option<Self> {
+        match self.0.checked_add(1) {
+            Some(value) => Some(Self(value)),
+            None => None,
+        }
+    }
 }
 
 #[cfg(test)]

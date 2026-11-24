@@ -23,7 +23,7 @@ use crate::principal::Principal;
 use crate::query::resolve_subject_token::{ResolveSubjectTokenQuery, TokenResolution};
 
 /// The extractor types a handler of this module may take.
-const ALLOWED_EXTRACTORS: [&str; 10] = [
+const ALLOWED_EXTRACTORS: [&str; 11] = [
     "State<IamState>",
     "CallerPrincipal",
     "ApiPath<",
@@ -34,6 +34,7 @@ const ALLOWED_EXTRACTORS: [&str; 10] = [
     "IfMatchHeader",
     "VersionedWriteHeaders",
     "PreferWaitHeader",
+    "RouteConfigurationTarget",
 ];
 
 /// Splits `text` at every `separator` that is not nested in brackets.
@@ -172,9 +173,14 @@ fn handlers_use_only_the_problem_aware_extractors() {
             vec!["create", "get_one", "update", "delete", "list"],
         ),
         (
+            include_str!("../route_configuration.rs"),
+            vec!["get_one", "apply"],
+        ),
+        (
             include_str!("../bulk_operation.rs"),
             vec!["get_one", "list"],
         ),
+        (include_str!("../policy_resync.rs"), vec!["create"]),
     ];
 
     for (source, expected) in sources {

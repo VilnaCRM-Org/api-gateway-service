@@ -11,6 +11,7 @@ use iam_domain::{BulkChunker, BulkPacing};
 use iam_infrastructure::BufferedRejectedAttemptLog;
 use serde_json::Value;
 use test_support::access_token::{DEVELOPMENT_PUBLIC_KEYS_FILE, FakeAccessTokenVerifier};
+use test_support::anti_entropy::FakePolicyLogTail;
 use test_support::bulk_operation::{FakeBulkOperationRepository, FakeBulkRoleTargetStore};
 use test_support::change_receipt::FakeChangeReceiptRepository;
 use test_support::clock::FixedClock;
@@ -22,6 +23,7 @@ use test_support::maintenance_store::FakeMaintenanceStore;
 use test_support::openapi_spec::FakeOpenApiSpecRepository;
 use test_support::policy_epoch::FakePolicyEpochRepository;
 use test_support::policy_read::FakePolicyReadRepository;
+use test_support::policy_state_inventory::FakePolicyStateInventory;
 use test_support::probe::StubProbe;
 use test_support::rate_policy::FakeRatePolicyRepository;
 use test_support::repository::InMemoryExampleApiResourceRepository;
@@ -91,6 +93,8 @@ fn adapters() -> Adapters {
             chunker: BulkChunker::new(1_000).unwrap(),
             pacing: BulkPacing::new(2_000).unwrap(),
         },
+        policy_inventory: Arc::new(FakePolicyStateInventory::new()),
+        policy_tail: Arc::new(FakePolicyLogTail::with(Vec::new())),
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
         rejected_attempts: Arc::new(BufferedRejectedAttemptLog::new()),
         startup_lock: Arc::new(FakeStartupLock::new()),

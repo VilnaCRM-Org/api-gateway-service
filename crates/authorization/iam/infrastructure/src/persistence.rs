@@ -17,6 +17,7 @@ pub mod openapi_spec;
 pub mod outbox_listener;
 pub mod outbox_store;
 pub mod policy_read;
+pub mod policy_state_inventory;
 pub mod propagation_store;
 pub mod rate_policy;
 pub mod rest_permission;

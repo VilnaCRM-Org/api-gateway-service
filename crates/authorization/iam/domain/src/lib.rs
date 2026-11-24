@@ -11,6 +11,7 @@ pub mod catalogue_statement;
 pub mod endpoint;
 pub mod entity;
 pub mod error;
+pub mod gateway_seed;
 pub mod gateway_statement;
 pub mod graphql_permission;
 pub mod graphql_spec;
@@ -24,6 +25,7 @@ pub mod rate_limit;
 pub mod rate_policy;
 pub mod rejected_attempt;
 pub mod rest_permission;
+pub mod resync;
 pub mod revocation;
 pub mod role;
 pub mod route;
@@ -67,6 +69,7 @@ pub use error::{
 };
 pub use error::{InvalidCatalogueEntry, InvalidStateRecord, RenameRefused};
 pub use error::{InvalidSpec, SpecPosition, SpecTransitionRefused};
+pub use gateway_seed::IamGatewaySeed;
 pub use gateway_statement::GatewayStatement;
 pub use graphql_permission::{GraphQlPermission, GraphQlPermissionParts};
 pub use graphql_spec::event::{GraphQlSpecLoaded, GraphQlSpecRetired};
@@ -111,6 +114,8 @@ pub use policy::rest_spec_diff::{
 pub use policy::route_conflict_guard::RouteConflictGuard;
 pub use policy::route_revocation_rule::{RouteChangeClass, RouteRevocationRule};
 pub use policy::route_scope_guard::{RouteScopeGuard, RouteScopeRefused};
+pub use policy::route_set_diff::{ChangedRoute, RouteSetDiff};
+pub use policy::route_set_version::RouteSetVersion;
 pub use policy::service_catalog::ServiceCatalog;
 pub use policy::spec_diff::{FlagDowngrade, RemovedGrant, RoleGrants, SpecDiff, WildcardGain};
 pub use policy::spec_scope_guard::{SpecScopeDenied, SpecScopeGuard};
@@ -150,6 +155,7 @@ pub use port::policy_log_producer::{
 };
 pub use port::policy_log_tail::{PolicyLogTail, PolicyLogTailError, TAIL_READ_LIMIT, TailRecord};
 pub use port::policy_read_repository::PolicyReadRepository;
+pub use port::policy_state_inventory::PolicyStateInventory;
 pub use port::policy_view::PolicyView;
 pub use port::propagation_store::PropagationStore;
 pub use port::rate_limit_store::{RateLimitStore, RateLimitStoreError};
@@ -185,6 +191,7 @@ pub use rejected_attempt::{
     AttemptSummary, RejectedAttempt, RejectedAttemptBuffer, SUMMARY_WINDOW,
 };
 pub use rest_permission::{RestPermission, RestPermissionParts};
+pub use resync::{EpochChange, InventoryEntry, PolicyResynced, Republication, ResyncStart};
 pub use revocation::global_token_cutoff::GlobalTokenCutoff;
 pub use revocation::inbound_event::{InboundEvent, InboundOutcome};
 pub use revocation::revocation_rule::{RevocationRule, RevocationStatus};

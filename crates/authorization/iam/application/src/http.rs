@@ -11,6 +11,7 @@ pub mod graphql_spec;
 pub mod handler;
 pub mod openapi_document_parser;
 pub mod openapi_spec;
+pub mod policy_resync;
 pub mod rate_policy;
 pub mod response;
 pub mod rest_activation;
@@ -18,6 +19,7 @@ pub mod rest_permission;
 pub mod role;
 pub mod role_permission;
 pub mod route;
+pub mod route_configuration;
 pub mod spec_retirement;
 pub mod upstream;
 pub mod user_role;
@@ -69,8 +71,10 @@ where
         .merge(user_role_permission_router())
         .merge(rate_policy_router())
         .merge(bulk_operation_router())
+        .merge(policy_resync_router())
         .merge(upstream_router())
         .merge(route_router())
+        .merge(route_configuration_router())
 }
 
 /// The routes of the access validation, single and batch, merged into [`router`].
@@ -173,6 +177,15 @@ where
         .routes(routes!(bulk_operation::get_one))
 }
 
+/// The route that resyncs the policy state, merged into [`router`].
+fn policy_resync_router<S>() -> OpenApiRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+    IamState: FromRef<S>,
+{
+    OpenApiRouter::new().routes(routes!(policy_resync::create))
+}
+
 /// The routes of the rate policies, merged into [`router`].
 fn rate_policy_router<S>() -> OpenApiRouter<S>
 where
@@ -212,6 +225,22 @@ where
     OpenApiRouter::new()
         .routes(routes!(route::create, route::list))
         .routes(routes!(route::get_one, route::update, route::delete))
+}
+
+/// The routes of the route configuration of a host, merged into [`router`].
+fn route_configuration_router<S>() -> OpenApiRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+    IamState: FromRef<S>,
+{
+    OpenApiRouter::new()
+        .routes(routes!(
+            route_configuration::get_one,
+            route_configuration::apply
+        ))
+        .layer(DefaultBodyLimit::max(
+            route_configuration::ROUTE_CONFIGURATION_BODY_LIMIT_BYTES,
+        ))
 }
 
 /// The routes that upload specification documents, to be nested under `/api`.

@@ -4,7 +4,7 @@ use iam_domain::{
     AuditAction, HttpMethod, PermissionKey, PermissionKeyKind, ReservedPermission, ServiceScope,
 };
 
-use super::{CallerRule, OperationRules, Requirement, VALIDATE_ALL};
+use super::{CallerRule, OperationRules, POLICY_RESYNC, Requirement, VALIDATE_ALL};
 use crate::http::{IamState, router, specification_router};
 
 fn rows_of(requirement: fn(Requirement) -> bool) -> Vec<(&'static str, &'static str)> {
@@ -136,7 +136,7 @@ fn a_row_with_fixed_keys_has_no_caller_rule() {
 fn every_other_operation_requires_its_catalogue_key() {
     let catalogue = rows_of(|requirement| requirement == Requirement::Catalogue);
 
-    assert_eq!(catalogue.len(), OperationRules::all().len() - 3);
+    assert_eq!(catalogue.len(), OperationRules::all().len() - 4);
     for rule in OperationRules::all() {
         if rule.requirement == Requirement::Catalogue {
             assert!(rule.requirement.needs_catalogue());
@@ -314,5 +314,65 @@ fn the_route_operations_need_their_catalogue_keys_on_both_interfaces() {
         let rule = OperationRules::find_graphql(coordinate).unwrap();
         assert_eq!(rule.action, action);
         assert_eq!(rule.requirement, Requirement::Catalogue);
+    }
+}
+
+#[test]
+fn the_route_configuration_operations_need_their_catalogue_keys_on_both_interfaces() {
+    let rest = [
+        (
+            "GET",
+            "/api/route-configurations/{host}",
+            "route_configuration.read",
+        ),
+        (
+            "PUT",
+            "/api/route-configurations/{host}",
+            "route_configuration.apply",
+        ),
+    ];
+    let graphql = [
+        ("Query.routeConfiguration", "route_configuration.read"),
+        (
+            "Mutation.applyRouteConfiguration",
+            "route_configuration.apply",
+        ),
+    ];
+
+    for (method, template, action) in rest {
+        let rule = OperationRules::find(method, template).unwrap();
+        assert_eq!(rule.action, action);
+        assert_eq!(rule.requirement, Requirement::Catalogue);
+    }
+    for (coordinate, action) in graphql {
+        let rule = OperationRules::find_graphql(coordinate).unwrap();
+        assert_eq!(rule.action, action);
+        assert_eq!(rule.requirement, Requirement::Catalogue);
+    }
+}
+
+#[test]
+fn the_policy_resync_needs_the_reserved_key_and_no_catalogue_key_on_both_interfaces() {
+    let rest = OperationRules::find("POST", "/api/policy-resyncs").unwrap();
+    let graphql = OperationRules::find_graphql("Mutation.resyncPolicy").unwrap();
+
+    assert_eq!(rest.action, "policy.resync");
+    assert_eq!(graphql.action, "policy.resync");
+    for requirement in [rest.requirement, graphql.requirement] {
+        assert_eq!(requirement, Requirement::Reserved(&[POLICY_RESYNC]));
+        assert!(!requirement.needs_catalogue());
+        assert_eq!(requirement.reserved(), ["iam:policy:resync"]);
+    }
+}
+
+#[test]
+fn there_is_no_cache_flush_operation_on_either_interface() {
+    assert!(OperationRules::find("POST", "/api/authorization-cache/flushes").is_none());
+    assert!(OperationRules::find_graphql("Mutation.flushAuthorizationCache").is_none());
+    for rule in OperationRules::all() {
+        assert!(!rule.template.contains("flush"));
+    }
+    for rule in OperationRules::graphql() {
+        assert!(!rule.coordinate.to_lowercase().contains("flush"));
     }
 }

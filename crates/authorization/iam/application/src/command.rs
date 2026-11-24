@@ -3,6 +3,7 @@
 //! A command changes state and returns no data; each one gets a module of its own below this one.
 //! The caller reads the result of a committed command through its change receipt.
 
+pub mod apply_route_configuration;
 pub mod assign_user_role;
 pub mod bootstrap_iam;
 pub mod create_graphql_permissions;
@@ -20,12 +21,15 @@ pub mod load_graphql_spec;
 pub mod load_openapi_spec;
 pub mod record_rejected_attempt;
 pub mod register_own_specs;
+pub mod resync_policy;
 pub mod retire_graphql_spec;
 pub mod retire_openapi_spec;
 pub mod revoke_user_role;
 pub(crate) mod role_deletion;
 pub(crate) mod route_checks;
+pub(crate) mod route_configuration_plan;
 pub mod run_maintenance;
+pub mod seed_iam_gateway;
 pub mod set_role_permissions;
 pub(crate) mod spec_retirement;
 pub mod update_rate_policy;

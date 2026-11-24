@@ -319,6 +319,26 @@ Content-Type: application/json
   "variables": { "id": "0190f2a8-7b3c-7d4e-8f10-1234567890af" }
 }
 
+### Resync the policy state over REST: republishes the complete current policy as a new log epoch, with versions above the highest version of the state topic, as a bulk operation of kind resync; needs iam:policy:resync, 202 with the Location of the bulk operation, 422 without a reason or for a reused Idempotency-Key, 403 without the key, 409 for a policy without entities
+POST {{baseUrl}}/api/policy-resyncs
+Authorization: Bearer <caller token>
+Content-Type: application/json
+Idempotency-Key: resync-2027-01-15
+
+{
+  "reason": "The state topic lost records after a broker failure."
+}
+
+### Resync the policy state over GraphQL: the mutation returns the bulk operation; a repeated idempotencyKey with the same input returns the original operation and starts no second resync
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: ResyncPolicyInput!) { resyncPolicy(input: $input) { id kind status totalRecords appliedRecords firstVersion lastVersion } }",
+  "variables": { "input": { "reason": "The state topic lost records after a broker failure.", "idempotencyKey": "resync-2027-01-15" } }
+}
+
 ### Read the permissions of a role over REST: every grant in key order with its key, kind (rest, gql or reserved), service, active flag and wildcard flag, and the ETag of the role; 404 for an unknown role, 422 for an id that is not a UUID
 GET {{baseUrl}}/api/roles/01a1c6b5-cb86-7134-868a-7608036facfe/permissions
 Authorization: Bearer <caller token>
@@ -979,4 +999,61 @@ Content-Type: application/json
 {
   "query": "mutation ($input: DeleteRouteInput!) { deleteRoute(input: $input) { id version policyVersion } }",
   "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facff", "expectedVersion": 1 } }
+}
+
+### Read the route configuration of a host over REST: 200 with the routes in the form that the replacement accepts and the version of the set as the ETag; a host without routes has an empty set; 422 for a host that is not a host name
+GET {{baseUrl}}/api/route-configurations/app.example.test
+Authorization: Bearer <caller token>
+
+### Read the route configuration of a host over GraphQL: the same data as the REST operation, with the version to pass as expectedVersion
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($host: String!) { routeConfiguration(host: $host) { host version routes { methods pathPattern service upstreamId anonymous enforcement requestTimeoutMs } } }",
+  "variables": { "host": "app.example.test" }
+}
+
+### Dry run of a route configuration over REST: 200 with the diff (added, changed and removed routes) and no write; If-Match is the ETag of the read; every check of the application runs, so the answer is the one the application would get (403, 409, 412, 422)
+PUT {{baseUrl}}/api/route-configurations/app.example.test?dryRun=true
+Authorization: Bearer <caller token>
+If-Match: "891243091239043"
+Content-Type: application/json
+
+{
+  "routes": [
+    { "methods": ["GET"], "pathPattern": "/api/orders/{id}", "service": "core", "upstreamId": "01a1c6b5-cb86-7134-868a-7608036fa000", "requestTimeoutMs": 5000 },
+    { "methods": ["POST"], "pathPattern": "/api/orders", "service": "core", "upstreamId": "01a1c6b5-cb86-7134-868a-7608036fa000" }
+  ]
+}
+
+### Apply a route configuration over REST: replaces the full route set of the host atomically in one policy version (200 with the diff, the new ETag and Iam-Policy-Version); a set of more than ROUTE_CONFIGURATION_MAX_ROUTES routes is 422, a conflicting set 409 (route-table-conflict), a stale If-Match 412, a missing If-Match 428; a set that deletes a route, clears anonymous or moves enforcement from audit to enforce is revocation-class; anonymous or audit-only routes need iam:route:anonymous (403 otherwise)
+PUT {{baseUrl}}/api/route-configurations/app.example.test
+Authorization: Bearer <caller token>
+If-Match: "891243091239043"
+Content-Type: application/json
+
+{
+  "routes": [
+    { "methods": ["GET"], "pathPattern": "/api/orders/{id}", "service": "core", "upstreamId": "01a1c6b5-cb86-7134-868a-7608036fa000", "requestTimeoutMs": 5000 },
+    { "methods": ["POST"], "pathPattern": "/api/orders", "service": "core", "upstreamId": "01a1c6b5-cb86-7134-868a-7608036fa000" }
+  ]
+}
+
+### Apply a route configuration over GraphQL: the same diff as the REST operation; dryRun true writes nothing; the error codes PRECONDITION_REQUIRED, PRECONDITION_FAILED, FORBIDDEN, CONFLICT and VALIDATION_FAILED
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: ApplyRouteConfigurationInput!) { applyRouteConfiguration(input: $input) { dryRun version routeCount revocation added { pathPattern } changed { pathPattern changedFields } removed { pathPattern } policyVersion } }",
+  "variables": { "input": {
+    "host": "app.example.test",
+    "expectedVersion": 891243091239043,
+    "dryRun": true,
+    "routes": [
+      { "methods": ["GET"], "pathPattern": "/api/orders/{id}", "service": "core", "upstreamId": "01a1c6b5-cb86-7134-868a-7608036fa000", "requestTimeoutMs": 5000 }
+    ]
+  } }
 }

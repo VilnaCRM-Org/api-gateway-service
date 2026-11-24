@@ -111,9 +111,8 @@ async fn write(
     events_topic: &str,
 ) -> Result<(PolicyVersion, Vec<StoredSecurityAuditEvent>), RepositoryError> {
     let changed_at = timestamp(change.occurred_at_micros())?;
-    let locked = lock_epoch(connection).await?;
+    let locked = lock_and_begin(connection, &change.parts().statements).await?;
     let version = next_version(connection, change, &locked, changed_at).await?;
-    check(&change.parts().statements, locked.version)?;
     let capture = capture_state(connection, change).await?;
     run(connection, &change.parts().statements).await?;
     if let Some(capture) = capture {
@@ -199,6 +198,47 @@ async fn lock_epoch(connection: &mut PgConnection) -> Result<Locked, RepositoryE
     restore(&row)
 }
 
+/// Locks the policy epoch row, refuses the change when a statement does not hold under the locked
+/// version, and starts the new log epoch that a statement asks for.
+async fn lock_and_begin(
+    connection: &mut PgConnection,
+    statements: &[ChangeStatement],
+) -> Result<Locked, RepositoryError> {
+    let locked = lock_epoch(connection).await?;
+    check(statements, locked.version)?;
+    begin_log_epoch(connection, statements, locked).await
+}
+
+/// Starts the new log epoch that a statement asks for: the stored log epoch must be the one the
+/// statement names, which becomes the next one, and the policy version rises to the floor of the
+/// statement when it is lower. The records of the transaction carry the new log epoch; without
+/// such a statement the locked values stay.
+async fn begin_log_epoch(
+    connection: &mut PgConnection,
+    statements: &[ChangeStatement],
+    locked: Locked,
+) -> Result<Locked, RepositoryError> {
+    let Some(change) = statements.iter().find_map(ChangeStatement::epoch_change) else {
+        return Ok(locked);
+    };
+    if locked.log_epoch != change.from() {
+        return Err(RepositoryError::Conflict);
+    }
+    let version = sqlx::query_scalar::<_, i64>(
+        "UPDATE iam_policy_epoch SET log_epoch = $1, version = GREATEST(version, $2)
+        WHERE id = 1 RETURNING version",
+    )
+    .bind(change.to().value())
+    .bind(change.version_floor().value())
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(translate)?;
+    Ok(Locked {
+        version: PolicyVersion::new(version).map_err(unusable)?,
+        log_epoch: change.to(),
+    })
+}
+
 /// Takes the next policy version under the row lock.
 async fn increment(
     connection: &mut PgConnection,
@@ -255,7 +295,9 @@ async fn run_statement(
         | ChangeStatement::SaveRole(_)
         | ChangeStatement::SaveUserRole(_)
         | ChangeStatement::SaveGateway(_)
-        | ChangeStatement::SaveBulkProgress(_) => run_aggregate(connection, statement).await,
+        | ChangeStatement::SaveBulkProgress(_)
+        | ChangeStatement::StartResync(_)
+        | ChangeStatement::RepublishState(_) => run_aggregate(connection, statement).await,
     }
 }
 
@@ -276,10 +318,14 @@ async fn run_aggregate(
         ChangeStatement::SaveBulkProgress(statement) => {
             bulk_operation::save_progress_within(connection, statement).await
         }
+        ChangeStatement::StartResync(start) => {
+            bulk_operation::insert_within(connection, start.operation()).await
+        }
         ChangeStatement::ExpectPolicyVersion(_)
         | ChangeStatement::SaveGraphQlSpec(_)
         | ChangeStatement::SaveOpenApiSpec(_)
-        | ChangeStatement::ApplyCatalogue(_) => Ok(()),
+        | ChangeStatement::ApplyCatalogue(_)
+        | ChangeStatement::RepublishState(_) => Ok(()),
     }
 }
 
