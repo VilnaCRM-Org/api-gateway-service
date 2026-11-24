@@ -745,3 +745,23 @@ async fn a_change_that_revokes_no_assignments_stores_no_number(pool: PgPool) {
         .unwrap();
     assert_eq!(read.revoked_assignments(), None);
 }
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn event_rows_name_the_events_topic_of_the_unit_of_work(pool: PgPool) {
+    let change = iam_change(&mut TestRng::from_env(), DecisionEffect::Affected, 2);
+    let unit =
+        PgIamUnitOfWork::new(pool.clone()).with_events_topic("iam.events.scenario".to_owned());
+
+    unit.commit(change.clone(), iam_domain::WriteMode::Published)
+        .await
+        .unwrap();
+
+    for envelope in &change.parts().events {
+        let topic: String = sqlx::query_scalar("SELECT topic FROM iam_outbox WHERE id = $1")
+            .bind(envelope.parts().id.as_uuid())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(topic, "iam.events.scenario");
+    }
+}

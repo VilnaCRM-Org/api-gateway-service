@@ -113,6 +113,57 @@ input AssignmentSubjectInput {
   kind: String!
 }
 
+"A bulk operation: a large change that the runner commits in chunks."
+type BulkOperation {
+  "How many records the committed chunks applied."
+  appliedRecords: Int!
+  "When the operation was recorded, as an RFC 3339 UTC time."
+  createdAt: String!
+  "Why the operation failed; null otherwise."
+  error: String
+  "The policy version of the first committed chunk; null before the first chunk."
+  firstVersion: Int
+  "The identifier."
+  id: ID!
+  "What the operation changes: `role_deletion`, `catalogue`, `resync` or `other`."
+  kind: String!
+  "The policy version of the last committed chunk; null before the first chunk."
+  lastVersion: Int
+  "The propagation of a revocation-class bulk operation; null until the chunks of such an operation are fenced by the pods' acknowledgements."
+  propagation: BulkOperationPropagation
+  "Who asked for the change."
+  requester: String!
+  "Where it stands: `pending`, `running`, `completed` or `failed`."
+  status: String!
+  "How many records the whole change touches."
+  totalRecords: Int!
+  "When the operation last changed, as an RFC 3339 UTC time."
+  updatedAt: String!
+}
+
+"One page of bulk operations."
+type BulkOperationPage {
+  "The operations of the page, oldest first."
+  items: [BulkOperation!]!
+  "The `after` value of the next page; null on the last page."
+  nextCursor: String
+}
+
+"""
+How far the gateway pods have acknowledged the policy versions of a revocation-class bulk
+operation.
+"""
+type BulkOperationPropagation {
+  "How many gateway pods acknowledged the version."
+  podsAcknowledged: Int!
+  "How many gateway pods did not acknowledge it in time."
+  podsTimedOut: Int!
+  "The policy version the status is about."
+  policyVersion: Int!
+  "`pending`, `acknowledged` or `timed_out`."
+  status: String!
+}
+
 "The two flags of a coordinate."
 type CoordinateFlags {
   "Whether every use of the coordinate is audited (`@iamAuditAlways`)."
@@ -143,6 +194,26 @@ input CreateGraphqlPermissionsInput {
   renames: [KeyRenameInput!]! = []
 }
 
+"Input of the rate-policy creation mutation."
+input CreateRatePolicyInput {
+  "The number of requests allowed above the limit in a burst, from 0 to 4,294,967,295."
+  burst: Int!
+  "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
+  consistency: String
+  "What the limit becomes without the shared counter: `divided` or `full`."
+  fallback: String!
+  "Makes the creation safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+  "What requests are counted by: `ip`, `subject`, `subject_route` or `route`."
+  key: String!
+  "The number of requests allowed per period, from 1 to 4,294,967,295."
+  limit: Int!
+  "The name: 1 to 100 characters, unique among the rate policies that are not deleted."
+  name: String!
+  "The period in milliseconds: a multiple of 1,000, from 1,000 to 4,294,967,295,000."
+  periodMs: Int!
+}
+
 "Input of the mutation that activates an `OpenAPI` specification version."
 input CreateRestPermissionsInput {
   "Accepts that keys lose the sensitive or the always-audit flag; without it, an activation that would remove a flag fails with `FLAG_DOWNGRADE_CONFIRMATION_REQUIRED`."
@@ -169,6 +240,62 @@ input CreateRoleInput {
   name: String!
 }
 
+"Input of the upstream-creation mutation."
+input CreateUpstreamInput {
+  "The catalogue service whose keys authorize the routes of this upstream."
+  catalogService: String!
+  "The largest number of concurrent requests to the upstream; default 256."
+  concurrencyLimit: Int
+  "The connect timeout in milliseconds; default 250."
+  connectTimeoutMs: Int
+  "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
+  consistency: String
+  "Whether the credentials of the caller are forwarded to the upstream; default `false`."
+  forwardCredentials: Boolean
+  "Makes the creation safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+  "The name of the upstream: a service name such as `core`, 1 to 63 characters, unique among the upstreams that are not deleted."
+  name: String!
+  "The Kubernetes namespace of the Service."
+  namespace: String!
+  "The number of consecutive failures after which an endpoint is ejected; default 5."
+  outlierConsecutiveErrors: Int
+  "The port of the Service, from 1 to 65,535."
+  port: Int!
+  "The protocol the gateway speaks to the upstream: `http1` or `h2c`."
+  protocol: String!
+  "The response timeout in milliseconds; default 10,000."
+  responseTimeoutMs: Int
+  "The retry budget in percent of the requests, from 0 to 100; default 10."
+  retryBudgetPercent: Int
+  "The Kubernetes Service that the gateway proxies to."
+  service: String!
+}
+
+"Input of the rate-policy deletion mutation."
+input DeleteRatePolicyInput {
+  "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
+  consistency: String
+  "The version the caller read; required, and the deletion is refused when it is not the current one."
+  expectedVersion: Int
+  "The rate policy to delete."
+  id: ID!
+  "Makes the deletion safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+}
+
+"The result of a rate-policy deletion."
+type DeleteRatePolicyPayload {
+  "The identifier of the deleted rate policy."
+  id: ID!
+  "The policy version that the deletion produced."
+  policyVersion: Int
+  "What the deletion learned about the publication of its policy version."
+  propagation: Propagation
+  "The final version of the rate policy."
+  version: Int!
+}
+
 "Input of the role-deletion mutation."
 input DeleteRoleInput {
   "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
@@ -192,6 +319,30 @@ type DeleteRolePayload {
   "The number of assignments that the deletion revoked."
   revokedAssignments: Int!
   "The final version of the role."
+  version: Int!
+}
+
+"Input of the upstream-deletion mutation."
+input DeleteUpstreamInput {
+  "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
+  consistency: String
+  "The version the caller read; required, and the deletion is refused when it is not the current one."
+  expectedVersion: Int
+  "The upstream to delete."
+  id: ID!
+  "Makes the deletion safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+}
+
+"The result of an upstream deletion."
+type DeleteUpstreamPayload {
+  "The identifier of the deleted upstream."
+  id: ID!
+  "The policy version that the deletion produced."
+  policyVersion: Int
+  "What the deletion learned about the publication of its policy version."
+  propagation: Propagation
+  "The final version of the upstream."
   version: Int!
 }
 
@@ -387,12 +538,20 @@ type Mutation {
   createExampleApiResource(input: CreateExampleApiResourceInput!): ExampleApiResource!
   "Activates a draft GraphQL specification version and makes its fields grantable permissions: the catalogue of the service becomes the union of its active versions, the next policy version is taken and `iam.graphql_permissions.created` is recorded. An activation that would remove the sensitive or always-audit flag from a key fails with `FLAG_DOWNGRADE_CONFIRMATION_REQUIRED` unless `confirmFlagDowngrade` is true, and one that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED` unless `confirmOrphans` is true. A version that is active already is a no-op."
   createGraphqlPermissions(input: CreateGraphqlPermissionsInput!): GraphqlPermissionsActivation!
+  "Creates a rate policy at version 1, takes the next policy version and records `iam.rate_policy.created`. The period `periodMs` is a multiple of 1,000."
+  createRatePolicy(input: CreateRatePolicyInput!): RatePolicy!
   "Activates a draft `OpenAPI` specification version and makes its operations grantable permissions: the catalogue of the service becomes the union of its active versions, the next policy version is taken and `iam.rest_permissions.created` is recorded. An activation that would remove the sensitive or always-audit flag from a key fails with `FLAG_DOWNGRADE_CONFIRMATION_REQUIRED` unless `confirmFlagDowngrade` is true, and one that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED` unless `confirmOrphans` is true. A version that is active already is a no-op."
   createRestPermissions(input: CreateRestPermissionsInput!): RestPermissionsActivation!
   "Creates a custom role without grants at version 1 and records `iam.role.created`."
   createRole(input: CreateRoleInput!): Role!
+  "Registers an upstream at version 1, writes its `upstream/<name>` state record, takes the next policy version and records `iam.upstream.created`. The caller needs `iam:route:{catalogService}` or `iam:route:*`; an upstream of the `iam` service is refused with `CONFLICT`. A repeated `idempotencyKey` with the same input within 24 hours returns the original result."
+  createUpstream(input: CreateUpstreamInput!): Upstream!
+  "Deletes a rate policy when `expectedVersion` is the current version and no route references it: the rate policy leaves the listings at once, the next policy version is committed, and `iam.rate_policy.deleted` and an audit record are written. A rate policy that a route references fails with `CONFLICT`."
+  deleteRatePolicy(input: DeleteRatePolicyInput!): DeleteRatePolicyPayload!
   "Deletes a custom role when `expectedVersion` is the current version and revokes every assignment of it in the same transaction: the role and its assignments leave the active listings at once, the next policy version is committed, and `iam.role.deleted`, one `iam.user_role.revoked` per revoked assignment and the audit records are written. The payload reports the number of revoked assignments."
   deleteRole(input: DeleteRoleInput!): DeleteRolePayload!
+  "Deletes an upstream when `expectedVersion` is the current version and no route references it: its state record becomes a tombstone, the next policy version is committed, and `iam.upstream.deleted` and an audit record are written in the same transaction. An upstream that a route references is refused with `CONFLICT`, and so are a system upstream and one of the `iam` service."
+  deleteUpstream(input: DeleteUpstreamInput!): DeleteUpstreamPayload!
   "Loads the SDL of a service as a draft version and returns it with its diff against the active versions; an SDL that the service already holds returns its version and changes nothing. The service `iam` is reserved."
   loadGraphqlSpec(input: LoadGraphqlSpecInput!): GraphqlSpec!
   "Loads the `OpenAPI` document of a service as a draft version and returns it with its diff against the active versions; a document that the service already holds returns its version and changes nothing. The service `iam` is reserved."
@@ -405,8 +564,12 @@ type Mutation {
   revokeUserRole(input: RevokeUserRoleInput!): RevokeUserRolePayload!
   "Replaces the whole grant set of a role when `expectedVersion` is the current version: every key must be in an active catalogue or be one of the four wildcard forms of a service that has a catalogue, and at most 5,000 keys are accepted; unknown keys fail with `VALIDATION_FAILED` and one violation per key. The change increases the version, updates the grant count, takes the next policy version and records `iam.role_permissions.changed` with the added and removed keys; an added wildcard is audited with `coversFutureElements=true`."
   setRolePermissions(input: SetRolePermissionsInput!): Role!
+  "Changes the fields of a rate policy that the input names when `expectedVersion` is the current version, increases the version, takes the next policy version and records `iam.rate_policy.updated`."
+  updateRatePolicy(input: UpdateRatePolicyInput!): RatePolicy!
   "Renames a custom role or changes its description when `expectedVersion` is the current version, increases the version and records `iam.role.updated`."
   updateRole(input: UpdateRoleInput!): Role!
+  "Changes the settings named in the input when `expectedVersion` is the current version, increases the version, takes the next policy version and records `iam.upstream.updated`. The name cannot change. The caller needs `iam:route:{catalogService}` or `iam:route:*` for the service before and after the change; a system upstream and one of the `iam` service are refused with `CONFLICT`."
+  updateUpstream(input: UpdateUpstreamInput!): Upstream!
   "Sets, extends, shortens or clears the expiry of an assignment when `expectedVersion` is the current version, increases the version, takes the next policy version and records `iam.user_role.updated`. `expiresAt` is required: a time in the future, or null to clear the expiry."
   updateUserRole(input: UpdateUserRoleInput!): UserRole!
 }
@@ -509,6 +672,15 @@ type Propagation {
 
 "Query root."
 type Query {
+  "Retrieves a bulk operation by id; null when it is unknown."
+  bulkOperation(id: ID!): BulkOperation
+  "Retrieves one page of bulk operations, oldest first."
+  bulkOperations(
+    "The nextCursor of the previous page."
+    after: String,
+    "Page size, from 1 to 100."
+    first: Int = 30
+  ): BulkOperationPage!
   "Retrieves an example API resource by id."
   exampleApiResource(id: ID!): ExampleApiResource
   "Retrieves one page of example API resources, newest first."
@@ -551,6 +723,15 @@ type Query {
     "Page size, from 1 to 100."
     first: Int = 30
   ): OpenapiSpecPage!
+  "Retrieves one page of rate policies in a stable order."
+  ratePolicies(
+    "The nextCursor of the previous page."
+    after: String,
+    "Page size, from 1 to 100."
+    first: Int = 30
+  ): RatePolicyPage!
+  "Retrieves a rate policy by id; null when it is unknown or deleted."
+  ratePolicy(id: ID!): RatePolicy
   "Resolves a User service token into its subject, or says why it is refused."
   resolveToken(input: ResolveTokenInput!): TokenResolution!
   "Retrieves a REST permission by id with the active versions that contain its key and the roles that grant it by its exact key; null when it is unknown."
@@ -575,6 +756,15 @@ type Query {
     "Page size, from 1 to 100."
     first: Int = 30
   ): RolePage!
+  "Retrieves an upstream by id; null when it is unknown or deleted."
+  upstream(id: ID!): Upstream
+  "Retrieves one page of the upstreams that are not deleted, in a stable order."
+  upstreams(
+    "The nextCursor of the previous page."
+    after: String,
+    "Page size, from 1 to 100."
+    first: Int = 30
+  ): UpstreamPage!
   "Retrieves a role assignment by id; null when it is unknown or revoked."
   userRole(id: ID!): UserRole
   "Retrieves the effective permissions of a user: every key and wildcard that its active assignments hold, each with the roles that grant it, its scopes (`all` or project ids), the shortest expiry among the contributing assignments that expire and the policy version the answer was composed at. `projectId` keeps the global assignments and those of the project; `service` keeps the keys and wildcards of the service. A user without assignments has an empty list."
@@ -599,6 +789,40 @@ type Query {
   validateAccess(input: ValidateAccessInput!): AccessValidation!
   "Decides 1 to 100 checks of the shape of `validateAccess` and returns one decision per input, in the order of the inputs, each with its own `decisionId`; an input that cannot be read is a `deny` with the reason `malformed_operation` and does not fail the others. A batch of no input or of more than 100 fails with `VALIDATION_FAILED`."
   validateAccessBatch(inputs: [ValidateAccessInput!]!): [AccessValidation!]!
+}
+
+"A rate policy."
+type RatePolicy {
+  "The number of requests allowed above the limit in a burst."
+  burst: Int!
+  "When the rate policy was created, as an RFC 3339 UTC time."
+  createdAt: String!
+  "What the limit becomes without the shared counter: `divided` or `full`."
+  fallback: String!
+  "The identifier of the rate policy."
+  id: ID!
+  "What requests are counted by: `ip`, `subject`, `subject_route` or `route`."
+  key: String!
+  "The number of requests allowed per period."
+  limit: Int!
+  "The name of the rate policy."
+  name: String!
+  "The period in milliseconds."
+  periodMs: Int!
+  "What the write that returned the rate policy learned about the publication of its policy version; null for a read."
+  propagation: Propagation
+  "When the rate policy was last changed, as an RFC 3339 UTC time."
+  updatedAt: String!
+  "The version of the rate policy."
+  version: Int!
+}
+
+"One page of rate policies."
+type RatePolicyPage {
+  "The rate policies of the page."
+  items: [RatePolicy!]!
+  "The `after` value of the next page; null on the last page."
+  nextCursor: String
 }
 
 "A removed coordinate that roles grant by its exact key."
@@ -823,6 +1047,30 @@ type TokenResolution {
   subjectKind: String
 }
 
+"Input of the rate-policy update mutation."
+input UpdateRatePolicyInput {
+  "The new burst; an absent field keeps it."
+  burst: Int
+  "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
+  consistency: String
+  "The version the caller read; required, and the update is refused when it is not the current one."
+  expectedVersion: Int
+  "The new fallback; an absent field keeps it."
+  fallback: String
+  "The rate policy to change."
+  id: ID!
+  "Makes the update safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+  "The new key kind; an absent field keeps it."
+  key: String
+  "The new limit; an absent field keeps it."
+  limit: Int
+  "The new name; an absent field keeps it."
+  name: String
+  "The new period in milliseconds; an absent field keeps it."
+  periodMs: Int
+}
+
 "Input of the role-update mutation."
 input UpdateRoleInput {
   "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
@@ -839,6 +1087,42 @@ input UpdateRoleInput {
   name: String
 }
 
+"Input of the upstream-update mutation; an absent or null setting keeps its stored value."
+input UpdateUpstreamInput {
+  "The catalogue service whose keys authorize the routes of this upstream."
+  catalogService: String
+  "The largest number of concurrent requests to the upstream."
+  concurrencyLimit: Int
+  "The connect timeout in milliseconds."
+  connectTimeoutMs: Int
+  "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
+  consistency: String
+  "The version the caller read; required, and the update is refused when it is not the current one."
+  expectedVersion: Int
+  "Whether the credentials of the caller are forwarded to the upstream."
+  forwardCredentials: Boolean
+  "The upstream to change."
+  id: ID!
+  "Makes the update safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+  "The name of the upstream; it must equal the stored name, because the name cannot change."
+  name: String
+  "The Kubernetes namespace of the Service."
+  namespace: String
+  "The number of consecutive failures after which an endpoint is ejected."
+  outlierConsecutiveErrors: Int
+  "The port of the Service, from 1 to 65,535."
+  port: Int
+  "The protocol the gateway speaks to the upstream: `http1` or `h2c`."
+  protocol: String
+  "The response timeout in milliseconds."
+  responseTimeoutMs: Int
+  "The retry budget in percent of the requests, from 0 to 100."
+  retryBudgetPercent: Int
+  "The Kubernetes Service that the gateway proxies to."
+  service: String
+}
+
 "Input of the assignment-update mutation."
 input UpdateUserRoleInput {
   "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
@@ -851,6 +1135,54 @@ input UpdateUserRoleInput {
   id: ID!
   "Makes the update safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
   idempotencyKey: String
+}
+
+"An upstream of the gateway configuration."
+type Upstream {
+  "The catalogue service whose keys authorize the routes of this upstream."
+  catalogService: String!
+  "The largest number of concurrent requests to the upstream."
+  concurrencyLimit: Int!
+  "The connect timeout in milliseconds."
+  connectTimeoutMs: Int!
+  "When the upstream was created, as an RFC 3339 UTC time."
+  createdAt: String!
+  "Whether the credentials of the caller are forwarded to the upstream."
+  forwardCredentials: Boolean!
+  "The identifier of the upstream."
+  id: ID!
+  "The name of the upstream."
+  name: String!
+  "The Kubernetes namespace of the Service."
+  namespace: String!
+  "The number of consecutive failures after which an endpoint is ejected."
+  outlierConsecutiveErrors: Int!
+  "The port of the Service."
+  port: Int!
+  "What the write that returned the upstream learned about the publication of its policy version; null for a read."
+  propagation: Propagation
+  "The protocol the gateway speaks to the upstream: `http1` or `h2c`."
+  protocol: String!
+  "The response timeout in milliseconds."
+  responseTimeoutMs: Int!
+  "The retry budget in percent of the requests."
+  retryBudgetPercent: Int!
+  "The Kubernetes Service that the gateway proxies to."
+  service: String!
+  "Whether IAM manages the upstream itself; the API refuses every change of a system upstream."
+  system: Boolean!
+  "When the upstream was last changed, as an RFC 3339 UTC time."
+  updatedAt: String!
+  "The version of the upstream."
+  version: Int!
+}
+
+"One page of upstreams."
+type UpstreamPage {
+  "The upstreams of the page."
+  items: [Upstream!]!
+  "The `after` value of the next page; null on the last page."
+  nextCursor: String
 }
 
 "A role assignment."
@@ -978,6 +1310,13 @@ fn the_sdl_has_the_template_and_iam_operations_and_nothing_else_to_call() {
     assert!(text.contains("setRolePermissions(input: SetRolePermissionsInput!): Role!"));
     assert!(text.contains("permissions: [RolePermission!]!"));
     assert!(text.contains("deleteRole(input: DeleteRoleInput!): DeleteRolePayload!"));
+    assert!(text.contains("createRatePolicy(input: CreateRatePolicyInput!): RatePolicy!"));
+    assert!(text.contains("updateRatePolicy(input: UpdateRatePolicyInput!): RatePolicy!"));
+    assert!(
+        text.contains("deleteRatePolicy(input: DeleteRatePolicyInput!): DeleteRatePolicyPayload!")
+    );
+    assert!(text.contains("ratePolicy(id: ID!): RatePolicy"));
+    assert!(text.contains("ratePolicies("));
     assert!(text.contains("role(id: ID!): Role"));
     assert!(text.contains("roles("));
     assert!(text.contains("assignUserRole(input: AssignUserRoleInput!): UserRole!"));

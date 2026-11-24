@@ -152,6 +152,140 @@ paths:
                 $ref: '#/components/schemas/Problem'
       security:
       - bearerAuth: []
+  /api/bulk-operations:
+    get:
+      tags:
+      - iam
+      summary: Retrieves the collection of bulk operations.
+      description: Returns one page of bulk operations, oldest first, with the `nextCursor` of the next page.
+      operationId: api_bulk_operations_get
+      parameters:
+      - name: limit
+        in: query
+        description: The largest number of operations of the page.
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 30
+          maximum: 100
+          minimum: 1
+      - name: after
+        in: query
+        description: The `nextCursor` of the previous page; absent for the first page.
+        required: false
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: One page of bulk operations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkOperationPage'
+        '400':
+          description: Invalid query parameter.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller does not hold the key of the operation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+  /api/bulk-operations/{id}:
+    get:
+      tags:
+      - iam
+      summary: Retrieves a bulk operation.
+      description: 'Returns the bulk operation with the identifier: its kind, status, applied and total records, the policy versions of its first and last chunk, its requester and, for a failed operation, its error. `propagation` is `null` until the chunks of a revocation-class operation are fenced by the pods'' acknowledgements.'
+      operationId: api_bulk_operations_id_get
+      parameters:
+      - name: id
+        in: path
+        description: Bulk operation identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The bulk operation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkOperation'
+        '400':
+          description: Invalid identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller does not hold the key of the operation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Bulk operation not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
   /api/example_api_resources:
     get:
       tags:
@@ -1482,6 +1616,536 @@ paths:
                 $ref: '#/components/schemas/Problem'
       security:
       - bearerAuth: []
+  /api/rate-policies:
+    get:
+      tags:
+      - iam
+      summary: Retrieves the collection of rate policies.
+      description: Returns one page of rate policies in a stable order, with the `nextCursor` of the next page.
+      operationId: api_rate_policies_get
+      parameters:
+      - name: limit
+        in: query
+        description: The largest number of rate policies of the page.
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 30
+          maximum: 100
+          minimum: 1
+      - name: after
+        in: query
+        description: The `nextCursor` of the previous page; absent for the first page.
+        required: false
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: One page of rate policies.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RatePolicyPage'
+        '400':
+          description: Invalid query parameter.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+    post:
+      tags:
+      - iam
+      summary: Creates a rate policy.
+      description: Creates a rate policy at version 1, takes the next policy version and records `iam.rate_policy.created`. The period `periodMs` is a multiple of 1,000. A repeated `Idempotency-Key` with the same body within 24 hours returns the original result.
+      operationId: api_rate_policies_post
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        description: Makes the creation safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: Prefer
+        in: header
+        description: 'What the write waits for: `wait=published` (the default) returns once Kafka acknowledged the policy version, `wait=propagated` is refused with 422 until the gateway pods report their versions.'
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRatePolicyRequest'
+        required: true
+      responses:
+        '201':
+          description: The rate policy was created.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the rate policy in double quotes.
+            iam-policy-offset:
+              schema:
+                type: string
+              description: The offset at which Kafka stored the `__head` record of the policy version.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+            location:
+              schema:
+                type: string
+              description: Path of the created rate policy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RatePolicy'
+        '202':
+          description: The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the rate policy in double quotes.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+            iam-propagation-status:
+              schema:
+                type: string
+              description: '`committed_pending_propagation`.'
+            location:
+              schema:
+                type: string
+              description: Path of the created rate policy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RatePolicy'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: A rate policy with this name exists.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed, or the idempotency key was used for another request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+  /api/rate-policies/{id}:
+    get:
+      tags:
+      - iam
+      summary: Retrieves a rate policy.
+      description: Returns the rate policy with the identifier, with its `ETag`.
+      operationId: api_rate_policies_id_get
+      parameters:
+      - name: id
+        in: path
+        description: Rate policy identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The rate policy.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the rate policy in double quotes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RatePolicy'
+        '400':
+          description: Invalid identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Rate policy not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+    delete:
+      tags:
+      - iam
+      summary: Deletes a rate policy.
+      description: 'Deletes a rate policy when `If-Match` holds the current `ETag` and no route references it: the rate policy leaves the listings at once, its state record becomes a tombstone, the next policy version is committed, and `iam.rate_policy.deleted` and the audit record are written. A rate policy that a route references is refused with 409. A repeated `Idempotency-Key` with the same request within 24 hours returns the original result.'
+      operationId: api_rate_policies_id_delete
+      parameters:
+      - name: id
+        in: path
+        description: Rate policy identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: If-Match
+        in: header
+        description: The `ETag` of the version the deletion ends, such as `"3"`.
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        description: Makes the deletion safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: Prefer
+        in: header
+        description: 'What the write waits for: `wait=published` (the default) returns once Kafka acknowledged the policy version, `wait=propagated` is refused with 422 until the gateway pods report their versions.'
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '200':
+          description: The rate policy was deleted.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The final version of the rate policy in double quotes.
+            iam-policy-offset:
+              schema:
+                type: string
+              description: The offset at which Kafka stored the `__head` record of the policy version.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeletedRatePolicy'
+        '202':
+          description: The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The final version of the rate policy in double quotes.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+            iam-propagation-status:
+              schema:
+                type: string
+              description: '`committed_pending_propagation`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeletedRatePolicy'
+        '400':
+          description: Invalid identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Rate policy not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: A route still references the rate policy, or the rate policy changed concurrently.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '412':
+          description: '`If-Match` is not the current version.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed, or the idempotency key was used for another request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '428':
+          description: '`If-Match` is missing.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+    patch:
+      tags:
+      - iam
+      summary: Updates a rate policy.
+      description: Changes the members of the body that are present when `If-Match` holds the current `ETag`, increases the version, takes the next policy version and records `iam.rate_policy.updated`. A repeated `Idempotency-Key` with the same request within 24 hours returns the original result.
+      operationId: api_rate_policies_id_patch
+      parameters:
+      - name: id
+        in: path
+        description: Rate policy identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: If-Match
+        in: header
+        description: The `ETag` of the version the update changes, such as `"3"`.
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        description: Makes the update safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: Prefer
+        in: header
+        description: 'What the write waits for: `wait=published` (the default) returns once Kafka acknowledged the policy version, `wait=propagated` is refused with 422 until the gateway pods report their versions.'
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRatePolicyRequest'
+        required: true
+      responses:
+        '200':
+          description: The rate policy was updated.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The new version of the rate policy in double quotes.
+            iam-policy-offset:
+              schema:
+                type: string
+              description: The offset at which Kafka stored the `__head` record of the policy version.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RatePolicy'
+        '202':
+          description: The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The new version of the rate policy in double quotes.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+            iam-propagation-status:
+              schema:
+                type: string
+              description: '`committed_pending_propagation`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RatePolicy'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Rate policy not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: A rate policy with this name exists, or the rate policy changed concurrently.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '412':
+          description: '`If-Match` is not the current version.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed, or the idempotency key was used for another request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '428':
+          description: '`If-Match` is missing.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
   /api/rest-permissions:
     get:
       tags:
@@ -2462,6 +3126,558 @@ paths:
                 $ref: '#/components/schemas/Problem'
       security:
       - bearerAuth: []
+  /api/upstreams:
+    get:
+      tags:
+      - iam
+      summary: Retrieves the collection of upstreams.
+      description: Returns one page of the upstreams that are not deleted in a stable order, with the `nextCursor` of the next page.
+      operationId: api_upstreams_get
+      parameters:
+      - name: limit
+        in: query
+        description: The largest number of upstreams of the page.
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 30
+          maximum: 100
+          minimum: 1
+      - name: after
+        in: query
+        description: The `nextCursor` of the previous page; absent for the first page.
+        required: false
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: One page of upstreams.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpstreamPage'
+        '400':
+          description: Invalid query parameter.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks the operation key.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+    post:
+      tags:
+      - iam
+      summary: Creates an upstream.
+      description: Registers a Kubernetes Service that the gateway proxies to at version 1, writes its `upstream/<name>` state record, takes the next policy version and records `iam.upstream.created`. The caller needs `iam:route:{catalogService}` or `iam:route:*`; an upstream of the `iam` service is refused with 409 `system-entry`. A repeated `Idempotency-Key` with the same body within 24 hours returns the original result.
+      operationId: api_upstreams_post
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        description: Makes the creation safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: Prefer
+        in: header
+        description: 'What the write waits for: `wait=published` (the default) returns once Kafka acknowledged the policy version, `wait=propagated` is refused with 422 until the gateway pods report their versions.'
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUpstreamRequest'
+        required: true
+      responses:
+        '201':
+          description: The upstream was created.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the upstream in double quotes.
+            iam-policy-offset:
+              schema:
+                type: string
+              description: The offset at which Kafka stored the `__head` record of the policy version; present when the change was acknowledged.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+            location:
+              schema:
+                type: string
+              description: Path of the created upstream.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Upstream'
+        '202':
+          description: The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the upstream in double quotes.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+            iam-propagation-status:
+              schema:
+                type: string
+              description: '`committed_pending_propagation`.'
+            location:
+              schema:
+                type: string
+              description: Path of the created upstream.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Upstream'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks the operation key or the route key of the catalogue service.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: An upstream with this name exists, or the upstream belongs to the `iam` service.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed, or the idempotency key was used for another request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+  /api/upstreams/{id}:
+    get:
+      tags:
+      - iam
+      summary: Retrieves an upstream.
+      description: Returns the upstream with the identifier, with its `ETag`.
+      operationId: api_upstreams_id_get
+      parameters:
+      - name: id
+        in: path
+        description: Upstream identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The upstream.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the upstream in double quotes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Upstream'
+        '400':
+          description: Invalid identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks the operation key.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Upstream not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+    delete:
+      tags:
+      - iam
+      summary: Deletes an upstream.
+      description: 'Deletes the upstream when `If-Match` holds the current `ETag` and no route references it: it leaves the listings at once, its `upstream/<name>` state record becomes a tombstone, the next policy version is committed, and `iam.upstream.deleted` and an audit record are written in the same transaction. The caller needs `iam:route:{catalogService}` or `iam:route:*`; a system upstream and one of the `iam` service are refused with 409 `system-entry`, and an upstream that a route references with 409 `referenced-by-route`. A repeated `Idempotency-Key` with the same request within 24 hours returns the original result.'
+      operationId: api_upstreams_id_delete
+      parameters:
+      - name: id
+        in: path
+        description: Upstream identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: If-Match
+        in: header
+        description: The `ETag` of the version the deletion ends, such as `"3"`.
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        description: Makes the deletion safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: Prefer
+        in: header
+        description: 'What the write waits for: `wait=published` (the default) returns once Kafka acknowledged the policy version, `wait=propagated` is refused with 422 until the gateway pods report their versions.'
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '202':
+          description: The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The final version of the upstream in double quotes.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+            iam-propagation-status:
+              schema:
+                type: string
+              description: '`committed_pending_propagation`.'
+        '204':
+          description: The upstream was deleted.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The final version of the upstream in double quotes.
+            iam-policy-offset:
+              schema:
+                type: string
+              description: The offset at which Kafka stored the `__head` record of the policy version; present when the change was acknowledged.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+        '400':
+          description: Invalid identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks the operation key or the route key of the catalogue service.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Upstream not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: A route references the upstream, the upstream is a system upstream or belongs to the `iam` service, or it changed concurrently.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '412':
+          description: '`If-Match` is not the current version.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed, or the idempotency key was used for another request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '428':
+          description: '`If-Match` is missing.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+    patch:
+      tags:
+      - iam
+      summary: Updates an upstream.
+      description: Changes the settings named in the body when `If-Match` holds the current `ETag`, increases the version, writes the `upstream/<name>` state record, takes the next policy version and records `iam.upstream.updated`. The name cannot change. The caller needs `iam:route:{catalogService}` or `iam:route:*` for the service before and after the change; a system upstream and one of the `iam` service are refused with 409 `system-entry`. A repeated `Idempotency-Key` with the same request within 24 hours returns the original result.
+      operationId: api_upstreams_id_patch
+      parameters:
+      - name: id
+        in: path
+        description: Upstream identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: If-Match
+        in: header
+        description: The `ETag` of the version the update changes, such as `"3"`.
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        description: Makes the update safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: Prefer
+        in: header
+        description: 'What the write waits for: `wait=published` (the default) returns once Kafka acknowledged the policy version, `wait=propagated` is refused with 422 until the gateway pods report their versions.'
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateUpstreamRequest'
+        required: true
+      responses:
+        '200':
+          description: The upstream was updated.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The new version of the upstream in double quotes.
+            iam-policy-offset:
+              schema:
+                type: string
+              description: The offset at which Kafka stored the `__head` record of the policy version; present when the change was acknowledged.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Upstream'
+        '202':
+          description: The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The new version of the upstream in double quotes.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+            iam-propagation-status:
+              schema:
+                type: string
+              description: '`committed_pending_propagation`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Upstream'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks the operation key or the route key of the catalogue service.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Upstream not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: The upstream is a system upstream or belongs to the `iam` service, or it changed concurrently.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '412':
+          description: '`If-Match` is not the current version.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed, the name changed, or the idempotency key was used for another request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '428':
+          description: '`If-Match` is missing.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
   /api/user-roles:
     get:
       tags:
@@ -3277,6 +4493,129 @@ components:
           description: '`user` for a user of the User service, `service` for a service principal.'
           example: user
       additionalProperties: false
+    BulkOperation:
+      type: object
+      description: 'A bulk operation: a large change that the runner commits in chunks.'
+      required:
+      - id
+      - kind
+      - status
+      - totalRecords
+      - appliedRecords
+      - requester
+      - createdAt
+      - updatedAt
+      properties:
+        appliedRecords:
+          type: integer
+          format: int64
+          description: How many records the committed chunks applied.
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+          description: When the operation was recorded, as an RFC 3339 UTC time.
+          example: 2027-01-15T08:00:00.000000Z
+        error:
+          type:
+          - string
+          - 'null'
+          description: Why the operation failed; absent otherwise.
+          maxLength: 500
+        firstVersion:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: The policy version of the first committed chunk; absent before the first chunk.
+          minimum: 0
+        id:
+          type: string
+          format: uuid
+          description: The identifier.
+        kind:
+          type: string
+          description: 'What the operation changes: `role_deletion`, `catalogue`, `resync` or `other`.'
+          example: role_deletion
+        lastVersion:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: The policy version of the last committed chunk; absent before the first chunk.
+          minimum: 0
+        propagation:
+          oneOf:
+          - $ref: '#/components/schemas/BulkOperationPropagation'
+            description: |-
+              The propagation of a revocation-class bulk operation; `null` until the chunks of such an
+              operation are fenced by the pods' acknowledgements.
+          - type: 'null'
+        requester:
+          type: string
+          description: Who asked for the change.
+          example: user:7f0cdd0e-6c1a-4a3b-9f7e-0b8e8f5f5f01
+        status:
+          type: string
+          description: 'Where it stands: `pending`, `running`, `completed` or `failed`.'
+          example: running
+        totalRecords:
+          type: integer
+          format: int64
+          description: How many records the whole change touches.
+          minimum: 1
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the operation last changed, as an RFC 3339 UTC time.
+          example: 2027-01-15T08:00:05.000000Z
+    BulkOperationPage:
+      type: object
+      description: One page of bulk operations, oldest first.
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BulkOperation'
+          description: The operations of the page.
+        nextCursor:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The `after` value of the next page; absent on the last page.
+    BulkOperationPropagation:
+      type: object
+      description: |-
+        How far the gateway pods have acknowledged the policy versions of a revocation-class bulk
+        operation.
+      required:
+      - status
+      - policyVersion
+      - podsAcknowledged
+      - podsTimedOut
+      properties:
+        podsAcknowledged:
+          type: integer
+          format: int64
+          description: How many gateway pods acknowledged the version.
+          minimum: 0
+        podsTimedOut:
+          type: integer
+          format: int64
+          description: How many gateway pods did not acknowledge it in time.
+          minimum: 0
+        policyVersion:
+          type: integer
+          format: int64
+          description: The policy version the status is about.
+          minimum: 0
+        status:
+          type: string
+          description: '`pending`, `acknowledged` or `timed_out`.'
+          example: acknowledged
     CoordinateFlags:
       type: object
       description: The two flags of a coordinate.
@@ -3335,6 +4674,52 @@ components:
             before anything is orphaned.
           maxItems: 1000
       additionalProperties: false
+    CreateRatePolicyRequest:
+      type: object
+      description: Body of the rate-policy creation operation.
+      required:
+      - name
+      - key
+      - limit
+      - periodMs
+      - burst
+      - fallback
+      properties:
+        burst:
+          type: integer
+          format: int64
+          description: The number of requests allowed above the limit in a burst, from 0 to 4,294,967,295.
+          example: 20
+          minimum: 0
+        fallback:
+          type: string
+          description: 'What the limit becomes without the shared counter: `divided` or `full`.'
+          example: divided
+        key:
+          type: string
+          description: 'What requests are counted by: `ip`, `subject`, `subject_route` or `route`.'
+          example: subject_route
+        limit:
+          type: integer
+          format: int64
+          description: The number of requests allowed per period, from 1 to 4,294,967,295.
+          example: 100
+          minimum: 1
+        name:
+          type: string
+          description: |-
+            The name: 1 to 100 characters without a control character, unique among the rate policies
+            that are not deleted.
+          example: per-subject-route
+          maxLength: 100
+          minLength: 1
+        periodMs:
+          type: integer
+          format: int64
+          description: 'The period in milliseconds: a multiple of 1,000, from 1,000 to 4,294,967,295,000.'
+          example: 60000
+          minimum: 1000
+      additionalProperties: false
     CreateRestPermissionsRequest:
       type: object
       description: Body of the operation that activates an `OpenAPI` specification version.
@@ -3380,6 +4765,105 @@ components:
           maxLength: 100
           minLength: 1
       additionalProperties: false
+    CreateUpstreamRequest:
+      type: object
+      description: Body of the upstream-creation operation.
+      required:
+      - name
+      - namespace
+      - service
+      - catalogService
+      - port
+      - protocol
+      properties:
+        catalogService:
+          type: string
+          description: The catalogue service whose keys authorize the routes of this upstream.
+          example: core
+          maxLength: 63
+          minLength: 1
+        concurrencyLimit:
+          type: integer
+          format: int64
+          description: The largest number of concurrent requests to the upstream.
+          default: 256
+          minimum: 1
+        connectTimeoutMs:
+          type: integer
+          format: int64
+          description: The connect timeout, in milliseconds.
+          default: 250
+          minimum: 1
+        forwardCredentials:
+          type: boolean
+          description: Whether the credentials of the caller are forwarded to the upstream.
+          default: false
+        name:
+          type: string
+          description: |-
+            The name of the upstream: a service name such as `core`, unique among the upstreams that
+            are not deleted; it cannot change afterwards.
+          example: core
+          maxLength: 63
+          minLength: 1
+        namespace:
+          type: string
+          description: The Kubernetes namespace of the Service.
+          example: platform
+          maxLength: 63
+          minLength: 1
+        outlierConsecutiveErrors:
+          type: integer
+          format: int64
+          description: The number of consecutive failures after which an endpoint is ejected.
+          default: 5
+          minimum: 1
+        port:
+          type: integer
+          format: int64
+          description: The port of the Service.
+          example: 8080
+          maximum: 65535
+          minimum: 1
+        protocol:
+          $ref: '#/components/schemas/UpstreamProtocol'
+          description: The protocol the gateway speaks to the upstream.
+        responseTimeoutMs:
+          type: integer
+          format: int64
+          description: The response timeout, in milliseconds.
+          default: 10000
+          minimum: 1
+        retryBudgetPercent:
+          type: integer
+          format: int64
+          description: The retry budget, in percent of the requests.
+          default: 10
+          maximum: 100
+          minimum: 0
+        service:
+          type: string
+          description: The Kubernetes Service that the gateway proxies to.
+          example: core-service
+          maxLength: 63
+          minLength: 1
+      additionalProperties: false
+    DeletedRatePolicy:
+      type: object
+      description: The result of a rate-policy deletion.
+      required:
+      - id
+      - version
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The identifier of the deleted rate policy.
+        version:
+          type: integer
+          format: int64
+          description: The final version of the rate policy.
+          minimum: 1
     DeletedRole:
       type: object
       description: The result of a role deletion.
@@ -4115,6 +5599,85 @@ components:
           items:
             $ref: '#/components/schemas/Violation'
           description: Violated constraints, for `/problems/validation-failed`.
+    RatePolicy:
+      type: object
+      description: A rate policy.
+      required:
+      - id
+      - name
+      - key
+      - limit
+      - periodMs
+      - burst
+      - fallback
+      - version
+      - createdAt
+      - updatedAt
+      properties:
+        burst:
+          type: integer
+          format: int64
+          description: The number of requests allowed above the limit in a burst.
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+          description: When the rate policy was created, as an RFC 3339 UTC time.
+          example: 2026-11-23T10:15:30.123456Z
+        fallback:
+          type: string
+          description: 'What the limit becomes without the shared counter: `divided` or `full`.'
+          example: divided
+        id:
+          type: string
+          format: uuid
+          description: The identifier of the rate policy.
+        key:
+          type: string
+          description: 'What requests are counted by: `ip`, `subject`, `subject_route` or `route`.'
+          example: subject_route
+        limit:
+          type: integer
+          format: int64
+          description: The number of requests allowed per period.
+          minimum: 1
+        name:
+          type: string
+          description: The name of the rate policy.
+          maxLength: 100
+          minLength: 1
+        periodMs:
+          type: integer
+          format: int64
+          description: The period in milliseconds.
+          minimum: 1000
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the rate policy was last changed, as an RFC 3339 UTC time.
+          example: 2026-11-23T10:15:30.123456Z
+        version:
+          type: integer
+          format: int64
+          description: The version of the rate policy; its `ETag` is this number in double quotes.
+          minimum: 1
+    RatePolicyPage:
+      type: object
+      description: One page of rate policies.
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RatePolicy'
+          description: The rate policies of the page.
+        nextCursor:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The `after` value of the next page; absent on the last page.
     RemovedGrant:
       type: object
       description: A removed coordinate that roles grant by its exact key.
@@ -4496,6 +6059,59 @@ components:
           example: eyJhbGciOiJSUzI1NiJ9.e30.c2lnbmF0dXJl
           maxLength: 8192
       additionalProperties: false
+    UpdateRatePolicyRequest:
+      type: object
+      description: |-
+        Body of the rate-policy update operation: every member is optional, and an absent one stays as
+        it is.
+      properties:
+        burst:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: The new burst, from 0 to 4,294,967,295.
+          example: 20
+          minimum: 0
+        fallback:
+          type:
+          - string
+          - 'null'
+          description: 'The new fallback: `divided` or `full`.'
+          example: divided
+        key:
+          type:
+          - string
+          - 'null'
+          description: 'The new key kind: `ip`, `subject`, `subject_route` or `route`.'
+          example: subject_route
+        limit:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: The new limit, from 1 to 4,294,967,295.
+          example: 100
+          minimum: 1
+        name:
+          type:
+          - string
+          - 'null'
+          description: |-
+            The new name: 1 to 100 characters without a control character, unique among the rate
+            policies that are not deleted.
+          example: per-subject-route
+          maxLength: 100
+          minLength: 1
+        periodMs:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: 'The new period in milliseconds: a multiple of 1,000, from 1,000 to 4,294,967,295,000.'
+          example: 60000
+          minimum: 1000
+      additionalProperties: false
     UpdateRoleRequest:
       type: object
       description: 'Body of the role-update operation: every member is optional, and an absent one stays as it is.'
@@ -4518,6 +6134,100 @@ components:
           maxLength: 100
           minLength: 1
       additionalProperties: false
+    UpdateUpstreamRequest:
+      type: object
+      description: |-
+        Body of the upstream-update operation: every member is optional, and an absent one stays as
+        it is. The name cannot change: a name other than the stored one is a violation.
+      properties:
+        catalogService:
+          type:
+          - string
+          - 'null'
+          description: The catalogue service whose keys authorize the routes of this upstream.
+          example: core
+          maxLength: 63
+          minLength: 1
+        concurrencyLimit:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: The largest number of concurrent requests to the upstream.
+          minimum: 1
+        connectTimeoutMs:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: The connect timeout, in milliseconds.
+          minimum: 1
+        forwardCredentials:
+          type:
+          - boolean
+          - 'null'
+          description: Whether the credentials of the caller are forwarded to the upstream.
+        name:
+          type:
+          - string
+          - 'null'
+          description: The name of the upstream; it must equal the stored name.
+          example: core
+          maxLength: 63
+          minLength: 1
+        namespace:
+          type:
+          - string
+          - 'null'
+          description: The Kubernetes namespace of the Service.
+          example: platform
+          maxLength: 63
+          minLength: 1
+        outlierConsecutiveErrors:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: The number of consecutive failures after which an endpoint is ejected.
+          minimum: 1
+        port:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: The port of the Service.
+          example: 8080
+          maximum: 65535
+          minimum: 1
+        protocol:
+          oneOf:
+          - $ref: '#/components/schemas/UpstreamProtocol'
+            description: The protocol the gateway speaks to the upstream.
+          - type: 'null'
+        responseTimeoutMs:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: The response timeout, in milliseconds.
+          minimum: 1
+        retryBudgetPercent:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: The retry budget, in percent of the requests.
+          maximum: 100
+          minimum: 0
+        service:
+          type:
+          - string
+          - 'null'
+          description: The Kubernetes Service that the gateway proxies to.
+          example: core-service
+          maxLength: 63
+          minLength: 1
+      additionalProperties: false
     UpdateUserRoleRequest:
       type: object
       description: Body of the assignment-update operation.
@@ -4534,6 +6244,125 @@ components:
             is required, so that an empty body never clears an expiry by accident.
           example: 2027-01-15T08:00:00Z
       additionalProperties: false
+    Upstream:
+      type: object
+      description: An upstream.
+      required:
+      - id
+      - name
+      - namespace
+      - service
+      - catalogService
+      - forwardCredentials
+      - port
+      - protocol
+      - connectTimeoutMs
+      - responseTimeoutMs
+      - concurrencyLimit
+      - retryBudgetPercent
+      - outlierConsecutiveErrors
+      - system
+      - version
+      - createdAt
+      - updatedAt
+      properties:
+        catalogService:
+          type: string
+          description: The catalogue service whose keys authorize the routes of this upstream.
+        concurrencyLimit:
+          type: integer
+          format: int32
+          description: The largest number of concurrent requests to the upstream.
+          minimum: 1
+        connectTimeoutMs:
+          type: integer
+          format: int32
+          description: The connect timeout, in milliseconds.
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+          description: When the upstream was created, as an RFC 3339 UTC time.
+          example: 2026-11-23T10:15:30.123456Z
+        forwardCredentials:
+          type: boolean
+          description: Whether the credentials of the caller are forwarded to the upstream.
+        id:
+          type: string
+          format: uuid
+          description: The identifier of the upstream.
+        name:
+          type: string
+          description: The name of the upstream.
+          maxLength: 63
+          minLength: 1
+        namespace:
+          type: string
+          description: The Kubernetes namespace of the Service.
+        outlierConsecutiveErrors:
+          type: integer
+          format: int32
+          description: The number of consecutive failures after which an endpoint is ejected.
+          minimum: 1
+        port:
+          type: integer
+          format: int32
+          description: The port of the Service.
+          maximum: 65535
+          minimum: 1
+        protocol:
+          $ref: '#/components/schemas/UpstreamProtocol'
+          description: The protocol the gateway speaks to the upstream.
+        responseTimeoutMs:
+          type: integer
+          format: int32
+          description: The response timeout, in milliseconds.
+          minimum: 1
+        retryBudgetPercent:
+          type: integer
+          format: int32
+          description: The retry budget, in percent of the requests.
+          maximum: 100
+          minimum: 0
+        service:
+          type: string
+          description: The Kubernetes Service that the gateway proxies to.
+        system:
+          type: boolean
+          description: Whether IAM manages the upstream itself; the API refuses every change of a system upstream.
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the upstream was last changed, as an RFC 3339 UTC time.
+          example: 2026-11-23T10:15:30.123456Z
+        version:
+          type: integer
+          format: int64
+          description: The version of the upstream; its `ETag` is this number in double quotes.
+          minimum: 1
+    UpstreamPage:
+      type: object
+      description: One page of upstreams.
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Upstream'
+          description: The upstreams of the page.
+        nextCursor:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The `after` value of the next page; absent on the last page.
+    UpstreamProtocol:
+      type: string
+      description: The protocol the gateway speaks to an upstream.
+      enum:
+      - http1
+      - h2c
     UserRole:
       type: object
       description: A role assignment.

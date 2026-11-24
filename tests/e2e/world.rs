@@ -33,6 +33,7 @@ use tokio::sync::watch;
 use tower::ServiceExt as _;
 
 use crate::administrator_policy::AdministratorCallerPolicy;
+use crate::events_topic::{self, EventRecord};
 use crate::tokens::{SigningKey, USER_ID, instant_after};
 
 /// Counter that makes the database names of the scenarios of one process unique.
@@ -68,6 +69,12 @@ const REVOCATION_RETENTION: Duration = Duration::from_hours(24);
 /// How long the per-replica tasks of a scenario get to stop before the scenario database is dropped.
 const TASK_STOP_GRACE: Duration = Duration::from_secs(5);
 
+/// How long a step waits for the relay to publish the outbox rows of a scenario.
+const RELAY_DEADLINE: Duration = Duration::from_secs(30);
+
+/// The pause between two looks at the unpublished rows of a scenario.
+const RELAY_POLL: Duration = Duration::from_millis(100);
+
 /// What the last request answered.
 #[derive(Debug, Clone)]
 pub(crate) struct Reply {
@@ -88,6 +95,8 @@ impl Reply {
 pub(crate) struct AppWorld {
     failing: Vec<Dependency>,
     database: Option<String>,
+    /// The topic of the scenario's events on the compose broker; created with the database.
+    events_topic: Option<String>,
     reply: Option<Reply>,
     created: Vec<String>,
     remembered: Option<String>,
@@ -123,6 +132,11 @@ fn base_config() -> Config {
     config.health_probe_timeout = Duration::from_secs(40);
     config.request_timeout = Duration::from_secs(60);
     config
+}
+
+/// The bootstrap servers of the compose broker, as `KAFKA_BOOTSTRAP_SERVERS` names them.
+fn kafka_servers() -> String {
+    base_config().kafka.bootstrap_servers
 }
 
 /// Connection options of the server of `DATABASE_URL`.
@@ -188,6 +202,15 @@ impl AppWorld {
         let created = self.created();
         assert!(!created.is_empty(), "the scenario created no resource");
         assert_eq!(ids, created);
+    }
+
+    /// The id that an earlier step remembered.
+    ///
+    /// # Panics
+    ///
+    /// When no step remembered an id.
+    pub(crate) fn remembered_id(&self) -> &str {
+        self.remembered.as_deref().expect("a remembered id")
     }
 
     /// Replaces the `{id}` token by the remembered id and the `{token}` token by the subject
@@ -289,6 +312,106 @@ impl AppWorld {
         .expect("seed the system role");
         connection.close().await.expect("close");
         self.remembered = Some(id);
+    }
+
+    /// Stores the upstream `name` of the catalogue service `catalog_service` at version 1 in the
+    /// scenario database, as a fixture, and remembers its id for `{id}`. A `system` upstream is
+    /// one that the API refuses to change.
+    pub(crate) async fn seed_upstream(&mut self, name: &str, catalog_service: &str, system: bool) {
+        let url = self.database_url().await;
+        let options = PgConnectOptions::from_str(&url).expect("valid database URL");
+        let mut connection = options
+            .connect()
+            .await
+            .expect("connect to the scenario database");
+        let id = sqlx::query_scalar::<_, String>(
+            "INSERT INTO iam_upstreams (id, name, namespace, service_name, catalog_service, port, \
+             protocol, forward_credentials, system, connect_timeout_ms, response_timeout_ms, \
+             concurrency_limit, retry_budget_percent, outlier_threshold, version, created_at, \
+             updated_at) \
+             VALUES (gen_random_uuid(), $1, 'platform', $1, $2, 8080, 'http1', FALSE, $3, 250, \
+             10000, 256, 10, 5, 1, now(), now()) RETURNING id::text",
+        )
+        .bind(name.to_owned())
+        .bind(catalog_service.to_owned())
+        .bind(system)
+        .fetch_one(&mut connection)
+        .await
+        .expect("seed the upstream");
+        connection.close().await.expect("close");
+        self.remembered = Some(id);
+    }
+
+    /// Stores a route that forwards to the upstream `name` in the scenario database, as a fixture:
+    /// the state that a route write leaves behind.
+    pub(crate) async fn seed_route_to_upstream(&mut self, name: &str) {
+        let url = self.database_url().await;
+        let options = PgConnectOptions::from_str(&url).expect("valid database URL");
+        let mut connection = options
+            .connect()
+            .await
+            .expect("connect to the scenario database");
+        sqlx::query(
+            "INSERT INTO iam_routes (id, host, methods, path_pattern, service, upstream_id, \
+             enforcement, body_limit, request_timeout_ms, idle_timeout_ms, retry, version, \
+             created_at, updated_at) \
+             SELECT gen_random_uuid(), 'api.example.com', ARRAY['GET'], '/seeded', \
+             catalog_service, id, 'enforce', 1048576, 30000, 60000, 'none', 1, now(), now() \
+             FROM iam_upstreams WHERE name = $1 AND deleted_at IS NULL",
+        )
+        .bind(name.to_owned())
+        .execute(&mut connection)
+        .await
+        .expect("seed the route");
+        connection.close().await.expect("close");
+    }
+
+    /// Stores an upstream and a route that applies the remembered rate policy in the scenario
+    /// database, as a fixture: the state that a route write leaves behind.
+    pub(crate) async fn seed_route_with_remembered_rate_policy(&mut self) {
+        let policy = self
+            .remembered
+            .clone()
+            .expect("a rate policy was created before the route is seeded");
+        let url = self.database_url().await;
+        let options = PgConnectOptions::from_str(&url).expect("valid database URL");
+        let mut connection = options
+            .connect()
+            .await
+            .expect("connect to the scenario database");
+        let upstream = sqlx::query_scalar::<_, String>(
+            "INSERT INTO iam_upstreams (id, name, namespace, service_name, catalog_service, port, \
+             protocol, forward_credentials, system, connect_timeout_ms, response_timeout_ms, \
+             concurrency_limit, retry_budget_percent, outlier_threshold, version, created_at, \
+             updated_at) \
+             VALUES (gen_random_uuid(), 'seeded-upstream', 'default', 'seeded', 'seeded', 80, \
+             'http1', FALSE, FALSE, 1000, 30000, 1000, 20, 5, 1, now(), now()) RETURNING id::text",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .expect("seed the upstream");
+        let route = sqlx::query_scalar::<_, String>(
+            "INSERT INTO iam_routes (id, host, methods, path_pattern, service, upstream_id, \
+             enforcement, body_limit, request_timeout_ms, idle_timeout_ms, retry, version, \
+             created_at, updated_at) \
+             VALUES (gen_random_uuid(), 'api.example.com', ARRAY['GET'], '/seeded', 'seeded', \
+             $1::text::uuid, 'enforce', 1048576, 30000, 60000, 'none', 1, now(), now()) \
+             RETURNING id::text",
+        )
+        .bind(upstream)
+        .fetch_one(&mut connection)
+        .await
+        .expect("seed the route");
+        sqlx::query(
+            "INSERT INTO iam_route_rate_policies (route_id, rate_policy_id, position) \
+             VALUES ($1::text::uuid, $2::text::uuid, 1)",
+        )
+        .bind(route)
+        .bind(policy)
+        .execute(&mut connection)
+        .await
+        .expect("seed the route's rate policy");
+        connection.close().await.expect("close");
     }
 
     /// Stores a custom role named `name` at version 1 that grants `keys` in the scenario database,
@@ -534,6 +657,86 @@ impl AppWorld {
         count
     }
 
+    /// The name of the scenario's events topic.
+    ///
+    /// # Panics
+    ///
+    /// Before the scenario database, and with it the topic, exists.
+    fn events_topic_name(&self) -> String {
+        self.events_topic
+            .clone()
+            .expect("the scenario topic exists with the scenario database")
+    }
+
+    /// The committed records of the scenario's events topic, read once the relay has published
+    /// every outbox row of the scenario database: the relay publishes after the commit.
+    ///
+    /// # Panics
+    ///
+    /// When the relay leaves a row unpublished for [`RELAY_DEADLINE`].
+    pub(crate) async fn scenario_events(&mut self) -> Vec<EventRecord> {
+        let started = tokio::time::Instant::now();
+        while self.unpublished_rows().await > 0 {
+            assert!(
+                started.elapsed() < RELAY_DEADLINE,
+                "the relay left outbox rows unpublished"
+            );
+            tokio::time::sleep(RELAY_POLL).await;
+        }
+        events_topic::read(&kafka_servers(), &self.events_topic_name()).await
+    }
+
+    /// The number of outbox rows of the scenario database that the relay has not published.
+    async fn unpublished_rows(&mut self) -> i64 {
+        let url = self.database_url().await;
+        let options = PgConnectOptions::from_str(&url).expect("valid database URL");
+        let mut connection = options
+            .connect()
+            .await
+            .expect("connect to the scenario database");
+        let rows = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM iam_outbox WHERE published_at IS NULL",
+        )
+        .fetch_one(&mut connection)
+        .await
+        .expect("count the unpublished rows");
+        connection.close().await.expect("close");
+        rows
+    }
+
+    /// The name of the scenario's events topic, created with the scenario database on first use.
+    pub(crate) async fn scenario_topic_name(&mut self) -> String {
+        self.database_url().await;
+        self.events_topic_name()
+    }
+
+    /// The name of the state topic.
+    pub(crate) fn state_topic() -> String {
+        base_config().kafka.policy_topic
+    }
+
+    /// The names of the topics on the compose broker.
+    pub(crate) async fn broker_topics() -> Vec<String> {
+        events_topic::topics(&kafka_servers()).await
+    }
+
+    /// The topics that the outbox rows of the scenario database name, each once.
+    pub(crate) async fn outbox_topics(&mut self) -> Vec<String> {
+        let url = self.database_url().await;
+        let options = PgConnectOptions::from_str(&url).expect("valid database URL");
+        let mut connection = options
+            .connect()
+            .await
+            .expect("connect to the scenario database");
+        let topics =
+            sqlx::query_scalar::<_, String>("SELECT DISTINCT topic FROM iam_outbox ORDER BY topic")
+                .fetch_all(&mut connection)
+                .await
+                .expect("select the topics");
+        connection.close().await.expect("close");
+        topics
+    }
+
     /// The subject token of the scenario; `None` before a step signed one.
     pub(crate) fn subject_token(&self) -> Option<&str> {
         self.subject_token.as_deref()
@@ -565,6 +768,12 @@ impl AppWorld {
     /// Makes the following requests carry the bearer token of the bootstrapped administrator.
     pub(crate) fn authenticate_as_administrator(&mut self) {
         self.caller_token = Some(self.signing_key().administrator_token());
+    }
+
+    /// Makes the following requests carry the bearer token of the administrator that holds
+    /// `iam:route:core` and no other route key.
+    pub(crate) fn authenticate_as_route_scoped_administrator(&mut self) {
+        self.caller_token = Some(self.signing_key().route_scoped_administrator_token());
     }
 
     /// Makes the following requests carry the bearer token of the administrator that lacks
@@ -635,6 +844,9 @@ impl AppWorld {
             let mut connection = options.clone().database(&name).connect().await.unwrap();
             MIGRATOR.run(&mut connection).await.expect("migrate");
             connection.close().await.expect("close");
+            let topic = events_topic::unique_name();
+            events_topic::create(&kafka_servers(), &topic).await;
+            self.events_topic = Some(topic);
             self.prepare(&name).await;
             self.database = Some(name);
         }
@@ -646,6 +858,7 @@ impl AppWorld {
     async fn prepare(&mut self, database: &str) {
         let mut config = base_config();
         config.database.url = url_with_database(database);
+        config.kafka.events_topic = self.events_topic_name();
         let adapters = Adapters::connect(&config).await.expect("production wiring");
         register_iam_specs(&adapters)
             .await
@@ -674,6 +887,9 @@ impl AppWorld {
         if let Some(name) = self.database.take() {
             drop_named(&mut admin().await, &name).await;
         }
+        if let Some(topic) = self.events_topic.take() {
+            events_topic::delete(&kafka_servers(), &topic).await;
+        }
         if let Some(path) = self.key_file.take() {
             drop(std::fs::remove_file(path));
         }
@@ -684,6 +900,7 @@ impl AppWorld {
         let url = self.database_url().await;
         let mut config = base_config();
         config.database.url = url;
+        config.kafka.events_topic = self.events_topic_name();
         if let Some(path) = &self.key_file {
             config.tokens.public_keys_file.clone_from(path);
         }
@@ -770,6 +987,7 @@ impl AppWorld {
         } else {
             json.pointer("/data/createExampleApiResource/id")
                 .or_else(|| json.pointer("/data/createRole/id"))
+                .or_else(|| json.pointer("/data/createUpstream/id"))
                 .or_else(|| json.pointer("/data/assignUserRole/id"))
         };
         if let Some(id) = created.and_then(Value::as_str) {

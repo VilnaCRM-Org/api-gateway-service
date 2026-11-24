@@ -1513,6 +1513,7 @@ dependencies = [
  "http-body-util",
  "iam-domain",
  "jsonwebtoken",
+ "krafka",
  "pem",
  "serde_json",
  "service",

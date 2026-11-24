@@ -31,11 +31,19 @@ use iam_application::{
     ListUserRolesQueryHandler, RevokeUserRoleCommandHandler, UpdateUserRoleCommandHandler,
 };
 use iam_application::{
+    CreateRatePolicyCommandHandler, DeleteRatePolicyCommandHandler, GetRatePolicyQueryHandler,
+    ListRatePoliciesQueryHandler, UpdateRatePolicyCommandHandler,
+};
+use iam_application::{
     CreateRestPermissionsCommandHandler, GetRestPermissionsCreatedQueryHandler, RestActivationReads,
 };
 use iam_application::{
     CreateRoleCommandHandler, DeleteRoleCommandHandler, GetRoleQueryHandler, ListRolesQueryHandler,
     UpdateRoleCommandHandler,
+};
+use iam_application::{
+    CreateUpstreamCommandHandler, DeleteUpstreamCommandHandler, DeleteUpstreamPorts,
+    GetUpstreamQueryHandler, ListUpstreamsQueryHandler, UpdateUpstreamCommandHandler,
 };
 use iam_application::{
     FindGraphQlSpecQueryHandler, GetGraphQlSpecDiffQueryHandler, GetGraphQlSpecQueryHandler,
@@ -45,6 +53,7 @@ use iam_application::{
     FindOpenApiSpecQueryHandler, GetOpenApiSpecDiffQueryHandler, GetOpenApiSpecQueryHandler,
     GetOpenApiSpecsQueryHandler, LoadOpenApiSpecCommandHandler,
 };
+use iam_application::{GetBulkOperationQueryHandler, ListBulkOperationsQueryHandler};
 use iam_application::{
     GetChangeReceiptQueryHandler, GetIdempotentReplayQueryHandler, GetPolicyEpochQueryHandler,
 };
@@ -62,6 +71,7 @@ use iam_application::{IamAccessGuard, RecordRejectedAttemptCommandHandler};
 use iam_application::{RegisterOwnSpecsCommand, RegisterOwnSpecsCommandHandler};
 use iam_application::{ResolveSubjectTokenQueryHandler, ResolveTokenQueryHandler};
 use iam_application::{RetireGraphQlSpecCommandHandler, RetireOpenApiSpecCommandHandler};
+use iam_domain::BulkOperationRepository;
 use iam_domain::GraphQlPermissionRepository;
 use iam_domain::GraphQlSpecRepository;
 use iam_domain::OpenApiSpecRepository;
@@ -99,8 +109,8 @@ use iam_infrastructure::{
     CachingTokenRepository, MokaTokenMemo, PgRevocationRepository, PgRevocationView,
 };
 use iam_infrastructure::{
-    JwtAccessTokenVerifier, JwtKeyFileError, PgChangeReceiptRepository, PgIdempotencyRepository,
-    PgPolicyEpochRepository, PgPolicyReadRepository, PgSecurityAuditLog,
+    JwtAccessTokenVerifier, JwtKeyFileError, PgBulkOperationRepository, PgChangeReceiptRepository,
+    PgIdempotencyRepository, PgPolicyEpochRepository, PgPolicyReadRepository, PgSecurityAuditLog,
 };
 use iam_infrastructure::{PgMaintenanceStore, PgTaskStateRepository};
 use shared_domain::{Clock, CommandBus, CommandHandler as _, EventBus, QueryBus, UuidGenerator};
@@ -141,6 +151,8 @@ pub struct Adapters {
     pub policy_epochs: Arc<dyn PolicyEpochRepository>,
     /// Reader of the policy data of a decision in repeatable-read snapshots.
     pub policy_reads: Arc<dyn PolicyReadRepository>,
+    /// Repository of the bulk operations and their progress.
+    pub bulk_operations: Arc<dyn BulkOperationRepository>,
     /// The hash-chained IAM security audit log.
     pub security_audit_log: Arc<dyn SecurityAuditLog>,
     /// The per-replica buffer of refused IAM requests that the rejected-attempt writer appends to
@@ -245,23 +257,21 @@ impl Adapters {
     pub async fn connect(config: &Config) -> Result<Self, BootstrapError> {
         let pool = connect_lazy(&config.database)?;
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-        let unit_of_work: Arc<dyn IamUnitOfWork> = Arc::new(PgIamUnitOfWork::new(pool.clone()));
-        let write_unit_of_work: Arc<dyn IamUnitOfWork> = Arc::new(PublishingUnitOfWork::new(
-            Arc::clone(&unit_of_work),
-            Arc::new(PgPropagationStore::new(pool.clone())),
-            Arc::clone(&clock),
-            config.relay.publish_wait_timeout,
-        ));
+        let (unit_of_work, write_unit_of_work) = units_of_work(config, &pool, &clock);
         let access_tokens = access_token_verifier(config, Arc::clone(&clock))?;
         Ok(Self {
             repository: Arc::new(PgExampleApiResourceRepository::new(pool.clone())),
             policy_epochs: Arc::new(PgPolicyEpochRepository::new(pool.clone())),
             policy_reads: Arc::new(PgPolicyReadRepository::new(pool.clone())),
+            bulk_operations: Arc::new(PgBulkOperationRepository::new(pool.clone())),
             security_audit_log: Arc::new(PgSecurityAuditLog::new(pool.clone())),
             rejected_attempts: Arc::new(BufferedRejectedAttemptLog::new()),
             startup_lock: Arc::new(PgStartupLock::new(pool.clone())),
             singleton_leadership: Arc::new(AdvisoryLockLeadership::new(pool.clone())),
-            maintenance_store: Arc::new(PgMaintenanceStore::new(pool.clone())),
+            maintenance_store: Arc::new(
+                PgMaintenanceStore::new(pool.clone())
+                    .with_events_topic(config.kafka.events_topic.clone()),
+            ),
             task_states: Arc::new(PgTaskStateRepository::new(pool.clone())),
             maintenance: config.maintenance,
             outbox_relay: Some(OutboxRelayAdapters::connect(config, &pool)?),
@@ -302,6 +312,24 @@ impl Adapters {
         }
         self
     }
+}
+
+/// The unit of work over PostgreSQL and the one of the published writes that wraps it.
+fn units_of_work(
+    config: &Config,
+    pool: &sqlx::PgPool,
+    clock: &Arc<dyn Clock>,
+) -> (Arc<dyn IamUnitOfWork>, Arc<dyn IamUnitOfWork>) {
+    let unit_of_work: Arc<dyn IamUnitOfWork> = Arc::new(
+        PgIamUnitOfWork::new(pool.clone()).with_events_topic(config.kafka.events_topic.clone()),
+    );
+    let write_unit_of_work: Arc<dyn IamUnitOfWork> = Arc::new(PublishingUnitOfWork::new(
+        Arc::clone(&unit_of_work),
+        Arc::new(PgPropagationStore::new(pool.clone())),
+        Arc::clone(clock),
+        config.relay.publish_wait_timeout,
+    ));
+    (unit_of_work, write_unit_of_work)
 }
 
 /// The production probes: PostgreSQL over `pool`, an in-process cache, the SQS client and the
@@ -430,6 +458,85 @@ fn register_role_queries(
     let list = ListRolesQueryHandler::new(Arc::clone(roles));
     let permissions = GetRolePermissionsQueryHandler::new(Arc::clone(roles));
     Ok(bus.register(get)?.register(list)?.register(permissions)?)
+}
+
+/// Registers the command handlers of the rate policies of the gateway configuration.
+fn register_rate_policy_commands(
+    bus: InMemoryCommandBus,
+    adapters: &Adapters,
+    unit_of_work: &Arc<dyn IamUnitOfWork>,
+) -> Result<InMemoryCommandBus, BootstrapError> {
+    let create = CreateRatePolicyCommandHandler::new(
+        Arc::clone(unit_of_work),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    let update = UpdateRatePolicyCommandHandler::new(
+        Arc::clone(&adapters.rate_policies),
+        Arc::clone(unit_of_work),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    let delete = DeleteRatePolicyCommandHandler::new(
+        Arc::clone(&adapters.rate_policies),
+        Arc::clone(&adapters.routes),
+        Arc::clone(unit_of_work),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    Ok(bus.register(create)?.register(update)?.register(delete)?)
+}
+
+/// Registers the query handlers of the rate policies of the gateway configuration.
+fn register_rate_policy_queries(
+    bus: InMemoryQueryBus,
+    rate_policies: &Arc<dyn RatePolicyRepository>,
+) -> Result<InMemoryQueryBus, BootstrapError> {
+    let get = GetRatePolicyQueryHandler::new(Arc::clone(rate_policies));
+    let list = ListRatePoliciesQueryHandler::new(Arc::clone(rate_policies));
+    Ok(bus.register(get)?.register(list)?)
+}
+
+/// Registers the command handlers of the upstreams of the gateway configuration.
+fn register_upstream_commands(
+    bus: InMemoryCommandBus,
+    adapters: &Adapters,
+    unit_of_work: &Arc<dyn IamUnitOfWork>,
+) -> Result<InMemoryCommandBus, BootstrapError> {
+    let create = CreateUpstreamCommandHandler::new(
+        Arc::clone(unit_of_work),
+        Arc::clone(&adapters.rejected_attempts),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    let update = UpdateUpstreamCommandHandler::new(
+        Arc::clone(&adapters.upstreams),
+        Arc::clone(unit_of_work),
+        Arc::clone(&adapters.rejected_attempts),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    let delete = DeleteUpstreamCommandHandler::new(
+        DeleteUpstreamPorts {
+            upstreams: Arc::clone(&adapters.upstreams),
+            routes: Arc::clone(&adapters.routes),
+            unit_of_work: Arc::clone(unit_of_work),
+            rejected_attempts: Arc::clone(&adapters.rejected_attempts),
+        },
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    Ok(bus.register(create)?.register(update)?.register(delete)?)
+}
+
+/// Registers the query handlers of the upstreams of the gateway configuration.
+fn register_upstream_queries(
+    bus: InMemoryQueryBus,
+    upstreams: &Arc<dyn UpstreamRepository>,
+) -> Result<InMemoryQueryBus, BootstrapError> {
+    let get = GetUpstreamQueryHandler::new(Arc::clone(upstreams));
+    let list = ListUpstreamsQueryHandler::new(Arc::clone(upstreams));
+    Ok(bus.register(get)?.register(list)?)
 }
 
 /// Registers the query handlers that read the result of an IAM write: its change receipt and the
@@ -751,7 +858,14 @@ fn register_user_role_queries(
         Arc::clone(&adapters.roles),
         Arc::clone(&adapters.clock),
     );
-    Ok(bus.register(get)?.register(list)?.register(effective)?)
+    let bulk = GetBulkOperationQueryHandler::new(Arc::clone(&adapters.bulk_operations));
+    let bulk_list = ListBulkOperationsQueryHandler::new(Arc::clone(&adapters.bulk_operations));
+    Ok(bus
+        .register(get)?
+        .register(list)?
+        .register(effective)?
+        .register(bulk)?
+        .register(bulk_list)?)
 }
 
 /// The unit of work of the administrative writes: it runs the escalation and specification-scope
@@ -785,6 +899,8 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
     let commands = register_commands(InMemoryCommandBus::new(), create)?;
     let guarded = guarded_unit_of_work(adapters);
     let commands = register_role_commands(commands, adapters, &guarded)?;
+    let commands = register_upstream_commands(commands, adapters, &guarded)?;
+    let commands = register_rate_policy_commands(commands, adapters, &guarded)?;
     let commands = register_graphql_spec_commands(commands, adapters, &guarded)?;
     let commands = register_graphql_activation_commands(commands, adapters, &guarded)?;
     let commands = register_openapi_spec_commands(commands, adapters, &guarded)?;
@@ -796,6 +912,8 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
     let (receipts, keys) = (&adapters.change_receipts, &adapters.idempotency_records);
     let queries = register_change_queries(queries, receipts, keys, &adapters.clock)?;
     let queries = register_role_queries(queries, &adapters.roles)?;
+    let queries = register_upstream_queries(queries, &adapters.upstreams)?;
+    let queries = register_rate_policy_queries(queries, &adapters.rate_policies)?;
     let queries = register_graphql_spec_queries(queries, adapters)?;
     let queries = register_graphql_activation_queries(queries, adapters)?;
     let queries = register_graphql_permission_queries(queries, adapters)?;

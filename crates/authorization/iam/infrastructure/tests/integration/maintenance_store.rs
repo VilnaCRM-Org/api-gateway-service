@@ -402,3 +402,20 @@ async fn an_event_id_that_is_stored_already_is_a_duplicate_and_writes_nothing(po
     assert!(matches!(error, RepositoryError::AlreadyExists));
     assert_eq!(count(&pool, "iam_outbox").await, 1);
 }
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn the_anchoring_row_names_the_events_topic_of_the_store(pool: PgPool) {
+    let mut rng = TestRng::from_env();
+    let stamp = stamp(&mut rng);
+    let store =
+        PgMaintenanceStore::new(pool.clone()).with_events_topic("iam.events.scenario".to_owned());
+
+    store.anchor_audit_chain(stamp).await.unwrap();
+
+    let topic: String = sqlx::query_scalar("SELECT topic FROM iam_outbox WHERE id = $1")
+        .bind(stamp.event_id.as_uuid())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(topic, "iam.events.scenario");
+}

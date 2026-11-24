@@ -23,6 +23,7 @@ use crate::persistence::unit_of_work::EVENTS_TOPIC;
 #[derive(Debug)]
 pub struct PgMaintenanceStore {
     pool: sqlx::PgPool,
+    events_topic: String,
 }
 
 /// Inactive grants of roles that are not deleted whose orphaning lies before the instant.
@@ -52,8 +53,19 @@ const INSERT_ANCHOR: &str = "INSERT INTO iam_outbox (id, kind, topic, record_key
 impl PgMaintenanceStore {
     /// Builds the store over a pool; no connection is opened here.
     #[must_use]
-    pub const fn new(pool: sqlx::PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: sqlx::PgPool) -> Self {
+        Self {
+            pool,
+            events_topic: EVENTS_TOPIC.to_owned(),
+        }
+    }
+
+    /// The same store whose anchoring rows name `topic` instead of [`EVENTS_TOPIC`]
+    /// (`EVENTS_TOPIC` of the configuration).
+    #[must_use]
+    pub fn with_events_topic(mut self, topic: String) -> Self {
+        self.events_topic = topic;
+        self
     }
 
     async fn select_orphans(
@@ -121,7 +133,7 @@ impl PgMaintenanceStore {
             log_epoch: log_epoch.value(),
             occurred_at: OffsetDateTime::from(stamp.occurred_at),
         };
-        insert_anchor(&mut transaction, &row).await?;
+        insert_anchor(&mut transaction, &self.events_topic, &row).await?;
         transaction.commit().await.map_err(translate)?;
         Ok(head)
     }
@@ -179,11 +191,12 @@ async fn read_epoch(
 /// Inserts the unpublished outbox event row of the anchoring.
 async fn insert_anchor(
     connection: &mut PgConnection,
+    topic: &str,
     row: &AnchorRow,
 ) -> Result<(), RepositoryError> {
     sqlx::query(INSERT_ANCHOR)
         .bind(row.id)
-        .bind(EVENTS_TOPIC)
+        .bind(topic)
         .bind(row.aggregate_id.to_string())
         .bind(&row.payload)
         .bind(row.policy_version)

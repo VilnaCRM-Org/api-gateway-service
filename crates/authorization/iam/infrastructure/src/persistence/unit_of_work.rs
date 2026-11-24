@@ -48,6 +48,7 @@ const NANOS_PER_MICRO: i128 = 1_000;
 #[derive(Debug)]
 pub struct PgIamUnitOfWork {
     pool: sqlx::PgPool,
+    events_topic: String,
 }
 
 /// The locked policy epoch row; it never leaves this module.
@@ -65,13 +66,24 @@ struct Locked {
 impl PgIamUnitOfWork {
     /// Builds the unit of work over a pool; no connection is opened here.
     #[must_use]
-    pub const fn new(pool: sqlx::PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: sqlx::PgPool) -> Self {
+        Self {
+            pool,
+            events_topic: EVENTS_TOPIC.to_owned(),
+        }
+    }
+
+    /// The same unit of work whose event rows name `topic` instead of [`EVENTS_TOPIC`]
+    /// (`EVENTS_TOPIC` of the configuration).
+    #[must_use]
+    pub fn with_events_topic(mut self, topic: String) -> Self {
+        self.events_topic = topic;
+        self
     }
 
     async fn commit_change(&self, change: &IamChange) -> Result<ChangeReceipt, RepositoryError> {
         let mut transaction = self.pool.begin().await.map_err(translate)?;
-        let (version, stored) = write(&mut transaction, change).await?;
+        let (version, stored) = write(&mut transaction, change, &self.events_topic).await?;
         wake_relay(&mut transaction).await?;
         transaction.commit().await.map_err(translate)?;
         stored.iter().for_each(emit);
@@ -95,6 +107,7 @@ async fn wake_relay(connection: &mut PgConnection) -> Result<(), RepositoryError
 async fn write(
     connection: &mut PgConnection,
     change: &IamChange,
+    events_topic: &str,
 ) -> Result<(PolicyVersion, Vec<StoredSecurityAuditEvent>), RepositoryError> {
     let changed_at = timestamp(change.occurred_at_micros())?;
     let locked = lock_epoch(connection).await?;
@@ -110,7 +123,13 @@ async fn write(
         };
         capture.write(connection, &target).await?;
     }
-    let stored = write_records(connection, change, version, locked.log_epoch, changed_at).await?;
+    let stored = write_records(
+        connection,
+        change,
+        (version, locked.log_epoch),
+        (changed_at, events_topic),
+    )
+    .await?;
     Ok((version, stored))
 }
 
@@ -148,12 +167,12 @@ async fn next_version(
 async fn write_records(
     connection: &mut PgConnection,
     change: &IamChange,
-    version: PolicyVersion,
-    log_epoch: LogEpoch,
-    changed_at: OffsetDateTime,
+    (version, log_epoch): (PolicyVersion, LogEpoch),
+    (changed_at, events_topic): (OffsetDateTime, &str),
 ) -> Result<Vec<StoredSecurityAuditEvent>, RepositoryError> {
     for envelope in &change.parts().events {
-        insert_event(connection, &EventRow::of(envelope, version, log_epoch)?).await?;
+        let row = EventRow::of(envelope, version, log_epoch, events_topic)?;
+        insert_event(connection, &row).await?;
     }
     let stored = PgSecurityAuditLog::append_within(connection, &change.audits(version)).await?;
     insert_receipt(
@@ -244,6 +263,7 @@ async fn run_statement(
 /// The column values of one outbox event row; they never leave this module.
 struct EventRow {
     id: SqlUuid,
+    topic: String,
     record_key: String,
     payload: String,
     policy_version: i64,
@@ -258,10 +278,12 @@ impl EventRow {
         envelope: &EventEnvelope,
         version: PolicyVersion,
         log_epoch: LogEpoch,
+        topic: &str,
     ) -> Result<Self, RepositoryError> {
         let parts = envelope.parts();
         Ok(Self {
             id: parts.id.as_uuid(),
+            topic: topic.to_owned(),
             record_key: parts.aggregate_id.to_string(),
             payload: encode(envelope, version).map_err(unencodable)?,
             policy_version: version.value(),
@@ -281,7 +303,7 @@ async fn insert_event(
     row: &EventRow,
 ) -> Result<(), RepositoryError> {
     let texts = [
-        EVENTS_TOPIC.to_owned(),
+        row.topic.clone(),
         row.record_key.clone(),
         row.payload.clone(),
         row.event_type.clone(),

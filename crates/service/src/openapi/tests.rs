@@ -85,6 +85,8 @@ fn documents_exactly_the_twenty_four_operations() {
         [
             "post /api/access-validations",
             "post /api/access-validations/batch",
+            "get /api/bulk-operations",
+            "get /api/bulk-operations/{id}",
             "get /api/example_api_resources",
             "post /api/example_api_resources",
             "get /api/example_api_resources/{id}",
@@ -103,6 +105,11 @@ fn documents_exactly_the_twenty_four_operations() {
             "get /api/openapi-specs/{id}/diff",
             "post /api/openapi-specs/{id}/permissions",
             "post /api/openapi-specs/{id}/retirement",
+            "get /api/rate-policies",
+            "post /api/rate-policies",
+            "get /api/rate-policies/{id}",
+            "delete /api/rate-policies/{id}",
+            "patch /api/rate-policies/{id}",
             "get /api/rest-permissions",
             "get /api/rest-permissions/{id}",
             "get /api/roles",
@@ -113,6 +120,11 @@ fn documents_exactly_the_twenty_four_operations() {
             "get /api/roles/{id}/permissions",
             "put /api/roles/{id}/permissions",
             "post /api/token-resolutions",
+            "get /api/upstreams",
+            "post /api/upstreams",
+            "get /api/upstreams/{id}",
+            "delete /api/upstreams/{id}",
+            "patch /api/upstreams/{id}",
             "get /api/user-roles",
             "post /api/user-roles",
             "get /api/user-roles/{id}",
@@ -304,6 +316,115 @@ fn the_role_deletion_documents_its_headers_and_the_revoked_assignments() {
     let schema = &json["components"]["schemas"]["DeletedRole"];
     assert_eq!(schema["required"], json!(["id", "revokedAssignments"]));
     assert_eq!(schema["properties"]["revokedAssignments"]["minimum"], 0);
+}
+
+#[test]
+fn documents_the_rate_policy_operations_with_the_bearer_requirement_and_the_iam_tag() {
+    let json = json_document();
+    let cases = [
+        (
+            "/api/rate-policies",
+            "post",
+            "api_rate_policies_post",
+            [
+                "201", "202", "400", "401", "409", "413", "415", "422", "default",
+            ]
+            .as_slice(),
+        ),
+        (
+            "/api/rate-policies",
+            "get",
+            "api_rate_policies_get",
+            ["200", "400", "401", "422", "default"].as_slice(),
+        ),
+        (
+            "/api/rate-policies/{id}",
+            "get",
+            "api_rate_policies_id_get",
+            ["200", "400", "401", "404", "422", "default"].as_slice(),
+        ),
+        (
+            "/api/rate-policies/{id}",
+            "patch",
+            "api_rate_policies_id_patch",
+            [
+                "200", "202", "400", "401", "404", "409", "412", "413", "415", "422", "428",
+                "default",
+            ]
+            .as_slice(),
+        ),
+        (
+            "/api/rate-policies/{id}",
+            "delete",
+            "api_rate_policies_id_delete",
+            [
+                "200", "202", "400", "401", "404", "409", "412", "422", "428", "default",
+            ]
+            .as_slice(),
+        ),
+    ];
+
+    for (path, method, operation_id, statuses) in cases {
+        let operation = &json["paths"][path][method];
+        assert_eq!(operation["operationId"], operation_id);
+        assert_eq!(operation["tags"], json!(["iam"]), "{operation_id}");
+        assert_eq!(
+            operation["security"],
+            json!([{ "bearerAuth": [] }]),
+            "{operation_id}"
+        );
+        let mut documented: Vec<&str> = operation["responses"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        documented.sort_unstable();
+        assert_eq!(documented, statuses, "{operation_id}");
+        for status in statuses.iter().filter(|status| !status.starts_with('2')) {
+            assert_eq!(
+                operation["responses"][status]["content"]["application/problem+json"]["schema"]["$ref"],
+                "#/components/schemas/Problem",
+                "{operation_id} {status}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_rate_policy_schemas_name_the_members_of_fr_64() {
+    let json = json_document();
+    let schemas = &json["components"]["schemas"];
+
+    assert_eq!(
+        schemas["CreateRatePolicyRequest"]["required"],
+        json!(["name", "key", "limit", "periodMs", "burst", "fallback"])
+    );
+    let response = &schemas["RatePolicy"]["properties"];
+    for member in [
+        "id",
+        "name",
+        "key",
+        "limit",
+        "periodMs",
+        "burst",
+        "fallback",
+        "version",
+        "createdAt",
+        "updatedAt",
+    ] {
+        assert!(response[member].is_object(), "{member}");
+    }
+    assert_eq!(
+        schemas["DeletedRatePolicy"]["required"],
+        json!(["id", "version"])
+    );
+    let delete = &json["paths"]["/api/rate-policies/{id}"]["delete"];
+    assert_eq!(
+        delete["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/DeletedRatePolicy"
+    );
+    assert!(delete["responses"]["200"]["headers"]["iam-policy-version"].is_object());
 }
 
 #[test]
@@ -1103,11 +1224,17 @@ fn defines_exactly_the_documented_schemas() {
             "AssignUserRoleRequest",
             "AssignmentScope",
             "AssignmentSubject",
+            "BulkOperation",
+            "BulkOperationPage",
+            "BulkOperationPropagation",
             "CoordinateFlags",
             "CreateExampleApiResourceRequest",
             "CreateGraphQlPermissionsRequest",
+            "CreateRatePolicyRequest",
             "CreateRestPermissionsRequest",
             "CreateRoleRequest",
+            "CreateUpstreamRequest",
+            "DeletedRatePolicy",
             "DeletedRole",
             "DependencyFailure",
             "EffectivePermission",
@@ -1132,6 +1259,8 @@ fn defines_exactly_the_documented_schemas() {
             "OperationFlags",
             "OperationWildcardGain",
             "Problem",
+            "RatePolicy",
+            "RatePolicyPage",
             "RemovedGrant",
             "RemovedOperationGrant",
             "RestPermission",
@@ -1146,8 +1275,13 @@ fn defines_exactly_the_documented_schemas() {
             "SpecRetirement",
             "TokenResolution",
             "TokenResolutionRequest",
+            "UpdateRatePolicyRequest",
             "UpdateRoleRequest",
+            "UpdateUpstreamRequest",
             "UpdateUserRoleRequest",
+            "Upstream",
+            "UpstreamPage",
+            "UpstreamProtocol",
             "UserRole",
             "UserRolePage",
             "UserRolePermissions",
@@ -1437,4 +1571,122 @@ fn documents_the_batch_access_validation_operation() {
         &json["components"]["schemas"]["ValidateAccessBatchRequest"]["properties"]["checks"];
     assert_eq!(checks["minItems"], 1);
     assert_eq!(checks["maxItems"], 100);
+}
+
+#[test]
+fn documents_the_upstream_operations_with_the_bearer_requirement_and_the_iam_tag() {
+    let json = json_document();
+    let cases = [
+        (
+            "/api/upstreams",
+            "post",
+            "api_upstreams_post",
+            [
+                "201", "202", "400", "401", "403", "409", "413", "415", "422", "default",
+            ]
+            .as_slice(),
+        ),
+        (
+            "/api/upstreams",
+            "get",
+            "api_upstreams_get",
+            ["200", "400", "401", "403", "422", "default"].as_slice(),
+        ),
+        (
+            "/api/upstreams/{id}",
+            "get",
+            "api_upstreams_id_get",
+            ["200", "400", "401", "403", "404", "422", "default"].as_slice(),
+        ),
+        (
+            "/api/upstreams/{id}",
+            "patch",
+            "api_upstreams_id_patch",
+            [
+                "200", "202", "400", "401", "403", "404", "409", "412", "413", "415", "422", "428",
+                "default",
+            ]
+            .as_slice(),
+        ),
+        (
+            "/api/upstreams/{id}",
+            "delete",
+            "api_upstreams_id_delete",
+            [
+                "202", "204", "400", "401", "403", "404", "409", "412", "422", "428", "default",
+            ]
+            .as_slice(),
+        ),
+    ];
+
+    for (path, method, operation_id, statuses) in cases {
+        let operation = &json["paths"][path][method];
+        assert_eq!(operation["operationId"], operation_id);
+        assert_eq!(operation["tags"], json!(["iam"]), "{operation_id}");
+        assert_eq!(
+            operation["security"],
+            json!([{ "bearerAuth": [] }]),
+            "{operation_id}"
+        );
+        let mut documented: Vec<&str> = operation["responses"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        documented.sort_unstable();
+        assert_eq!(documented, statuses, "{operation_id}");
+        for status in statuses.iter().filter(|status| !status.starts_with('2')) {
+            assert_eq!(
+                operation["responses"][status]["content"]["application/problem+json"]["schema"]["$ref"],
+                "#/components/schemas/Problem",
+                "{operation_id} {status}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_upstream_schemas_name_the_members_of_fr_56() {
+    let json = json_document();
+    let schemas = &json["components"]["schemas"];
+
+    assert_eq!(
+        schemas["CreateUpstreamRequest"]["required"],
+        json!([
+            "name",
+            "namespace",
+            "service",
+            "catalogService",
+            "port",
+            "protocol"
+        ])
+    );
+    let response = &schemas["Upstream"]["properties"];
+    for member in [
+        "id",
+        "name",
+        "namespace",
+        "service",
+        "catalogService",
+        "forwardCredentials",
+        "port",
+        "protocol",
+        "connectTimeoutMs",
+        "responseTimeoutMs",
+        "concurrencyLimit",
+        "retryBudgetPercent",
+        "outlierConsecutiveErrors",
+        "system",
+        "version",
+        "createdAt",
+        "updatedAt",
+    ] {
+        assert!(response[member].is_object(), "{member}");
+    }
+    assert_eq!(
+        json["paths"]["/api/upstreams/{id}"]["get"]["responses"]["200"]["content"]["application/json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/Upstream"
+    );
 }

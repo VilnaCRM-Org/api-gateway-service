@@ -3,6 +3,8 @@
 #[cfg(test)]
 mod administrator_policy;
 #[cfg(test)]
+mod events_topic;
+#[cfg(test)]
 mod steps;
 #[cfg(test)]
 mod tokens;
