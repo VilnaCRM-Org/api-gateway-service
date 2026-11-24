@@ -14,8 +14,9 @@ use clap::Parser as _;
 use health_check_domain::Dependency;
 use http_body_util::BodyExt as _;
 use iam_domain::{
-    ActorRef, PolicyEpoch, RejectedAttemptLog, RevocationSource, RouteHost, SessionId,
-    SessionRevocation, SessionRevocationId, SubjectRef, SystemComponent,
+    ActorRef, GlobalTokenCutoff, PolicyEpoch, RejectedAttemptLog, RevocationSource, RouteHost,
+    SessionId, SessionRevocation, SessionRevocationId, SubjectRef, SystemComponent,
+    UserTokenCutoff,
 };
 use serde_json::Value;
 use service::bootstrap::{
@@ -34,7 +35,7 @@ use tower::ServiceExt as _;
 
 use crate::administrator_policy::AdministratorCallerPolicy;
 use crate::events_topic::{self, EventRecord};
-use crate::tokens::{SigningKey, USER_ID, instant_after};
+use crate::tokens::{ADMINISTRATOR_ID, SigningKey, USER_ID, instant_after};
 
 /// Counter that makes the database names of the scenarios of one process unique.
 static DATABASES: AtomicUsize = AtomicUsize::new(0);
@@ -65,6 +66,13 @@ const ADMINISTRATOR_ROLE: &str = "SELECT id::text FROM iam_roles WHERE name = $1
 
 /// How long a session revocation recorded by a step is kept before it may be pruned.
 const REVOCATION_RETENTION: Duration = Duration::from_hours(24);
+
+/// The instant `minutes` minutes before now, for the records a step writes in the past.
+fn minutes_before_now(minutes: u64) -> std::time::SystemTime {
+    instant_after(Duration::ZERO)
+        .checked_sub(Duration::from_mins(minutes))
+        .expect("the instant is representable")
+}
 
 /// How long the per-replica tasks of a scenario get to stop before the scenario database is dropped.
 const TASK_STOP_GRACE: Duration = Duration::from_secs(5);
@@ -960,6 +968,78 @@ impl AppWorld {
             .revoke_session(&revocation)
             .await
             .expect("record the session revocation");
+    }
+
+    /// Records the revocation `id` of `session` from `source`, `minutes_ago` minutes in the past,
+    /// through the production wiring, as the revocation repository stores it. An operator
+    /// revocation is recorded by the bootstrapped administrator and a User service revocation by
+    /// the consumer of its events.
+    pub(crate) async fn seed_session_revocation(
+        &mut self,
+        id: &str,
+        session: &str,
+        source: RevocationSource,
+        minutes_ago: u64,
+    ) {
+        let config = self.config().await;
+        let adapters = Adapters::connect(&config).await.expect("production wiring");
+        let revoked_at = minutes_before_now(minutes_ago);
+        let revoked_by = match source {
+            RevocationSource::Operator => {
+                ActorRef::parse(&format!("user:{ADMINISTRATOR_ID}")).expect("a valid actor")
+            }
+            RevocationSource::UserService => ActorRef::System(SystemComponent::UserService),
+        };
+        let revocation = SessionRevocation {
+            id: SessionRevocationId::parse(id).expect("a valid revocation id"),
+            session: SessionId::new(session).expect("a valid session id"),
+            user: Uuid::parse(USER_ID).expect("a valid user id"),
+            source,
+            revoked_by,
+            revoked_at,
+            prune_after: instant_after(REVOCATION_RETENTION),
+        };
+        adapters
+            .revocations
+            .revoke_session(&revocation)
+            .await
+            .expect("record the session revocation");
+    }
+
+    /// Sets the token cut-off of the user of the scenario from `source`, through the production
+    /// wiring.
+    pub(crate) async fn seed_user_cutoff(&mut self, source: RevocationSource) {
+        let config = self.config().await;
+        let adapters = Adapters::connect(&config).await.expect("production wiring");
+        let cutoff = UserTokenCutoff {
+            user: Uuid::parse(USER_ID).expect("a valid user id"),
+            tokens_valid_after: minutes_before_now(1),
+            source,
+            updated_at: minutes_before_now(2),
+            prune_after: instant_after(REVOCATION_RETENTION),
+        };
+        adapters
+            .revocations
+            .set_user_cutoff(&cutoff)
+            .await
+            .expect("record the user cut-off");
+    }
+
+    /// Sets the global token cut-off, as the bootstrapped administrator, through the production
+    /// wiring.
+    pub(crate) async fn seed_global_cutoff(&mut self) {
+        let config = self.config().await;
+        let adapters = Adapters::connect(&config).await.expect("production wiring");
+        let cutoff = GlobalTokenCutoff {
+            tokens_valid_after: minutes_before_now(1),
+            set_by: ActorRef::parse(&format!("user:{ADMINISTRATOR_ID}")).expect("a valid actor"),
+            set_at: minutes_before_now(2),
+        };
+        adapters
+            .revocations
+            .set_global_cutoff(&cutoff)
+            .await
+            .expect("record the global cut-off");
     }
 
     /// Creates the scenario database on first use and returns its URL.

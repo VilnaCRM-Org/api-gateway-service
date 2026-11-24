@@ -16,6 +16,7 @@ mod iam_openapi_specs;
 mod iam_operations;
 mod iam_rate_policies;
 mod iam_rest_activation;
+mod iam_revocation_reads;
 mod iam_role_permissions;
 mod iam_roles;
 mod iam_route_configurations;

@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use iam_domain::{
     ActorRef, GlobalTokenCutoff, InboundEvent, InvalidIamValue, RepositoryError,
     RevocationRepository, RevocationSource, SessionId, SessionRevocation, SessionRevocationId,
-    UserTokenCutoff,
+    SessionRevocationSearch, UserTokenCutoff,
 };
 use shared_domain::Uuid;
 use sqlx::types::Uuid as SqlUuid;
@@ -19,7 +19,24 @@ pub struct PgRevocationRepository {
     pool: sqlx::PgPool,
 }
 
+/// The page of the session revocations that meet the conditions of a search, newest first. A
+/// condition that is null is not applied; the cursor names the last revocation of the previous
+/// page, and only revocations that sort after it are returned.
+const SEARCH_SESSIONS: &str =
+    "SELECT session_id, id, user_id, source, revoked_by, revoked_at, prune_after
+    FROM iam_revoked_sessions
+    WHERE ($1::uuid IS NULL OR user_id = $1)
+        AND ($2::text IS NULL OR source = $2)
+        AND ($3::timestamptz IS NULL OR revoked_at >= $3)
+        AND ($4::timestamptz IS NULL OR revoked_at < $4)
+        AND ($5::uuid IS NULL OR (revoked_at, id) < (
+            SELECT pivot.revoked_at, pivot.id FROM iam_revoked_sessions AS pivot
+            WHERE pivot.id = $5))
+    ORDER BY revoked_at DESC, id DESC
+    LIMIT $6";
+
 /// A stored session revocation; it never leaves this module.
+#[derive(sqlx::FromRow)]
 struct SessionRow {
     session_id: String,
     id: SqlUuid,
@@ -142,6 +159,40 @@ impl PgRevocationRepository {
         .await
         .map_err(unavailable)?;
         row.as_ref().map(restore_session).transpose()
+    }
+
+    async fn select_session_by_id(
+        &self,
+        id: SessionRevocationId,
+    ) -> Result<Option<SessionRevocation>, RepositoryError> {
+        let row = sqlx::query_as::<_, SessionRow>(
+            "SELECT session_id, id, user_id, source, revoked_by, revoked_at, prune_after
+            FROM iam_revoked_sessions WHERE id = $1",
+        )
+        .bind(id.as_uuid().as_uuid())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(unavailable)?;
+        row.as_ref().map(restore_session).transpose()
+    }
+
+    async fn select_session_search(
+        &self,
+        search: &SessionRevocationSearch,
+    ) -> Result<Vec<SessionRevocation>, RepositoryError> {
+        let from = search.from.map(timestamp).transpose()?;
+        let until = search.until.map(timestamp).transpose()?;
+        let rows = sqlx::query_as::<_, SessionRow>(SEARCH_SESSIONS)
+            .bind(search.user.map(|user| user.as_uuid()))
+            .bind(search.source.map(RevocationSource::as_str))
+            .bind(from)
+            .bind(until)
+            .bind(search.after.map(|after| after.as_uuid().as_uuid()))
+            .bind(i64::from(search.limit))
+            .fetch_all(&self.pool)
+            .await
+            .map_err(unavailable)?;
+        rows.iter().map(restore_session).collect()
     }
 
     async fn select_user_cutoff(
@@ -292,6 +343,20 @@ impl RevocationRepository for PgRevocationRepository {
         session: &SessionId,
     ) -> Result<Option<SessionRevocation>, RepositoryError> {
         self.select_session(session).await
+    }
+
+    async fn session_revocation_by_id(
+        &self,
+        id: SessionRevocationId,
+    ) -> Result<Option<SessionRevocation>, RepositoryError> {
+        self.select_session_by_id(id).await
+    }
+
+    async fn search_session_revocations(
+        &self,
+        search: &SessionRevocationSearch,
+    ) -> Result<Vec<SessionRevocation>, RepositoryError> {
+        self.select_session_search(search).await
     }
 
     async fn user_cutoff(&self, user: Uuid) -> Result<Option<UserTokenCutoff>, RepositoryError> {

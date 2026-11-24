@@ -184,6 +184,10 @@ fn handlers_use_only_the_problem_aware_extractors() {
             include_str!("../security_audit_event.rs"),
             vec!["list", "get_one"],
         ),
+        (
+            include_str!("../revocation_read.rs"),
+            vec!["list", "get_one", "user_cutoff", "global_cutoff"],
+        ),
         (include_str!("../policy_resync.rs"), vec!["create"]),
     ];
 

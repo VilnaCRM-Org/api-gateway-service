@@ -3,8 +3,8 @@ use std::time::{Duration, SystemTime};
 use iam_domain::{
     AccessToken, AccessTokenParts, ActorRef, GlobalTokenCutoff, InboundEvent, InboundOutcome,
     RepositoryError, RevocationRepository as _, RevocationSource, RevocationStatus,
-    RevocationView as _, ServiceName, SessionId, SessionRevocation, SessionRevocationId, SubjectId,
-    TokenId, TokenIdentity, UserTokenCutoff,
+    RevocationView as _, ServiceName, SessionId, SessionRevocation, SessionRevocationId,
+    SessionRevocationSearch, SubjectId, TokenId, TokenIdentity, UserTokenCutoff,
 };
 use shared_domain::Uuid;
 
@@ -243,4 +243,85 @@ fn the_view_double_answers_its_status_and_counts_its_calls() {
         Err(RepositoryError::Unavailable(_))
     ));
     assert_eq!(view.calls(), 3);
+}
+
+fn search() -> SessionRevocationSearch {
+    SessionRevocationSearch {
+        user: None,
+        source: None,
+        from: None,
+        until: None,
+        after: None,
+        limit: 10,
+    }
+}
+
+#[test]
+fn a_revocation_is_found_by_its_identifier() {
+    let repository = FakeRevocationRepository::new();
+    let stored = revocation(FIRST, session(), 1_000);
+    block_on(repository.revoke_session(&stored)).unwrap();
+
+    assert_eq!(
+        block_on(repository.session_revocation_by_id(stored.id)).unwrap(),
+        Some(stored)
+    );
+    assert_eq!(
+        block_on(repository.session_revocation_by_id(SessionRevocationId::parse(SECOND).unwrap()))
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn a_search_lists_the_newest_first_filters_and_pages_by_cursor() {
+    let repository = FakeRevocationRepository::new();
+    let old = revocation(FIRST, SessionId::new("session-old").unwrap(), 1_000);
+    let new = SessionRevocation {
+        source: RevocationSource::Operator,
+        ..revocation(SECOND, SessionId::new("session-new").unwrap(), 2_000)
+    };
+    block_on(repository.revoke_session(&old)).unwrap();
+    block_on(repository.revoke_session(&new)).unwrap();
+
+    let all = block_on(repository.search_session_revocations(&search())).unwrap();
+    let operator = block_on(
+        repository.search_session_revocations(&SessionRevocationSearch {
+            source: Some(RevocationSource::Operator),
+            ..search()
+        }),
+    )
+    .unwrap();
+    let first_page = block_on(
+        repository.search_session_revocations(&SessionRevocationSearch {
+            limit: 1,
+            ..search()
+        }),
+    )
+    .unwrap();
+    let second_page = block_on(
+        repository.search_session_revocations(&SessionRevocationSearch {
+            after: Some(new.id),
+            limit: 1,
+            ..search()
+        }),
+    )
+    .unwrap();
+
+    assert_eq!(all, vec![new.clone(), old.clone()]);
+    assert_eq!(operator, vec![new.clone()]);
+    assert_eq!(first_page, vec![new]);
+    assert_eq!(second_page, vec![old]);
+}
+
+#[test]
+fn a_failing_repository_fails_the_new_reads() {
+    let repository = FakeRevocationRepository::new();
+    repository.fail(true);
+
+    assert!(
+        block_on(repository.session_revocation_by_id(SessionRevocationId::parse(FIRST).unwrap()))
+            .is_err()
+    );
+    assert!(block_on(repository.search_session_revocations(&search())).is_err());
 }

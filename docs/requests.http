@@ -378,6 +378,61 @@ Content-Type: application/json
   "variables": { "input": { "idempotencyKey": "global-cutoff-2027-01-15" } }
 }
 
+### List session revocations over REST: a page of 1 to 100 revocations, newest first, each with its session, user, source (user-service or operator), actor and time; filter by userId, source and the time range from (inclusive) and until (exclusive); pass nextCursor as after for the next page; needs iam:audit:read, 403 without it, 422 for an invalid parameter
+GET {{baseUrl}}/api/session-revocations?limit=30&userId=0190f2a8-7b3c-7d4e-8f10-1234567890ab&source=operator&from=2027-01-01T00:00:00Z&until=2027-02-01T00:00:00Z
+Authorization: Bearer <caller token>
+
+### List session revocations over GraphQL: the same page; the filter keeps the revocations that meet every field given
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($first: Int, $after: String, $filter: SessionRevocationFilterInput) { sessionRevocations(first: $first, after: $after, filter: $filter) { items { id sessionId userId source actor revokedAt } nextCursor } }",
+  "variables": { "first": 30, "filter": { "source": "operator", "userId": "0190f2a8-7b3c-7d4e-8f10-1234567890ab" } }
+}
+
+### Read a session revocation over REST: its session, user, source, actor and time; needs iam:audit:read, 404 for an unknown id, 422 for an id that is not a UUID
+GET {{baseUrl}}/api/session-revocations/0190f2a8-7b3c-7d4e-8f20-000000000001
+Authorization: Bearer <caller token>
+
+### Read a session revocation over GraphQL: null for an unknown id
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($id: ID!) { sessionRevocation(id: $id) { id sessionId userId source actor revokedAt } }",
+  "variables": { "id": "0190f2a8-7b3c-7d4e-8f20-000000000001" }
+}
+
+### Read the token cut-off of a user over REST: the instant at or before which the user's tokens are refused, with its source and actor; needs iam:audit:read, 404 for a user without a cut-off, 422 for a user id that is not a UUID
+GET {{baseUrl}}/api/users/0190f2a8-7b3c-7d4e-8f10-1234567890ab/token-cutoff
+Authorization: Bearer <caller token>
+
+### Read the token cut-off of a user over GraphQL: null for a user without a cut-off
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($userId: ID!) { userTokenCutoff(userId: $userId) { userId tokensValidAfter source actor updatedAt } }",
+  "variables": { "userId": "0190f2a8-7b3c-7d4e-8f10-1234567890ab" }
+}
+
+### Read the global token cut-off over REST: the instant at or before which every token is refused, with its source and actor; needs iam:audit:read, 404 when it was never set
+GET {{baseUrl}}/api/global-token-cutoffs/current
+Authorization: Bearer <caller token>
+
+### Read the global token cut-off over GraphQL: null when it was never set
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "{ globalTokenCutoff { tokensValidAfter source actor setAt } }"
+}
+
 ### Read the permissions of a role over REST: every grant in key order with its key, kind (rest, gql or reserved), service, active flag and wildcard flag, and the ETag of the role; 404 for an unknown role, 422 for an id that is not a UUID
 GET {{baseUrl}}/api/roles/01a1c6b5-cb86-7134-868a-7608036facfe/permissions
 Authorization: Bearer <caller token>

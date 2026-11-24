@@ -22,6 +22,7 @@ pub mod propagation;
 pub mod rate_policy;
 pub mod rest_activation;
 pub mod rest_permission;
+pub mod revocation_read;
 pub mod role_deletion;
 pub mod role_permission;
 pub mod route;
@@ -93,6 +94,11 @@ use rest_activation::{
 use rest_permission::{
     RestPermissionFilterInput, RestPermissionObject, RestPermissionPageObject,
     rest_permission_field, rest_permissions_field,
+};
+use revocation_read::{
+    GlobalTokenCutoffObject, SessionRevocationFilterInput, SessionRevocationObject,
+    SessionRevocationPageObject, UserTokenCutoffObject, global_token_cutoff_field,
+    session_revocation_field, session_revocations_field, user_token_cutoff_field,
 };
 use role_deletion::{DeleteRoleInput, DeleteRolePayload, delete_role_field};
 use role_permission::{
@@ -777,6 +783,53 @@ impl IamQuery {
         filter: Option<SecurityAuditEventFilterInput>,
     ) -> async_graphql::Result<SecurityAuditEventPageObject> {
         security_audit_events_field(ctx, first, after, filter.unwrap_or_default())
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves a session revocation by id with its source and actor; null when it is unknown. Needs `iam:audit:read`.
+    async fn session_revocation(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> async_graphql::Result<Option<SessionRevocationObject>> {
+        session_revocation_field(ctx, &id)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves one page of the session revocations, newest first; the filter keeps the revocations that match every field given. Needs `iam:audit:read`.
+    #[graphql(complexity = "page_complexity(first, child_complexity)")]
+    async fn session_revocations(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 30, desc = "Page size, from 1 to 100.")] first: Option<i32>,
+        #[graphql(desc = "The nextCursor of the previous page.")] after: Option<String>,
+        #[graphql(desc = "Keeps the revocations of a user, of a source and in a time range.")]
+        filter: Option<SessionRevocationFilterInput>,
+    ) -> async_graphql::Result<SessionRevocationPageObject> {
+        session_revocations_field(ctx, first, after, filter.unwrap_or_default())
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves the token cut-off of a user with its source and actor; null when the user has none. Needs `iam:audit:read`.
+    async fn user_token_cutoff(
+        &self,
+        ctx: &Context<'_>,
+        user_id: ID,
+    ) -> async_graphql::Result<Option<UserTokenCutoffObject>> {
+        user_token_cutoff_field(ctx, &user_id)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves the global token cut-off with its source and actor; null when it was never set. Needs `iam:audit:read`.
+    async fn global_token_cutoff(
+        &self,
+        ctx: &Context<'_>,
+    ) -> async_graphql::Result<Option<GlobalTokenCutoffObject>> {
+        global_token_cutoff_field(ctx)
             .await
             .map_err(iam_problem_to_graphql_error)
     }

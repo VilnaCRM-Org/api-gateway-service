@@ -66,6 +66,11 @@ use iam_application::{
     GetChangeReceiptQueryHandler, GetIdempotentReplayQueryHandler, GetPolicyEpochQueryHandler,
 };
 use iam_application::{
+    GetGlobalTokenCutoffQueryHandler, GetSecurityAuditEventQueryHandler,
+    GetSecurityAuditEventsQueryHandler, GetSessionRevocationQueryHandler,
+    GetUserTokenCutoffQueryHandler, ListSessionRevocationsQueryHandler,
+};
+use iam_application::{
     GetGraphQlPermissionQueryHandler, GetGraphQlPermissionsQueryHandler, PermissionReads,
 };
 use iam_application::{
@@ -74,7 +79,6 @@ use iam_application::{
 use iam_application::{
     GetRolePermissionsQueryHandler, SetRolePermissionsCommandHandler, SetRolePermissionsReads,
 };
-use iam_application::{GetSecurityAuditEventQueryHandler, GetSecurityAuditEventsQueryHandler};
 use iam_application::{GuardReads, GuardedUnitOfWork};
 use iam_application::{IamAccessGuard, RecordRejectedAttemptCommandHandler};
 use iam_application::{
@@ -101,8 +105,8 @@ use iam_domain::{
     PolicyReadRepository, RejectedAttemptLog, SecurityAuditLog,
 };
 use iam_domain::{BulkOperationRepository, BulkRoleTargetStore};
+use iam_domain::{ExpiredRevocationStore, MaintenanceStore, TaskStateRepository};
 use iam_domain::{IamUnitOfWork, OWN_SPECIFICATIONS_LOCK, RepositoryError, RequestDigester};
-use iam_domain::{MaintenanceStore, TaskStateRepository};
 use iam_domain::{PolicyLogTail, PolicyStateInventory};
 use iam_domain::{RevocationRepository, RevocationView, TokenMemo, TokenRepository};
 use iam_infrastructure::BufferedRejectedAttemptLog;
@@ -193,6 +197,9 @@ pub struct Adapters {
     pub singleton_leadership: Arc<dyn SingletonLeadership>,
     /// Finds and removes what the maintenance task keeps small, and anchors the audit chain.
     pub maintenance_store: Arc<dyn MaintenanceStore>,
+    /// Finds the revocation records whose prune-after instant has passed, for the tombstone
+    /// emitter.
+    pub expired_revocations: Arc<dyn ExpiredRevocationStore>,
     /// Reader of what the committed batches of singleton tasks recorded.
     pub task_states: Arc<dyn TaskStateRepository>,
     /// How often the maintenance task runs and how long orphaned grants are kept.
@@ -309,10 +316,8 @@ impl Adapters {
             rejected_attempts: Arc::new(BufferedRejectedAttemptLog::new()),
             startup_lock: Arc::new(PgStartupLock::new(pool.clone())),
             singleton_leadership: Arc::new(AdvisoryLockLeadership::new(pool.clone())),
-            maintenance_store: Arc::new(
-                PgMaintenanceStore::new(pool.clone())
-                    .with_events_topic(config.kafka.events_topic.clone()),
-            ),
+            maintenance_store: maintenance_store(config, &pool),
+            expired_revocations: Arc::new(PgMaintenanceStore::new(pool.clone())),
             task_states: Arc::new(PgTaskStateRepository::new(pool.clone())),
             maintenance: config.maintenance,
             outbox_relay: Some(OutboxRelayAdapters::connect(config, &pool)?),
@@ -355,6 +360,13 @@ impl Adapters {
         }
         self
     }
+}
+
+/// The maintenance store, publishing to the events topic of the configuration.
+fn maintenance_store(config: &Config, pool: &sqlx::PgPool) -> Arc<dyn MaintenanceStore> {
+    Arc::new(
+        PgMaintenanceStore::new(pool.clone()).with_events_topic(config.kafka.events_topic.clone()),
+    )
 }
 
 /// The unit of work over PostgreSQL and the one of the published writes that wraps it.
@@ -727,6 +739,26 @@ fn register_security_audit_queries(
         Arc::clone(&adapters.uuid_generator),
     );
     Ok(bus.register(search)?.register(get)?)
+}
+
+/// Registers the query handlers that read session revocations and token cut-offs.
+fn register_revocation_queries(
+    bus: InMemoryQueryBus,
+    adapters: &Adapters,
+) -> Result<InMemoryQueryBus, BootstrapError> {
+    let revocations = &adapters.revocations;
+    let get = GetSessionRevocationQueryHandler::new(Arc::clone(revocations));
+    let list = ListSessionRevocationsQueryHandler::new(Arc::clone(revocations));
+    let user = GetUserTokenCutoffQueryHandler::new(
+        Arc::clone(revocations),
+        Arc::clone(&adapters.security_audit_log),
+    );
+    let global = GetGlobalTokenCutoffQueryHandler::new(Arc::clone(revocations));
+    Ok(bus
+        .register(get)?
+        .register(list)?
+        .register(user)?
+        .register(global)?)
 }
 
 /// Registers the query handlers that read the result of an IAM write: its change receipt and the
@@ -1118,6 +1150,7 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
     let queries = register_rest_permission_queries(queries, adapters)?;
     let queries = register_user_role_queries(queries, adapters)?;
     let queries = register_security_audit_queries(queries, adapters)?;
+    let queries = register_revocation_queries(queries, adapters)?;
     let queries = register_token_queries(queries, &adapters.tokens, config)?;
     let queries = register_access_validation_queries(queries, adapters)?;
     Ok((Arc::new(commands), Arc::new(queries)))

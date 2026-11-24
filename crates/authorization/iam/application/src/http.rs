@@ -17,6 +17,7 @@ pub mod rate_policy;
 pub mod response;
 pub mod rest_activation;
 pub mod rest_permission;
+pub mod revocation_read;
 pub mod role;
 pub mod role_permission;
 pub mod route;
@@ -191,15 +192,19 @@ where
     OpenApiRouter::new().routes(routes!(policy_resync::create))
 }
 
-/// The routes that revoke sessions and set the global token cut-off, merged into [`router`].
+/// The routes that revoke sessions, set the global token cut-off and read both, merged into
+/// [`router`].
 fn revocation_router<S>() -> OpenApiRouter<S>
 where
     S: Clone + Send + Sync + 'static,
     IamState: FromRef<S>,
 {
     OpenApiRouter::new()
-        .routes(routes!(session_revocation::create))
+        .routes(routes!(session_revocation::create, revocation_read::list))
+        .routes(routes!(revocation_read::get_one))
+        .routes(routes!(revocation_read::user_cutoff))
         .routes(routes!(global_token_cutoff::create))
+        .routes(routes!(revocation_read::global_cutoff))
 }
 
 /// The routes of the rate policies, merged into [`router`].

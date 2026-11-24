@@ -2,11 +2,13 @@
 //! applies them and the idempotency record of consumed User service events.
 
 pub mod event;
+pub mod expired_revocation;
 pub mod global_token_cutoff;
 pub mod inbound_event;
 pub mod prune_policy;
 pub mod revocation_rule;
 pub mod revocation_source;
 pub mod session_revocation;
+pub mod session_revocation_search;
 pub mod statement;
 pub mod user_token_cutoff;

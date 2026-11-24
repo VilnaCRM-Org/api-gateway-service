@@ -24,6 +24,7 @@ use crate::http::IamState;
 use crate::principal::Principal;
 use crate::query::resolve_subject_token::{ResolveSubjectTokenQuery, TokenResolution};
 
+mod revocation_reads;
 mod role_deletion;
 mod roles;
 mod route_configurations;

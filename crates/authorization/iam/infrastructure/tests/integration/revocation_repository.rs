@@ -7,8 +7,8 @@ use std::time::{Duration, SystemTime};
 use iam_domain::{
     AccessToken, AccessTokenParts, ActorRef, GlobalTokenCutoff, InboundEvent, InboundOutcome,
     RepositoryError, RevocationRepository as _, RevocationSource, RevocationStatus,
-    RevocationView as _, ServiceName, SessionId, SessionRevocation, SessionRevocationId, SubjectId,
-    TokenId, TokenIdentity, UserTokenCutoff,
+    RevocationView as _, ServiceName, SessionId, SessionRevocation, SessionRevocationId,
+    SessionRevocationSearch, SubjectId, TokenId, TokenIdentity, UserTokenCutoff,
 };
 use iam_infrastructure::{PgRevocationRepository, PgRevocationView};
 use shared_domain::Uuid;
@@ -89,6 +89,25 @@ fn identity(subject: SubjectId, session_name: Option<&str>) -> TokenIdentity {
         issued_at: at(NOW - 60),
         expires_at: at(NOW + 840),
     }))
+}
+
+fn search() -> SessionRevocationSearch {
+    SessionRevocationSearch {
+        user: None,
+        source: None,
+        from: None,
+        until: None,
+        after: None,
+        limit: 10,
+    }
+}
+
+fn operator_revocation(id: &str, session_name: &str, revoked_at: u64) -> SessionRevocation {
+    SessionRevocation {
+        source: RevocationSource::Operator,
+        revoked_by: ActorRef::parse(&format!("user:{USER}")).unwrap(),
+        ..revocation(id, session_name, revoked_at)
+    }
 }
 
 #[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
@@ -351,6 +370,14 @@ async fn an_unreachable_database_makes_every_call_unavailable() {
     let view = PgRevocationView::new(pool);
 
     let read = repository.global_cutoff().await.unwrap_err();
+    let by_id = repository
+        .session_revocation_by_id(SessionRevocationId::parse(FIRST).unwrap())
+        .await
+        .unwrap_err();
+    let searched = repository
+        .search_session_revocations(&search())
+        .await
+        .unwrap_err();
     let write = repository
         .set_global_cutoff(&global_cutoff(NOW))
         .await
@@ -361,6 +388,115 @@ async fn an_unreachable_database_makes_every_call_unavailable() {
         .unwrap_err();
 
     assert!(matches!(read, RepositoryError::Unavailable(_)));
+    assert!(matches!(by_id, RepositoryError::Unavailable(_)));
+    assert!(matches!(searched, RepositoryError::Unavailable(_)));
     assert!(matches!(write, RepositoryError::Unavailable(_)));
     assert!(matches!(status, RepositoryError::Unavailable(_)));
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn a_session_revocation_is_found_by_its_identifier(pool: PgPool) {
+    let repository = PgRevocationRepository::new(pool);
+    let stored = operator_revocation(FIRST, "session-1", NOW);
+    repository.revoke_session(&stored).await.unwrap();
+
+    let found = repository
+        .session_revocation_by_id(stored.id)
+        .await
+        .unwrap();
+    let unknown = repository
+        .session_revocation_by_id(SessionRevocationId::parse(SECOND).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(found, Some(stored));
+    assert_eq!(unknown, None);
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn a_search_returns_the_newest_revocations_first_and_applies_every_filter(pool: PgPool) {
+    let repository = PgRevocationRepository::new(pool);
+    let old = revocation(FIRST, "session-1", NOW);
+    let newer = operator_revocation(SECOND, "session-2", NOW + 10);
+    repository.revoke_session(&old).await.unwrap();
+    repository.revoke_session(&newer).await.unwrap();
+
+    let all = repository
+        .search_session_revocations(&search())
+        .await
+        .unwrap();
+    let operator = repository
+        .search_session_revocations(&SessionRevocationSearch {
+            source: Some(RevocationSource::Operator),
+            ..search()
+        })
+        .await
+        .unwrap();
+    let in_range = repository
+        .search_session_revocations(&SessionRevocationSearch {
+            from: Some(at(NOW)),
+            until: Some(at(NOW + 10)),
+            ..search()
+        })
+        .await
+        .unwrap();
+    let other_user = repository
+        .search_session_revocations(&SessionRevocationSearch {
+            user: Some(Uuid::parse(FIRST).unwrap()),
+            ..search()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(all, vec![newer.clone(), old.clone()]);
+    assert_eq!(operator, vec![newer]);
+    assert_eq!(in_range, vec![old]);
+    assert_eq!(other_user.len(), 0);
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn cursor_pages_hold_every_revocation_exactly_once_even_at_one_instant(pool: PgPool) {
+    let repository = PgRevocationRepository::new(pool);
+    let ids = [
+        "0190f2a8-7b3c-7d4e-8f00-000000000011",
+        "0190f2a8-7b3c-7d4e-8f00-000000000012",
+        "0190f2a8-7b3c-7d4e-8f00-000000000013",
+        "0190f2a8-7b3c-7d4e-8f00-000000000014",
+        "0190f2a8-7b3c-7d4e-8f00-000000000015",
+    ];
+    for (index, id) in ids.iter().enumerate() {
+        let instant = if index < 3 { NOW } else { NOW + 5 };
+        repository
+            .revoke_session(&revocation(id, &format!("page-{index}"), instant))
+            .await
+            .unwrap();
+    }
+
+    let mut seen = Vec::new();
+    let mut after = None;
+    loop {
+        let page = repository
+            .search_session_revocations(&SessionRevocationSearch {
+                after,
+                limit: 2,
+                ..search()
+            })
+            .await
+            .unwrap();
+        seen.extend(page.iter().map(|record| record.id));
+        match page.last() {
+            Some(last) if page.len() == 2 => after = Some(last.id),
+            _ => break,
+        }
+    }
+
+    assert_eq!(seen.len(), 5);
+    let mut unique = seen.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), 5);
+    assert_eq!(
+        seen.first().copied(),
+        Some(SessionRevocationId::parse(ids[4]).unwrap())
+    );
 }

@@ -91,6 +91,7 @@ fn documents_exactly_the_twenty_four_operations() {
             "post /api/example_api_resources",
             "get /api/example_api_resources/{id}",
             "post /api/global-token-cutoffs",
+            "get /api/global-token-cutoffs/current",
             "get /api/graphql-permissions",
             "get /api/graphql-permissions/{id}",
             "get /api/graphql-specs",
@@ -130,7 +131,9 @@ fn documents_exactly_the_twenty_four_operations() {
             "patch /api/routes/{id}",
             "get /api/security-audit-events",
             "get /api/security-audit-events/{id}",
+            "get /api/session-revocations",
             "post /api/session-revocations",
+            "get /api/session-revocations/{id}",
             "post /api/token-resolutions",
             "get /api/upstreams",
             "post /api/upstreams",
@@ -143,6 +146,7 @@ fn documents_exactly_the_twenty_four_operations() {
             "delete /api/user-roles/{id}",
             "patch /api/user-roles/{id}",
             "get /api/users/{userId}/role-permissions",
+            "get /api/users/{userId}/token-cutoff",
         ]
     );
 }
@@ -1372,6 +1376,7 @@ fn defines_exactly_the_documented_schemas() {
             "EffectivePermission",
             "ExampleApiResource",
             "FlagDowngrade",
+            "GlobalTokenCutoff",
             "GrantingRole",
             "GraphQlPermission",
             "GraphQlPermissionPage",
@@ -1419,6 +1424,8 @@ fn defines_exactly_the_documented_schemas() {
             "RouteTraffic",
             "SecurityAuditEvent",
             "SecurityAuditEventPage",
+            "SessionRevocation",
+            "SessionRevocationPage",
             "SetGlobalTokenCutoffRequest",
             "SetRolePermissionsRequest",
             "SpecRetirement",
@@ -1435,6 +1442,7 @@ fn defines_exactly_the_documented_schemas() {
             "UserRole",
             "UserRolePage",
             "UserRolePermissions",
+            "UserTokenCutoff",
             "ValidateAccessBatchRequest",
             "ValidateAccessRequest",
             "Violation",
@@ -1883,6 +1891,99 @@ fn documents_the_security_audit_reads_with_the_bearer_requirement_and_the_iam_ta
             "{operation_id}"
         );
     }
+}
+
+#[test]
+fn documents_the_revocation_reads_with_the_bearer_requirement_and_the_iam_tag() {
+    let json = json_document();
+    let cases = [
+        (
+            "/api/session-revocations",
+            "api_session_revocations_get",
+            "SessionRevocationPage",
+            ["200", "400", "401", "403", "422", "default"].as_slice(),
+        ),
+        (
+            "/api/session-revocations/{id}",
+            "api_session_revocations_id_get",
+            "SessionRevocation",
+            ["200", "400", "401", "403", "404", "422", "default"].as_slice(),
+        ),
+        (
+            "/api/users/{userId}/token-cutoff",
+            "api_users_user_id_token_cutoff_get",
+            "UserTokenCutoff",
+            ["200", "400", "401", "403", "404", "422", "default"].as_slice(),
+        ),
+        (
+            "/api/global-token-cutoffs/current",
+            "api_global_token_cutoffs_current_get",
+            "GlobalTokenCutoff",
+            ["200", "401", "403", "404", "default"].as_slice(),
+        ),
+    ];
+
+    for (path, operation_id, schema, statuses) in cases {
+        let operation = &json["paths"][path]["get"];
+        assert_eq!(operation["operationId"], operation_id);
+        assert_eq!(operation["tags"], json!(["iam"]), "{operation_id}");
+        assert_eq!(
+            operation["security"],
+            json!([{ "bearerAuth": [] }]),
+            "{operation_id}"
+        );
+        let mut documented: Vec<&str> = operation["responses"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        documented.sort_unstable();
+        assert_eq!(documented, statuses, "{operation_id}");
+        assert_eq!(
+            operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            format!("#/components/schemas/{schema}"),
+            "{operation_id}"
+        );
+    }
+}
+
+#[test]
+fn the_revocation_schemas_name_the_source_and_the_actor_of_fr_81() {
+    let json = json_document();
+    let schemas = &json["components"]["schemas"];
+
+    for (schema, members) in [
+        (
+            "SessionRevocation",
+            ["id", "sessionId", "userId", "source", "actor", "revokedAt"].as_slice(),
+        ),
+        (
+            "UserTokenCutoff",
+            ["userId", "tokensValidAfter", "source", "actor", "updatedAt"].as_slice(),
+        ),
+        (
+            "GlobalTokenCutoff",
+            ["tokensValidAfter", "source", "actor", "setAt"].as_slice(),
+        ),
+    ] {
+        for member in members {
+            assert!(
+                schemas[schema]["properties"][member].is_object(),
+                "{schema}.{member}"
+            );
+        }
+    }
+    let parameters: Vec<&str> = json["paths"]["/api/session-revocations"]["get"]["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|parameter| parameter["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        parameters,
+        ["limit", "after", "userId", "source", "from", "until"]
+    );
 }
 
 #[test]

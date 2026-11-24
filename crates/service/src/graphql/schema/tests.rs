@@ -488,6 +488,18 @@ type FlagDowngrade {
   coordinate: String!
 }
 
+"The cut-off of every token."
+type GlobalTokenCutoff {
+  "The actor that set the cut-off: `user:<uuid>`, `service:<name>` or `system:<component>`."
+  actor: String!
+  "When the cut-off was set, as an RFC 3339 UTC time."
+  setAt: String!
+  "Who caused the cut-off; the global cut-off is always set by an operator."
+  source: String!
+  "Tokens issued at or before this RFC 3339 UTC time are refused."
+  tokensValidAfter: String!
+}
+
 "A role that grants an effective permission."
 type GrantingRole {
   "The identifier of the role."
@@ -808,6 +820,8 @@ type Query {
     "Page number, from 1."
     page: Int! = 1
   ): [ExampleApiResource!]!
+  "Retrieves the global token cut-off with its source and actor; null when it was never set. Needs `iam:audit:read`."
+  globalTokenCutoff: GlobalTokenCutoff
   "Retrieves a GraphQL permission by id with the active versions that contain its key and the roles that grant it by its exact key; null when it is unknown."
   graphqlPermission(id: ID!): GraphqlPermission
   "Retrieves one page of GraphQL permissions in a stable order, filtered by service, type, active state, the sensitive flag and key prefix."
@@ -898,6 +912,17 @@ type Query {
     "Page size, from 1 to 100."
     first: Int = 30
   ): SecurityAuditEventPage!
+  "Retrieves a session revocation by id with its source and actor; null when it is unknown. Needs `iam:audit:read`."
+  sessionRevocation(id: ID!): SessionRevocation
+  "Retrieves one page of the session revocations, newest first; the filter keeps the revocations that match every field given. Needs `iam:audit:read`."
+  sessionRevocations(
+    "The nextCursor of the previous page."
+    after: String,
+    "Keeps the revocations of a user, of a source and in a time range."
+    filter: SessionRevocationFilterInput,
+    "Page size, from 1 to 100."
+    first: Int = 30
+  ): SessionRevocationPage!
   "Retrieves an upstream by id; null when it is unknown or deleted."
   upstream(id: ID!): Upstream
   "Retrieves one page of the upstreams that are not deleted, in a stable order."
@@ -927,6 +952,8 @@ type Query {
     "Page size, from 1 to 100."
     first: Int = 30
   ): UserRolePage!
+  "Retrieves the token cut-off of a user with its source and actor; null when the user has none. Needs `iam:audit:read`."
+  userTokenCutoff(userId: ID!): UserTokenCutoff
   "Decides whether a subject may perform a REST operation or hold permission keys; a valid request always gets a decision."
   validateAccess(input: ValidateAccessInput!): AccessValidation!
   "Decides 1 to 100 checks of the shape of `validateAccess` and returns one decision per input, in the order of the inputs, each with its own `decisionId`; an input that cannot be read is a `deny` with the reason `malformed_operation` and does not fail the others. A batch of no input or of more than 100 fails with `VALIDATION_FAILED`."
@@ -1415,6 +1442,42 @@ type SecurityAuditEventPage {
   nextCursor: String
 }
 
+"One revoked session with the source and the actor of its revocation."
+type SessionRevocation {
+  "The actor that recorded the revocation: `user:<uuid>`, `service:<name>` or `system:<component>`."
+  actor: String!
+  "The identifier of the revocation."
+  id: ID!
+  "When the revocation was recorded, as an RFC 3339 UTC time."
+  revokedAt: String!
+  "The revoked session."
+  sessionId: String!
+  "Who caused the revocation: `user-service` or `operator`."
+  source: String!
+  "The user the session belongs to."
+  userId: ID!
+}
+
+"The filters of the session revocation list: a revocation must meet every one that is given."
+input SessionRevocationFilterInput {
+  "Only the revocations from this RFC 3339 UTC time on."
+  from: String
+  "Only the revocations that this source caused: `user-service` or `operator`."
+  source: String
+  "Only the revocations before this RFC 3339 UTC time."
+  until: String
+  "Only the revocations of the sessions of this user."
+  userId: ID
+}
+
+"One page of session revocations."
+type SessionRevocationPage {
+  "The revocations of the page, newest first."
+  items: [SessionRevocation!]!
+  "The `after` value of the next, older page; null on the last page."
+  nextCursor: String
+}
+
 "Input of the global token cut-off mutation."
 input SetGlobalTokenCutoffInput {
   "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
@@ -1703,6 +1766,20 @@ type UserRolePermissions {
   "The policy version the permissions were composed at."
   policyVersion: Int!
   "The user whose permissions these are."
+  userId: ID!
+}
+
+"The cut-off of the tokens of one user."
+type UserTokenCutoff {
+  "The actor that set the cut-off: `system:user-service` for a cut-off of a User service event and the actor of the audit record for an operator cut-off; null when the audit log holds no record of it."
+  actor: String
+  "Who caused the cut-off: `user-service` or `operator`."
+  source: String!
+  "Tokens issued at or before this RFC 3339 UTC time are refused."
+  tokensValidAfter: String!
+  "When the cut-off was last moved, as an RFC 3339 UTC time."
+  updatedAt: String!
+  "The user."
   userId: ID!
 }
 
@@ -2061,6 +2138,27 @@ async fn the_security_audit_queries_are_merged_into_the_query_root_and_need_an_a
         assert_eq!(
             error_code(&response),
             Some(async_graphql::Value::String("UNAUTHENTICATED".to_owned()))
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_revocation_queries_are_merged_into_the_query_root_and_need_an_authenticated_caller() {
+    let schema: ApiSchema = builder().data(iam_state()).finish();
+    let queries = [
+        "{ sessionRevocation(id: \"0190f2a8-7b3c-7d4e-8f10-1234567890cd\") { id } }",
+        "{ sessionRevocations(filter: { source: \"operator\" }) { items { id } nextCursor } }",
+        "{ userTokenCutoff(userId: \"0190f2a8-7b3c-7d4e-8f10-1234567890ab\") { source actor } }",
+        "{ globalTokenCutoff { source actor } }",
+    ];
+
+    for query in queries {
+        let response = schema.execute(Request::new(query)).await;
+
+        assert_eq!(
+            error_code(&response),
+            Some(async_graphql::Value::String("UNAUTHENTICATED".to_owned())),
+            "{query}"
         );
     }
 }

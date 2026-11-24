@@ -274,6 +274,26 @@ const GRAPHQL_RULES: &[GraphQlRule] = &[
         "global_token.cut_off",
         Requirement::Reserved(&[REVOKE_GLOBAL]),
     ),
+    field(
+        "Query.sessionRevocation",
+        "session_revocation.read",
+        Requirement::Reserved(&[AUDIT_READ]),
+    ),
+    field(
+        "Query.sessionRevocations",
+        "session_revocation.list",
+        Requirement::Reserved(&[AUDIT_READ]),
+    ),
+    field(
+        "Query.userTokenCutoff",
+        "user_token_cutoff.read",
+        Requirement::Reserved(&[AUDIT_READ]),
+    ),
+    field(
+        "Query.globalTokenCutoff",
+        "global_token_cutoff.read",
+        Requirement::Reserved(&[AUDIT_READ]),
+    ),
     field("Mutation.createRole", "role.create", Requirement::Catalogue),
     field("Mutation.updateRole", "role.update", Requirement::Catalogue),
     field("Mutation.deleteRole", "role.delete", Requirement::Catalogue),
@@ -685,6 +705,30 @@ const RULES: &[OperationRule] = &[
         HttpMethod::Get,
         "/api/security-audit-events/{id}",
         "security_audit.read",
+        Requirement::Reserved(&[AUDIT_READ]),
+    ),
+    row(
+        HttpMethod::Get,
+        "/api/session-revocations",
+        "session_revocation.list",
+        Requirement::Reserved(&[AUDIT_READ]),
+    ),
+    row(
+        HttpMethod::Get,
+        "/api/session-revocations/{id}",
+        "session_revocation.read",
+        Requirement::Reserved(&[AUDIT_READ]),
+    ),
+    row(
+        HttpMethod::Get,
+        "/api/users/{userId}/token-cutoff",
+        "user_token_cutoff.read",
+        Requirement::Reserved(&[AUDIT_READ]),
+    ),
+    row(
+        HttpMethod::Get,
+        "/api/global-token-cutoffs/current",
+        "global_token_cutoff.read",
         Requirement::Reserved(&[AUDIT_READ]),
     ),
 ];

@@ -139,7 +139,7 @@ fn a_row_with_fixed_keys_has_no_caller_rule() {
 fn every_other_operation_requires_its_catalogue_key() {
     let catalogue = rows_of(|requirement| requirement == Requirement::Catalogue);
 
-    assert_eq!(catalogue.len(), OperationRules::all().len() - 8);
+    assert_eq!(catalogue.len(), OperationRules::all().len() - 12);
     for rule in OperationRules::all() {
         if rule.requirement == Requirement::Catalogue {
             assert!(rule.requirement.needs_catalogue());
@@ -404,14 +404,25 @@ fn the_revocation_writes_need_their_reserved_key_and_no_catalogue_key_on_both_in
 }
 
 #[test]
-fn the_security_audit_reads_need_the_audit_key_and_no_catalogue_key_on_both_interfaces() {
+fn the_audit_and_revocation_reads_need_the_audit_key_and_no_catalogue_key_on_both_interfaces() {
     let rest = [
         ("/api/security-audit-events", "security_audit.list"),
         ("/api/security-audit-events/{id}", "security_audit.read"),
+        ("/api/session-revocations", "session_revocation.list"),
+        ("/api/session-revocations/{id}", "session_revocation.read"),
+        ("/api/users/{userId}/token-cutoff", "user_token_cutoff.read"),
+        (
+            "/api/global-token-cutoffs/current",
+            "global_token_cutoff.read",
+        ),
     ];
     let graphql = [
         ("Query.securityAuditEvents", "security_audit.list"),
         ("Query.securityAuditEvent", "security_audit.read"),
+        ("Query.sessionRevocations", "session_revocation.list"),
+        ("Query.sessionRevocation", "session_revocation.read"),
+        ("Query.userTokenCutoff", "user_token_cutoff.read"),
+        ("Query.globalTokenCutoff", "global_token_cutoff.read"),
     ];
 
     let rules = rest

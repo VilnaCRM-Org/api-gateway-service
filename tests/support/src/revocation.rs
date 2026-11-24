@@ -7,7 +7,8 @@ use std::sync::{Mutex, PoisonError};
 use async_trait::async_trait;
 use iam_domain::{
     GlobalTokenCutoff, InboundEvent, RepositoryError, RevocationRepository, RevocationStatus,
-    RevocationView, SessionId, SessionRevocation, SubjectId, TokenIdentity, UserTokenCutoff,
+    RevocationView, SessionId, SessionRevocation, SessionRevocationId, SessionRevocationSearch,
+    SubjectId, TokenIdentity, UserTokenCutoff,
 };
 use shared_domain::Uuid;
 
@@ -108,6 +109,50 @@ impl RevocationRepository for FakeRevocationRepository {
         session: &SessionId,
     ) -> Result<Option<SessionRevocation>, RepositoryError> {
         self.with_state(|state| state.sessions.get(session).cloned())
+    }
+
+    async fn session_revocation_by_id(
+        &self,
+        id: SessionRevocationId,
+    ) -> Result<Option<SessionRevocation>, RepositoryError> {
+        self.with_state(|state| {
+            state
+                .sessions
+                .values()
+                .find(|stored| stored.id == id)
+                .cloned()
+        })
+    }
+
+    async fn search_session_revocations(
+        &self,
+        search: &SessionRevocationSearch,
+    ) -> Result<Vec<SessionRevocation>, RepositoryError> {
+        self.with_state(|state| {
+            let mut found: Vec<&SessionRevocation> = state
+                .sessions
+                .values()
+                .filter(|stored| search.matches(stored))
+                .collect();
+            found.sort_by_key(|stored| SessionRevocationSearch::order_key(stored));
+            let cursor = search.after.and_then(|after| {
+                state
+                    .sessions
+                    .values()
+                    .find(|stored| stored.id == after)
+                    .map(SessionRevocationSearch::order_key)
+            });
+            found
+                .into_iter()
+                .filter(|stored| {
+                    cursor
+                        .as_ref()
+                        .is_none_or(|key| SessionRevocationSearch::order_key(stored) > *key)
+                })
+                .take(usize::try_from(search.limit).unwrap_or(usize::MAX))
+                .cloned()
+                .collect()
+        })
     }
 
     async fn user_cutoff(&self, user: Uuid) -> Result<Option<UserTokenCutoff>, RepositoryError> {

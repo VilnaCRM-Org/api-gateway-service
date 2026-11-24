@@ -6,7 +6,9 @@ use crate::port::RepositoryError;
 use crate::revocation::global_token_cutoff::GlobalTokenCutoff;
 use crate::revocation::inbound_event::InboundEvent;
 use crate::revocation::session_revocation::SessionRevocation;
+use crate::revocation::session_revocation_search::SessionRevocationSearch;
 use crate::revocation::user_token_cutoff::UserTokenCutoff;
+use crate::value_object::identifier::SessionRevocationId;
 use crate::value_object::session_id::SessionId;
 
 /// Writes and reads session revocations, user and global cut-offs, and records consumed events
@@ -44,6 +46,26 @@ pub trait RevocationRepository: std::fmt::Debug + Send + Sync {
         &self,
         session: &SessionId,
     ) -> Result<Option<SessionRevocation>, RepositoryError>;
+
+    /// The revocation with the identifier `id`, if any.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when the storage fails or holds unusable data.
+    async fn session_revocation_by_id(
+        &self,
+        id: SessionRevocationId,
+    ) -> Result<Option<SessionRevocation>, RepositoryError>;
+
+    /// One page of the revocations that meet the conditions of `search`, newest first.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when the storage fails or holds unusable data.
+    async fn search_session_revocations(
+        &self,
+        search: &SessionRevocationSearch,
+    ) -> Result<Vec<SessionRevocation>, RepositoryError>;
 
     /// The cut-off of `user`, if any.
     ///
