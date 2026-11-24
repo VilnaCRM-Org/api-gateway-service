@@ -284,21 +284,39 @@ Content-Type: application/json
   "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe", "expectedVersion": 1, "name": "Accounting administrator" } }
 }
 
-### Delete a role over REST: 200 with the final ETag, the Iam-Policy-Version and the number of assignments it revoked; 428 without If-Match; 412 for a stale If-Match; 403 for a system role; 404 for an unknown or deleted role; 409 for a role with more than 1,000 assignments
-# Every assignment of the role is revoked in the same transaction. A replay with the same Idempotency-Key returns the original count.
+### Delete a role over REST: 200 with the final ETag, the Iam-Policy-Version and the number of assignments it revoked; 428 without If-Match; 412 for a stale If-Match; 403 for a system role; 404 for an unknown or deleted role; 202 with the Location of a bulk operation for a role with more assignments than BULK_CHUNK_ENTITIES
+# Every assignment of the role is revoked in the same transaction. A replay with the same Idempotency-Key returns the original count. A role with more assignments than BULK_CHUNK_ENTITIES is deleted by a bulk operation instead: the 202 response carries its Location, revokedAssignments is the number it will revoke, and the runner commits the revocations in versions of at most BULK_CHUNK_ENTITIES entities before it deletes the role.
 DELETE {{baseUrl}}/api/roles/01a1c6b5-cb86-7134-868a-7608036facfe
 Authorization: Bearer <caller token>
 If-Match: "1"
 Idempotency-Key: delete-billing-administrator
 
-### Delete a role over GraphQL: the id, the final version, the policy version and revokedAssignments; the error codes PRECONDITION_REQUIRED, PRECONDITION_FAILED, FORBIDDEN, NOT_FOUND and CONFLICT
+### Delete a role over GraphQL: the id, the final version, the policy version and revokedAssignments, and bulkOperationId (null unless the role has more assignments than BULK_CHUNK_ENTITIES); the error codes PRECONDITION_REQUIRED, PRECONDITION_FAILED, FORBIDDEN and NOT_FOUND
 POST {{baseUrl}}/api/graphql
 Authorization: Bearer <caller token>
 Content-Type: application/json
 
 {
-  "query": "mutation ($input: DeleteRoleInput!) { deleteRole(input: $input) { id version policyVersion revokedAssignments } }",
+  "query": "mutation ($input: DeleteRoleInput!) { deleteRole(input: $input) { id version policyVersion revokedAssignments bulkOperationId } }",
   "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe", "expectedVersion": 1 } }
+}
+
+### Read a bulk operation over REST: its kind, status, applied and total records, the policy versions of its first and last chunk, its requester and propagation (null until the chunks of a revocation-class operation are fenced); 404 for an unknown id, 422 for an id that is not a UUID
+GET {{baseUrl}}/api/bulk-operations/0190f2a8-7b3c-7d4e-8f10-1234567890af
+Authorization: Bearer <caller token>
+
+### List the bulk operations over REST: oldest first with a cursor
+GET {{baseUrl}}/api/bulk-operations?limit=20
+Authorization: Bearer <caller token>
+
+### Read and list bulk operations over GraphQL: bulkOperation(id) is null for an unknown id
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($id: ID!) { bulkOperation(id: $id) { id kind status totalRecords appliedRecords firstVersion lastVersion requester error propagation { status policyVersion podsAcknowledged podsTimedOut } } bulkOperations(first: 20) { items { id status } nextCursor } }",
+  "variables": { "id": "0190f2a8-7b3c-7d4e-8f10-1234567890af" }
 }
 
 ### Read the permissions of a role over REST: every grant in key order with its key, kind (rest, gql or reserved), service, active flag and wildcard flag, and the ETag of the role; 404 for an unknown role, 422 for an id that is not a UUID
@@ -866,4 +884,99 @@ Content-Type: application/json
 {
   "query": "mutation ($input: DeleteUpstreamInput!) { deleteUpstream(input: $input) { id version policyVersion } }",
   "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe", "expectedVersion": 1 } }
+}
+
+### Create a route over REST: 201 with Location, ETag and Iam-Policy-Version; the caller needs iam:route:{service} or iam:route:* (403 otherwise) and iam:route:anonymous for an anonymous or audit-only route (403 otherwise, audited); the service must equal the catalogService of the upstream (422); 409 for a route that overlaps another route of its host, for a candidate route table that the gateway could not build (route-table-conflict) and for a route of the service iam (system-entry, audited); 422 for an unknown upstream or rate policy, an invalid pattern or an origin that is not exact; the flags default to false, enforcement to enforce, bodyLimitBytes to 1048576, requestTimeoutMs to 30000, idleTimeoutMs to 60000 and retryPolicy to none
+POST {{baseUrl}}/api/routes
+Authorization: Bearer <caller token>
+Idempotency-Key: create-orders-route
+Content-Type: application/json
+
+{
+  "host": "app.example.test",
+  "methods": ["GET", "PATCH"],
+  "pathPattern": "/api/orders/{id}",
+  "service": "core",
+  "upstreamId": "01a1c6b5-cb86-7134-868a-7608036facfe",
+  "cors": {
+    "origins": ["https://app.example.test"],
+    "methods": ["GET"],
+    "headers": ["content-type"],
+    "allowCredentials": true,
+    "maxAgeSeconds": 600
+  }
+}
+
+### Create a route over GraphQL: the same data as the REST operation, with the propagation of the write; the error codes VALIDATION_FAILED, CONFLICT and FORBIDDEN
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: CreateRouteInput!) { createRoute(input: $input) { id host methods pathPattern service upstreamId graphql streaming anonymous enforcement bodyLimitBytes requestTimeoutMs idleTimeoutMs retryPolicy ratePolicyIds cors { origins methods headers allowCredentials maxAgeSeconds } system version createdAt updatedAt propagation { status policyVersion } } }",
+  "variables": { "input": { "host": "app.example.test", "methods": ["GET"], "pathPattern": "/api/orders/{id}", "service": "core", "upstreamId": "01a1c6b5-cb86-7134-868a-7608036facfe", "idempotencyKey": "create-orders-route-gql" } }
+}
+
+### Read a route over REST: 200 with its ETag; 404 for an unknown or deleted id; 422 for an id that is not a UUID
+GET {{baseUrl}}/api/routes/01a1c6b5-cb86-7134-868a-7608036facff
+Authorization: Bearer <caller token>
+
+### Read a route over GraphQL: null for an unknown or deleted id
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($id: ID!) { route(id: $id) { id host methods pathPattern service upstreamId anonymous enforcement version } }",
+  "variables": { "id": "01a1c6b5-cb86-7134-868a-7608036facff" }
+}
+
+### List routes over REST: a page of 1 to 100 routes with the nextCursor of the next page, filtered by host, upstream and service
+GET {{baseUrl}}/api/routes?limit=30&host=app.example.test&service=core
+Authorization: Bearer <caller token>
+
+### List routes over GraphQL: the same page with cursor pagination and the filter input
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($first: Int, $after: String, $filter: RouteFilterInput) { routes(first: $first, after: $after, filter: $filter) { items { id host pathPattern service version } nextCursor } }",
+  "variables": { "first": 30, "filter": { "host": "app.example.test", "service": "core" } }
+}
+
+### Update a route over REST: 200 with the new ETag and Iam-Policy-Version; only the members of the body change and "cors": null removes the policy; changing anonymous or enforcement needs iam:route:anonymous (403 otherwise) and is audited with the old and the new value; 428 without If-Match; 412 for a stale If-Match; 404 for an unknown id; 403 without the route key of the service; 409 for a conflict and for a system route
+PATCH {{baseUrl}}/api/routes/01a1c6b5-cb86-7134-868a-7608036facff
+Authorization: Bearer <caller token>
+If-Match: "1"
+Content-Type: application/json
+
+{
+  "requestTimeoutMs": 5000,
+  "methods": ["GET"]
+}
+
+### Update a route over GraphQL: the same data as the REST operation; the error codes PRECONDITION_REQUIRED, PRECONDITION_FAILED, NOT_FOUND, FORBIDDEN, CONFLICT and VALIDATION_FAILED
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: UpdateRouteInput!) { updateRoute(input: $input) { id version requestTimeoutMs } }",
+  "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facff", "expectedVersion": 1, "requestTimeoutMs": 5000 } }
+}
+
+### Delete a route over REST: 204 with the final ETag and Iam-Policy-Version, and a tombstone state record; 409 for a system route (system-entry); 428 without If-Match; 412 for a stale If-Match; 404 for an unknown or deleted id
+DELETE {{baseUrl}}/api/routes/01a1c6b5-cb86-7134-868a-7608036facff
+Authorization: Bearer <caller token>
+If-Match: "1"
+
+### Delete a route over GraphQL: the id, the final version and the policy version; the error codes PRECONDITION_REQUIRED, PRECONDITION_FAILED, NOT_FOUND, FORBIDDEN and CONFLICT
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: DeleteRouteInput!) { deleteRoute(input: $input) { id version policyVersion } }",
+  "variables": { "input": { "id": "01a1c6b5-cb86-7134-868a-7608036facff", "expectedVersion": 1 } }
 }

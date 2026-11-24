@@ -101,7 +101,7 @@ impl AdministratorCallerPolicy {
         let mut route_scoped_grants: Vec<&str> = PlatformAdministrator::GRANTS
             .iter()
             .copied()
-            .filter(|grant| *grant != "iam:route:*")
+            .filter(|grant| *grant != "iam:route:*" && *grant != "iam:route:anonymous")
             .collect();
         route_scoped_grants.push("iam:route:core");
         let route_scoped = InjectedCaller::new(

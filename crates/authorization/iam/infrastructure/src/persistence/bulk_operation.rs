@@ -7,9 +7,10 @@ use std::time::SystemTime;
 
 use iam_domain::{
     ActorRef, BulkKind, BulkOperation, BulkOperationId, BulkOperationParts,
-    BulkOperationRepository, BulkStatus, PolicyVersion, RepositoryError,
+    BulkOperationRepository, BulkProgressStatement, BulkStatus, PolicyVersion, RepositoryError,
 };
 use shared_domain::Uuid;
+use sqlx::PgConnection;
 use sqlx::types::Uuid as SqlUuid;
 use sqlx::types::time::OffsetDateTime;
 
@@ -36,6 +37,36 @@ const UPDATE: &str = "UPDATE iam_bulk_operations
     SET status = $2, applied_records = $3, first_version = $4, last_version = $5, error = $6,
         updated_at = $7
     WHERE id = $1";
+
+const UPDATE_PROGRESS: &str = "UPDATE iam_bulk_operations
+    SET status = $2, applied_records = $3, first_version = $4, last_version = $5, updated_at = $6
+    WHERE id = $1 AND applied_records = $7 AND status IN ('pending', 'running')";
+
+/// Stores the progress of a bulk operation inside the transaction of a chunk's change.
+///
+/// # Errors
+///
+/// [`RepositoryError::Conflict`] when the stored operation is finished or has not applied the
+/// expected records, and [`RepositoryError::Unavailable`] when the storage fails or a value cannot
+/// be stored.
+pub async fn save_progress_within(
+    connection: &mut PgConnection,
+    statement: &BulkProgressStatement,
+) -> Result<(), RepositoryError> {
+    let parts = statement.operation();
+    let done = sqlx::query(UPDATE_PROGRESS)
+        .bind(parts.id.as_uuid().as_uuid())
+        .bind(parts.status.as_str())
+        .bind(count(parts.applied_records)?)
+        .bind(parts.first_version.map(PolicyVersion::value))
+        .bind(parts.last_version.map(PolicyVersion::value))
+        .bind(OffsetDateTime::from(parts.updated_at))
+        .bind(count(statement.expected_applied())?)
+        .execute(&mut *connection)
+        .await
+        .map_err(translate)?;
+    updated(done.rows_affected())
+}
 
 /// The stored bulk operation row; it never leaves this module.
 #[derive(sqlx::FromRow)]

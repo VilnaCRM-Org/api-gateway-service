@@ -119,6 +119,11 @@ fn documents_exactly_the_twenty_four_operations() {
             "patch /api/roles/{id}",
             "get /api/roles/{id}/permissions",
             "put /api/roles/{id}/permissions",
+            "get /api/routes",
+            "post /api/routes",
+            "get /api/routes/{id}",
+            "delete /api/routes/{id}",
+            "patch /api/routes/{id}",
             "post /api/token-resolutions",
             "get /api/upstreams",
             "post /api/upstreams",
@@ -1233,6 +1238,7 @@ fn defines_exactly_the_documented_schemas() {
             "CreateRatePolicyRequest",
             "CreateRestPermissionsRequest",
             "CreateRoleRequest",
+            "CreateRouteRequest",
             "CreateUpstreamRequest",
             "DeletedRatePolicy",
             "DeletedRole",
@@ -1271,12 +1277,20 @@ fn defines_exactly_the_documented_schemas() {
             "RolePage",
             "RolePermission",
             "RolePermissions",
+            "Route",
+            "RouteCorsPolicy",
+            "RouteEnforcement",
+            "RouteMethod",
+            "RoutePage",
+            "RouteRetryPolicy",
+            "RouteTraffic",
             "SetRolePermissionsRequest",
             "SpecRetirement",
             "TokenResolution",
             "TokenResolutionRequest",
             "UpdateRatePolicyRequest",
             "UpdateRoleRequest",
+            "UpdateRouteRequest",
             "UpdateUpstreamRequest",
             "UpdateUserRoleRequest",
             "Upstream",
@@ -1688,5 +1702,86 @@ fn the_upstream_schemas_name_the_members_of_fr_56() {
         json["paths"]["/api/upstreams/{id}"]["get"]["responses"]["200"]["content"]["application/json"]
             ["schema"]["$ref"],
         "#/components/schemas/Upstream"
+    );
+}
+
+#[test]
+fn documents_the_route_operations_with_the_bearer_requirement_and_the_iam_tag() {
+    let json = json_document();
+    let cases = [
+        ("/api/routes", "post", "api_routes_post"),
+        ("/api/routes", "get", "api_routes_get"),
+        ("/api/routes/{id}", "get", "api_routes_id_get"),
+        ("/api/routes/{id}", "patch", "api_routes_id_patch"),
+        ("/api/routes/{id}", "delete", "api_routes_id_delete"),
+    ];
+
+    for (path, method, operation_id) in cases {
+        let operation = &json["paths"][path][method];
+        assert_eq!(operation["operationId"], operation_id);
+        assert_eq!(operation["tags"], json!(["iam"]), "{operation_id}");
+        assert_eq!(
+            operation["security"],
+            json!([{ "bearerAuth": [] }]),
+            "{operation_id}"
+        );
+        assert_eq!(
+            operation["responses"]["401"]["content"]["application/problem+json"]["schema"]["$ref"],
+            "#/components/schemas/Problem",
+            "{operation_id}"
+        );
+    }
+}
+
+#[test]
+fn the_route_schemas_name_the_members_of_fr_57() {
+    let json = json_document();
+    let schemas = &json["components"]["schemas"];
+
+    assert_eq!(
+        schemas["CreateRouteRequest"]["required"],
+        json!(["host", "methods", "pathPattern", "service", "upstreamId"])
+    );
+    let parts = schemas["Route"]["allOf"].as_array().unwrap();
+    assert!(
+        parts
+            .iter()
+            .any(|part| part["$ref"] == "#/components/schemas/RouteTraffic")
+    );
+    let response = parts
+        .iter()
+        .map(|part| &part["properties"])
+        .find(|properties| properties.is_object())
+        .unwrap();
+    for member in [
+        "id",
+        "host",
+        "methods",
+        "pathPattern",
+        "service",
+        "upstreamId",
+        "anonymous",
+        "enforcement",
+        "bodyLimitBytes",
+        "requestTimeoutMs",
+        "idleTimeoutMs",
+        "retryPolicy",
+        "ratePolicyIds",
+        "cors",
+        "system",
+        "version",
+        "createdAt",
+        "updatedAt",
+    ] {
+        assert!(response[member].is_object(), "{member}");
+    }
+    let traffic = &schemas["RouteTraffic"]["properties"];
+    for member in ["graphql", "streaming"] {
+        assert!(traffic[member].is_object(), "{member}");
+    }
+    assert_eq!(
+        json["paths"]["/api/routes/{id}"]["get"]["responses"]["200"]["content"]["application/json"]
+            ["schema"]["$ref"],
+        "#/components/schemas/Route"
     );
 }

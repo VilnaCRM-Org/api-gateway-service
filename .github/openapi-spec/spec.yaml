@@ -2567,7 +2567,7 @@ paths:
       tags:
       - iam
       summary: Deletes a role.
-      description: 'Deletes a custom role when `If-Match` holds the current `ETag` and revokes every assignment of it in the same transaction: the role and its assignments leave the active listings at once, the next policy version is committed, and `iam.role.deleted`, one `iam.user_role.revoked` per revoked assignment and the audit records are written. The response reports the number of revoked assignments. A system role cannot be deleted. A repeated `Idempotency-Key` with the same request within 24 hours returns the original result, including the number of revoked assignments.'
+      description: 'Deletes a custom role when `If-Match` holds the current `ETag` and revokes every assignment of it in the same transaction: the role and its assignments leave the active listings at once, the next policy version is committed, and `iam.role.deleted`, one `iam.user_role.revoked` per revoked assignment and the audit records are written. The response reports the number of revoked assignments. A system role cannot be deleted. A repeated `Idempotency-Key` with the same request within 24 hours returns the original result, including the number of revoked assignments. A role with more assignments than `BULK_CHUNK_ENTITIES` is deleted by a bulk operation instead: the response is 202 with the `Location` of the operation, which revokes the assignments in ordered chunks and deletes the role in the last one; `revokedAssignments` is the number it will revoke.'
       operationId: api_roles_id_delete
       parameters:
       - name: id
@@ -2620,20 +2620,24 @@ paths:
               schema:
                 $ref: '#/components/schemas/DeletedRole'
         '202':
-          description: The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.
+          description: The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet. For a role with more assignments than `BULK_CHUNK_ENTITIES` the deletion was recorded as a bulk operation, which `location` names.
           headers:
             etag:
               schema:
                 type: string
-              description: The final version of the role in double quotes.
+              description: The final version of the role in double quotes; for a bulk operation, the version the role holds until the last chunk deletes it.
             iam-policy-version:
               schema:
                 type: string
-              description: The policy version that the change produced.
+              description: The policy version that the change produced; absent for a bulk operation.
             iam-propagation-status:
               schema:
                 type: string
-              description: '`committed_pending_propagation`.'
+              description: '`committed_pending_propagation`; absent for a bulk operation.'
+            location:
+              schema:
+                type: string
+              description: Path of the bulk operation; present only when the deletion runs as a bulk operation.
           content:
             application/json:
               schema:
@@ -2668,7 +2672,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
         '409':
-          description: The role or one of its assignments changed concurrently, or the role has more assignments than one transaction revokes.
+          description: The role or one of its assignments changed concurrently.
           content:
             application/problem+json:
               schema:
@@ -3039,6 +3043,577 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '422':
           description: 'Validation failed: unknown keys, more than 5,000 keys, or the idempotency key was used for another request.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '428':
+          description: '`If-Match` is missing.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+  /api/routes:
+    get:
+      tags:
+      - iam
+      summary: Retrieves the collection of routes.
+      description: Returns one page of the routes that are not deleted in a stable order, with the `nextCursor` of the next page. The filters `host`, `upstream` and `service` keep the routes that match every filter given.
+      operationId: api_routes_get
+      parameters:
+      - name: limit
+        in: query
+        description: The largest number of routes of the page.
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 30
+          maximum: 100
+          minimum: 1
+      - name: after
+        in: query
+        description: The `nextCursor` of the previous page; absent for the first page.
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: host
+        in: query
+        description: Only the routes of this host.
+        required: false
+        schema:
+          type: string
+      - name: upstream
+        in: query
+        description: Only the routes that forward to this upstream.
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: service
+        in: query
+        description: Only the routes of this catalogue service.
+        required: false
+        schema:
+          type: string
+      responses:
+        '200':
+          description: One page of routes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutePage'
+        '400':
+          description: Invalid query parameter.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks the operation key.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+    post:
+      tags:
+      - iam
+      summary: Creates a route.
+      description: Registers a route of one host, a set of methods and a path pattern that the gateway forwards to an upstream, at version 1, writes its `route/<id>` state record, takes the next policy version and records `iam.route.created`. The caller needs `iam:route:{service}` or `iam:route:*`, and `iam:route:anonymous` to make the route anonymous or audit-only. The route `service` must equal the `catalogService` of its upstream. A route that overlaps another route of its host, or whose candidate route table the gateway could not build, is refused with 409 `route-table-conflict`; a route of the `iam` service with 409 `system-entry`. A repeated `Idempotency-Key` with the same body within 24 hours returns the original result.
+      operationId: api_routes_post
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        description: Makes the creation safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: Prefer
+        in: header
+        description: 'What the write waits for: `wait=published` (the default) returns once Kafka acknowledged the policy version, `wait=propagated` is refused with 422 until the gateway pods report their versions.'
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRouteRequest'
+        required: true
+      responses:
+        '201':
+          description: The route was created.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the route in double quotes.
+            iam-policy-offset:
+              schema:
+                type: string
+              description: The offset at which Kafka stored the `__head` record of the policy version; present when the change was acknowledged.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+            location:
+              schema:
+                type: string
+              description: Path of the created route.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Route'
+        '202':
+          description: The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the route in double quotes.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+            iam-propagation-status:
+              schema:
+                type: string
+              description: '`committed_pending_propagation`.'
+            location:
+              schema:
+                type: string
+              description: Path of the created route.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Route'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks the operation key, the route key of the service or `iam:route:anonymous`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: The route conflicts with another route of its host, or it belongs to the `iam` service.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed, or the idempotency key was used for another request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+  /api/routes/{id}:
+    get:
+      tags:
+      - iam
+      summary: Retrieves a route.
+      description: Returns the route with the identifier, with its `ETag`.
+      operationId: api_routes_id_get
+      parameters:
+      - name: id
+        in: path
+        description: Route identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The route.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the route in double quotes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Route'
+        '400':
+          description: Invalid identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks the operation key.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Route not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+    delete:
+      tags:
+      - iam
+      summary: Deletes a route.
+      description: 'Deletes the route when `If-Match` holds the current `ETag`: it leaves the listings at once, its `route/<id>` state record becomes a tombstone, the next policy version is committed, and `iam.route.deleted` and an audit record are written in the same transaction. The caller needs `iam:route:{service}` or `iam:route:*`; a system route and one of the `iam` service are refused with 409 `system-entry`. A repeated `Idempotency-Key` with the same request within 24 hours returns the original result.'
+      operationId: api_routes_id_delete
+      parameters:
+      - name: id
+        in: path
+        description: Route identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: If-Match
+        in: header
+        description: The `ETag` of the version the deletion ends, such as `"3"`.
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        description: Makes the deletion safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: Prefer
+        in: header
+        description: 'What the write waits for: `wait=published` (the default) returns once Kafka acknowledged the policy version, `wait=propagated` is refused with 422 until the gateway pods report their versions.'
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      responses:
+        '202':
+          description: The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The final version of the route in double quotes.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+            iam-propagation-status:
+              schema:
+                type: string
+              description: '`committed_pending_propagation`.'
+        '204':
+          description: The route was deleted.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The final version of the route in double quotes.
+            iam-policy-offset:
+              schema:
+                type: string
+              description: The offset at which Kafka stored the `__head` record of the policy version; present when the change was acknowledged.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+        '400':
+          description: Invalid identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks the operation key or the route key of the service.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Route not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: The route is a system route or belongs to the `iam` service, or it changed concurrently.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '412':
+          description: '`If-Match` is not the current version.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed, or the idempotency key was used for another request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '428':
+          description: '`If-Match` is missing.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+    patch:
+      tags:
+      - iam
+      summary: Updates a route.
+      description: Changes the members named in the body when `If-Match` holds the current `ETag`, increases the version, writes the `route/<id>` state record, takes the next policy version and records `iam.route.updated`. The caller needs `iam:route:{service}` or `iam:route:*` for the service before and after the change, and `iam:route:anonymous` to change `anonymous` or `enforcement`, which is audited with the old and the new value. A system route and one of the `iam` service are refused with 409 `system-entry`. A repeated `Idempotency-Key` with the same request within 24 hours returns the original result.
+      operationId: api_routes_id_patch
+      parameters:
+      - name: id
+        in: path
+        description: Route identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: If-Match
+        in: header
+        description: The `ETag` of the version the update changes, such as `"3"`.
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        description: Makes the update safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      - name: Prefer
+        in: header
+        description: 'What the write waits for: `wait=published` (the default) returns once Kafka acknowledged the policy version, `wait=propagated` is refused with 422 until the gateway pods report their versions.'
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRouteRequest'
+        required: true
+      responses:
+        '200':
+          description: The route was updated.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The new version of the route in double quotes.
+            iam-policy-offset:
+              schema:
+                type: string
+              description: The offset at which Kafka stored the `__head` record of the policy version; present when the change was acknowledged.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Route'
+        '202':
+          description: The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The new version of the route in double quotes.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+            iam-propagation-status:
+              schema:
+                type: string
+              description: '`committed_pending_propagation`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Route'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks the operation key, the route key of the service or `iam:route:anonymous`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Route not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: The route is a system route or belongs to the `iam` service, it conflicts with another route of its host, or it changed concurrently.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '412':
+          description: '`If-Match` is not the current version.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed, or the idempotency key was used for another request.
           content:
             application/problem+json:
               schema:
@@ -4765,6 +5340,102 @@ components:
           maxLength: 100
           minLength: 1
       additionalProperties: false
+    CreateRouteRequest:
+      type: object
+      description: Body of the route-creation operation.
+      required:
+      - host
+      - methods
+      - pathPattern
+      - service
+      - upstreamId
+      properties:
+        anonymous:
+          type:
+          - boolean
+          - 'null'
+          description: |-
+            Whether the route is served without authentication; needs `iam:route:anonymous`; `false`
+            when absent.
+          default: false
+        bodyLimitBytes:
+          type: integer
+          format: int64
+          description: The largest request body, in bytes.
+          default: 1048576
+          minimum: 1
+        cors:
+          oneOf:
+          - $ref: '#/components/schemas/RouteCorsPolicy'
+            description: The CORS policy of the route, when it has one.
+          - type: 'null'
+        enforcement:
+          $ref: '#/components/schemas/RouteEnforcement'
+          description: The enforcement mode; `audit` needs `iam:route:anonymous`.
+        graphql:
+          type:
+          - boolean
+          - 'null'
+          description: Whether the route serves GraphQL; `false` when absent.
+          default: false
+        host:
+          type: string
+          description: The lower-case DNS name of the host the route serves.
+          example: app.example.test
+          maxLength: 253
+          minLength: 1
+        idleTimeoutMs:
+          type: integer
+          format: int64
+          description: The idle timeout, in milliseconds.
+          default: 60000
+          minimum: 1
+        methods:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteMethod'
+          description: The methods the route serves.
+          minItems: 1
+        pathPattern:
+          type: string
+          description: The path pattern, with `{name}` and `{name:*}` segments.
+          example: /api/orders/{id}
+          maxLength: 2048
+          minLength: 1
+        ratePolicyIds:
+          type: array
+          items:
+            type: string
+          description: The rate policies of the route, in the order they apply, at most 10.
+          maxItems: 10
+        requestTimeoutMs:
+          type: integer
+          format: int64
+          description: The request timeout, in milliseconds.
+          default: 30000
+          minimum: 1
+        retryPolicy:
+          $ref: '#/components/schemas/RouteRetryPolicy'
+          description: Which failed requests are retried.
+        service:
+          type: string
+          description: |-
+            The catalogue service whose keys authorize the route; it must equal the catalogue service
+            of the upstream.
+          example: core
+          maxLength: 63
+          minLength: 1
+        streaming:
+          type:
+          - boolean
+          - 'null'
+          description: Whether the route streams its response; `false` when absent.
+          default: false
+        upstreamId:
+          type: string
+          format: uuid
+          description: The upstream the route forwards to.
+      additionalProperties: false
     CreateUpstreamRequest:
       type: object
       description: Body of the upstream-creation operation.
@@ -5947,6 +6618,194 @@ components:
           format: int64
           description: The version of the role.
           minimum: 1
+    Route:
+      allOf:
+      - $ref: '#/components/schemas/RouteTraffic'
+        description: Whether the route serves GraphQL and whether it streams its response.
+      - type: object
+        required:
+        - id
+        - host
+        - methods
+        - pathPattern
+        - service
+        - upstreamId
+        - anonymous
+        - enforcement
+        - bodyLimitBytes
+        - requestTimeoutMs
+        - idleTimeoutMs
+        - retryPolicy
+        - ratePolicyIds
+        - system
+        - version
+        - createdAt
+        - updatedAt
+        properties:
+          anonymous:
+            type: boolean
+            description: Whether the route is served without authentication.
+          bodyLimitBytes:
+            type: integer
+            format: int64
+            description: The largest request body, in bytes.
+            minimum: 1
+          cors:
+            oneOf:
+            - $ref: '#/components/schemas/RouteCorsPolicy'
+              description: The CORS policy of the route, when it has one.
+            - type: 'null'
+          createdAt:
+            type: string
+            format: date-time
+            description: When the route was created, as an RFC 3339 UTC time.
+            example: 2026-11-23T10:15:30.123456Z
+          enforcement:
+            $ref: '#/components/schemas/RouteEnforcement'
+            description: The enforcement mode.
+          host:
+            type: string
+            description: The host the route serves.
+          id:
+            type: string
+            format: uuid
+            description: The identifier of the route.
+          idleTimeoutMs:
+            type: integer
+            format: int32
+            description: The idle timeout, in milliseconds.
+            minimum: 1
+          methods:
+            type: array
+            items:
+              $ref: '#/components/schemas/RouteMethod'
+            description: The methods the route serves.
+          pathPattern:
+            type: string
+            description: The path pattern.
+          ratePolicyIds:
+            type: array
+            items:
+              type: string
+            description: The rate policies of the route, in the order they apply.
+          requestTimeoutMs:
+            type: integer
+            format: int32
+            description: The request timeout, in milliseconds.
+            minimum: 1
+          retryPolicy:
+            $ref: '#/components/schemas/RouteRetryPolicy'
+            description: Which failed requests are retried.
+          service:
+            type: string
+            description: The catalogue service whose keys authorize the route.
+          system:
+            type: boolean
+            description: Whether IAM manages the route itself; the API refuses every change of a system route.
+          updatedAt:
+            type: string
+            format: date-time
+            description: When the route was last changed, as an RFC 3339 UTC time.
+            example: 2026-11-23T10:15:30.123456Z
+          upstreamId:
+            type: string
+            format: uuid
+            description: The upstream the route forwards to.
+          version:
+            type: integer
+            format: int64
+            description: The version of the route; its `ETag` is this number in double quotes.
+            minimum: 1
+      description: A route.
+    RouteCorsPolicy:
+      type: object
+      description: 'The CORS policy of a route: exact origins, never a wildcard.'
+      required:
+      - origins
+      properties:
+        allowCredentials:
+          type: boolean
+          description: Whether credentials are allowed.
+          default: false
+        headers:
+          type: array
+          items:
+            type: string
+          description: The allowed request headers.
+        maxAgeSeconds:
+          type: integer
+          format: int64
+          description: How long a preflight answer may be cached, in seconds, at most 86,400.
+          default: 600
+          maximum: 86400
+          minimum: 0
+        methods:
+          type: array
+          items:
+            $ref: '#/components/schemas/RouteMethod'
+          description: The allowed methods.
+        origins:
+          type: array
+          items:
+            type: string
+          description: |-
+            The allowed origins, each an exact `https` (or `http`) origin such as
+            `https://app.example.com`.
+          minItems: 1
+      additionalProperties: false
+    RouteEnforcement:
+      type: string
+      description: What the gateway does with a request that the decision denies.
+      enum:
+      - enforce
+      - audit
+    RouteMethod:
+      type: string
+      description: An HTTP method that a route serves.
+      enum:
+      - GET
+      - HEAD
+      - POST
+      - PUT
+      - PATCH
+      - DELETE
+      - OPTIONS
+    RoutePage:
+      type: object
+      description: One page of routes.
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Route'
+          description: The routes of the page.
+        nextCursor:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The `after` value of the next page; absent on the last page.
+    RouteRetryPolicy:
+      type: string
+      description: Which failed requests the gateway retries.
+      enum:
+      - none
+      - idempotent
+    RouteTraffic:
+      type: object
+      description: How the gateway carries the traffic of a route.
+      required:
+      - graphql
+      - streaming
+      properties:
+        graphql:
+          type: boolean
+          description: Whether the route serves GraphQL.
+        streaming:
+          type: boolean
+          description: Whether the route streams its response.
     SetRolePermissionsRequest:
       type: object
       description: Body of the operation that replaces the grants of a role.
@@ -6133,6 +6992,112 @@ components:
           example: Billing administrator
           maxLength: 100
           minLength: 1
+      additionalProperties: false
+    UpdateRouteRequest:
+      type: object
+      description: |-
+        Body of the route-update operation: every member is optional, and an absent one stays as it
+        is.
+      properties:
+        anonymous:
+          type:
+          - boolean
+          - 'null'
+          description: |-
+            Whether the route is served without authentication; changing it needs
+            `iam:route:anonymous`.
+        bodyLimitBytes:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: The largest request body, in bytes.
+          minimum: 1
+        cors:
+          oneOf:
+          - $ref: '#/components/schemas/RouteCorsPolicy'
+            description: The CORS policy of the route; `null` removes it.
+          - type: 'null'
+        enforcement:
+          oneOf:
+          - $ref: '#/components/schemas/RouteEnforcement'
+            description: The enforcement mode; changing it needs `iam:route:anonymous`.
+          - type: 'null'
+        graphql:
+          type:
+          - boolean
+          - 'null'
+          description: Whether the route serves GraphQL.
+        host:
+          type:
+          - string
+          - 'null'
+          description: The lower-case DNS name of the host the route serves.
+          example: app.example.test
+          maxLength: 253
+          minLength: 1
+        idleTimeoutMs:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: The idle timeout, in milliseconds.
+          minimum: 1
+        methods:
+          type:
+          - array
+          - 'null'
+          items:
+            $ref: '#/components/schemas/RouteMethod'
+          description: The methods the route serves.
+          minItems: 1
+        pathPattern:
+          type:
+          - string
+          - 'null'
+          description: The path pattern, with `{name}` and `{name:*}` segments.
+          example: /api/orders/{id}
+          maxLength: 2048
+          minLength: 1
+        ratePolicyIds:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+          description: The rate policies of the route, in the order they apply, at most 10.
+          maxItems: 10
+        requestTimeoutMs:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: The request timeout, in milliseconds.
+          minimum: 1
+        retryPolicy:
+          oneOf:
+          - $ref: '#/components/schemas/RouteRetryPolicy'
+            description: Which failed requests are retried.
+          - type: 'null'
+        service:
+          type:
+          - string
+          - 'null'
+          description: The catalogue service whose keys authorize the route.
+          example: core
+          maxLength: 63
+          minLength: 1
+        streaming:
+          type:
+          - boolean
+          - 'null'
+          description: Whether the route streams its response.
+        upstreamId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The upstream the route forwards to.
       additionalProperties: false
     UpdateUpstreamRequest:
       type: object

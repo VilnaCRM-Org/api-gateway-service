@@ -3,6 +3,7 @@
 
 pub mod chunker;
 pub mod event;
+pub mod statement;
 
 use std::time::SystemTime;
 

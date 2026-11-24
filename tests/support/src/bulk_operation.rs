@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use async_trait::async_trait;
 use iam_domain::{
     BulkChunkCommitter, BulkOperation, BulkOperationId, BulkOperationParts,
-    BulkOperationRepository, BulkStamp, ChunkCommitError, CommittedChunk, PolicyVersion,
-    RepositoryError,
+    BulkOperationRepository, BulkRoleTargetStore, BulkStamp, ChunkCommitError, CommittedChunk,
+    PolicyVersion, RepositoryError, RoleId,
 };
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -208,5 +208,74 @@ impl BulkChunkCommitter for FakeChunkCommitter {
         let chunk = CommittedChunk { records, version };
         locked(&self.commits).push(chunk);
         Ok(chunk)
+    }
+}
+
+/// A target store that keeps the role of each operation in memory.
+#[derive(Debug, Default)]
+pub struct FakeBulkRoleTargetStore {
+    stored: Mutex<Vec<(BulkOperationId, RoleId)>>,
+    failing: bool,
+}
+
+impl FakeBulkRoleTargetStore {
+    /// A store without targets.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            stored: Mutex::new(Vec::new()),
+            failing: false,
+        }
+    }
+
+    /// A store that answers `Unavailable`.
+    #[must_use]
+    pub const fn failing() -> Self {
+        Self {
+            stored: Mutex::new(Vec::new()),
+            failing: true,
+        }
+    }
+
+    /// A store that holds `role` as the target of `operation`.
+    #[must_use]
+    pub fn holding(operation: BulkOperationId, role: RoleId) -> Self {
+        Self {
+            stored: Mutex::new(vec![(operation, role)]),
+            failing: false,
+        }
+    }
+
+    fn check(&self) -> Result<(), RepositoryError> {
+        if self.failing {
+            return Err(RepositoryError::Unavailable("the fake is failing".into()));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl BulkRoleTargetStore for FakeBulkRoleTargetStore {
+    async fn insert(
+        &self,
+        operation: BulkOperationId,
+        role: RoleId,
+    ) -> Result<(), RepositoryError> {
+        self.check()?;
+        let mut stored = locked(&self.stored);
+        if stored.iter().any(|(id, _role)| *id == operation) {
+            return Err(RepositoryError::AlreadyExists);
+        }
+        stored.push((operation, role));
+        drop(stored);
+        Ok(())
+    }
+
+    async fn find(&self, operation: BulkOperationId) -> Result<Option<RoleId>, RepositoryError> {
+        self.check()?;
+        Ok(locked(&self.stored)
+            .iter()
+            .find(|(id, _role)| *id == operation)
+            .map(|(_id, role)| *role))
     }
 }

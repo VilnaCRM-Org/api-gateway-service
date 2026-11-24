@@ -14,6 +14,7 @@ pub mod anti_entropy;
 #[cfg(test)]
 mod bulk_operation_fixtures;
 pub mod bulk_operation_runner;
+pub mod bulk_role_deletion;
 pub mod caller_rule;
 pub mod command;
 pub mod endpoint_directory;
@@ -53,6 +54,8 @@ mod rest_activation_fixtures;
 mod rest_permission_fixtures;
 #[cfg(test)]
 mod role_permission_fixtures;
+#[cfg(test)]
+mod route_fixtures;
 pub mod service_catalog_loader;
 pub mod singleton_loop;
 #[cfg(test)]
@@ -72,6 +75,7 @@ pub use anti_entropy::{
     AntiEntropySettings, InvalidAntiEntropySettings, TopicAheadHold,
 };
 pub use bulk_operation_runner::{BulkOperationRunner, BulkRunnerPorts};
+pub use bulk_role_deletion::{RoleDeletionChunkCommitter, RoleDeletionPorts};
 pub use caller_rule::{CallerRule, target_services};
 pub use command::assign_user_role::{AssignUserRoleCommand, AssignUserRoleCommandHandler};
 pub use command::bootstrap_iam::{BootstrapIamCommand, BootstrapIamCommandHandler};
@@ -83,9 +87,11 @@ pub use command::create_rest_permissions::{
     CreateRestPermissionsCommand, CreateRestPermissionsCommandHandler, RestActivationReads,
 };
 pub use command::create_role::{CreateRoleCommand, CreateRoleCommandHandler};
+pub use command::create_route::{CreateRouteCommand, CreateRouteCommandHandler};
 pub use command::create_upstream::{CreateUpstreamCommand, CreateUpstreamCommandHandler};
 pub use command::delete_rate_policy::{DeleteRatePolicyCommand, DeleteRatePolicyCommandHandler};
-pub use command::delete_role::{DeleteRoleCommand, DeleteRoleCommandHandler};
+pub use command::delete_role::{BulkDeletionPath, DeleteRoleCommand, DeleteRoleCommandHandler};
+pub use command::delete_route::{DeleteRouteCommand, DeleteRouteCommandHandler, DeleteRoutePorts};
 pub use command::delete_upstream::{
     DeleteUpstreamCommand, DeleteUpstreamCommandHandler, DeleteUpstreamPorts,
 };
@@ -100,12 +106,14 @@ pub use command::retire_openapi_spec::{RetireOpenApiSpecCommand, RetireOpenApiSp
 pub use command::revoke_user_role::{
     RevokeUserRoleCommand, RevokeUserRoleCommandHandler, RevokeUserRoleReads,
 };
+pub use command::route_checks::RoutePorts;
 pub use command::run_maintenance::{RunMaintenanceCommand, RunMaintenanceCommandHandler};
 pub use command::set_role_permissions::{
     SetRolePermissionsCommand, SetRolePermissionsCommandHandler, SetRolePermissionsReads,
 };
 pub use command::update_rate_policy::{UpdateRatePolicyCommand, UpdateRatePolicyCommandHandler};
 pub use command::update_role::{DescriptionUpdate, UpdateRoleCommand, UpdateRoleCommandHandler};
+pub use command::update_route::{RoutePatch, UpdateRouteCommand, UpdateRouteCommandHandler};
 pub use command::update_upstream::{
     UpdateUpstreamCommand, UpdateUpstreamCommandHandler, UpstreamPatch,
 };
@@ -169,6 +177,7 @@ pub use query::get_role::{GetRoleQuery, GetRoleQueryHandler};
 pub use query::get_role_permissions::{
     GetRolePermissionsQuery, GetRolePermissionsQueryHandler, RolePermissions,
 };
+pub use query::get_route::{GetRouteQuery, GetRouteQueryHandler};
 pub use query::get_upstream::{GetUpstreamQuery, GetUpstreamQueryHandler};
 pub use query::get_user_role::{GetUserRoleQuery, GetUserRoleQueryHandler, UserRoleView};
 pub use query::get_user_role_permissions::{
@@ -181,6 +190,7 @@ pub use query::list_rate_policies::{
     ListRatePoliciesQuery, ListRatePoliciesQueryHandler, RatePolicyPage,
 };
 pub use query::list_roles::{ListRolesQuery, ListRolesQueryHandler, RolePage};
+pub use query::list_routes::{ListRoutesQuery, ListRoutesQueryHandler, RoutePage};
 pub use query::list_upstreams::{ListUpstreamsQuery, ListUpstreamsQueryHandler, UpstreamPage};
 pub use query::list_user_roles::{ListUserRolesQuery, ListUserRolesQueryHandler, UserRolePage};
 pub use query::resolve_subject_token::{

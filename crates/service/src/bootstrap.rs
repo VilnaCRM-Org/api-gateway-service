@@ -31,6 +31,10 @@ use iam_application::{
     ListUserRolesQueryHandler, RevokeUserRoleCommandHandler, UpdateUserRoleCommandHandler,
 };
 use iam_application::{
+    BulkDeletionPath, CreateRoleCommandHandler, DeleteRoleCommandHandler, GetRoleQueryHandler,
+    ListRolesQueryHandler, UpdateRoleCommandHandler,
+};
+use iam_application::{
     CreateRatePolicyCommandHandler, DeleteRatePolicyCommandHandler, GetRatePolicyQueryHandler,
     ListRatePoliciesQueryHandler, UpdateRatePolicyCommandHandler,
 };
@@ -38,8 +42,8 @@ use iam_application::{
     CreateRestPermissionsCommandHandler, GetRestPermissionsCreatedQueryHandler, RestActivationReads,
 };
 use iam_application::{
-    CreateRoleCommandHandler, DeleteRoleCommandHandler, GetRoleQueryHandler, ListRolesQueryHandler,
-    UpdateRoleCommandHandler,
+    CreateRouteCommandHandler, DeleteRouteCommandHandler, DeleteRoutePorts, GetRouteQueryHandler,
+    ListRoutesQueryHandler, RoutePorts, UpdateRouteCommandHandler,
 };
 use iam_application::{
     CreateUpstreamCommandHandler, DeleteUpstreamCommandHandler, DeleteUpstreamPorts,
@@ -71,7 +75,6 @@ use iam_application::{IamAccessGuard, RecordRejectedAttemptCommandHandler};
 use iam_application::{RegisterOwnSpecsCommand, RegisterOwnSpecsCommandHandler};
 use iam_application::{ResolveSubjectTokenQueryHandler, ResolveTokenQueryHandler};
 use iam_application::{RetireGraphQlSpecCommandHandler, RetireOpenApiSpecCommandHandler};
-use iam_domain::BulkOperationRepository;
 use iam_domain::GraphQlPermissionRepository;
 use iam_domain::GraphQlSpecRepository;
 use iam_domain::OpenApiSpecRepository;
@@ -87,11 +90,13 @@ use iam_domain::{
     AccessTokenVerifier, ChangeReceiptRepository, IdempotencyRepository, PolicyEpochRepository,
     PolicyReadRepository, RejectedAttemptLog, SecurityAuditLog,
 };
+use iam_domain::{BulkOperationRepository, BulkRoleTargetStore};
 use iam_domain::{IamUnitOfWork, OWN_SPECIFICATIONS_LOCK, RepositoryError, RequestDigester};
 use iam_domain::{MaintenanceStore, TaskStateRepository};
 use iam_domain::{RevocationRepository, RevocationView, TokenMemo, TokenRepository};
 use iam_infrastructure::BufferedRejectedAttemptLog;
 use iam_infrastructure::KrafkaTopicInspector;
+use iam_infrastructure::MatchitRouteTableCompiler;
 use iam_infrastructure::PgGraphQlPermissionRepository;
 use iam_infrastructure::PgGraphQlSpecRepository;
 use iam_infrastructure::PgOpenApiSpecRepository;
@@ -109,8 +114,9 @@ use iam_infrastructure::{
     CachingTokenRepository, MokaTokenMemo, PgRevocationRepository, PgRevocationView,
 };
 use iam_infrastructure::{
-    JwtAccessTokenVerifier, JwtKeyFileError, PgBulkOperationRepository, PgChangeReceiptRepository,
-    PgIdempotencyRepository, PgPolicyEpochRepository, PgPolicyReadRepository, PgSecurityAuditLog,
+    JwtAccessTokenVerifier, JwtKeyFileError, PgBulkOperationRepository, PgBulkRoleTargetStore,
+    PgChangeReceiptRepository, PgIdempotencyRepository, PgPolicyEpochRepository,
+    PgPolicyReadRepository, PgSecurityAuditLog,
 };
 use iam_infrastructure::{PgMaintenanceStore, PgTaskStateRepository};
 use shared_domain::{Clock, CommandBus, CommandHandler as _, EventBus, QueryBus, UuidGenerator};
@@ -130,7 +136,7 @@ use some_module_application::{
 use some_module_domain::ExampleApiResourceRepository;
 use some_module_infrastructure::PgExampleApiResourceRepository;
 
-use crate::config::Config;
+use crate::config::{BulkSettings, Config};
 use crate::graphql::schema;
 use crate::http::AppState;
 use crate::http::router::assemble_with_iam_routes;
@@ -153,6 +159,10 @@ pub struct Adapters {
     pub policy_reads: Arc<dyn PolicyReadRepository>,
     /// Repository of the bulk operations and their progress.
     pub bulk_operations: Arc<dyn BulkOperationRepository>,
+    /// The role that each role-deletion bulk operation deletes.
+    pub bulk_targets: Arc<dyn BulkRoleTargetStore>,
+    /// The chunk size and the rate cap of the bulk operation runner.
+    pub bulk: BulkSettings,
     /// The hash-chained IAM security audit log.
     pub security_audit_log: Arc<dyn SecurityAuditLog>,
     /// The per-replica buffer of refused IAM requests that the rejected-attempt writer appends to
@@ -264,6 +274,8 @@ impl Adapters {
             policy_epochs: Arc::new(PgPolicyEpochRepository::new(pool.clone())),
             policy_reads: Arc::new(PgPolicyReadRepository::new(pool.clone())),
             bulk_operations: Arc::new(PgBulkOperationRepository::new(pool.clone())),
+            bulk_targets: Arc::new(PgBulkRoleTargetStore::new(pool.clone())),
+            bulk: config.bulk,
             security_audit_log: Arc::new(PgSecurityAuditLog::new(pool.clone())),
             rejected_attempts: Arc::new(BufferedRejectedAttemptLog::new()),
             startup_lock: Arc::new(PgStartupLock::new(pool.clone())),
@@ -431,7 +443,12 @@ fn register_role_commands(
         Arc::clone(unit_of_work),
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
-    );
+    )
+    .with_bulk(BulkDeletionPath {
+        operations: Arc::clone(&adapters.bulk_operations),
+        targets: Arc::clone(&adapters.bulk_targets),
+        chunker: adapters.bulk.chunker,
+    });
     let set_permissions = SetRolePermissionsCommandHandler::new(
         SetRolePermissionsReads {
             roles: Arc::clone(&adapters.roles),
@@ -527,6 +544,53 @@ fn register_upstream_commands(
         Arc::clone(&adapters.uuid_generator),
     );
     Ok(bus.register(create)?.register(update)?.register(delete)?)
+}
+
+/// Registers the command handlers of the routes of the gateway configuration.
+fn register_route_commands(
+    bus: InMemoryCommandBus,
+    adapters: &Adapters,
+    unit_of_work: &Arc<dyn IamUnitOfWork>,
+) -> Result<InMemoryCommandBus, BootstrapError> {
+    let ports = || RoutePorts {
+        upstreams: Arc::clone(&adapters.upstreams),
+        rate_policies: Arc::clone(&adapters.rate_policies),
+        routes: Arc::clone(&adapters.routes),
+        compiler: Arc::new(MatchitRouteTableCompiler),
+        policies: Arc::clone(&adapters.policy_reads),
+        unit_of_work: Arc::clone(unit_of_work),
+        rejected_attempts: Arc::clone(&adapters.rejected_attempts),
+    };
+    let create = CreateRouteCommandHandler::new(
+        ports(),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    let update = UpdateRouteCommandHandler::new(
+        ports(),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    let delete = DeleteRouteCommandHandler::new(
+        DeleteRoutePorts {
+            routes: Arc::clone(&adapters.routes),
+            unit_of_work: Arc::clone(unit_of_work),
+            rejected_attempts: Arc::clone(&adapters.rejected_attempts),
+        },
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    Ok(bus.register(create)?.register(update)?.register(delete)?)
+}
+
+/// Registers the query handlers of the routes of the gateway configuration.
+fn register_route_queries(
+    bus: InMemoryQueryBus,
+    routes: &Arc<dyn RouteRepository>,
+) -> Result<InMemoryQueryBus, BootstrapError> {
+    let get = GetRouteQueryHandler::new(Arc::clone(routes));
+    let list = ListRoutesQueryHandler::new(Arc::clone(routes));
+    Ok(bus.register(get)?.register(list)?)
 }
 
 /// Registers the query handlers of the upstreams of the gateway configuration.
@@ -900,6 +964,7 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
     let guarded = guarded_unit_of_work(adapters);
     let commands = register_role_commands(commands, adapters, &guarded)?;
     let commands = register_upstream_commands(commands, adapters, &guarded)?;
+    let commands = register_route_commands(commands, adapters, &guarded)?;
     let commands = register_rate_policy_commands(commands, adapters, &guarded)?;
     let commands = register_graphql_spec_commands(commands, adapters, &guarded)?;
     let commands = register_graphql_activation_commands(commands, adapters, &guarded)?;
@@ -913,6 +978,7 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
     let queries = register_change_queries(queries, receipts, keys, &adapters.clock)?;
     let queries = register_role_queries(queries, &adapters.roles)?;
     let queries = register_upstream_queries(queries, &adapters.upstreams)?;
+    let queries = register_route_queries(queries, &adapters.routes)?;
     let queries = register_rate_policy_queries(queries, &adapters.rate_policies)?;
     let queries = register_graphql_spec_queries(queries, adapters)?;
     let queries = register_graphql_activation_queries(queries, adapters)?;

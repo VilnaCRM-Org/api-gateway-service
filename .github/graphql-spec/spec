@@ -225,6 +225,44 @@ input CreateRoleInput {
   name: String!
 }
 
+"Input of the route-creation mutation."
+input CreateRouteInput {
+  "Whether the route is served without authentication; needs `iam:route:anonymous`; default `false`."
+  anonymous: Boolean
+  "The largest request body in bytes; default 1,048,576."
+  bodyLimitBytes: Int
+  "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
+  consistency: String
+  "The CORS policy of the route."
+  cors: RouteCorsPolicyInput
+  "The enforcement mode: `enforce` (the default) or `audit`, which needs `iam:route:anonymous`."
+  enforcement: String
+  "Whether the route serves GraphQL; default `false`."
+  graphql: Boolean
+  "The lower-case DNS name of the host the route serves."
+  host: String!
+  "Makes the creation safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+  "The idle timeout in milliseconds; default 60,000."
+  idleTimeoutMs: Int
+  "The methods the route serves, such as `GET`."
+  methods: [String!]!
+  "The path pattern, with `{name}` and `{name:*}` segments."
+  pathPattern: String!
+  "The rate policies of the route, in the order they apply, at most 10."
+  ratePolicyIds: [ID!]
+  "The request timeout in milliseconds; default 30,000."
+  requestTimeoutMs: Int
+  "Which failed requests are retried: `none` (the default) or `idempotent`."
+  retryPolicy: String
+  "The catalogue service whose keys authorize the route; it must equal the catalogue service of the upstream."
+  service: String!
+  "Whether the route streams its response; default `false`."
+  streaming: Boolean
+  "The upstream the route forwards to."
+  upstreamId: ID!
+}
+
 "Input of the upstream-creation mutation."
 input CreateUpstreamInput {
   "The catalogue service whose keys authorize the routes of this upstream."
@@ -295,6 +333,8 @@ input DeleteRoleInput {
 
 "The result of a role deletion."
 type DeleteRolePayload {
+  "The bulk operation that deletes a role with more assignments than `BULK_CHUNK_ENTITIES` in chunks, or null when the deletion committed in one change; for a bulk operation `version` is the version the role holds until the last chunk deletes it, `revokedAssignments` is the number of assignments it will revoke and `policyVersion` is null."
+  bulkOperationId: ID
   "The identifier of the deleted role."
   id: ID!
   "The policy version that the deletion produced."
@@ -304,6 +344,30 @@ type DeleteRolePayload {
   "The number of assignments that the deletion revoked."
   revokedAssignments: Int!
   "The final version of the role."
+  version: Int!
+}
+
+"Input of the route-deletion mutation."
+input DeleteRouteInput {
+  "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
+  consistency: String
+  "The version the caller read; required, and the deletion is refused when it is not the current one."
+  expectedVersion: Int
+  "The route to delete."
+  id: ID!
+  "Makes the deletion safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+}
+
+"The result of a route deletion."
+type DeleteRoutePayload {
+  "The identifier of the deleted route."
+  id: ID!
+  "The policy version that the deletion produced."
+  policyVersion: Int
+  "What the deletion learned about the publication of its policy version."
+  propagation: Propagation
+  "The final version of the route."
   version: Int!
 }
 
@@ -529,12 +593,16 @@ type Mutation {
   createRestPermissions(input: CreateRestPermissionsInput!): RestPermissionsActivation!
   "Creates a custom role without grants at version 1 and records `iam.role.created`."
   createRole(input: CreateRoleInput!): Role!
+  "Registers a route of one host, a set of methods and a path pattern that the gateway forwards to an upstream, at version 1, writes its `route/<id>` state record, takes the next policy version and records `iam.route.created`. The caller needs `iam:route:{service}` or `iam:route:*`, and `iam:route:anonymous` to make the route anonymous or audit-only. The route `service` must equal the `catalogService` of its upstream. A route that overlaps another route of its host, or whose candidate route table the gateway could not build, is refused with `CONFLICT`, and so is a route of the `iam` service. A repeated `idempotencyKey` with the same input within 24 hours returns the original result."
+  createRoute(input: CreateRouteInput!): Route!
   "Registers an upstream at version 1, writes its `upstream/<name>` state record, takes the next policy version and records `iam.upstream.created`. The caller needs `iam:route:{catalogService}` or `iam:route:*`; an upstream of the `iam` service is refused with `CONFLICT`. A repeated `idempotencyKey` with the same input within 24 hours returns the original result."
   createUpstream(input: CreateUpstreamInput!): Upstream!
   "Deletes a rate policy when `expectedVersion` is the current version and no route references it: the rate policy leaves the listings at once, the next policy version is committed, and `iam.rate_policy.deleted` and an audit record are written. A rate policy that a route references fails with `CONFLICT`."
   deleteRatePolicy(input: DeleteRatePolicyInput!): DeleteRatePolicyPayload!
   "Deletes a custom role when `expectedVersion` is the current version and revokes every assignment of it in the same transaction: the role and its assignments leave the active listings at once, the next policy version is committed, and `iam.role.deleted`, one `iam.user_role.revoked` per revoked assignment and the audit records are written. The payload reports the number of revoked assignments."
   deleteRole(input: DeleteRoleInput!): DeleteRolePayload!
+  "Deletes a route when `expectedVersion` is the current version: its state record becomes a tombstone, the next policy version is committed, and `iam.route.deleted` and an audit record are written in the same transaction. A system route and one of the `iam` service are refused with `CONFLICT`."
+  deleteRoute(input: DeleteRouteInput!): DeleteRoutePayload!
   "Deletes an upstream when `expectedVersion` is the current version and no route references it: its state record becomes a tombstone, the next policy version is committed, and `iam.upstream.deleted` and an audit record are written in the same transaction. An upstream that a route references is refused with `CONFLICT`, and so are a system upstream and one of the `iam` service."
   deleteUpstream(input: DeleteUpstreamInput!): DeleteUpstreamPayload!
   "Loads the SDL of a service as a draft version and returns it with its diff against the active versions; an SDL that the service already holds returns its version and changes nothing. The service `iam` is reserved."
@@ -553,6 +621,8 @@ type Mutation {
   updateRatePolicy(input: UpdateRatePolicyInput!): RatePolicy!
   "Renames a custom role or changes its description when `expectedVersion` is the current version, increases the version and records `iam.role.updated`."
   updateRole(input: UpdateRoleInput!): Role!
+  "Changes the members named in the input when `expectedVersion` is the current version, increases the version, takes the next policy version and records `iam.route.updated`. The caller needs `iam:route:{service}` or `iam:route:*` for the service before and after the change, and `iam:route:anonymous` to change `anonymous` or `enforcement`; a system route and one of the `iam` service are refused with `CONFLICT`. A null `cors` removes the CORS policy."
+  updateRoute(input: UpdateRouteInput!): Route!
   "Changes the settings named in the input when `expectedVersion` is the current version, increases the version, takes the next policy version and records `iam.upstream.updated`. The name cannot change. The caller needs `iam:route:{catalogService}` or `iam:route:*` for the service before and after the change; a system upstream and one of the `iam` service are refused with `CONFLICT`."
   updateUpstream(input: UpdateUpstreamInput!): Upstream!
   "Sets, extends, shortens or clears the expiry of an assignment when `expectedVersion` is the current version, increases the version, takes the next policy version and records `iam.user_role.updated`. `expiresAt` is required: a time in the future, or null to clear the expiry."
@@ -741,6 +811,17 @@ type Query {
     "Page size, from 1 to 100."
     first: Int = 30
   ): RolePage!
+  "Retrieves a route by id; null when it is unknown or deleted."
+  route(id: ID!): Route
+  "Retrieves one page of the routes that are not deleted, in a stable order; the filter keeps the routes that match every field given."
+  routes(
+    "The nextCursor of the previous page."
+    after: String,
+    "Keeps the routes of this host, upstream and catalogue service."
+    filter: RouteFilterInput,
+    "Page size, from 1 to 100."
+    first: Int = 30
+  ): RoutePage!
   "Retrieves an upstream by id; null when it is unknown or deleted."
   upstream(id: ID!): Upstream
   "Retrieves one page of the upstreams that are not deleted, in a stable order."
@@ -988,6 +1069,98 @@ type RolePermission {
   wildcard: Boolean!
 }
 
+"A route of the gateway configuration."
+type Route {
+  "Whether the route is served without authentication."
+  anonymous: Boolean!
+  "The largest request body in bytes."
+  bodyLimitBytes: Int!
+  "The CORS policy of the route; null when it has none."
+  cors: RouteCorsPolicy
+  "When the route was created, as an RFC 3339 UTC time."
+  createdAt: String!
+  "The enforcement mode: `enforce` or `audit`."
+  enforcement: String!
+  "Whether the route serves GraphQL."
+  graphql: Boolean!
+  "The host the route serves."
+  host: String!
+  "The identifier of the route."
+  id: ID!
+  "The idle timeout in milliseconds."
+  idleTimeoutMs: Int!
+  "The methods the route serves."
+  methods: [String!]!
+  "The path pattern."
+  pathPattern: String!
+  "What the write that returned the route learned about the publication of its policy version; null for a read."
+  propagation: Propagation
+  "The rate policies of the route, in the order they apply."
+  ratePolicyIds: [ID!]!
+  "The request timeout in milliseconds."
+  requestTimeoutMs: Int!
+  "Which failed requests are retried: `none` or `idempotent`."
+  retryPolicy: String!
+  "The catalogue service whose keys authorize the route."
+  service: String!
+  "Whether the route streams its response."
+  streaming: Boolean!
+  "Whether IAM manages the route itself; the API refuses every change of a system route."
+  system: Boolean!
+  "When the route was last changed, as an RFC 3339 UTC time."
+  updatedAt: String!
+  "The upstream the route forwards to."
+  upstreamId: ID!
+  "The version of the route."
+  version: Int!
+}
+
+"The CORS policy of a route."
+type RouteCorsPolicy {
+  "Whether credentials are allowed."
+  allowCredentials: Boolean!
+  "The allowed request headers."
+  headers: [String!]!
+  "How long a preflight answer may be cached, in seconds."
+  maxAgeSeconds: Int!
+  "The allowed methods."
+  methods: [String!]!
+  "The allowed origins."
+  origins: [String!]!
+}
+
+"Input of the CORS policy of a route."
+input RouteCorsPolicyInput {
+  "Whether credentials are allowed; default `false`."
+  allowCredentials: Boolean
+  "The allowed request headers."
+  headers: [String!]
+  "How long a preflight answer may be cached, in seconds, at most 86,400; default 600."
+  maxAgeSeconds: Int
+  "The allowed methods, such as `GET`."
+  methods: [String!]
+  "The allowed origins, each an exact `https` (or `http`) origin."
+  origins: [String!]!
+}
+
+"The filters of the route list: a route must match every one that is given."
+input RouteFilterInput {
+  "Only the routes of this host."
+  host: String
+  "Only the routes of this catalogue service."
+  service: String
+  "Only the routes that forward to this upstream."
+  upstream: ID
+}
+
+"One page of routes."
+type RoutePage {
+  "The routes of the page."
+  items: [Route!]!
+  "The `after` value of the next page; null on the last page."
+  nextCursor: String
+}
+
 "Input of the mutation that replaces the grants of a role."
 input SetRolePermissionsInput {
   "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
@@ -1070,6 +1243,51 @@ input UpdateRoleInput {
   idempotencyKey: String
   "The new name of the role: 1 to 100 characters, unique without regard to case among the roles that are not deleted."
   name: String
+}
+
+"""
+Input of the route-update mutation; an absent or null setting keeps its stored value, except
+`cors`, where null removes the policy.
+"""
+input UpdateRouteInput {
+  "Whether the route is served without authentication; changing it needs `iam:route:anonymous`."
+  anonymous: Boolean
+  "The largest request body in bytes."
+  bodyLimitBytes: Int
+  "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
+  consistency: String
+  "The CORS policy of the route; null removes it."
+  cors: RouteCorsPolicyInput
+  "The enforcement mode: `enforce` or `audit`; changing it needs `iam:route:anonymous`."
+  enforcement: String
+  "The version the caller read; required, and the update is refused when it is not the current one."
+  expectedVersion: Int
+  "Whether the route serves GraphQL."
+  graphql: Boolean
+  "The lower-case DNS name of the host the route serves."
+  host: String
+  "The route to change."
+  id: ID!
+  "Makes the update safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+  "The idle timeout in milliseconds."
+  idleTimeoutMs: Int
+  "The methods the route serves, such as `GET`."
+  methods: [String!]
+  "The path pattern."
+  pathPattern: String
+  "The rate policies of the route, in the order they apply, at most 10."
+  ratePolicyIds: [ID!]
+  "The request timeout in milliseconds."
+  requestTimeoutMs: Int
+  "Which failed requests are retried: `none` or `idempotent`."
+  retryPolicy: String
+  "The catalogue service whose keys authorize the route."
+  service: String
+  "Whether the route streams its response."
+  streaming: Boolean
+  "The upstream the route forwards to."
+  upstreamId: ID
 }
 
 "Input of the upstream-update mutation; an absent or null setting keeps its stored value."

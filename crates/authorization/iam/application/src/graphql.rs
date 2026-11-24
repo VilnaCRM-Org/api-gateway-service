@@ -22,6 +22,7 @@ pub mod rest_activation;
 pub mod rest_permission;
 pub mod role_deletion;
 pub mod role_permission;
+pub mod route;
 pub mod schema_parser;
 pub mod spec_retirement;
 pub mod upstream;
@@ -90,6 +91,11 @@ use role_deletion::{DeleteRoleInput, DeleteRolePayload, delete_role_field};
 use role_permission::{
     RolePermissionObject, SetRolePermissionsInput, role_permissions_field,
     set_role_permissions_field,
+};
+use route::{
+    CreateRouteInput, DeleteRouteInput, DeleteRoutePayload, RouteFilterInput, RouteObject,
+    RoutePageObject, UpdateRouteInput, create_route_field, delete_route_field, route_field,
+    routes_field, update_route_field,
 };
 use spec_retirement::{
     RetireGraphQlSpecInput, RetireOpenApiSpecInput, SpecRetirementObject,
@@ -433,6 +439,39 @@ impl IamMutation {
             .map_err(iam_problem_to_graphql_error)
     }
 
+    /// Registers a route of one host, a set of methods and a path pattern that the gateway forwards to an upstream, at version 1, writes its `route/<id>` state record, takes the next policy version and records `iam.route.created`. The caller needs `iam:route:{service}` or `iam:route:*`, and `iam:route:anonymous` to make the route anonymous or audit-only. The route `service` must equal the `catalogService` of its upstream. A route that overlaps another route of its host, or whose candidate route table the gateway could not build, is refused with `CONFLICT`, and so is a route of the `iam` service. A repeated `idempotencyKey` with the same input within 24 hours returns the original result.
+    async fn create_route(
+        &self,
+        ctx: &Context<'_>,
+        input: CreateRouteInput,
+    ) -> async_graphql::Result<RouteObject> {
+        create_route_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Changes the members named in the input when `expectedVersion` is the current version, increases the version, takes the next policy version and records `iam.route.updated`. The caller needs `iam:route:{service}` or `iam:route:*` for the service before and after the change, and `iam:route:anonymous` to change `anonymous` or `enforcement`; a system route and one of the `iam` service are refused with `CONFLICT`. A null `cors` removes the CORS policy.
+    async fn update_route(
+        &self,
+        ctx: &Context<'_>,
+        input: UpdateRouteInput,
+    ) -> async_graphql::Result<RouteObject> {
+        update_route_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Deletes a route when `expectedVersion` is the current version: its state record becomes a tombstone, the next policy version is committed, and `iam.route.deleted` and an audit record are written in the same transaction. A system route and one of the `iam` service are refused with `CONFLICT`.
+    async fn delete_route(
+        &self,
+        ctx: &Context<'_>,
+        input: DeleteRouteInput,
+    ) -> async_graphql::Result<DeleteRoutePayload> {
+        delete_route_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
     /// Assigns an existing role to a user or a service principal at global or project scope, takes the next policy version and records `iam.user_role.assigned`, and `iam.privileged_role.assigned` as well when the role grants a wildcard or a reserved key.
     async fn assign_user_role(
         &self,
@@ -628,6 +667,28 @@ impl IamQuery {
         #[graphql(desc = "The nextCursor of the previous page.")] after: Option<String>,
     ) -> async_graphql::Result<UpstreamPageObject> {
         upstreams_field(ctx, first, after)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves a route by id; null when it is unknown or deleted.
+    async fn route(&self, ctx: &Context<'_>, id: ID) -> async_graphql::Result<Option<RouteObject>> {
+        route_field(ctx, &id)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves one page of the routes that are not deleted, in a stable order; the filter keeps the routes that match every field given.
+    #[graphql(complexity = "page_complexity(first, child_complexity)")]
+    async fn routes(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 30, desc = "Page size, from 1 to 100.")] first: Option<i32>,
+        #[graphql(desc = "The nextCursor of the previous page.")] after: Option<String>,
+        #[graphql(desc = "Keeps the routes of this host, upstream and catalogue service.")]
+        filter: Option<RouteFilterInput>,
+    ) -> async_graphql::Result<RoutePageObject> {
+        routes_field(ctx, first, after, filter.unwrap_or_default())
             .await
             .map_err(iam_problem_to_graphql_error)
     }

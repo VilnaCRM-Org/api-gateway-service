@@ -2,19 +2,23 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use iam_domain::{
-    ActorRef, AssignmentExpiry, AssignmentScope, AuditOutcome, AuditSummary, ChangeId,
+    ActorRef, AssignmentExpiry, AssignmentScope, AuditOutcome, AuditSummary, BulkChunker, BulkKind,
+    BulkOperationId, BulkOperationRepository as _, BulkRoleTargetStore as _, BulkStatus, ChangeId,
     ChangeStatement, DecisionEffect, EntityVersion, IamUnitOfWork, IdempotencyKey,
     IdempotencyRequest, PermissionGrantSet, PolicyVersion, RequestDigest, RoleId, RoleKind,
     RoleName, RoleParts, RoleRepository, SubjectRef, UserRoleId, UserRoleParts, UserRoleRepository,
 };
 use shared_domain::{Command as _, CommandHandler as _, Uuid};
+use test_support::bulk_operation::{FakeBulkOperationRepository, FakeBulkRoleTargetStore};
 use test_support::clock::FixedClock;
 use test_support::id::SequenceUuidGenerator;
 use test_support::role::FakeRoleRepository;
 use test_support::unit_of_work::FakeIamUnitOfWork;
 use test_support::user_role::FakeUserRoleRepository;
 
-use super::{DeleteRoleCommand, DeleteRoleCommandHandler, MAX_REVOKED_ASSIGNMENTS};
+use super::{
+    BulkDeletionPath, DeleteRoleCommand, DeleteRoleCommandHandler, MAX_REVOKED_ASSIGNMENTS,
+};
 use crate::error::IamError;
 
 const USER: &str = "0190f2a8-7b3c-7d4e-8f10-1234567890ab";
@@ -525,4 +529,104 @@ async fn a_failing_unit_of_work_is_a_storage_failure() {
         .unwrap_err();
 
     assert!(matches!(error, IamError::Storage(_)), "{error:?}");
+}
+
+struct Bulk {
+    operations: Arc<FakeBulkOperationRepository>,
+    targets: Arc<FakeBulkRoleTargetStore>,
+    unit_of_work: Arc<FakeIamUnitOfWork>,
+}
+
+fn with_bulk(role: RoleParts, user_roles: Vec<UserRoleParts>) -> (DeleteRoleCommandHandler, Bulk) {
+    let bulk = Bulk {
+        operations: Arc::new(FakeBulkOperationRepository::new()),
+        targets: Arc::new(FakeBulkRoleTargetStore::new()),
+        unit_of_work: Arc::new(FakeIamUnitOfWork::new()),
+    };
+    let handler = handler(
+        FakeRoleRepository::holding(vec![role]),
+        FakeUserRoleRepository::holding(user_roles),
+        &bulk.unit_of_work,
+    )
+    .with_bulk(BulkDeletionPath {
+        operations: Arc::<FakeBulkOperationRepository>::clone(&bulk.operations),
+        targets: Arc::<FakeBulkRoleTargetStore>::clone(&bulk.targets),
+        chunker: BulkChunker::new(1_000).unwrap(),
+    });
+    (handler, bulk)
+}
+
+#[tokio::test]
+async fn a_role_with_more_assignments_than_a_chunk_is_recorded_as_a_pending_bulk_operation() {
+    let (handler, bulk) = with_bulk(role(RoleKind::Custom), assignments(2_500));
+
+    handler.handle(command()).await.unwrap();
+
+    assert_eq!(
+        bulk.unit_of_work.committed(),
+        Vec::<iam_domain::IamChange>::new()
+    );
+    let id = BulkOperationId::from_uuid(command().change_id.as_uuid());
+    let stored = bulk.operations.find(id).await.unwrap().unwrap();
+    let parts = stored.parts();
+    assert_eq!(parts.kind, BulkKind::RoleDeletion);
+    assert_eq!(parts.status, BulkStatus::Pending);
+    assert_eq!(parts.total_records, 2_501);
+    assert_eq!(parts.applied_records, 0);
+    assert_eq!(parts.requester, actor());
+    assert_eq!(
+        bulk.targets.find(id).await.unwrap(),
+        Some(command().role_id)
+    );
+}
+
+#[tokio::test]
+async fn a_role_whose_deletion_fits_one_chunk_is_deleted_in_one_change() {
+    let (handler, bulk) = with_bulk(role(RoleKind::Custom), assignments(999));
+
+    handler.handle(command()).await.unwrap();
+
+    assert_eq!(bulk.unit_of_work.committed().len(), 1);
+    assert_eq!(
+        bulk.operations.snapshot(),
+        Vec::<iam_domain::BulkOperationParts>::new()
+    );
+}
+
+#[tokio::test]
+async fn a_role_with_a_thousand_assignments_changes_more_entities_than_a_chunk() {
+    let (handler, bulk) = with_bulk(role(RoleKind::Custom), assignments(1_000));
+
+    handler.handle(command()).await.unwrap();
+
+    assert_eq!(
+        bulk.unit_of_work.committed(),
+        Vec::<iam_domain::IamChange>::new()
+    );
+    assert_eq!(bulk.operations.snapshot()[0].total_records, 1_001);
+}
+
+#[tokio::test]
+async fn a_system_role_or_a_stale_version_is_refused_before_any_operation_is_recorded() {
+    let (handler, bulk) = with_bulk(role(RoleKind::System), assignments(2_500));
+    let forbidden = handler.handle(command()).await.unwrap_err();
+    let (handler, stale_bulk) = with_bulk(role(RoleKind::Custom), assignments(2_500));
+    let stale = handler
+        .handle(DeleteRoleCommand {
+            expected: version(7),
+            ..command()
+        })
+        .await
+        .unwrap_err();
+
+    assert!(matches!(forbidden, IamError::Forbidden), "{forbidden:?}");
+    assert!(matches!(stale, IamError::PreconditionFailed), "{stale:?}");
+    assert_eq!(
+        bulk.operations.snapshot(),
+        Vec::<iam_domain::BulkOperationParts>::new()
+    );
+    assert_eq!(
+        stale_bulk.operations.snapshot(),
+        Vec::<iam_domain::BulkOperationParts>::new()
+    );
 }

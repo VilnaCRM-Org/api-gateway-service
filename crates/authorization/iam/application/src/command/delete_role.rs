@@ -1,34 +1,45 @@
 //! Deletes a custom role and revokes every assignment of it (FR-23).
 
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use iam_domain::{
-    ActorRef, AuditAction, AuditOutcome, AuditSummary, AuditTarget, ChangeId, ChangeStatement,
-    DecisionEffect, EntityVersion, EventEnvelope, IamChange, IamChangeParts, IamUnitOfWork,
-    IdempotencyRequest, RevocationCause, Role, RoleId, RoleName, RoleRepository, RoleStamp,
-    RoleStatement, SecurityAuditEvent, SecurityAuditEventId, SecurityAuditEventParts, UserRole,
-    UserRoleId, UserRolePageQuery, UserRoleParts, UserRoleRepository, UserRoleStamp,
-    UserRoleStatement,
+    ActorRef, BulkChunker, BulkKind, BulkOperation, BulkOperationId, BulkOperationRepository,
+    BulkRoleTargetStore, ChangeId, ChangeStatement, DecisionEffect, EntityVersion, IamChange,
+    IamChangeParts, IamUnitOfWork, IdempotencyRequest, Role, RoleId, RoleName, RoleRepository,
+    RoleStamp, RoleStatement, UserRole, UserRoleId, UserRoleRepository,
 };
 use shared_domain::{Clock, Command, CommandHandler, UuidGenerator};
 
+use super::role_deletion::{self, PAGE_LIMIT, Revocation, page_query};
 use crate::error::IamError;
 
-/// The audit action of a deleted role.
-const AUDIT_ACTION: &str = "role.delete";
-
-/// The audit action of an assignment that the deletion of its role revoked.
-const REVOKE_AUDIT_ACTION: &str = "user_role.revoke";
-
-/// The number of assignments read per page.
-const PAGE_LIMIT: u32 = 100;
-
-/// The largest number of assignments that one deletion revokes in one transaction.
+/// The largest number of assignments that one deletion revokes in one transaction when no bulk
+/// path is configured.
 ///
-/// It is the default of `BULK_CHUNK_ENTITIES` (FR-84); a role with more assignments is refused as
-/// a conflict until the bulk operation of Story 13.8 splits the deletion.
+/// It is the default of `BULK_CHUNK_ENTITIES` (FR-84); a handler without a bulk path refuses a
+/// role with more assignments as a conflict.
 pub const MAX_REVOKED_ASSIGNMENTS: usize = 1_000;
+
+/// The bulk path of a role deletion: a role whose deletion changes more than
+/// `BULK_CHUNK_ENTITIES` entities is recorded as a pending bulk operation that the
+/// `BulkOperationRunner` commits in chunks (FR-84).
+#[derive(Debug, Clone)]
+pub struct BulkDeletionPath {
+    /// Where the pending operation is recorded.
+    pub operations: Arc<dyn BulkOperationRepository>,
+    /// Where the role of the operation is remembered.
+    pub targets: Arc<dyn BulkRoleTargetStore>,
+    /// The chunk size: `BULK_CHUNK_ENTITIES`.
+    pub chunker: BulkChunker,
+}
+
+/// The assignments of a role that a deletion revokes.
+enum Assignments {
+    /// All of them, few enough for one change.
+    Within(Vec<UserRole>),
+    /// More than one change may revoke; the count of all of them.
+    Beyond(usize),
+}
 
 /// Deletes the custom role `role_id` as `actor`, when the stored role still holds the version
 /// `expected`, and revokes every assignment of it.
@@ -68,13 +79,7 @@ pub struct DeleteRoleCommandHandler {
     unit_of_work: Arc<dyn IamUnitOfWork>,
     clock: Arc<dyn Clock>,
     uuid_generator: Arc<dyn UuidGenerator>,
-}
-
-/// The write of one revoked assignment: its statement, its events and its audit record.
-struct Revocation {
-    statement: ChangeStatement,
-    events: Vec<EventEnvelope>,
-    audit: SecurityAuditEvent,
+    bulk: Option<BulkDeletionPath>,
 }
 
 impl DeleteRoleCommandHandler {
@@ -94,7 +99,16 @@ impl DeleteRoleCommandHandler {
             unit_of_work,
             clock,
             uuid_generator,
+            bulk: None,
         }
+    }
+
+    /// The same handler with a bulk path: a role with more assignments than one change may revoke
+    /// is recorded as a bulk operation instead of being refused.
+    #[must_use]
+    pub fn with_bulk(mut self, bulk: BulkDeletionPath) -> Self {
+        self.bulk = Some(bulk);
+        self
     }
 
     async fn delete(&self, command: DeleteRoleCommand) -> Result<(), IamError> {
@@ -103,22 +117,32 @@ impl DeleteRoleCommandHandler {
             .find_by_id(command.role_id)
             .await?
             .ok_or(IamError::NotFound)?;
-        let assignments = self.assignments_of(command.role_id).await?;
-        let change = self.change_of(role, assignments, command)?;
-        self.unit_of_work
-            .commit(change, iam_domain::WriteMode::Published)
-            .await?;
-        Ok(())
+        match self.assignments_of(command.role_id).await? {
+            Assignments::Within(assignments) => {
+                let change = self.change_of(role, assignments, command)?;
+                self.unit_of_work
+                    .commit(change, iam_domain::WriteMode::Published)
+                    .await?;
+                Ok(())
+            }
+            Assignments::Beyond(count) => self.record_bulk(&role, count, &command).await,
+        }
     }
 
-    /// Every assignment of the role that is not revoked, expired ones included.
+    /// The assignments of the role that are not revoked, expired ones included: all of them when
+    /// one change may revoke them, otherwise their count.
     ///
     /// # Errors
     ///
-    /// [`IamError::Conflict`] when the role has more than [`MAX_REVOKED_ASSIGNMENTS`] of them.
-    async fn assignments_of(&self, role_id: RoleId) -> Result<Vec<UserRole>, IamError> {
+    /// [`IamError::Conflict`] when the role has more assignments than one change may revoke and
+    /// the handler has no bulk path.
+    async fn assignments_of(&self, role_id: RoleId) -> Result<Assignments, IamError> {
         let now = self.clock.now();
+        let limit = self.bulk.as_ref().map_or(MAX_REVOKED_ASSIGNMENTS, |bulk| {
+            bulk.chunker.chunk_entities().saturating_sub(1)
+        });
         let mut found = Vec::new();
+        let mut counted = 0_usize;
         let mut after: Option<UserRoleId> = None;
         loop {
             let page = self
@@ -127,15 +151,52 @@ impl DeleteRoleCommandHandler {
                 .await?;
             let last = page.last().map(|user_role| user_role.parts().id);
             let full = u32::try_from(page.len()) == Ok(PAGE_LIMIT);
-            found.extend(page);
-            if found.len() > MAX_REVOKED_ASSIGNMENTS {
+            counted = counted.saturating_add(page.len());
+            if counted <= limit {
+                found.extend(page);
+            } else if self.bulk.is_none() {
                 return Err(IamError::Conflict);
             }
             match last {
                 Some(id) if full => after = Some(id),
-                _ => return Ok(found),
+                _ if counted <= limit => return Ok(Assignments::Within(found)),
+                _ => return Ok(Assignments::Beyond(counted)),
             }
         }
+    }
+
+    /// Records the deletion as a pending bulk operation over every assignment and the role itself.
+    /// The deletion is checked as the single change would be (kind and version), so a refusal is
+    /// the same, and the operation is named after the change.
+    async fn record_bulk(
+        &self,
+        role: &Role,
+        assignments: usize,
+        command: &DeleteRoleCommand,
+    ) -> Result<(), IamError> {
+        let bulk = self.bulk.as_ref().ok_or(IamError::Conflict)?;
+        let now = self.clock.now();
+        let stamp = RoleStamp {
+            event_id: self.uuid_generator.generate(),
+            actor: command.actor.clone(),
+            occurred_at: now,
+        };
+        Role::restore(role.parts().clone()).delete(Some(command.expected), 0, stamp)?;
+        let id = BulkOperationId::from_uuid(command.change_id.as_uuid());
+        let total = u64::try_from(assignments)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1);
+        let operation = BulkOperation::pending(
+            id,
+            BulkKind::RoleDeletion,
+            total,
+            command.actor.clone(),
+            now,
+        )
+        .map_err(|_invalid| IamError::Conflict)?;
+        bulk.targets.insert(id, command.role_id).await?;
+        bulk.operations.insert(&operation).await?;
+        Ok(())
     }
 
     /// The change that deletes the role: the deletion, the revocations, the events and the audit
@@ -163,18 +224,10 @@ impl DeleteRoleCommandHandler {
         };
         role.delete(Some(expected), revoked, stamp.clone())?;
         let mut events = role.pull_envelopes()?;
-        let summaries = (
-            format!(
-                "kind={} version={}",
-                before.kind.as_str(),
-                before.version.value()
-            ),
-            format!(
-                "deleted version={} revoked={revoked}",
-                role.parts().version.value()
-            ),
-        );
-        let audit = self.audit(before.id, summaries, &stamp, idempotency.as_ref())?;
+        let summaries = role_deletion::summaries(&before, role.parts(), revoked);
+        let key = idempotency.as_ref().map(|request| &request.key);
+        let ids = self.uuid_generator.as_ref();
+        let audit = role_deletion::role_audit(ids, before.id, summaries, &stamp, key)?;
         let statement = RoleStatement::update(&role, expected, actor);
         let mut statements = vec![ChangeStatement::SaveRole(Box::new(statement))];
         let mut related = Vec::new();
@@ -207,123 +260,15 @@ impl DeleteRoleCommandHandler {
     ) -> Result<Vec<Revocation>, IamError> {
         assignments
             .into_iter()
-            .map(|assignment| self.revocation(assignment, role_name.clone(), role_stamp))
+            .map(|assignment| {
+                role_deletion::revocation(
+                    self.uuid_generator.as_ref(),
+                    assignment,
+                    role_name.clone(),
+                    role_stamp,
+                )
+            })
             .collect()
-    }
-
-    /// The revocation of one assignment, at the version it was read at.
-    fn revocation(
-        &self,
-        mut user_role: UserRole,
-        role_name: RoleName,
-        role_stamp: &RoleStamp,
-    ) -> Result<Revocation, IamError> {
-        let before = user_role.parts().clone();
-        let stamp = UserRoleStamp {
-            event_id: self.uuid_generator.generate(),
-            actor: role_stamp.actor.clone(),
-            occurred_at: role_stamp.occurred_at,
-        };
-        user_role.revoke(
-            Some(before.version),
-            role_name,
-            RevocationCause::RoleDeleted,
-            stamp.clone(),
-        )?;
-        Ok(Revocation {
-            events: user_role.pull_envelopes()?,
-            audit: self.revoke_audit(&before, user_role.parts(), &stamp)?,
-            statement: ChangeStatement::SaveUserRole(Box::new(UserRoleStatement::update(
-                &user_role,
-                before.version,
-            ))),
-        })
-    }
-
-    /// The committed audit record of the deletion of the role `id`, with the summaries of the role
-    /// before it and after it.
-    fn audit(
-        &self,
-        id: RoleId,
-        summaries: (String, String),
-        stamp: &RoleStamp,
-        idempotency: Option<&IdempotencyRequest>,
-    ) -> Result<SecurityAuditEvent, IamError> {
-        let (held, ended) = summaries;
-        let parts = SecurityAuditEventParts {
-            id: SecurityAuditEventId::from_uuid(self.uuid_generator.generate()),
-            occurred_at: stamp.occurred_at,
-            actor: stamp.actor.clone(),
-            caller_service: None,
-            action: AuditAction::new(AUDIT_ACTION)?,
-            target: AuditTarget::new("role", &id.to_string())?,
-            scope: None,
-            before: Some(AuditSummary::new(&held)?),
-            after: Some(AuditSummary::new(&ended)?),
-            idempotency_key: idempotency.map(|request| request.key.clone()),
-            outcome: AuditOutcome::Committed,
-            reason: None,
-            policy_version: None,
-            request_id: None,
-        };
-        Ok(SecurityAuditEvent::record(parts)?)
-    }
-
-    /// The committed audit record of one assignment that the deletion revoked: the assignment
-    /// before it, and the version it ended at.
-    fn revoke_audit(
-        &self,
-        before: &UserRoleParts,
-        after: &UserRoleParts,
-        stamp: &UserRoleStamp,
-    ) -> Result<SecurityAuditEvent, IamError> {
-        let held = format!(
-            "subject={} role={} scope={} version={}",
-            before.subject,
-            before.role_id,
-            before.scope,
-            before.version.value()
-        );
-        let ended = format!(
-            "revoked version={} cause={}",
-            after.version.value(),
-            RevocationCause::RoleDeleted.as_str()
-        );
-        let parts = SecurityAuditEventParts {
-            id: SecurityAuditEventId::from_uuid(self.uuid_generator.generate()),
-            occurred_at: stamp.occurred_at,
-            actor: stamp.actor.clone(),
-            caller_service: None,
-            action: AuditAction::new(REVOKE_AUDIT_ACTION)?,
-            target: AuditTarget::new("user_role", &after.id.to_string())?,
-            scope: Some(after.scope),
-            before: Some(AuditSummary::new(&held)?),
-            after: Some(AuditSummary::new(&ended)?),
-            idempotency_key: None,
-            outcome: AuditOutcome::Committed,
-            reason: None,
-            policy_version: None,
-            request_id: None,
-        };
-        Ok(SecurityAuditEvent::record(parts)?)
-    }
-}
-
-/// The page of assignments of `role_id` after the cursor, expired ones included.
-const fn page_query(
-    role_id: RoleId,
-    after: Option<UserRoleId>,
-    now: SystemTime,
-) -> UserRolePageQuery {
-    UserRolePageQuery {
-        limit: PAGE_LIMIT,
-        after,
-        subject_kind: None,
-        subject_id: None,
-        role_id: Some(role_id),
-        project_id: None,
-        include_expired: true,
-        now,
     }
 }
 

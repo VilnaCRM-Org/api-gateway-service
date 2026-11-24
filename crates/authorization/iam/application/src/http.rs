@@ -17,6 +17,7 @@ pub mod rest_activation;
 pub mod rest_permission;
 pub mod role;
 pub mod role_permission;
+pub mod route;
 pub mod spec_retirement;
 pub mod upstream;
 pub mod user_role;
@@ -69,6 +70,7 @@ where
         .merge(rate_policy_router())
         .merge(bulk_operation_router())
         .merge(upstream_router())
+        .merge(route_router())
 }
 
 /// The routes of the access validation, single and batch, merged into [`router`].
@@ -199,6 +201,17 @@ where
             upstream::update,
             upstream::delete
         ))
+}
+
+/// The routes of the routes of the gateway configuration, merged into [`router`].
+fn route_router<S>() -> OpenApiRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+    IamState: FromRef<S>,
+{
+    OpenApiRouter::new()
+        .routes(routes!(route::create, route::list))
+        .routes(routes!(route::get_one, route::update, route::delete))
 }
 
 /// The routes that upload specification documents, to be nested under `/api`.

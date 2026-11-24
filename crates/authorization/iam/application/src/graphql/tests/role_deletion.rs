@@ -96,6 +96,47 @@ async fn a_deleted_role_reports_the_revoked_assignments_and_dispatches_the_comma
 }
 
 #[tokio::test]
+async fn a_deletion_that_became_a_bulk_operation_returns_its_id_and_the_planned_count() {
+    let answers = Answers {
+        bulk: Some(crate::bulk_operation_fixtures::operation(
+            1,
+            iam_domain::BulkStatus::Pending,
+            0,
+        )),
+        ..Answers::default()
+    };
+    let (state, commands, queries, _asked) = scenario(answers);
+    let query = "mutation($input: DeleteRoleInput!) { deleteRole(input: $input) \
+        { id version policyVersion revokedAssignments propagation { status } bulkOperationId } }";
+
+    let response = schema(Some(state))
+        .execute(
+            Request::new(query)
+                .variables(Variables::from_json(deletion(Some(1))))
+                .data(Some(principal())),
+        )
+        .await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    assert_eq!(
+        response.data.into_json().unwrap(),
+        json!({ "deleteRole": {
+            "id": ROLE,
+            "version": 1,
+            "policyVersion": null,
+            "revokedAssignments": 2_499,
+            "propagation": null,
+            "bulkOperationId": "00000000-0000-0000-0000-000000000001",
+        } })
+    );
+    assert_eq!(commands.dispatched(), ["DeleteRoleCommand"]);
+    assert_eq!(
+        queries.asked(),
+        ["GetChangeReceiptQuery", "GetBulkOperationQuery"]
+    );
+}
+
+#[tokio::test]
 async fn a_receipt_without_a_count_reports_no_revoked_assignments() {
     let answers = Answers {
         receipt: receipt_at(2, None),

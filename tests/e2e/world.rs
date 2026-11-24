@@ -366,6 +366,39 @@ impl AppWorld {
         connection.close().await.expect("close");
     }
 
+    /// Stores a system route of the service `iam` on `host` for `path_pattern` that forwards to
+    /// the upstream `upstream` in the scenario database, as a fixture, and remembers its id for
+    /// `{id}`: the API refuses every change of such a route.
+    pub(crate) async fn seed_system_route(
+        &mut self,
+        host: &str,
+        path_pattern: &str,
+        upstream: &str,
+    ) {
+        let url = self.database_url().await;
+        let options = PgConnectOptions::from_str(&url).expect("valid database URL");
+        let mut connection = options
+            .connect()
+            .await
+            .expect("connect to the scenario database");
+        let id = sqlx::query_scalar::<_, String>(
+            "INSERT INTO iam_routes (id, host, methods, path_pattern, service, upstream_id, \
+             enforcement, body_limit, request_timeout_ms, idle_timeout_ms, retry, system, \
+             version, created_at, updated_at) \
+             SELECT gen_random_uuid(), $1, ARRAY['GET'], $2, 'iam', id, 'enforce', 1048576, \
+             30000, 60000, 'none', TRUE, 1, now(), now() \
+             FROM iam_upstreams WHERE name = $3 AND deleted_at IS NULL RETURNING id::text",
+        )
+        .bind(host.to_owned())
+        .bind(path_pattern.to_owned())
+        .bind(upstream.to_owned())
+        .fetch_one(&mut connection)
+        .await
+        .expect("seed the system route");
+        connection.close().await.expect("close");
+        self.remembered = Some(id);
+    }
+
     /// Stores an upstream and a route that applies the remembered rate policy in the scenario
     /// database, as a fixture: the state that a route write leaves behind.
     pub(crate) async fn seed_route_with_remembered_rate_policy(&mut self) {
@@ -500,6 +533,57 @@ impl AppWorld {
         connection.close().await.expect("close");
     }
 
+    /// Stores `count` active assignments of the seeded role to distinct users in the scenario
+    /// database, as a fixture: the only fast way to have a role that a bulk operation must delete.
+    pub(crate) async fn seed_assignments(&mut self, count: i64) {
+        let url = self.database_url().await;
+        let options = PgConnectOptions::from_str(&url).expect("valid database URL");
+        let mut connection = options
+            .connect()
+            .await
+            .expect("connect to the scenario database");
+        sqlx::query(
+            "INSERT INTO iam_user_roles (id, subject_kind, subject_id, role_id, scope_kind, \
+             version, created_by, created_at, updated_at) \
+             SELECT gen_random_uuid(), 'user', gen_random_uuid()::text, $1::text::uuid, 'global', \
+             1, 'system:bootstrap', now(), now() FROM generate_series(1, $2)",
+        )
+        .bind(self.seeded_role().to_owned())
+        .bind(count)
+        .execute(&mut connection)
+        .await
+        .expect("seed the assignments");
+        connection.close().await.expect("close");
+    }
+
+    /// Waits until no bulk operation of the scenario database is pending or running.
+    ///
+    /// # Panics
+    ///
+    /// When an operation is still unfinished after the wait.
+    pub(crate) async fn wait_for_bulk_operations(&mut self) {
+        let url = self.database_url().await;
+        let options = PgConnectOptions::from_str(&url).expect("valid database URL");
+        let mut connection = options
+            .connect()
+            .await
+            .expect("connect to the scenario database");
+        for _attempt in 0..120 {
+            let unfinished = sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM iam_bulk_operations WHERE status IN ('pending', 'running')",
+            )
+            .fetch_one(&mut connection)
+            .await
+            .expect("count the unfinished bulk operations");
+            if unfinished == 0 {
+                connection.close().await.expect("close");
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        panic!("a bulk operation is still unfinished after a minute");
+    }
+
     /// Makes every update of an assignment row of the scenario database fail, as a fixture: the
     /// statement that a role deletion runs after it has updated the role row, so that the whole
     /// change must roll back.
@@ -609,7 +693,11 @@ impl AppWorld {
 
     /// The text that the statement selects, with `value` bound to its only parameter, in the
     /// scenario database; `None` when it selects no row.
-    async fn select_text(&mut self, statement: &'static str, value: &str) -> Option<String> {
+    pub(crate) async fn select_text(
+        &mut self,
+        statement: &'static str,
+        value: &str,
+    ) -> Option<String> {
         let url = self.database_url().await;
         let options = PgConnectOptions::from_str(&url).expect("valid database URL");
         let mut connection = options
@@ -872,7 +960,9 @@ impl AppWorld {
         supervisor.spawn_singletons(
             singleton_set(&adapters)
                 .into_iter()
-                .filter(|singleton| singleton.name() == "outbox-relay")
+                .filter(|singleton| {
+                    matches!(singleton.name(), "outbox-relay" | "bulk-operation-runner")
+                })
                 .collect(),
         );
         self.tasks = Some((stop, supervisor));
@@ -988,6 +1078,7 @@ impl AppWorld {
             json.pointer("/data/createExampleApiResource/id")
                 .or_else(|| json.pointer("/data/createRole/id"))
                 .or_else(|| json.pointer("/data/createUpstream/id"))
+                .or_else(|| json.pointer("/data/createRoute/id"))
                 .or_else(|| json.pointer("/data/assignUserRole/id"))
         };
         if let Some(id) = created.and_then(Value::as_str) {

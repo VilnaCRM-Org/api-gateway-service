@@ -168,6 +168,10 @@ fn handlers_use_only_the_problem_aware_extractors() {
             vec!["create", "get_one", "update", "delete", "list"],
         ),
         (
+            include_str!("../route.rs"),
+            vec!["create", "get_one", "update", "delete", "list"],
+        ),
+        (
             include_str!("../bulk_operation.rs"),
             vec!["get_one", "list"],
         ),

@@ -13,6 +13,7 @@ use iam_application::{
     GetPolicyEpochQueryHandler,
 };
 use iam_application::{MaintenanceSettings, OutboxRelayPorts, OutboxRelaySettings, SingletonLoop};
+use iam_domain::{BulkChunker, BulkPacing};
 use iam_domain::{Credential, PolicyDigestValue, PolicyEpochRepository, TokenRejection};
 use iam_infrastructure::BufferedRejectedAttemptLog;
 use serde_json::Value;
@@ -24,7 +25,7 @@ use test_support::access_token::{DEVELOPMENT_PUBLIC_KEYS_FILE, FakeAccessTokenVe
 use test_support::anti_entropy::{
     FakeAntiEntropyStore, FakePolicyLogTail, HashDigest, TextHeadCodec,
 };
-use test_support::bulk_operation::FakeBulkOperationRepository;
+use test_support::bulk_operation::{FakeBulkOperationRepository, FakeBulkRoleTargetStore};
 use test_support::bus::RecordingEventBus;
 use test_support::cache::StubCache;
 use test_support::change_receipt::{FakeChangeReceiptRepository, change_receipt};
@@ -67,7 +68,7 @@ use super::{
     register_iam_specs, register_queries, router, singleton_set, start_tasks,
 };
 use crate::cli::{KafkaArgs, ServeArgs};
-use crate::config::Config;
+use crate::config::{BulkSettings, Config};
 
 const FIRST_ID: &str = "00000000-0000-7000-8000-000000000001";
 
@@ -114,6 +115,11 @@ fn adapters() -> Adapters {
         policy_epochs: Arc::new(FakePolicyEpochRepository::new()),
         policy_reads: Arc::new(FakePolicyReadRepository::new()),
         bulk_operations: Arc::new(FakeBulkOperationRepository::new()),
+        bulk_targets: Arc::new(FakeBulkRoleTargetStore::new()),
+        bulk: BulkSettings {
+            chunker: BulkChunker::new(1_000).unwrap(),
+            pacing: BulkPacing::new(2_000).unwrap(),
+        },
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
         rejected_attempts: Arc::new(BufferedRejectedAttemptLog::new()),
         startup_lock: Arc::new(FakeStartupLock::new()),
@@ -794,10 +800,11 @@ async fn the_serve_mode_registers_the_singleton_set_with_the_maintenance_task() 
 
     let supervisor = start_tasks(&adapters(), TaskMode::Serve, stopping);
 
-    assert_eq!(supervisor.len(), 2);
+    assert_eq!(supervisor.len(), 3);
     let set = singleton_set(&adapters());
-    assert_eq!(set.len(), 1);
+    assert_eq!(set.len(), 2);
     assert_eq!(set[0].name(), "policy-maintenance");
+    assert_eq!(set[1].name(), "bulk-operation-runner");
     stop.send_replace(true);
     assert_eq!(
         supervisor.stop(Duration::from_secs(1)).await,
@@ -831,12 +838,19 @@ async fn the_serve_mode_adds_the_outbox_relay_and_its_listener() {
 
     let supervisor = start_tasks(&adapters, TaskMode::Serve, stopping);
 
-    assert_eq!(supervisor.len(), 4);
+    assert_eq!(supervisor.len(), 5);
     let names: Vec<_> = singleton_set(&adapters)
         .iter()
         .map(SingletonLoop::name)
         .collect();
-    assert_eq!(names, ["policy-maintenance", "outbox-relay"]);
+    assert_eq!(
+        names,
+        [
+            "policy-maintenance",
+            "outbox-relay",
+            "bulk-operation-runner"
+        ]
+    );
     stop.send_replace(true);
     assert_eq!(
         supervisor.stop(Duration::from_secs(1)).await,
@@ -869,16 +883,26 @@ async fn the_serve_mode_adds_the_anti_entropy_task_after_the_relay_and_shares_it
 
     assert_eq!(
         names,
-        ["policy-maintenance", "outbox-relay", "anti-entropy"]
+        [
+            "policy-maintenance",
+            "outbox-relay",
+            "anti-entropy",
+            "bulk-operation-runner"
+        ]
     );
 }
 
 #[test]
-fn a_zero_maintenance_interval_registers_no_task() {
+fn a_zero_maintenance_interval_registers_no_maintenance_task() {
     let mut adapters = adapters();
     adapters.maintenance.interval = Duration::ZERO;
 
-    assert!(singleton_set(&adapters).is_empty());
+    let names: Vec<_> = singleton_set(&adapters)
+        .iter()
+        .map(SingletonLoop::name)
+        .collect();
+
+    assert_eq!(names, ["bulk-operation-runner"]);
 }
 
 #[tokio::test]

@@ -7,14 +7,18 @@
 
 use axum::Json;
 use axum::extract::State;
-use axum::http::header::ETAG;
+use axum::http::header::{ETAG, LOCATION};
 use axum::http::{HeaderName, StatusCode};
+use axum::response::AppendHeaders;
 use iam_domain::{
-    ActorRef, ChangeId, ChangeReceipt, IdempotencyKey, IdempotencyRequest, RoleId, RoleParts,
+    ActorRef, BulkOperationId, BulkOperationParts, ChangeId, ChangeReceipt, EntityVersion,
+    IdempotencyKey, IdempotencyRequest, RoleId, RoleParts,
 };
 use shared_application::http::{ApiPath, Problem, ValidatedJson, ValidatedQuery, Violation};
+use shared_domain::BusError;
 
 use super::IamState;
+use super::bulk_operation::{BULK_OPERATIONS_PATH, find_bulk_operation};
 use super::dto::{
     CreateRoleRequest, DeleteRoleResponse, ListRolesParams, RolePageResponse, RoleResponse,
     UpdateRoleRequest, delete_role_canonical_form,
@@ -171,19 +175,20 @@ pub(crate) async fn update_role(
 /// it.
 ///
 /// It returns the receipt of the change, which holds the number of revoked assignments, because a
-/// command returns no data and a deleted role can no longer be read.
+/// command returns no data and a deleted role can no longer be read; a role with more assignments
+/// than one version may change returns the bulk operation that deletes it in chunks instead.
 ///
 /// # Errors
 ///
 /// The problem of a refused request: 403 for a system role, 404 for an unknown or deleted role,
-/// 409 for a concurrent change or a role with more assignments than one transaction revokes, 412
-/// for a stale version, 422 for a key reused for another request, 500 for a storage failure.
+/// 409 for a concurrent change, 412 for a stale version, 422 for a key reused for another request,
+/// 500 for a storage failure.
 pub(crate) async fn delete_role(
     state: &IamState,
     caller: &Principal,
     id: RoleId,
     headers: VersionedWriteHeaders,
-) -> Result<ChangeReceipt, Problem> {
+) -> Result<RoleDeletion, Problem> {
     let VersionedWriteHeaders { expected, key } = headers;
     let actor = caller.actor();
     let idempotency = key.map(|key| IdempotencyRequest {
@@ -193,7 +198,7 @@ pub(crate) async fn delete_role(
             .digest(&delete_role_canonical_form(id, expected)),
     });
     if let Some(replayed) = find_replay(state, &actor, idempotency.as_ref()).await? {
-        return Ok(replayed);
+        return Ok(RoleDeletion::Committed(replayed));
     }
     let change_id = ChangeId::from_uuid(state.uuid_generator.generate());
     let command = DeleteRoleCommand {
@@ -204,10 +209,68 @@ pub(crate) async fn delete_role(
         idempotency,
     };
     state.command_bus.dispatch(command).await?;
-    Ok(state
+    match state
         .query_bus
         .ask(GetChangeReceiptQuery { change_id })
-        .await?)
+        .await
+    {
+        Ok(receipt) => Ok(RoleDeletion::Committed(receipt)),
+        Err(BusError::Handler(IamError::NotFound)) => {
+            started_deletion(state, id, change_id, expected).await
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// What a role deletion did: committed in one change, or handed to a bulk operation.
+#[derive(Debug)]
+pub(crate) enum RoleDeletion {
+    /// The role and its assignments were deleted in one change.
+    Committed(ChangeReceipt),
+    /// The role has more assignments than one version may change; the bulk operation deletes it
+    /// in chunks.
+    Bulk(BulkDeletion),
+}
+
+/// A role deletion that runs as a bulk operation.
+#[derive(Debug)]
+pub(crate) struct BulkDeletion {
+    /// The role that is deleted.
+    pub(crate) role: RoleId,
+    /// The version the role holds until the last chunk deletes it.
+    pub(crate) version: EntityVersion,
+    /// The bulk operation as it was recorded.
+    pub(crate) operation: BulkOperationParts,
+}
+
+impl BulkDeletion {
+    /// The assignments that the operation revokes: every record but the role itself.
+    pub(crate) fn revoked_assignments(&self) -> u32 {
+        u32::try_from(self.operation.total_records.saturating_sub(1)).unwrap_or(u32::MAX)
+    }
+
+    /// The path of the operation, the `Location` of the 202 response.
+    pub(crate) fn location(&self) -> String {
+        format!("{BULK_OPERATIONS_PATH}/{}", self.operation.id)
+    }
+}
+
+/// The bulk operation that the command recorded for the change `change_id`, which the command
+/// names after the change; a command that recorded neither a receipt nor an operation did not run.
+async fn started_deletion(
+    state: &IamState,
+    role: RoleId,
+    change_id: ChangeId,
+    version: EntityVersion,
+) -> Result<RoleDeletion, Problem> {
+    let operation = find_bulk_operation(state, BulkOperationId::from_uuid(change_id.as_uuid()))
+        .await?
+        .ok_or(IamError::NotFound)?;
+    Ok(RoleDeletion::Bulk(BulkDeletion {
+        role,
+        version,
+        operation,
+    }))
 }
 
 /// The role with the identifier, none when it is unknown or deleted.
@@ -425,7 +488,7 @@ pub async fn update(
 /// # Errors
 ///
 /// A problem document: 401 without a valid token, 403 for a system role, 404 for an unknown role,
-/// 409 for a concurrent change or too many assignments, 412 for a stale `If-Match`, 422 for an id
+/// 409 for a concurrent change, 412 for a stale `If-Match`, 422 for an id
 /// that is not a UUID or a reused idempotency key, 428 without `If-Match`, 500 when the storage
 /// fails.
 #[utoipa::path(
@@ -434,7 +497,7 @@ pub async fn update(
     operation_id = "api_roles_id_delete",
     tag = "iam",
     summary = "Deletes a role.",
-    description = "Deletes a custom role when `If-Match` holds the current `ETag` and revokes every assignment of it in the same transaction: the role and its assignments leave the active listings at once, the next policy version is committed, and `iam.role.deleted`, one `iam.user_role.revoked` per revoked assignment and the audit records are written. The response reports the number of revoked assignments. A system role cannot be deleted. A repeated `Idempotency-Key` with the same request within 24 hours returns the original result, including the number of revoked assignments.",
+    description = "Deletes a custom role when `If-Match` holds the current `ETag` and revokes every assignment of it in the same transaction: the role and its assignments leave the active listings at once, the next policy version is committed, and `iam.role.deleted`, one `iam.user_role.revoked` per revoked assignment and the audit records are written. The response reports the number of revoked assignments. A system role cannot be deleted. A repeated `Idempotency-Key` with the same request within 24 hours returns the original result, including the number of revoked assignments. A role with more assignments than `BULK_CHUNK_ENTITIES` is deleted by a bulk operation instead: the response is 202 with the `Location` of the operation, which revokes the assignments in ordered chunks and deletes the role in the last one; `revokedAssignments` is the number it will revoke.",
     security(("bearerAuth" = [])),
     params(
         ("id" = String, Path, format = Uuid, description = "Role identifier"),
@@ -455,12 +518,13 @@ pub async fn update(
         ),
         (
             status = 202,
-            description = "The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.",
+            description = "The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet. For a role with more assignments than `BULK_CHUNK_ENTITIES` the deletion was recorded as a bulk operation, which `location` names.",
             body = DeleteRoleResponse,
             headers(
-                ("etag" = String, description = "The final version of the role in double quotes."),
-                ("iam-policy-version" = String, description = "The policy version that the change produced."),
-                ("iam-propagation-status" = String, description = "`committed_pending_propagation`.")
+                ("etag" = String, description = "The final version of the role in double quotes; for a bulk operation, the version the role holds until the last chunk deletes it."),
+                ("iam-policy-version" = String, description = "The policy version that the change produced; absent for a bulk operation."),
+                ("iam-propagation-status" = String, description = "`committed_pending_propagation`; absent for a bulk operation."),
+                ("location" = String, description = "Path of the bulk operation; present only when the deletion runs as a bulk operation.")
             )
         ),
         (status = 400, description = "Invalid identifier.", body = Problem, content_type = "application/problem+json"),
@@ -473,7 +537,7 @@ pub async fn update(
         ),
         (status = 403, description = "A system role cannot be deleted.", body = Problem, content_type = "application/problem+json"),
         (status = 404, description = "Role not found.", body = Problem, content_type = "application/problem+json"),
-        (status = 409, description = "The role or one of its assignments changed concurrently, or the role has more assignments than one transaction revokes.", body = Problem, content_type = "application/problem+json"),
+        (status = 409, description = "The role or one of its assignments changed concurrently.", body = Problem, content_type = "application/problem+json"),
         (status = 412, description = "`If-Match` is not the current version.", body = Problem, content_type = "application/problem+json"),
         (status = 422, description = "Validation failed, or the idempotency key was used for another request.", body = Problem, content_type = "application/problem+json"),
         (status = 428, description = "`If-Match` is missing.", body = Problem, content_type = "application/problem+json"),
@@ -486,12 +550,24 @@ pub async fn delete(
     ApiPath(id): ApiPath<String>,
     headers: VersionedWriteHeaders,
 ) -> Result<(StatusCode, WriteHeaders, Json<DeleteRoleResponse>), Problem> {
-    let receipt = delete_role(&state, &caller, parse_role_id(&id)?, headers).await?;
-    Ok((
-        write_status(&receipt, StatusCode::OK),
-        change_headers(&receipt),
-        Json(DeleteRoleResponse::from(&receipt)),
-    ))
+    match delete_role(&state, &caller, parse_role_id(&id)?, headers).await? {
+        RoleDeletion::Committed(receipt) => Ok((
+            write_status(&receipt, StatusCode::OK),
+            change_headers(&receipt),
+            Json(DeleteRoleResponse::from(&receipt)),
+        )),
+        RoleDeletion::Bulk(deletion) => Ok((
+            StatusCode::ACCEPTED,
+            AppendHeaders(vec![
+                (ETAG, etag(deletion.version)),
+                (LOCATION, deletion.location()),
+            ]),
+            Json(DeleteRoleResponse {
+                id: deletion.role.to_string(),
+                revoked_assignments: deletion.revoked_assignments(),
+            }),
+        )),
+    }
 }
 
 /// Lists roles.

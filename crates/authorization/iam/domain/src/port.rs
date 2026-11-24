@@ -5,6 +5,7 @@ pub mod anti_entropy_store;
 pub mod boot_clock;
 pub mod bulk_chunk_committer;
 pub mod bulk_operation_repository;
+pub mod bulk_role_target_store;
 pub mod change_receipt_repository;
 pub mod endpoint_watch;
 pub mod graphql_document_analyzer;

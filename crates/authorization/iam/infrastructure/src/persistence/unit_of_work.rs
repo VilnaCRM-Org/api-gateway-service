@@ -15,6 +15,7 @@ use sqlx::PgConnection;
 use sqlx::types::Uuid as SqlUuid;
 use sqlx::types::time::OffsetDateTime;
 
+use crate::persistence::bulk_operation;
 use crate::persistence::catalogue;
 use crate::persistence::event_encoding::encode;
 use crate::persistence::gateway_configuration;
@@ -234,17 +235,13 @@ async fn run(
     Ok(())
 }
 
-/// Runs the aggregate write of one statement; a guard writes nothing.
+/// Runs the write of one statement: a specification write here, every other write in
+/// [`run_aggregate`].
 async fn run_statement(
     connection: &mut PgConnection,
     statement: &ChangeStatement,
 ) -> Result<(), RepositoryError> {
     match statement {
-        ChangeStatement::ExpectPolicyVersion(_) => Ok(()),
-        ChangeStatement::SaveRole(role) => save_within(connection, role).await,
-        ChangeStatement::SaveUserRole(assignment) => {
-            user_role::save_within(connection, assignment).await
-        }
         ChangeStatement::SaveGraphQlSpec(version) => {
             graphql_spec::save_within(connection, version).await
         }
@@ -254,9 +251,35 @@ async fn run_statement(
         ChangeStatement::ApplyCatalogue(activation) => {
             catalogue::apply_within(connection, activation).await
         }
+        ChangeStatement::ExpectPolicyVersion(_)
+        | ChangeStatement::SaveRole(_)
+        | ChangeStatement::SaveUserRole(_)
+        | ChangeStatement::SaveGateway(_)
+        | ChangeStatement::SaveBulkProgress(_) => run_aggregate(connection, statement).await,
+    }
+}
+
+/// Runs the aggregate write of one statement; a guard, like a specification write that
+/// [`run_statement`] already ran, writes nothing here.
+async fn run_aggregate(
+    connection: &mut PgConnection,
+    statement: &ChangeStatement,
+) -> Result<(), RepositoryError> {
+    match statement {
+        ChangeStatement::SaveRole(role) => save_within(connection, role).await,
+        ChangeStatement::SaveUserRole(assignment) => {
+            user_role::save_within(connection, assignment).await
+        }
         ChangeStatement::SaveGateway(statement) => {
             gateway_configuration::save_within(connection, statement).await
         }
+        ChangeStatement::SaveBulkProgress(statement) => {
+            bulk_operation::save_progress_within(connection, statement).await
+        }
+        ChangeStatement::ExpectPolicyVersion(_)
+        | ChangeStatement::SaveGraphQlSpec(_)
+        | ChangeStatement::SaveOpenApiSpec(_)
+        | ChangeStatement::ApplyCatalogue(_) => Ok(()),
     }
 }
 

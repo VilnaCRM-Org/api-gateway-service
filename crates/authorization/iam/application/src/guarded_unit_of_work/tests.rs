@@ -214,6 +214,13 @@ fn route_scope(names: &[&str]) -> GuardCheck {
     }
 }
 
+fn route(names: &[&str], anonymous_key: bool) -> GuardCheck {
+    GuardCheck::Route {
+        services: names.iter().map(|name| service(name)).collect(),
+        anonymous_key,
+    }
+}
+
 async fn commit(world: &World, change: IamChange) -> Result<(), RepositoryError> {
     world
         .unit
@@ -626,4 +633,47 @@ async fn a_change_of_an_entry_without_the_route_key_is_refused_and_audited() {
     let result = commit(&world, user_change(route_scope(&["core"]))).await;
 
     assert_refused(&world, &result, "route_scope.denied");
+}
+
+#[tokio::test]
+async fn a_route_change_that_needs_no_anonymous_key_is_decided_by_the_route_keys_alone() {
+    let world = Setup::holding(&["iam:route:core"]).build();
+
+    commit(&world, user_change(route(&["core"], false)))
+        .await
+        .unwrap();
+
+    assert_eq!(world.committed.committed().len(), 1);
+}
+
+#[tokio::test]
+async fn a_route_change_in_a_service_without_the_key_is_refused_before_the_anonymous_key() {
+    let world = Setup::holding(&["iam:route:core"]).build();
+
+    let result = commit(&world, user_change(route(&["core", "payment"], true))).await;
+
+    assert_refused(&world, &result, "route_scope.denied");
+}
+
+#[tokio::test]
+async fn a_route_change_that_needs_the_anonymous_key_is_refused_without_it_and_audited() {
+    let world = Setup::holding(&["iam:route:core"]).build();
+
+    let result = commit(&world, user_change(route(&["core"], true))).await;
+
+    assert_refused(&world, &result, "anonymous_route_forbidden");
+    let recorded = world.audit.recorded();
+    let before = recorded[0].event().parts().before.clone().unwrap();
+    assert_eq!(before.as_str(), "missing=iam:route:anonymous");
+}
+
+#[tokio::test]
+async fn a_holder_of_the_anonymous_key_commits_the_route_change() {
+    let world = Setup::holding(&["iam:route:core", "iam:route:anonymous"]).build();
+
+    commit(&world, user_change(route(&["core"], true)))
+        .await
+        .unwrap();
+
+    assert_eq!(world.committed.committed().len(), 1);
 }

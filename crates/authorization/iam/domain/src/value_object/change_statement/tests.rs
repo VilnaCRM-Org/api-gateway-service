@@ -3,6 +3,8 @@ use std::time::SystemTime;
 use shared_domain::Uuid;
 
 use super::ChangeStatement;
+use crate::bulk_operation::statement::BulkProgressStatement;
+use crate::bulk_operation::{BulkKind, BulkOperation};
 use crate::role::statement::RoleStatement;
 use crate::role::{Role, RoleFields, RoleStamp};
 use crate::state::key::StateKey;
@@ -10,6 +12,7 @@ use crate::user_role::statement::UserRoleStatement;
 use crate::user_role::{UserRole, UserRoleAssignment, UserRoleStamp};
 use crate::value_object::actor_ref::ActorRef;
 use crate::value_object::assignment_scope::AssignmentScope;
+use crate::value_object::identifier::BulkOperationId;
 use crate::value_object::identifier::{RoleId, UserRoleId};
 use crate::value_object::policy_version::PolicyVersion;
 use crate::value_object::role_name::RoleName;
@@ -409,5 +412,25 @@ fn a_rate_policy_write_changes_the_state_of_its_rate_policy() {
             RatePolicyId::parse("6c3f0d2b-8e4a-4b7c-9d1e-2f3a4b5c6d7e").unwrap()
         )]
     );
+    assert_eq!(statement.catalogue_service(), None);
+}
+
+#[test]
+fn a_bulk_progress_write_holds_everywhere_and_names_no_state_key_or_service() {
+    let operation = BulkOperation::pending(
+        BulkOperationId::parse("01890a5d-ac96-774b-bcce-b302099a8058").unwrap(),
+        BulkKind::RoleDeletion,
+        3,
+        ActorRef::User(Uuid::parse("3d9b7c1e-5a2f-4e8d-b6c0-9f1e2d3c4b5a").unwrap()),
+        SystemTime::UNIX_EPOCH,
+    )
+    .unwrap();
+    let statement = ChangeStatement::SaveBulkProgress(Box::new(
+        BulkProgressStatement::after_chunk(&operation, 0),
+    ));
+
+    assert!(statement.holds(PolicyVersion::new(1).unwrap()));
+    assert!(statement.holds(PolicyVersion::new(9).unwrap()));
+    assert_eq!(statement.state_keys().len(), 0);
     assert_eq!(statement.catalogue_service(), None);
 }

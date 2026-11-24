@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use iam_domain::{
-    AccessToken, AccessTokenParts, ActorRef, AuditTarget, ChangeId, ChangeReceipt, EntityVersion,
-    PermissionGrantSet, PolicyVersion, RoleDescription, RoleId, RoleKind, RoleName, RoleParts,
-    SessionId, SubjectId, TokenId, TokenIdentity,
+    AccessToken, AccessTokenParts, ActorRef, AuditTarget, BulkOperationParts, ChangeId,
+    ChangeReceipt, EntityVersion, PermissionGrantSet, PolicyVersion, RoleDescription, RoleId,
+    RoleKind, RoleName, RoleParts, SessionId, SubjectId, TokenId, TokenIdentity,
 };
 use shared_domain::{CommandBus, QueryBus, Uuid};
 use test_support::bus::{FakeCommandBus, FakeQueryBus};
@@ -20,6 +20,7 @@ use crate::command::update_role::UpdateRoleCommand;
 use crate::error::IamError;
 use crate::http::IamState;
 use crate::principal::Principal;
+use crate::query::get_bulk_operation::GetBulkOperationQuery;
 use crate::query::get_change_receipt::GetChangeReceiptQuery;
 use crate::query::get_idempotent_replay::GetIdempotentReplayQuery;
 use crate::query::get_role::GetRoleQuery;
@@ -100,6 +101,9 @@ pub(crate) struct Answers {
     pub update: Result<(), Refusal>,
     /// The answer of the delete command.
     pub delete: Result<(), Refusal>,
+    /// The bulk operation that a deletion recorded instead of a change: the change-receipt query
+    /// then finds no receipt and the bulk-operation query answers this operation.
+    pub bulk: Option<BulkOperationParts>,
 }
 
 impl Default for Answers {
@@ -115,6 +119,7 @@ impl Default for Answers {
             command: Ok(()),
             update: Ok(()),
             delete: Ok(()),
+            bulk: None,
         }
     }
 }
@@ -201,8 +206,10 @@ fn query_bus(answers: Answers, asked: &Asked) -> FakeQueryBus {
         receipt,
         role,
         page,
+        bulk,
         ..
     } = answers;
+    let found = bulk.clone();
     let replays = Arc::clone(&asked.replays);
     let roles = Arc::clone(&asked.roles);
     let lists = Arc::clone(&asked.lists);
@@ -210,7 +217,14 @@ fn query_bus(answers: Answers, asked: &Asked) -> FakeQueryBus {
         record(&replays, query);
         replay.clone().map_err(|refusal| refusal())
     })
-    .and_answering(move |_query: GetChangeReceiptQuery| Ok(receipt.clone()))
+    .and_answering(move |_query: GetChangeReceiptQuery| {
+        if bulk.is_some() {
+            Err(IamError::NotFound)
+        } else {
+            Ok(receipt.clone())
+        }
+    })
+    .and_answering(move |_query: GetBulkOperationQuery| Ok(found.clone()))
     .and_answering(move |query: GetRoleQuery| {
         record(&roles, query.id);
         role.clone().map_err(|refusal| refusal())

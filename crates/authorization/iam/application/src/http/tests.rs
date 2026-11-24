@@ -135,7 +135,11 @@ fn the_router_documents_the_role_operations_under_the_iam_tag_behind_the_bearer_
             .post
             .is_some()
     );
-    assert_eq!(document.paths.paths.len(), 23);
+    let routes = &document.paths.paths["/routes"];
+    let route = &document.paths.paths["/routes/{id}"];
+    assert!(routes.post.is_some() && routes.get.is_some());
+    assert!(route.get.is_some() && route.patch.is_some() && route.delete.is_some());
+    assert_eq!(document.paths.paths.len(), 25);
 }
 
 #[test]

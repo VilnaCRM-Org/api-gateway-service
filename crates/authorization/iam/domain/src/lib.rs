@@ -38,6 +38,7 @@ pub use bulk_operation::chunker::{
     BulkChange, BulkChunk, BulkChunker, BulkPacing, ChangeDirection, InvalidBulkChunking,
 };
 pub use bulk_operation::event::BulkOperationCompleted;
+pub use bulk_operation::statement::BulkProgressStatement;
 pub use bulk_operation::{
     BulkKind, BulkOperation, BulkOperationParts, BulkOperationRefused, BulkStamp, BulkStatus,
     InvalidBulkOperation,
@@ -122,6 +123,7 @@ pub use port::anti_entropy_store::{AntiEntropyStore, PublishedRecord, StoredHead
 pub use port::boot_clock::BootClock;
 pub use port::bulk_chunk_committer::{BulkChunkCommitter, ChunkCommitError, CommittedChunk};
 pub use port::bulk_operation_repository::BulkOperationRepository;
+pub use port::bulk_role_target_store::BulkRoleTargetStore;
 pub use port::change_receipt_repository::ChangeReceiptRepository;
 pub use port::endpoint_watch::{
     EndpointListing, EndpointSlice, EndpointWatch, EndpointWatchError, SliceChange, WatchBatch,

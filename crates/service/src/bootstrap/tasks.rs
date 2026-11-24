@@ -12,8 +12,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iam_application::{
-    AntiEntropyChecker, InvalidSingletonInterval, OutboxRelay, PolicyMaintenance,
-    RejectedAttemptWriter, RunMaintenanceCommandHandler, SingletonLoop,
+    AntiEntropyChecker, BulkOperationRunner, BulkRunnerPorts, InvalidSingletonInterval,
+    OutboxRelay, PolicyMaintenance, RejectedAttemptWriter, RoleDeletionChunkCommitter,
+    RoleDeletionPorts, RunMaintenanceCommandHandler, SingletonLoop,
 };
 use tokio::sync::watch;
 use tokio::task::JoinSet;
@@ -130,7 +131,8 @@ fn log_failed(error: &tokio::task::JoinError) {
     tracing::error!(error = %error, "task failed");
 }
 
-/// The singleton tasks that `service serve` runs: maintenance, the outbox relay, anti-entropy.
+/// The singleton tasks that `service serve` runs: maintenance, the outbox relay, anti-entropy and
+/// the bulk operation runner.
 ///
 /// There is no `service worker` mode, so the set runs inside `serve`; the stories that add a task
 /// extend it here.
@@ -151,7 +153,37 @@ pub fn singleton_set(adapters: &Adapters) -> Vec<SingletonLoop> {
             .and_then(|relay| relay.anti_entropy.as_ref())
             .map(|anti_entropy| anti_entropy_loop(adapters, anti_entropy)),
     );
+    set.push(bulk_loop(adapters));
     set
+}
+
+/// The loop of the bulk operation runner: it commits the oldest unfinished bulk operation chunk by
+/// chunk, at most `BULK_MAX_RECORDS_PER_SECOND` records per second (Story 7.9).
+fn bulk_loop(adapters: &Adapters) -> SingletonLoop {
+    let committer = RoleDeletionChunkCommitter::new(
+        RoleDeletionPorts {
+            roles: Arc::clone(&adapters.roles),
+            user_roles: Arc::clone(&adapters.user_roles),
+            targets: Arc::clone(&adapters.bulk_targets),
+            policy_epochs: Arc::clone(&adapters.policy_epochs),
+            unit_of_work: Arc::clone(&adapters.unit_of_work),
+            ids: Arc::clone(&adapters.uuid_generator),
+        },
+        adapters.bulk.chunker,
+    );
+    BulkOperationRunner::new(
+        BulkRunnerPorts {
+            operations: Arc::clone(&adapters.bulk_operations),
+            committer: Arc::new(committer),
+            clock: Arc::clone(&adapters.clock),
+            ids: Arc::clone(&adapters.uuid_generator),
+        },
+        adapters.bulk.pacing,
+    )
+    .into_loop(
+        Arc::clone(&adapters.singleton_leadership),
+        Arc::clone(&adapters.clock),
+    )
 }
 
 /// The loop of the anti-entropy task: a head check every `ANTI_ENTROPY_HEAD_INTERVAL` (polled at

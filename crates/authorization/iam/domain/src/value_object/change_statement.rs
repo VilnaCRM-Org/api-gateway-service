@@ -1,5 +1,6 @@
 //! The statements and guards that a change runs inside its transaction.
 
+use crate::bulk_operation::statement::BulkProgressStatement;
 use crate::catalogue_statement::CatalogueStatement;
 use crate::gateway_statement::GatewayStatement;
 use crate::graphql_spec::statement::GraphQlSpecStatement;
@@ -46,6 +47,9 @@ pub enum ChangeStatement {
     /// a duplicate id or name refuses the change as a duplicate, and a stale or deleted stored
     /// record or a missing upstream or rate policy of a route as a conflict.
     SaveGateway(Box<GatewayStatement>),
+    /// Store the progress of a bulk operation after a committed chunk; stored progress that differs
+    /// from the expected applied records refuses the change as a conflict.
+    SaveBulkProgress(Box<BulkProgressStatement>),
 }
 
 impl ChangeStatement {
@@ -60,7 +64,8 @@ impl ChangeStatement {
             | Self::SaveGraphQlSpec(_)
             | Self::SaveOpenApiSpec(_)
             | Self::ApplyCatalogue(_)
-            | Self::SaveGateway(_) => true,
+            | Self::SaveGateway(_)
+            | Self::SaveBulkProgress(_) => true,
         }
     }
 
@@ -70,9 +75,10 @@ impl ChangeStatement {
     #[must_use]
     pub fn state_keys(&self) -> Vec<StateKey> {
         match self {
-            Self::ExpectPolicyVersion(_) | Self::SaveGraphQlSpec(_) | Self::SaveOpenApiSpec(_) => {
-                Vec::new()
-            }
+            Self::ExpectPolicyVersion(_)
+            | Self::SaveGraphQlSpec(_)
+            | Self::SaveOpenApiSpec(_)
+            | Self::SaveBulkProgress(_) => Vec::new(),
             Self::SaveRole(statement) => vec![StateKey::Role(statement.role().id)],
             Self::SaveUserRole(statement) => {
                 vec![StateKey::Subject(statement.user_role().subject.clone())]
@@ -107,7 +113,8 @@ impl ChangeStatement {
             | Self::SaveUserRole(_)
             | Self::SaveGraphQlSpec(_)
             | Self::SaveOpenApiSpec(_)
-            | Self::SaveGateway(_) => None,
+            | Self::SaveGateway(_)
+            | Self::SaveBulkProgress(_) => None,
         }
     }
 }

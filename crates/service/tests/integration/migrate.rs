@@ -12,7 +12,7 @@ use crate::support::{DEAD_DATABASE_URL, Scratch, database_url, silent_listener, 
 const TABLE_EXISTS: &str = "SELECT to_regclass('example_api_resources') IS NOT NULL";
 /// The embedded migrations, oldest first: the version and what the migration creates, a table
 /// (`table`) or a column of an existing table (`table.column`).
-const MIGRATIONS: [(&str, &str); 16] = [
+const MIGRATIONS: [(&str, &str); 17] = [
     ("20261110000000", "example_api_resources"),
     ("20261122000224", "iam_policy_epoch"),
     ("20261122125604", "iam_security_audit_events"),
@@ -29,6 +29,7 @@ const MIGRATIONS: [(&str, &str); 16] = [
     ("20261123163401", "iam_route_rate_policies"),
     ("20261123201326", "iam_change_receipts.propagation_status"),
     ("20261124014501", "iam_bulk_operations"),
+    ("20261124045238", "iam_bulk_role_targets"),
 ];
 /// What a process start and the output handling may add to a wait that is bounded by its timeout.
 const MARGIN: Duration = Duration::from_millis(700);

@@ -955,6 +955,49 @@ async fn a_deleted_role_is_200_with_the_revoked_assignments_the_final_etag_and_t
 }
 
 #[tokio::test]
+async fn a_deletion_that_became_a_bulk_operation_is_202_with_the_location_of_the_operation() {
+    let answers = Answers {
+        bulk: Some(crate::bulk_operation_fixtures::operation(
+            1,
+            iam_domain::BulkStatus::Pending,
+            0,
+        )),
+        ..Answers::default()
+    };
+    let (app, commands, queries, _asked) = app(answers);
+
+    let (status, headers, body) = answer(app, delete(&[("If-Match", "\"1\"")])).await;
+
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(
+        header(&headers, LOCATION.as_str()),
+        Some("/api/bulk-operations/00000000-0000-0000-0000-000000000001".to_owned())
+    );
+    assert_eq!(header(&headers, ETAG.as_str()), Some("\"1\"".to_owned()));
+    assert_eq!(header(&headers, "iam-policy-version"), None);
+    assert_eq!(body, json!({ "id": ROLE, "revokedAssignments": 2_499 }));
+    assert_eq!(commands.dispatched(), ["DeleteRoleCommand"]);
+    assert_eq!(
+        queries.asked(),
+        ["GetChangeReceiptQuery", "GetBulkOperationQuery"]
+    );
+}
+
+#[tokio::test]
+async fn a_receipt_that_cannot_be_read_after_a_deletion_is_the_500_problem() {
+    let (mut state, commands, _queries, _asked) = scenario(deleted(0));
+    state.query_bus = Arc::new(FakeQueryBus::unregistered());
+    let (routes, _document) = router::<IamState>().split_for_parts();
+
+    let (status, _headers, problem) =
+        answer(routes.with_state(state), delete(&[("If-Match", "\"1\"")])).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(problem["status"], json!(500));
+    assert_eq!(commands.dispatched(), ["DeleteRoleCommand"]);
+}
+
+#[tokio::test]
 async fn a_deletion_without_a_token_is_the_401_problem_and_dispatches_nothing() {
     let (app, commands, _queries, _asked) = app(deleted(0));
 

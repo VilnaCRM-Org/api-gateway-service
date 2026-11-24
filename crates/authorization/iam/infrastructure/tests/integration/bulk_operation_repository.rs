@@ -100,3 +100,61 @@ async fn the_oldest_unfinished_operation_skips_finished_ones(pool: PgPool) {
 
     assert_eq!(oldest.parts().id, id(2));
 }
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn a_role_target_is_stored_once_and_read_back(pool: PgPool) {
+    use iam_domain::{BulkRoleTargetStore as _, RoleId};
+    use iam_infrastructure::PgBulkRoleTargetStore;
+
+    let store = PgBulkRoleTargetStore::new(pool);
+    let role = RoleId::parse("7f1c2a4e-1d0b-4f5e-9a3c-2b6d8e0f1a2b").unwrap();
+
+    assert!(store.find(id(1)).await.unwrap().is_none());
+    store.insert(id(1), role).await.unwrap();
+    let again = store.insert(id(1), role).await.unwrap_err();
+
+    assert_eq!(store.find(id(1)).await.unwrap(), Some(role));
+    assert!(matches!(again, RepositoryError::AlreadyExists));
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn a_chunk_change_saves_the_progress_only_over_the_expected_applied_records(pool: PgPool) {
+    use iam_domain::{
+        BulkProgressStatement, ChangeStatement, DecisionEffect, IamUnitOfWork as _, WriteMode,
+    };
+    use iam_infrastructure::PgIamUnitOfWork;
+    use test_support::seed::TestRng;
+    use test_support::unit_of_work::{iam_change, rebuilt};
+
+    let repository = PgBulkOperationRepository::new(pool.clone());
+    let unit = PgIamUnitOfWork::new(pool);
+    let mut operation = pending(1, 2_500);
+    repository.insert(&operation).await.unwrap();
+    operation
+        .record_chunk(1_000, PolicyVersion::new(1).unwrap(), stamp(1))
+        .unwrap();
+    let progress = BulkProgressStatement::after_chunk(&operation, 0);
+    let mut rng = TestRng::from_env();
+    let chunk = |rng: &mut TestRng| {
+        rebuilt(&iam_change(rng, DecisionEffect::Affected, 0), |parts| {
+            parts.statements = vec![ChangeStatement::SaveBulkProgress(Box::new(
+                progress.clone(),
+            ))];
+        })
+    };
+
+    unit.commit(chunk(&mut rng), WriteMode::Published)
+        .await
+        .unwrap();
+    let replayed = unit
+        .commit(chunk(&mut rng), WriteMode::Published)
+        .await
+        .unwrap_err();
+
+    let stored = repository.find(id(1)).await.unwrap().unwrap();
+    assert_eq!(stored.parts(), operation.parts());
+    assert!(
+        matches!(replayed, RepositoryError::Conflict),
+        "{replayed:?}"
+    );
+}
