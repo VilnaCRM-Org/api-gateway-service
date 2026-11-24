@@ -4,7 +4,7 @@ use iam_domain::{
     AuditAction, HttpMethod, PermissionKey, PermissionKeyKind, ReservedPermission, ServiceScope,
 };
 
-use super::{OperationRules, Requirement, VALIDATE_ALL};
+use super::{CallerRule, OperationRules, Requirement, VALIDATE_ALL};
 use crate::http::{IamState, router, specification_router};
 
 fn rows_of(requirement: fn(Requirement) -> bool) -> Vec<(&'static str, &'static str)> {
@@ -71,11 +71,11 @@ fn rows_and_actions_are_unique_and_actions_are_valid_audit_actions() {
 }
 
 #[test]
-fn each_reserved_key_operation_names_exactly_its_reserved_key() {
-    let reserved = rows_of(|requirement| matches!(requirement, Requirement::Reserved(_)));
+fn the_decision_api_and_token_resolution_follow_the_caller_rule_and_need_no_catalogue_key() {
+    let caller = rows_of(|requirement| matches!(requirement, Requirement::Caller(_)));
 
     assert_eq!(
-        reserved,
+        caller,
         vec![
             ("POST", "/api/token-resolutions"),
             ("POST", "/api/access-validations"),
@@ -83,11 +83,53 @@ fn each_reserved_key_operation_names_exactly_its_reserved_key() {
         ]
     );
     for rule in OperationRules::all() {
-        if let Requirement::Reserved(keys) = rule.requirement {
-            assert_eq!(keys, [VALIDATE_ALL], "{}", rule.template);
+        if let Requirement::Caller(caller_rule) = rule.requirement {
             assert!(!rule.requirement.needs_catalogue(), "{}", rule.template);
+            assert!(rule.requirement.reserved().is_empty(), "{}", rule.template);
+            assert_eq!(rule.requirement.caller_rule(), Some(caller_rule));
+            assert_eq!(
+                caller_rule.names_services(),
+                rule.template.contains("access-validations"),
+                "{}",
+                rule.template
+            );
         }
     }
+}
+
+#[test]
+fn the_graphql_decision_fields_follow_the_same_caller_rules_as_their_rest_operations() {
+    let rule = |coordinate: &str| {
+        OperationRules::find_graphql(coordinate)
+            .unwrap()
+            .requirement
+    };
+
+    assert_eq!(
+        rule("Query.validateAccess"),
+        Requirement::Caller(CallerRule::Validate)
+    );
+    assert_eq!(
+        rule("Query.validateAccessBatch"),
+        Requirement::Caller(CallerRule::Validate)
+    );
+    assert_eq!(
+        rule("Query.resolveToken"),
+        Requirement::Caller(CallerRule::ResolveToken)
+    );
+}
+
+#[test]
+fn a_row_with_fixed_keys_has_no_caller_rule() {
+    assert_eq!(Requirement::Catalogue.caller_rule(), None);
+    assert_eq!(
+        Requirement::Reserved(&["iam:audit:read"]).caller_rule(),
+        None
+    );
+    assert_eq!(
+        Requirement::CatalogueAndReserved(&["iam:audit:read"]).caller_rule(),
+        None
+    );
 }
 
 #[test]

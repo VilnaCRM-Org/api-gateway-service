@@ -11,6 +11,7 @@ use axum::middleware::{Next, from_fn_with_state};
 use axum::response::Response;
 use axum::routing::{get, post};
 use http_body_util::BodyExt as _;
+use iam_application::http::access_validation::ACCESS_VALIDATION_BATCH_BODY_LIMIT_BYTES;
 use iam_application::{
     AccessDecisionService, IamAccessGuard, IamError, Principal, RecordRejectedAttemptCommand,
     ServiceCatalogLoader,
@@ -135,6 +136,11 @@ fn app(guard: Arc<IamAccessGuard>, authenticated: bool) -> Router {
         .route("/api/roles", post(async || StatusCode::CREATED))
         .route("/api/roles/{id}", get(async || StatusCode::OK))
         .route("/api/unlisted", get(async || StatusCode::OK))
+        .route("/api/access-validations", post(async |body: String| body))
+        .route(
+            "/api/access-validations/batch",
+            post(async |body: String| body),
+        )
         .route_layer(from_fn_with_state(guard, require_operation));
     if authenticated {
         routes.route_layer(from_fn_with_state(principal(), put_principal))
@@ -150,14 +156,25 @@ struct Answer {
 }
 
 async fn call(app: Router, method: Method, path: &str, request_id: Option<&str>) -> Answer {
+    send(app, method, path, request_id, Body::empty()).await
+}
+
+async fn post_body(app: Router, path: &str, body: String) -> Answer {
+    send(app, Method::POST, path, None, Body::from(body)).await
+}
+
+async fn send(
+    app: Router,
+    method: Method,
+    path: &str,
+    request_id: Option<&str>,
+    body: Body,
+) -> Answer {
     let mut builder = Request::builder().method(method).uri(path);
     if let Some(id) = request_id {
         builder = builder.header("x-request-id", id);
     }
-    let response = app
-        .oneshot(builder.body(Body::empty()).unwrap())
-        .await
-        .unwrap();
+    let response = app.oneshot(builder.body(body).unwrap()).await.unwrap();
     let (parts, body) = response.into_parts();
     Answer {
         status: parts.status,
@@ -257,4 +274,92 @@ async fn an_unreadable_policy_is_a_500_and_records_nothing() {
 
     assert_eq!(answer.status, StatusCode::INTERNAL_SERVER_ERROR);
     assert!(refusals(&recorded).is_empty());
+}
+
+#[tokio::test]
+async fn a_caller_validating_for_a_service_it_holds_the_key_of_reaches_the_handler_with_its_body() {
+    let (guard, recorded) = guard_over(repository(&["iam:validate:core"]));
+    let body = r#"{"service":"core","request_id":"r-1"}"#;
+
+    let answer = post_body(app(guard, true), "/api/access-validations", body.to_owned()).await;
+
+    assert_eq!(answer.status, StatusCode::OK);
+    assert_eq!(answer.body, body);
+    assert!(refusals(&recorded).is_empty());
+}
+
+#[tokio::test]
+async fn a_caller_validating_for_another_service_gets_a_403_problem_and_the_refusal_is_offered() {
+    let (guard, recorded) = guard_over(repository(&["iam:validate:core"]));
+    let body = r#"{"service":"payment","request_id":"r-1"}"#;
+
+    let answer = post_body(app(guard, true), "/api/access-validations", body.to_owned()).await;
+
+    assert_eq!(answer.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        answer.content_type.as_deref(),
+        Some("application/problem+json")
+    );
+    assert_eq!(refusals(&recorded)[0].action.as_str(), "access.validate");
+}
+
+#[tokio::test]
+async fn one_item_for_a_service_the_caller_may_not_validate_refuses_the_whole_batch() {
+    let (guard, recorded) = guard_over(repository(&["iam:validate:core"]));
+    let body = r#"{"checks":[{"service":"core"},{"service":"payment"}]}"#;
+
+    let answer = post_body(
+        app(guard, true),
+        "/api/access-validations/batch",
+        body.to_owned(),
+    )
+    .await;
+
+    assert_eq!(answer.status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        refusals(&recorded)[0].action.as_str(),
+        "access.validate_batch"
+    );
+}
+
+#[tokio::test]
+async fn a_batch_of_services_the_caller_holds_keys_of_reaches_the_handler() {
+    let (guard, _recorded) = guard_over(repository(&["iam:validate:core", "iam:validate:payment"]));
+    let body = r#"{"checks":[{"service":"core"},{"service":"payment"}]}"#;
+
+    let answer = post_body(
+        app(guard, true),
+        "/api/access-validations/batch",
+        body.to_owned(),
+    )
+    .await;
+
+    assert_eq!(answer.status, StatusCode::OK);
+    assert_eq!(answer.body, body);
+}
+
+#[tokio::test]
+async fn a_body_above_the_batch_limit_is_a_413_problem() {
+    let (guard, recorded) = guard_over(repository(&["iam:validate:*"]));
+    let body = " ".repeat(ACCESS_VALIDATION_BATCH_BODY_LIMIT_BYTES + 1);
+
+    let answer = post_body(app(guard, true), "/api/access-validations/batch", body).await;
+
+    assert_eq!(answer.status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(refusals(&recorded).is_empty());
+}
+
+#[tokio::test]
+async fn a_body_that_names_no_service_needs_the_wildcard() {
+    let (guard, recorded) = guard_over(repository(&["iam:validate:core"]));
+
+    let answer = post_body(
+        app(guard, true),
+        "/api/access-validations",
+        "not json".to_owned(),
+    )
+    .await;
+
+    assert_eq!(answer.status, StatusCode::FORBIDDEN);
+    assert_eq!(refusals(&recorded)[0].action.as_str(), "access.validate");
 }

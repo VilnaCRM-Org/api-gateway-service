@@ -435,6 +435,7 @@ fn every_variable_accepts_a_valid_value() {
         maintenance: valid().maintenance,
         relay: valid().relay,
         anti_entropy: valid().anti_entropy,
+        bulk: valid().bulk,
     };
 
     let config = Config::from_args(args).unwrap();
@@ -1070,7 +1071,7 @@ type Mutator = fn(&mut ServeArgs);
 
 /// One row per variable of `ServeArgs`: the variable, a way to make it the only problem, and the
 /// variable that the problem names.
-const FIELDS: [(&str, Mutator, &str); 48] = [
+const FIELDS: [(&str, Mutator, &str); 50] = [
     ("APP_ENV", |a| a.app_env = some("x"), "APP_ENV"),
     ("APP_HOST", |a| a.app_host = some("x"), "APP_HOST"),
     ("APP_PORT", |a| a.app_port = some("x"), "APP_PORT"),
@@ -1267,6 +1268,16 @@ const FIELDS: [(&str, Mutator, &str); 48] = [
         "ANTI_ENTROPY_FULL_INTERVAL",
         |a| a.anti_entropy.full_interval = some("x"),
         "ANTI_ENTROPY_FULL_INTERVAL",
+    ),
+    (
+        "BULK_CHUNK_ENTITIES",
+        |a| a.bulk.chunk_entities = some("x"),
+        "BULK_CHUNK_ENTITIES",
+    ),
+    (
+        "BULK_MAX_RECORDS_PER_SECOND",
+        |a| a.bulk.max_records_per_second = some("x"),
+        "BULK_MAX_RECORDS_PER_SECOND",
     ),
     (
         "KAFKA_CONFIG_GATES",
@@ -2065,6 +2076,62 @@ fn a_full_interval_shorter_than_the_head_interval_names_the_full_interval() {
     };
 
     assert_eq!(variables(args), vec!["ANTI_ENTROPY_FULL_INTERVAL"]);
+}
+
+#[test]
+fn the_bulk_defaults_are_a_thousand_entities_and_two_thousand_records_a_second() {
+    let config = Config::from_args(valid()).unwrap();
+
+    assert_eq!(config.bulk.chunker.chunk_entities(), 1_000);
+    assert_eq!(config.bulk.pacing.records_per_second(), 2_000);
+}
+
+#[test]
+fn the_bulk_variables_accept_values_within_their_bounds() {
+    let args = ServeArgs {
+        bulk: BulkArgs {
+            chunk_entities: some("1"),
+            max_records_per_second: some("50"),
+        },
+        ..valid()
+    };
+
+    let config = Config::from_args(args).unwrap();
+
+    assert_eq!(config.bulk.chunker.chunk_entities(), 1);
+    assert_eq!(config.bulk.pacing.records_per_second(), 50);
+}
+
+#[rstest]
+#[case("0")]
+#[case("1001")]
+#[case("-1")]
+#[case("many")]
+fn a_bulk_chunk_size_outside_one_to_one_thousand_names_its_variable(#[case] raw: &str) {
+    let args = ServeArgs {
+        bulk: BulkArgs {
+            chunk_entities: some(raw),
+            ..BulkArgs::default()
+        },
+        ..valid()
+    };
+
+    assert_eq!(variables(args), vec!["BULK_CHUNK_ENTITIES"]);
+}
+
+#[rstest]
+#[case("0")]
+#[case("fast")]
+fn a_bulk_rate_below_one_names_its_variable(#[case] raw: &str) {
+    let args = ServeArgs {
+        bulk: BulkArgs {
+            max_records_per_second: some(raw),
+            ..BulkArgs::default()
+        },
+        ..valid()
+    };
+
+    assert_eq!(variables(args), vec!["BULK_MAX_RECORDS_PER_SECOND"]);
 }
 
 #[test]

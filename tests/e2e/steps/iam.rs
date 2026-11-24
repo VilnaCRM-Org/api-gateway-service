@@ -7,7 +7,7 @@ use cucumber::{given, then};
 use serde_json::{Value, json};
 use test_support::policy_epoch::seeded_policy_epoch;
 
-use crate::tokens::{SigningKey, USER_ID};
+use crate::tokens::{SERVICE_CALLERS, SigningKey, USER_ID};
 use crate::world::AppWorld;
 
 /// How often the step reads the policy epoch while the relay of the scenario takes its lease.
@@ -49,9 +49,27 @@ fn caller_as_the_administrator(world: &mut AppWorld) {
     world.authenticate_as_administrator();
 }
 
+#[given("a caller authenticated as an administrator that lacks iam:grant:wildcard")]
+fn caller_as_the_restricted_administrator(world: &mut AppWorld) {
+    world.authenticate_as_restricted_administrator();
+}
+
 #[given("a caller authenticated with a valid service token that holds no IAM key")]
 fn caller_without_iam_keys(world: &mut AppWorld) {
     world.authenticate_as_unprivileged_service();
+}
+
+#[given(expr = "a caller authenticated as the service {string} that holds only {string}")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "cucumber fixes the step signature"
+)]
+fn caller_as_a_service_with_one_key(world: &mut AppWorld, service: String, key: String) {
+    assert!(
+        SERVICE_CALLERS.contains(&(service.as_str(), key.as_str())),
+        "the scenario policy gives {service:?} no key {key:?}"
+    );
+    world.authenticate_as_service(&service);
 }
 
 #[given("a caller presenting a token signed by an unknown key")]

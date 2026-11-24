@@ -22,19 +22,52 @@ use iam_domain::{
 };
 use shared_domain::Uuid;
 
-use crate::tokens::ADMINISTRATOR_ID;
+use crate::tokens::{ADMINISTRATOR_ID, RESTRICTED_ADMINISTRATOR_ID, SERVICE_CALLERS};
 
 /// The id of the in-memory role that holds the administrator's keys; no stored role has it.
 const ADMINISTRATOR_ROLE: &str = "0190f2a8-7b3c-7d4e-8f10-00000000ad01";
 
-/// Policy reads of the scenario database in which the administrator holds the keys of the
-/// bootstrapped role.
+/// The id of the in-memory role of the administrator that lacks `iam:grant:wildcard`.
+const RESTRICTED_ADMINISTRATOR_ROLE: &str = "0190f2a8-7b3c-7d4e-8f10-00000000ad04";
+
+/// The in-memory roles of the service callers of [`SERVICE_CALLERS`], in the same order.
+const SERVICE_ROLES: [&str; 2] = [
+    "0190f2a8-7b3c-7d4e-8f10-00000000ad11",
+    "0190f2a8-7b3c-7d4e-8f10-00000000ad12",
+];
+
+/// One caller of the scenarios and the in-memory role that gives it its keys.
 #[derive(Debug)]
-pub(crate) struct AdministratorCallerPolicy {
-    inner: Arc<dyn PolicyReadRepository>,
+struct InjectedCaller {
     caller: SubjectRef,
     role: RoleId,
     role_set: CompiledRoleSet,
+}
+
+impl InjectedCaller {
+    /// A caller `caller` that holds exactly `grants` in the role `role`.
+    fn new(caller: SubjectRef, role: &str, grants: &[&str]) -> Self {
+        let grants = grants.iter().map(|raw| {
+            (
+                PermissionGrant::parse(raw).expect("a scenario grant"),
+                GrantStatus::Active,
+            )
+        });
+        Self {
+            caller,
+            role: RoleId::parse(role).expect("a valid role id"),
+            role_set: CompiledRoleSet::compile(grants),
+        }
+    }
+}
+
+/// Policy reads of the scenario database in which the administrator holds the keys of the
+/// bootstrapped role, and each scenario service holds the one key of its row of
+/// [`SERVICE_CALLERS`].
+#[derive(Debug)]
+pub(crate) struct AdministratorCallerPolicy {
+    inner: Arc<dyn PolicyReadRepository>,
+    callers: Vec<InjectedCaller>,
 }
 
 impl AdministratorCallerPolicy {
@@ -44,33 +77,57 @@ impl AdministratorCallerPolicy {
     ///
     /// When a constant above does not parse, which is a defect of the suite.
     pub(crate) fn wrapping(inner: Arc<dyn PolicyReadRepository>) -> Self {
-        let grants = PlatformAdministrator::GRANTS.iter().map(|raw| {
-            (
-                PermissionGrant::parse(raw).expect("an administrator grant"),
-                GrantStatus::Active,
-            )
-        });
+        let administrator = InjectedCaller::new(
+            SubjectRef::user(Uuid::parse(ADMINISTRATOR_ID).expect("a valid user id")),
+            ADMINISTRATOR_ROLE,
+            &PlatformAdministrator::GRANTS,
+        );
+        let restricted_grants: Vec<&str> = PlatformAdministrator::GRANTS
+            .iter()
+            .copied()
+            .filter(|grant| *grant != "iam:grant:wildcard")
+            .collect();
+        let restricted = InjectedCaller::new(
+            SubjectRef::user(Uuid::parse(RESTRICTED_ADMINISTRATOR_ID).expect("a valid user id")),
+            RESTRICTED_ADMINISTRATOR_ROLE,
+            &restricted_grants,
+        );
+        let services = SERVICE_CALLERS
+            .iter()
+            .zip(SERVICE_ROLES)
+            .map(|((name, grant), role)| {
+                InjectedCaller::new(
+                    SubjectRef::service(ServiceName::new(name).expect("a valid service name")),
+                    role,
+                    &[*grant],
+                )
+            });
         Self {
             inner,
-            caller: SubjectRef::user(Uuid::parse(ADMINISTRATOR_ID).expect("a valid user id")),
-            role: RoleId::parse(ADMINISTRATOR_ROLE).expect("a valid role id"),
-            role_set: CompiledRoleSet::compile(grants),
+            callers: [administrator, restricted]
+                .into_iter()
+                .chain(services)
+                .collect(),
         }
     }
 
     async fn subject_policy(&self, subject: &SubjectRef) -> Result<SubjectPolicy, RepositoryError> {
         let stored = self.inner.read_subject_policy(subject).await?;
-        if *subject != self.caller {
+        let Some(injected) = self
+            .callers
+            .iter()
+            .find(|injected| injected.caller == *subject)
+        else {
             return Ok(stored);
-        }
+        };
         let mut assignments = stored.assignments().to_vec();
         assignments.push(RoleAssignment::new(
-            self.role,
+            injected.role,
             AssignmentScope::Global,
             None,
         ));
         let mut role_sets: BTreeMap<RoleId, CompiledRoleSet> = stored.role_sets().clone();
-        role_sets.insert(self.role, self.role_set.clone());
+        role_sets.insert(injected.role, injected.role_set.clone());
         Ok(SubjectPolicy::new(stored.epoch(), assignments, role_sets))
     }
 

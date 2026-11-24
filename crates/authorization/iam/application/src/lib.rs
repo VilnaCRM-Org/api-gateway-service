@@ -11,6 +11,8 @@ pub mod access_decision_service;
 mod access_validation_fixtures;
 pub mod administrator_safeguard;
 pub mod anti_entropy;
+pub mod bulk_operation_runner;
+pub mod caller_rule;
 pub mod command;
 pub mod endpoint_directory;
 pub mod endpoint_watcher;
@@ -24,6 +26,7 @@ mod graphql_activation_fixtures;
 mod graphql_permission_fixtures;
 #[cfg(test)]
 mod graphql_spec_fixtures;
+pub mod guarded_unit_of_work;
 pub mod http;
 pub mod iam_access_guard;
 #[cfg(test)]
@@ -52,6 +55,8 @@ mod spec_retirement_fixtures;
 pub mod subscriber;
 #[cfg(test)]
 mod user_role_fixtures;
+#[cfg(test)]
+mod user_role_permission_fixtures;
 
 pub use access_decision_service::AccessDecisionService;
 pub use administrator_safeguard::{AdministratorSafeguard, Admission, SafeguardPorts};
@@ -59,6 +64,8 @@ pub use anti_entropy::{
     AntiEntropyAlert, AntiEntropyChecker, AntiEntropyCounters, AntiEntropyPorts,
     AntiEntropySettings, InvalidAntiEntropySettings, TopicAheadHold,
 };
+pub use bulk_operation_runner::{BulkOperationRunner, BulkRunnerPorts};
+pub use caller_rule::{CallerRule, target_services};
 pub use command::assign_user_role::{AssignUserRoleCommand, AssignUserRoleCommandHandler};
 pub use command::bootstrap_iam::{BootstrapIamCommand, BootstrapIamCommandHandler};
 pub use command::create_graphql_permissions::{
@@ -89,6 +96,7 @@ pub use command::update_user_role::{UpdateUserRoleCommand, UpdateUserRoleCommand
 pub use endpoint_directory::{EndpointDirectory, EndpointView, ZoneSource};
 pub use endpoint_watcher::{EndpointWatcher, WatcherSettings};
 pub use error::IamError;
+pub use guarded_unit_of_work::{GuardReads, GuardedUnitOfWork};
 pub use iam_access_guard::{
     AuthorizationUnavailable, GraphQlOperationRequest, IamAccessGuard, OperationRequest,
 };
@@ -103,6 +111,7 @@ pub use principal::Principal;
 pub use publishing_unit_of_work::PublishingUnitOfWork;
 pub use query::find_graphql_spec::{FindGraphQlSpecQuery, FindGraphQlSpecQueryHandler};
 pub use query::find_openapi_spec::{FindOpenApiSpecQuery, FindOpenApiSpecQueryHandler};
+pub use query::get_bulk_operation::{GetBulkOperationQuery, GetBulkOperationQueryHandler};
 pub use query::get_change_receipt::{GetChangeReceiptQuery, GetChangeReceiptQueryHandler};
 pub use query::get_graphql_permission::{
     GetGraphQlPermissionQuery, GetGraphQlPermissionQueryHandler,
@@ -143,6 +152,12 @@ pub use query::get_role_permissions::{
     GetRolePermissionsQuery, GetRolePermissionsQueryHandler, RolePermissions,
 };
 pub use query::get_user_role::{GetUserRoleQuery, GetUserRoleQueryHandler, UserRoleView};
+pub use query::get_user_role_permissions::{
+    GetUserRolePermissionsQuery, GetUserRolePermissionsQueryHandler, UserRolePermissionsView,
+};
+pub use query::list_bulk_operations::{
+    BulkOperationPage, ListBulkOperationsQuery, ListBulkOperationsQueryHandler,
+};
 pub use query::list_roles::{ListRolesQuery, ListRolesQueryHandler, RolePage};
 pub use query::list_user_roles::{ListUserRolesQuery, ListUserRolesQueryHandler, UserRolePage};
 pub use query::resolve_subject_token::{

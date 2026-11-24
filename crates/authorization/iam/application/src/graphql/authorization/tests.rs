@@ -17,7 +17,7 @@ use test_support::policy_epoch::seeded_policy_epoch;
 use test_support::policy_read::FakePolicyReadRepository;
 use test_support::token::FakeTokenRepository;
 
-use super::{IamAuthorizationExtension, owned_coordinates};
+use super::{IamAuthorizationExtension, selected_fields};
 use crate::access_decision_service::AccessDecisionService;
 use crate::command::record_rejected_attempt::RecordRejectedAttemptCommand;
 use crate::error::IamError;
@@ -34,6 +34,11 @@ const IAM_SDL: &str =
 
 type Recorded = Arc<Mutex<Vec<RecordRejectedAttemptCommand>>>;
 
+#[derive(async_graphql::InputObject)]
+struct Check {
+    service: String,
+}
+
 struct Query;
 
 #[Object]
@@ -42,7 +47,8 @@ impl Query {
         "roles"
     }
 
-    async fn validate_access(&self) -> &str {
+    async fn validate_access(&self, input: Option<Check>) -> &str {
+        drop(input);
         "validated"
     }
 
@@ -153,7 +159,12 @@ fn recorded_actions(recorded: &Recorded) -> Vec<String> {
 fn names(query: &str, operation: Option<&str>) -> Vec<String> {
     let mut request = Request::new(query);
     request.operation_name = operation.map(str::to_owned);
-    owned_coordinates(&request)
+    selected_fields(&request).coordinates
+}
+
+fn services_of(query: &str, variables: serde_json::Value) -> Vec<String> {
+    let request = Request::new(query).variables(async_graphql::Variables::from_json(variables));
+    selected_fields(&request).services
 }
 
 #[tokio::test]
@@ -302,4 +313,80 @@ fn the_selected_iam_root_fields_are_collected(
     #[case] expected: &[&str],
 ) {
     assert_eq!(names(query, operation), expected);
+}
+
+#[tokio::test]
+async fn a_service_validates_over_graphql_only_for_the_service_it_holds_the_key_of() {
+    let (schema, recorded) = schema(&["iam:validate:core"]);
+
+    let own = schema
+        .execute(request(
+            r#"{ validateAccess(input: {service: "core"}) }"#,
+            Some(principal()),
+        ))
+        .await;
+    let other = schema
+        .execute(request(
+            r#"{ validateAccess(input: {service: "payment"}) }"#,
+            Some(principal()),
+        ))
+        .await;
+
+    assert!(own.errors.is_empty(), "{:?}", own.errors);
+    assert_eq!(code(&other).as_deref(), Some("FORBIDDEN"));
+    assert_eq!(recorded_actions(&recorded), ["access.validate"]);
+}
+
+#[tokio::test]
+async fn the_service_of_a_variable_is_checked_like_an_inline_one() {
+    let (schema, recorded) = schema(&["iam:validate:core"]);
+    let query = "query($check: Check) { validateAccess(input: $check) }";
+    let variables = |service: &str| {
+        async_graphql::Variables::from_json(serde_json::json!({"check": {"service": service}}))
+    };
+
+    let own = schema
+        .execute(request(query, Some(principal())).variables(variables("core")))
+        .await;
+    let other = schema
+        .execute(request(query, Some(principal())).variables(variables("payment")))
+        .await;
+
+    assert!(own.errors.is_empty(), "{:?}", own.errors);
+    assert_eq!(code(&other).as_deref(), Some("FORBIDDEN"));
+    assert_eq!(recorded_actions(&recorded), ["access.validate"]);
+}
+
+#[tokio::test]
+async fn the_wildcard_validates_for_any_service_over_graphql() {
+    let (schema, recorded) = schema(&["iam:validate:*"]);
+
+    let response = schema
+        .execute(request(
+            r#"{ validateAccess(input: {service: "payment"}) }"#,
+            Some(principal()),
+        ))
+        .await;
+
+    assert!(response.errors.is_empty(), "{:?}", response.errors);
+    assert_eq!(recorded_actions(&recorded), Vec::<String>::new());
+}
+
+#[rstest]
+#[case::inline(r#"{ validateAccess(input: {service: "core"}) }"#, serde_json::json!({}), &["core"])]
+#[case::list(r#"{ validateAccess(input: [{service: "core"}, {service: "payment"}]) }"#, serde_json::json!({}), &["core", "payment"])]
+#[case::variable(
+    "query($c: Check) { validateAccess(input: $c) }",
+    serde_json::json!({"c": {"service": "payment"}}),
+    &["payment"]
+)]
+#[case::missing_variable("query($c: Check) { validateAccess(input: $c) }", serde_json::json!({}), &[])]
+#[case::no_arguments("{ validateAccess }", serde_json::json!({}), &[])]
+#[case::a_field_that_is_not_a_decision_field(r#"mutation { createRole(input: {service: "core"}) }"#, serde_json::json!({}), &[])]
+fn the_services_of_the_decision_fields_are_read_from_their_arguments(
+    #[case] query: &str,
+    #[case] variables: serde_json::Value,
+    #[case] expected: &[&str],
+) {
+    assert_eq!(services_of(query, variables), expected);
 }

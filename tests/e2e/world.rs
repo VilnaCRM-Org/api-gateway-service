@@ -567,10 +567,22 @@ impl AppWorld {
         self.caller_token = Some(self.signing_key().administrator_token());
     }
 
+    /// Makes the following requests carry the bearer token of the administrator that lacks
+    /// `iam:grant:wildcard`.
+    pub(crate) fn authenticate_as_restricted_administrator(&mut self) {
+        self.caller_token = Some(self.signing_key().restricted_administrator_token());
+    }
+
     /// Makes the following requests carry the bearer token of a valid service caller that holds
     /// no IAM key.
     pub(crate) fn authenticate_as_unprivileged_service(&mut self) {
         self.caller_token = Some(self.signing_key().unprivileged_caller_token());
+    }
+
+    /// Makes the following requests carry the bearer token of `service`, one of the scenario
+    /// services of `SERVICE_CALLERS` that hold one validate key each.
+    pub(crate) fn authenticate_as_service(&mut self, service: &str) {
+        self.caller_token = Some(self.signing_key().service_token(service));
     }
 
     /// Makes the following requests carry a bearer token that no key file of the application

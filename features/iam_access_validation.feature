@@ -502,6 +502,76 @@ Feature: IAM access validation
     And both batches should have 100 results
     And the REST and GraphQL batch results should be the same and alternate "allowed" and "token_invalid"
 
+  Scenario: A service validates for its own service over REST and GraphQL
+    Given a caller authenticated as the service "core" that holds only "iam:validate:core"
+    And a subject token of a user in session "e2e-validate-caller-1"
+    When POST request is sent to "/api/access-validations" with body:
+      """
+      {"credential": "{token}", "service": "core", "permissions": ["rest:core:GET /items"], "requestId": "req-own"}
+      """
+    And the GraphQL operation is sent:
+      """
+      { validateAccess(input: {credential: "{token}", service: "core", permissions: ["rest:core:GET /items"], requestId: "req-own"}) { decision reason denied scopes { all projects } subject { id kind } decisionId policyVersion requestId } }
+      """
+    Then the REST status of the check should be 200
+    And the GraphQL response should have no errors
+    And the REST and GraphQL access validations should be the same
+    And both access validations should be a deny with reason "unknown_service"
+
+  Scenario: A service validating for another service is refused and audited over REST and GraphQL
+    Given a caller authenticated as the service "core" that holds only "iam:validate:core"
+    And a subject token of a user in session "e2e-validate-caller-2"
+    When POST request is sent to "/api/access-validations" with body:
+      """
+      {"credential": "{token}", "service": "payment", "permissions": ["rest:payment:GET /items"], "requestId": "req-other"}
+      """
+    Then the response status code should be 403
+    And the response header "content-type" should contain "application/problem+json"
+    And the audit log should hold 1 forbidden "access.validate" record within one second
+    When the GraphQL operation is sent:
+      """
+      { validateAccess(input: {credential: "{token}", service: "payment", permissions: ["rest:payment:GET /items"], requestId: "req-other"}) { decision } }
+      """
+    Then the GraphQL error code should be "FORBIDDEN"
+    # FR-49: the GraphQL refusal repeats the REST one of the same actor within the 60-second
+    # window, so it joins the summary of the first record instead of writing a second one.
+    And the audit log should hold 1 forbidden "access.validate" record within one second
+    And no response should contain the subject token
+
+  Scenario: A caller that holds the wildcard validate key validates for any service over REST and GraphQL
+    Given a caller authenticated as the service "e2e-validator" that holds only "iam:validate:*"
+    And a subject token of a user in session "e2e-validate-caller-3"
+    When POST request is sent to "/api/access-validations" with body:
+      """
+      {"credential": "{token}", "service": "payment", "permissions": ["rest:payment:GET /items"], "requestId": "req-any"}
+      """
+    And the GraphQL operation is sent:
+      """
+      { validateAccess(input: {credential: "{token}", service: "payment", permissions: ["rest:payment:GET /items"], requestId: "req-any"}) { decision reason denied scopes { all projects } subject { id kind } decisionId policyVersion requestId } }
+      """
+    Then the REST status of the check should be 200
+    And the GraphQL response should have no errors
+    And the REST and GraphQL access validations should be the same
+    And both access validations should be a deny with reason "unknown_service"
+
+  Scenario: One item for a service the caller may not validate refuses the whole batch over REST and GraphQL
+    Given a caller authenticated as the service "core" that holds only "iam:validate:core"
+    And a subject token of a user in session "e2e-validate-caller-4"
+    When POST request is sent to "/api/access-validations/batch" with body:
+      """
+      {"checks": [{"credential": "{token}", "service": "core", "permissions": ["rest:core:GET /items"], "requestId": "batch-own"}, {"credential": "{token}", "service": "payment", "permissions": ["rest:payment:GET /items"], "requestId": "batch-other"}]}
+      """
+    Then the response status code should be 403
+    And the audit log should hold 1 forbidden "access.validate_batch" record within one second
+    When the GraphQL operation is sent:
+      """
+      { validateAccessBatch(inputs: [{credential: "{token}", service: "core", permissions: ["rest:core:GET /items"], requestId: "batch-own"}, {credential: "{token}", service: "payment", permissions: ["rest:payment:GET /items"], requestId: "batch-other"}]) { decision } }
+      """
+    Then the GraphQL error code should be "FORBIDDEN"
+    # FR-49: the GraphQL refusal repeats the REST one of the same actor within the 60-second
+    # window, so it joins the summary of the first record instead of writing a second one.
+    And the audit log should hold 1 forbidden "access.validate_batch" record within one second
+
   Scenario: The access-validation operation is documented with its security requirement
     When GET request is sent to "/api/docs/openapi.json"
     Then the response status code should be 200

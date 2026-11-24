@@ -101,6 +101,43 @@ Feature: IAM token resolution
     And the GraphQL error code should be "UNAUTHENTICATED"
     And no response should contain the subject token
 
+  Scenario: A service resolves a token with the validate key of its own name over REST and GraphQL
+    Given a caller authenticated as the service "core" that holds only "iam:validate:core"
+    And a subject token of a user in session "e2e-session-8"
+    When POST request is sent to "/api/token-resolutions" with body:
+      """
+      {"credential": "{token}"}
+      """
+    And the GraphQL operation is sent:
+      """
+      { resolveToken(input: {credential: "{token}"}) { resolved reason subjectId subjectKind sessionId roles expiresAt } }
+      """
+    Then the response status code should be 200
+    And the GraphQL response should have no errors
+    And the REST and GraphQL token resolutions should be the same
+    And both token resolutions should be resolved for a "user" subject in session "e2e-session-8"
+    And no response should contain the subject token
+
+  Scenario: A service without the validate key of its name or the wildcard is refused over REST and GraphQL
+    Given a caller authenticated with a valid service token that holds no IAM key
+    And a subject token of a user in session "e2e-session-9"
+    When POST request is sent to "/api/token-resolutions" with body:
+      """
+      {"credential": "{token}"}
+      """
+    Then the response status code should be 403
+    And the response header "content-type" should contain "application/problem+json"
+    And the audit log should hold 1 forbidden "token.resolve" record within one second
+    When the GraphQL operation is sent:
+      """
+      { resolveToken(input: {credential: "{token}"}) { resolved reason } }
+      """
+    Then the GraphQL error code should be "FORBIDDEN"
+    # FR-49: the GraphQL refusal repeats the REST one of the same actor within the 60-second
+    # window, so it joins the summary of the first record instead of writing a second one.
+    And the audit log should hold 1 forbidden "token.resolve" record within one second
+    And no response should contain the subject token
+
   Scenario: A rejected bearer token is unauthenticated over REST
     Given a caller presenting a token signed by an unknown key
     And a subject token of a user in session "e2e-session-6"

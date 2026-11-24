@@ -20,7 +20,7 @@ use test_support::policy_read::FakePolicyReadRepository;
 use test_support::security_audit::FakeSecurityAuditLog;
 use test_support::token::FakeTokenRepository;
 
-use super::{GraphQlOperationRequest, IamAccessGuard, OperationRequest, Verdict};
+use super::{GraphQlOperationRequest, IamAccessGuard, OperationRequest, Verdict, catalogue_check};
 use crate::access_decision_service::AccessDecisionService;
 use crate::command::record_rejected_attempt::{
     RecordRejectedAttemptCommand, RecordRejectedAttemptCommandHandler,
@@ -133,8 +133,41 @@ const fn request<'a>(method: &'a str, template: &'a str, path: &'a str) -> Opera
         method,
         template,
         path,
+        services: &[],
         request_id: Some("req-1"),
     }
+}
+
+fn naming<'a>(path: &'a str, services: &'a [String]) -> OperationRequest<'a> {
+    OperationRequest {
+        services,
+        ..request("POST", path, path)
+    }
+}
+
+fn service_names(names: &[&str]) -> Vec<String> {
+    names.iter().map(|name| (*name).to_owned()).collect()
+}
+
+fn service_principal(name: &str) -> Principal {
+    Principal::from(TokenIdentity::from(&AccessToken::new(AccessTokenParts {
+        subject: SubjectId::Service(ServiceName::new(name).unwrap()),
+        session: None,
+        token_id: TokenId::new("jti-service").unwrap(),
+        roles: Vec::new(),
+        issued_at: at(NOW - 60),
+        expires_at: at(NOW + 840),
+    })))
+}
+
+/// A policy in which service `name` holds `grants`.
+fn service_repository(name: &str, grants: &[&str]) -> FakePolicyReadRepository {
+    FakePolicyReadRepository::new()
+        .with_catalog(catalog())
+        .with_subject(
+            SubjectRef::service(ServiceName::new(name).unwrap()),
+            holding(grants),
+        )
 }
 
 fn refusals(recorded: &Recorded) -> Vec<RecordRejectedAttemptCommand> {
@@ -254,19 +287,163 @@ async fn validation_needs_no_catalogue_of_service_iam() {
 
 #[rstest]
 #[case::the_catalogue_key_only(&["rest:iam:POST /api/access-validations"])]
-#[case::another_service_scope(&["iam:validate:core"])]
+#[case::another_service_scope(&["iam:validate:payment"])]
 #[case::an_unrelated_reserved_key(&["iam:audit:read"])]
 #[tokio::test]
-async fn validation_is_refused_without_the_reserved_key(#[case] grants: &[&str]) {
+async fn validation_is_refused_without_a_key_for_the_target_service(#[case] grants: &[&str]) {
     let (guard, recorded) = guard_over(repository(grants));
     let path = "/api/access-validations";
+    let services = service_names(&["core"]);
+
+    let outcome = guard
+        .authorize(&principal(), &naming(path, &services))
+        .await;
+
+    assert!(matches!(outcome, Err(IamError::Forbidden)));
+    assert_eq!(refusals(&recorded)[0].action.as_str(), "access.validate");
+}
+
+#[tokio::test]
+async fn a_service_validating_for_itself_is_admitted_with_its_own_key() {
+    let (guard, recorded) = guard_over(service_repository("core", &["iam:validate:core"]));
+    let path = "/api/access-validations";
+    let services = service_names(&["core"]);
+
+    let outcome = guard
+        .authorize(&service_principal("core"), &naming(path, &services))
+        .await;
+
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert!(refusals(&recorded).is_empty());
+}
+
+#[tokio::test]
+async fn a_service_validating_for_another_service_is_refused_and_audited() {
+    let (guard, recorded) = guard_over(service_repository("core", &["iam:validate:core"]));
+    let path = "/api/access-validations";
+    let services = service_names(&["payment"]);
+
+    let outcome = guard
+        .authorize(&service_principal("core"), &naming(path, &services))
+        .await;
+
+    assert!(matches!(outcome, Err(IamError::Forbidden)));
+    let offered = refusals(&recorded);
+    assert_eq!(offered.len(), 1);
+    assert_eq!(offered[0].actor.to_string(), "service:core");
+    assert_eq!(offered[0].action.as_str(), "access.validate");
+    assert_eq!(offered[0].reason.as_str(), "forbidden");
+}
+
+#[tokio::test]
+async fn a_caller_holding_the_wildcard_validates_for_any_service() {
+    let (guard, recorded) = guard_over(service_repository("core", &["iam:validate:*"]));
+    let path = "/api/access-validations";
+    let services = service_names(&["core", "payment", "Not A Service"]);
+
+    let outcome = guard
+        .authorize(&service_principal("core"), &naming(path, &services))
+        .await;
+
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert!(refusals(&recorded).is_empty());
+}
+
+#[rstest]
+#[case::one_item_of_another_service(&["core", "payment"], &["iam:validate:core"])]
+#[case::a_name_that_is_not_a_service(&["core", "Not A Service"], &["iam:validate:core"])]
+#[case::no_service_named(&[], &["iam:validate:core"])]
+#[tokio::test]
+async fn one_item_the_caller_may_not_validate_refuses_the_whole_batch(
+    #[case] named: &[&str],
+    #[case] grants: &[&str],
+) {
+    let (guard, recorded) = guard_over(service_repository("core", grants));
+    let path = "/api/access-validations/batch";
+    let services = service_names(named);
+
+    let outcome = guard
+        .authorize(&service_principal("core"), &naming(path, &services))
+        .await;
+
+    assert!(matches!(outcome, Err(IamError::Forbidden)));
+    assert_eq!(
+        refusals(&recorded)[0].action.as_str(),
+        "access.validate_batch"
+    );
+}
+
+#[tokio::test]
+async fn every_service_of_a_batch_is_admitted_by_its_own_key() {
+    let grants = ["iam:validate:core", "iam:validate:payment"];
+    let (guard, _recorded) = guard_over(service_repository("core", &grants));
+    let path = "/api/access-validations/batch";
+    let services = service_names(&["core", "payment", "core"]);
+
+    let outcome = guard
+        .authorize(&service_principal("core"), &naming(path, &services))
+        .await;
+
+    assert!(outcome.is_ok(), "{outcome:?}");
+}
+
+#[rstest]
+#[case::its_own_key(&["iam:validate:core"], true)]
+#[case::the_wildcard(&["iam:validate:*"], true)]
+#[case::another_service_key(&["iam:validate:payment"], false)]
+#[case::the_catalogue_key_only(&["rest:iam:POST /api/token-resolutions"], false)]
+#[tokio::test]
+async fn a_service_resolving_a_token_needs_its_own_key_or_the_wildcard(
+    #[case] grants: &[&str],
+    #[case] admitted: bool,
+) {
+    let (guard, recorded) = guard_over(service_repository("core", grants));
+    let path = "/api/token-resolutions";
+
+    let outcome = guard
+        .authorize(&service_principal("core"), &request("POST", path, path))
+        .await;
+
+    assert_eq!(outcome.is_ok(), admitted, "{outcome:?}");
+    let actions: Vec<String> = refusals(&recorded)
+        .iter()
+        .map(|command| command.action.as_str().to_owned())
+        .collect();
+    assert_eq!(
+        actions,
+        if admitted {
+            vec![]
+        } else {
+            vec!["token.resolve".to_owned()]
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_user_resolving_a_token_needs_the_wildcard() {
+    let (guard, recorded) = guard_over(repository(&["iam:validate:core"]));
+    let path = "/api/token-resolutions";
 
     let outcome = guard
         .authorize(&principal(), &request("POST", path, path))
         .await;
 
     assert!(matches!(outcome, Err(IamError::Forbidden)));
-    assert_eq!(refusals(&recorded)[0].action.as_str(), "access.validate");
+    assert_eq!(refusals(&recorded)[0].action.as_str(), "token.resolve");
+}
+
+#[tokio::test]
+async fn an_unreadable_policy_fails_a_validation_closed() {
+    let (guard, recorded) = guard_over(Failing);
+    let path = "/api/access-validations";
+    let services = service_names(&["core"]);
+
+    let outcome = guard
+        .authorize(&principal(), &naming(path, &services))
+        .await;
+
+    assert!(matches!(outcome, Err(IamError::Storage(_))), "{outcome:?}");
+    assert!(refusals(&recorded).is_empty());
 }
 
 #[tokio::test]
@@ -429,9 +606,39 @@ async fn a_row_whose_reserved_key_does_not_parse_is_undecidable() {
     assert_eq!(verdict, Verdict::Unavailable);
 }
 
+/// A row that needs only reserved keys, which no operation of the table has today.
+const RESERVED_ONLY: OperationRule = OperationRule {
+    method: HttpMethod::Post,
+    template: "/api/reserved",
+    action: "reserved.call",
+    requirement: Requirement::Reserved(&["iam:validate:*"]),
+};
+
+#[rstest]
+#[case::holding_the_key(&["iam:validate:*"], Verdict::Allowed)]
+#[case::lacking_the_key(&["rest:iam:POST /api/roles"], Verdict::Denied)]
+#[tokio::test]
+async fn a_reserved_only_row_skips_the_catalogue_and_decides_the_reserved_keys(
+    #[case] grants: &[&str],
+    #[case] expected: Verdict,
+) {
+    let (guard, _recorded) = guard_over(repository(grants));
+    let check = catalogue_check(
+        &RESERVED_ONLY,
+        &request("POST", RESERVED_ONLY.template, RESERVED_ONLY.template),
+    );
+
+    let verdict = guard
+        .verdict(&principal(), RESERVED_ONLY.requirement, &check)
+        .await;
+
+    assert_eq!(verdict, expected);
+}
+
 fn fields(coordinates: &[String]) -> GraphQlOperationRequest<'_> {
     GraphQlOperationRequest {
         coordinates,
+        services: &[],
         request_id: Some("req-1"),
     }
 }
@@ -501,6 +708,58 @@ async fn graphql_validation_needs_the_reserved_key_and_no_catalogue_key() {
     assert!(passed.is_ok(), "{passed:?}");
     assert!(matches!(denied, Err(IamError::Forbidden)));
     assert_eq!(refusals(&recorded)[0].action.as_str(), "access.validate");
+}
+
+#[tokio::test]
+async fn a_service_validates_over_graphql_only_for_the_services_its_fields_name() {
+    let (guard, recorded) = guard_over(service_repository("core", &["iam:validate:core"]));
+    let coordinates = selected(&["Query.validateAccessBatch"]);
+    let own = service_names(&["core"]);
+    let mixed = service_names(&["core", "payment"]);
+
+    let passed = guard
+        .authorize_graphql(
+            &service_principal("core"),
+            &GraphQlOperationRequest {
+                services: &own,
+                ..fields(&coordinates)
+            },
+        )
+        .await;
+    let denied = guard
+        .authorize_graphql(
+            &service_principal("core"),
+            &GraphQlOperationRequest {
+                services: &mixed,
+                ..fields(&coordinates)
+            },
+        )
+        .await;
+
+    assert!(passed.is_ok(), "{passed:?}");
+    assert!(matches!(denied, Err(IamError::Forbidden)));
+    assert_eq!(
+        refusals(&recorded)[0].action.as_str(),
+        "access.validate_batch"
+    );
+}
+
+#[tokio::test]
+async fn a_service_resolving_a_token_over_graphql_needs_its_own_key() {
+    let (allowed, _allowed_log) = guard_over(service_repository("core", &["iam:validate:core"]));
+    let (refused, recorded) = guard_over(service_repository("core", &["iam:validate:payment"]));
+    let coordinates = selected(&["Query.resolveToken"]);
+
+    let passed = allowed
+        .authorize_graphql(&service_principal("core"), &fields(&coordinates))
+        .await;
+    let denied = refused
+        .authorize_graphql(&service_principal("core"), &fields(&coordinates))
+        .await;
+
+    assert!(passed.is_ok(), "{passed:?}");
+    assert!(matches!(denied, Err(IamError::Forbidden)));
+    assert_eq!(refusals(&recorded)[0].action.as_str(), "token.resolve");
 }
 
 #[tokio::test]

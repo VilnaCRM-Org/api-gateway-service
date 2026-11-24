@@ -3006,6 +3006,80 @@ paths:
                 $ref: '#/components/schemas/Problem'
       security:
       - bearerAuth: []
+  /api/users/{userId}/role-permissions:
+    get:
+      tags:
+      - iam
+      summary: Retrieves the effective permissions of a user.
+      description: Returns every key and wildcard that the active assignments of the user hold, each with the roles that grant it, its scopes (`all` or the project ids), the shortest expiry among the contributing assignments that expire, and the `policyVersion` the answer was composed at. Assignments that have expired grant nothing, a reserved `iam:` key counts only through a global assignment, and a wildcard never covers a sensitive key, exactly as in a decision. `projectId` keeps the global assignments and those of the project; `service` keeps the keys and wildcards of the service. A user without assignments has an empty list.
+      operationId: api_users_user_id_role_permissions_get
+      parameters:
+      - name: userId
+        in: path
+        description: User identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: projectId
+        in: query
+        description: 'Only assignments that apply in this project: the global ones and those of the project.'
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: service
+        in: query
+        description: Only keys and wildcards of this service.
+        required: false
+        schema:
+          type: string
+          maxLength: 63
+        example: billing
+      responses:
+        '200':
+          description: The effective permissions of the user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserRolePermissions'
+        '400':
+          description: Invalid identifier or query parameter.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller does not hold the key of the operation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
 components:
   schemas:
     AccessScopes:
@@ -3335,6 +3409,53 @@ components:
         message:
           type: string
           description: Failure message of the probe.
+    EffectivePermission:
+      type: object
+      description: One key or wildcard that a user holds.
+      required:
+      - key
+      - kind
+      - service
+      - wildcard
+      - roles
+      - scopes
+      properties:
+        expiresAt:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: |-
+            The shortest expiry among the contributing assignments that expire, as an RFC 3339 UTC
+            time; absent when none of them expires.
+          example: 2027-01-15T08:00:00.000000Z
+        key:
+          type: string
+          description: The permission key or the wildcard pattern.
+          example: rest:billing:GET /invoices
+        kind:
+          type: string
+          description: 'The form of the key: `rest` or `gql`, or `reserved` for a reserved `iam:` key.'
+          example: rest
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/GrantingRole'
+          description: The roles of the active assignments that grant it, in identifier order.
+        scopes:
+          type: array
+          items:
+            type: string
+          description: 'Where it is held: `["all"]` when a global assignment grants it, else the project ids.'
+          example:
+          - all
+        service:
+          type: string
+          description: The service of the key.
+          example: billing
+        wildcard:
+          type: boolean
+          description: Whether the entry is a wildcard pattern; a wildcard never covers a sensitive key.
     ExampleApiResource:
       type: object
       description: Template example resource.
@@ -3377,6 +3498,22 @@ components:
           type: string
           description: The coordinate, `Type.field`.
           example: Mutation.pay
+    GrantingRole:
+      type: object
+      description: A role that grants an effective permission.
+      required:
+      - id
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The identifier of the role.
+        name:
+          type:
+          - string
+          - 'null'
+          description: The name of the role; absent when the role is no longer stored.
+          maxLength: 100
     GraphQlPermission:
       type: object
       description: A GraphQL catalogue entry.
@@ -4468,6 +4605,28 @@ components:
           - 'null'
           format: uuid
           description: The `after` value of the next page; absent on the last page.
+    UserRolePermissions:
+      type: object
+      description: The effective permissions of a user.
+      required:
+      - userId
+      - policyVersion
+      - permissions
+      properties:
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/EffectivePermission'
+          description: The exact keys in key order, then the wildcard patterns.
+        policyVersion:
+          type: integer
+          format: int64
+          description: The policy version the permissions were composed at.
+          minimum: 0
+        userId:
+          type: string
+          format: uuid
+          description: The user whose permissions these are.
     ValidateAccessBatchRequest:
       type: object
       description: |-

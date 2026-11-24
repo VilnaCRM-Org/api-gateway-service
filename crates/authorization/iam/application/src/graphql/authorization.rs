@@ -5,7 +5,10 @@
 //! of [`OperationRules::graphql`]). A document that selects none is the template's and passes
 //! untouched. A document that selects one needs a [`Principal`] (`UNAUTHENTICATED` without one) and
 //! the keys of the row of every IAM root field (`FORBIDDEN` for a caller that lacks one, with the
-//! refusal offered to the audit log by the [`IamAccessGuard`]).
+//! refusal offered to the audit log by the [`IamAccessGuard`]). The caller rule of the decision
+//! fields (FR-12) needs the target service of each check, so the extension reads it from the
+//! arguments of the selected `validateAccess` and `validateAccessBatch` fields, through the
+//! variables of the request.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -15,12 +18,13 @@ use async_graphql::extensions::{
 };
 use async_graphql::parser::parse_query;
 use async_graphql::parser::types::{
-    DocumentOperations, ExecutableDocument, OperationDefinition, OperationType, Selection,
+    DocumentOperations, ExecutableDocument, Field, OperationDefinition, OperationType, Selection,
     SelectionSet,
 };
-use async_graphql::{Request, ServerError, ServerResult};
+use async_graphql::{Request, ServerError, ServerResult, Variables};
 use async_trait::async_trait;
 
+use crate::caller_rule::{CallerRule, target_services};
 use crate::error::IamError;
 use crate::graphql::iam_problem_to_graphql_error;
 use crate::iam_access_guard::{GraphQlOperationRequest, IamAccessGuard};
@@ -80,13 +84,17 @@ impl Authorizer {
 
     /// Lets the request through unless it selects IAM fields its caller may not use.
     async fn authorize(&self, request: &Request) -> Result<(), IamError> {
-        let coordinates = owned_coordinates(request);
+        let Selected {
+            coordinates,
+            services,
+        } = selected_fields(request);
         if coordinates.is_empty() {
             return Ok(());
         }
         let principal = caller(request).ok_or(IamError::Unauthenticated)?;
         let selected = GraphQlOperationRequest {
             coordinates: &coordinates,
+            services: &services,
             request_id: None,
         };
         self.guard.authorize_graphql(principal, &selected).await
@@ -114,17 +122,38 @@ fn caller(request: &Request) -> Option<&Principal> {
         .and_then(Option::as_ref)
 }
 
-/// The coordinates of the IAM root fields that the request's operations select, in order and
-/// without repeats. A document that does not parse selects none: execution refuses it.
-fn owned_coordinates(request: &Request) -> Vec<String> {
+/// What a request selects of IAM's root fields.
+struct Selected {
+    /// The coordinates of the IAM root fields, in order and without repeats.
+    coordinates: Vec<String>,
+    /// The target services that the arguments of the decision fields name.
+    services: Vec<String>,
+}
+
+/// The IAM root fields that the request's operations select, and the services their arguments
+/// name. A document that does not parse selects none: execution refuses it.
+fn selected_fields(request: &Request) -> Selected {
     let Ok(document) = parse_query(&request.query) else {
-        return Vec::new();
+        return Selected {
+            coordinates: Vec::new(),
+            services: Vec::new(),
+        };
     };
-    let mut coordinates = BTreeSet::new();
+    let mut found = Found::default();
     for operation in operations(&document, request.operation_name.as_deref()) {
-        collect_operation(&document, operation, &mut coordinates);
+        collect_operation(&document, operation, &request.variables, &mut found);
     }
-    coordinates.into_iter().collect()
+    Selected {
+        coordinates: found.coordinates.into_iter().collect(),
+        services: found.services.into_iter().collect(),
+    }
+}
+
+/// The coordinates and services found so far.
+#[derive(Default)]
+struct Found {
+    coordinates: BTreeSet<String>,
+    services: BTreeSet<String>,
 }
 
 /// The operations a request may run: the only one of a document, the named one, or every one when
@@ -149,64 +178,83 @@ fn operations<'doc>(
 fn collect_operation(
     document: &ExecutableDocument,
     operation: &OperationDefinition,
-    coordinates: &mut BTreeSet<String>,
+    variables: &Variables,
+    found: &mut Found,
 ) {
     let root = match operation.ty {
         OperationType::Query => "Query",
         OperationType::Mutation => "Mutation",
         OperationType::Subscription => return,
     };
-    let mut visited = BTreeSet::new();
-    collect_selection(
+    let mut scan = Scan {
         document,
         root,
-        &operation.selection_set.node,
-        &mut visited,
-        coordinates,
-    );
+        variables,
+        visited: BTreeSet::new(),
+    };
+    scan.selection_set(&operation.selection_set.node, found);
 }
 
-/// Walks a selection set of a root type through inline fragments and fragment spreads; a fragment
-/// is entered once, so a cycle ends.
-fn collect_selection(
-    document: &ExecutableDocument,
-    root: &str,
-    selection_set: &SelectionSet,
-    visited: &mut BTreeSet<String>,
-    coordinates: &mut BTreeSet<String>,
-) {
-    for selection in &selection_set.items {
-        match &selection.node {
-            Selection::Field(field) => {
-                let coordinate = format!("{root}.{}", field.node.name.node);
-                if OperationRules::find_graphql(&coordinate).is_some() {
-                    coordinates.insert(coordinate);
+/// The walk of the root selection sets of one operation.
+struct Scan<'doc> {
+    document: &'doc ExecutableDocument,
+    root: &'doc str,
+    variables: &'doc Variables,
+    visited: BTreeSet<String>,
+}
+
+impl Scan<'_> {
+    /// Walks a selection set of a root type through inline fragments and fragment spreads; a
+    /// fragment is entered once, so a cycle ends.
+    fn selection_set(&mut self, selection_set: &SelectionSet, found: &mut Found) {
+        for selection in &selection_set.items {
+            match &selection.node {
+                Selection::Field(field) => self.field(&field.node, found),
+                Selection::InlineFragment(fragment) => {
+                    self.selection_set(&fragment.node.selection_set.node, found);
                 }
-            }
-            Selection::InlineFragment(fragment) => {
-                collect_selection(
-                    document,
-                    root,
-                    &fragment.node.selection_set.node,
-                    visited,
-                    coordinates,
-                );
-            }
-            Selection::FragmentSpread(spread) => {
-                let name = spread.node.fragment_name.node.as_str();
-                if let Some(fragment) = document.fragments.get(name)
-                    && visited.insert(name.to_owned())
-                {
-                    collect_selection(
-                        document,
-                        root,
-                        &fragment.node.selection_set.node,
-                        visited,
-                        coordinates,
-                    );
+                Selection::FragmentSpread(spread) => {
+                    let name = spread.node.fragment_name.node.as_str();
+                    if let Some(fragment) = self.document.fragments.get(name)
+                        && self.visited.insert(name.to_owned())
+                    {
+                        self.selection_set(&fragment.node.selection_set.node, found);
+                    }
                 }
             }
         }
+    }
+
+    /// Records a root field that IAM owns, with the services of its arguments.
+    fn field(&self, field: &Field, found: &mut Found) {
+        let coordinate = format!("{}.{}", self.root, field.name.node);
+        let Some(rule) = OperationRules::find_graphql(&coordinate) else {
+            return;
+        };
+        if rule
+            .requirement
+            .caller_rule()
+            .is_some_and(CallerRule::names_services)
+        {
+            found.services.extend(self.argument_services(field));
+        }
+        found.coordinates.insert(coordinate);
+    }
+
+    /// The services that the arguments of `field` name, with the variables substituted; an
+    /// argument that cannot be resolved names none, because execution refuses it.
+    fn argument_services(&self, field: &Field) -> Vec<String> {
+        let mut services = Vec::new();
+        for (_name, argument) in &field.arguments {
+            let resolved = argument
+                .node
+                .clone()
+                .into_const_with(|name| self.variables.get(&name).cloned().ok_or(()));
+            if let Ok(value) = resolved {
+                services.extend(target_services(&value));
+            }
+        }
+        services
     }
 }
 

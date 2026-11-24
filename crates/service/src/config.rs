@@ -14,6 +14,7 @@ use std::time::Duration;
 use axum::http::Uri;
 use axum::http::uri::Authority;
 use iam_application::{AntiEntropySettings, MaintenanceSettings};
+use iam_domain::{BulkChunker, BulkPacing};
 use iam_domain::{CallerTokenRule, ConfigGates, TokenLifetimeRule, Zone};
 use iam_infrastructure::{
     JwtKeySet, JwtSettings, KafkaSecret, KafkaSecurity, KafkaSettings, SaslMechanism,
@@ -28,8 +29,8 @@ use tracing_subscriber::EnvFilter;
 
 use crate::bootstrap::gateway::listener;
 use crate::cli::{
-    AntiEntropyArgs, DatabaseArgs, GatewayArgs, KafkaArgs, MaintenanceArgs, MigrateArgs, RelayArgs,
-    ServeArgs, TokenArgs,
+    AntiEntropyArgs, BulkArgs, DatabaseArgs, GatewayArgs, KafkaArgs, MaintenanceArgs, MigrateArgs,
+    RelayArgs, ServeArgs, TokenArgs,
 };
 
 /// The largest accepted `JWT_CLOCK_SKEW`.
@@ -115,6 +116,17 @@ pub struct Config {
     pub relay: RelaySettings,
     /// How often the anti-entropy task checks the head and rebuilds the state from the topic.
     pub anti_entropy: AntiEntropySettings,
+    /// The chunk size and the rate cap of the bulk operation runner.
+    pub bulk: BulkSettings,
+}
+
+/// The settings of the bulk operation runner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BulkSettings {
+    /// `BULK_CHUNK_ENTITIES`: the most entities one version of a bulk change may change.
+    pub chunker: BulkChunker,
+    /// `BULK_MAX_RECORDS_PER_SECOND`: the most records per second the runner commits.
+    pub pacing: BulkPacing,
 }
 
 /// The settings of the outbox relay.
@@ -166,12 +178,7 @@ impl Config {
             &args.kafka,
             server.as_ref().map(|server| server.app_env),
         );
-        collector.cross_field_rules(
-            database.as_ref().map(|settings| settings.acquire_timeout),
-            sqs.as_ref().map(|settings| settings.operation_timeout),
-            limits.as_ref().map(|limits| limits.health_probe_timeout),
-            limits.as_ref().map(|limits| limits.request_timeout),
-        );
+        collector.cross_field_rules(database.as_ref(), sqs.as_ref(), limits.as_ref());
         let tasks = task_settings(
             &mut collector,
             &args,
@@ -185,7 +192,7 @@ impl Config {
                 Some(limits),
                 Some(tokens),
                 Some(kafka),
-                Some((maintenance, relay, anti_entropy)),
+                Some((maintenance, relay, anti_entropy, bulk)),
             ) if collector.problems.is_empty() => Ok(Self {
                 app_env: server.app_env,
                 host: server.host,
@@ -202,6 +209,7 @@ impl Config {
                 maintenance,
                 relay,
                 anti_entropy,
+                bulk,
             }),
             _ => Err(ConfigErrors(collector.problems)),
         }
@@ -674,11 +682,14 @@ impl Collector {
 
     fn cross_field_rules(
         &mut self,
-        acquire: Option<Duration>,
-        operation: Option<Duration>,
-        probe: Option<Duration>,
-        request: Option<Duration>,
+        database: Option<&PostgresSettings>,
+        sqs: Option<&SqsSettings>,
+        limits: Option<&Limits>,
     ) {
+        let acquire = database.map(|settings| settings.acquire_timeout);
+        let operation = sqs.map(|settings| settings.operation_timeout);
+        let probe = limits.map(|limits| limits.health_probe_timeout);
+        let request = limits.map(|limits| limits.request_timeout);
         self.at_least(
             "HEALTH_PROBE_TIMEOUT",
             probe,
@@ -1128,11 +1139,17 @@ fn task_settings(
     collector: &mut Collector,
     args: &ServeArgs,
     database_url_fallback: Option<&str>,
-) -> Option<(MaintenanceSettings, RelaySettings, AntiEntropySettings)> {
+) -> Option<(
+    MaintenanceSettings,
+    RelaySettings,
+    AntiEntropySettings,
+    BulkSettings,
+)> {
     let maintenance = maintenance_settings(collector, &args.maintenance);
     let relay = relay_settings(collector, &args.relay, database_url_fallback);
     let anti_entropy = anti_entropy_settings(collector, &args.anti_entropy);
-    Some((maintenance?, relay?, anti_entropy?))
+    let bulk = bulk_settings(collector, &args.bulk);
+    Some((maintenance?, relay?, anti_entropy?, bulk?))
 }
 
 /// `ANTI_ENTROPY_HEAD_INTERVAL` and `ANTI_ENTROPY_FULL_INTERVAL`: two positive durations, the full
@@ -1157,6 +1174,44 @@ fn anti_entropy_settings(
         head,
     );
     AntiEntropySettings::new(head?, full?).ok()
+}
+
+/// The default `BULK_CHUNK_ENTITIES`.
+const DEFAULT_BULK_CHUNK_ENTITIES: usize = 1_000;
+
+/// The default `BULK_MAX_RECORDS_PER_SECOND`.
+const DEFAULT_BULK_RECORDS_PER_SECOND: u64 = 2_000;
+
+/// `BULK_CHUNK_ENTITIES` (1 to 1,000) and `BULK_MAX_RECORDS_PER_SECOND` (at least 1).
+fn bulk_settings(collector: &mut Collector, args: &BulkArgs) -> Option<BulkSettings> {
+    let chunker = collector.collect("BULK_CHUNK_ENTITIES", bulk_chunker(args));
+    let pacing = collector.collect("BULK_MAX_RECORDS_PER_SECOND", bulk_pacing(args));
+    Some(BulkSettings {
+        chunker: chunker?,
+        pacing: pacing?,
+    })
+}
+
+/// `BULK_CHUNK_ENTITIES`: an integer from 1 to 1,000.
+fn bulk_chunker(args: &BulkArgs) -> Parsed<BulkChunker> {
+    let reason = "must be an integer from 1 to 1000";
+    let value = parsed(
+        args.chunk_entities.as_deref(),
+        DEFAULT_BULK_CHUNK_ENTITIES,
+        reason,
+    )?;
+    BulkChunker::new(value).map_err(|_error| reason.to_owned())
+}
+
+/// `BULK_MAX_RECORDS_PER_SECOND`: an integer of at least 1.
+fn bulk_pacing(args: &BulkArgs) -> Parsed<BulkPacing> {
+    let reason = "must be an integer of at least 1";
+    let value = parsed(
+        args.max_records_per_second.as_deref(),
+        DEFAULT_BULK_RECORDS_PER_SECOND,
+        reason,
+    )?;
+    BulkPacing::new(value).map_err(|_error| reason.to_owned())
 }
 
 /// `DATABASE_LISTEN_URL` (`DATABASE_URL` when it is not set), `KAFKA_TRANSACTION_TIMEOUT` and

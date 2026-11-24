@@ -118,7 +118,7 @@ async fn a_batch_whose_backend_was_terminated_fails_and_leaves_no_state(pool: Pg
     let mut batch = led(&leadership, &TASK).await;
 
     let terminated: i64 = sqlx::query(
-        "SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity \
+        "SELECT count(pg_terminate_backend(pid, 5000)) FROM pg_stat_activity \
          WHERE datname = current_database() AND state = 'idle in transaction' AND query LIKE '%pg_try_advisory_xact_lock%'",
     )
     .fetch_one(&pool)

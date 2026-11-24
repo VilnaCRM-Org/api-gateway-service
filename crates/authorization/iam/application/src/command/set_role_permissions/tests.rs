@@ -568,3 +568,27 @@ async fn a_failing_unit_of_work_is_a_storage_error() {
 
     assert!(matches!(error, IamError::Storage(_)));
 }
+
+#[tokio::test]
+async fn the_replacement_asks_for_the_escalation_check_of_the_added_grants_only() {
+    let (handler, unit_of_work) = World::new().handler(vec![stored(
+        RoleKind::Custom,
+        1,
+        &["rest:orders:GET /orders"],
+    )]);
+
+    handler
+        .handle(command(
+            1,
+            &["rest:orders:GET /orders", "rest:billing:GET /invoices"],
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        unit_of_work.committed()[0].guard(),
+        Some(&iam_domain::GuardCheck::Grants(vec![
+            PermissionGrant::parse("rest:billing:GET /invoices").unwrap()
+        ]))
+    );
+}

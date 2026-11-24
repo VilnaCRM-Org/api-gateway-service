@@ -47,6 +47,9 @@ pub struct OperationRequest<'request> {
     pub template: &'request str,
     /// The path of the request.
     pub path: &'request str,
+    /// The target services that the body of the request names, for a row of the decision API (the
+    /// caller rule of FR-12 needs a key for each); empty for every other operation.
+    pub services: &'request [String],
     /// The request id, recorded with a refusal.
     pub request_id: Option<&'request str>,
 }
@@ -57,14 +60,18 @@ pub struct GraphQlOperationRequest<'request> {
     /// The `{Type}.{field}` coordinates of the IAM-owned root fields the executed operation
     /// selects.
     pub coordinates: &'request [String],
+    /// The target services that the arguments of the selected decision fields name; empty when the
+    /// document selects none.
+    pub services: &'request [String],
     /// The request id, recorded with a refusal.
     pub request_id: Option<&'request str>,
 }
 
 /// What a row of a rule table says about an operation: its audited action and what it requires.
-struct Row {
+struct Row<'services> {
     action: &'static str,
     requirement: Requirement,
+    services: &'services [String],
 }
 
 /// What a refusal says about the request: the audited action, the target and the reason code.
@@ -135,6 +142,7 @@ impl IamAccessGuard {
         let row = Row {
             action: rule.action,
             requirement: rule.requirement,
+            services: request.services,
         };
         self.enforce(principal, &row, &check, request.request_id)
             .await
@@ -162,6 +170,7 @@ impl IamAccessGuard {
             let row = Row {
                 action: rule.action,
                 requirement: rule.requirement,
+                services: request.services,
             };
             self.enforce(principal, &row, &field_check(rule)?, request.request_id)
                 .await?;
@@ -190,11 +199,11 @@ impl IamAccessGuard {
     async fn enforce(
         &self,
         principal: &Principal,
-        row: &Row,
+        row: &Row<'_>,
         check: &AccessCheck,
         request_id: Option<&str>,
     ) -> Result<(), IamError> {
-        match self.verdict(principal, row.requirement, check).await {
+        match self.row_verdict(principal, row, check).await {
             Verdict::Allowed => Ok(()),
             Verdict::Denied => {
                 let refusal = Refusal {
@@ -206,6 +215,20 @@ impl IamAccessGuard {
                 Err(IamError::Forbidden)
             }
             Verdict::Unavailable => Err(IamError::Storage(Box::new(AuthorizationUnavailable))),
+        }
+    }
+
+    /// Decides a row: by the caller rule when its keys depend on the request, else by its fixed
+    /// keys.
+    async fn row_verdict(
+        &self,
+        principal: &Principal,
+        row: &Row<'_>,
+        check: &AccessCheck,
+    ) -> Verdict {
+        match row.requirement.caller_rule() {
+            Some(rule) => caller::caller_verdict(self, principal, rule, row.services).await,
+            None => self.verdict(principal, row.requirement, check).await,
         }
     }
 
@@ -334,6 +357,8 @@ fn rejection(
         request_id: request_id.and_then(|id| RequestId::new(id).ok()),
     })
 }
+
+mod caller;
 
 #[cfg(test)]
 mod tests;

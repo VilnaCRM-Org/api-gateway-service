@@ -8,8 +8,12 @@
 
 use iam_domain::HttpMethod;
 
-/// `iam:validate:*`: the key of the decision API and of token resolution; the caller rule of
-/// Story 6.13 narrows it to the target service of each check.
+use crate::caller_rule::CallerRule;
+
+/// `iam:validate:*`: the key that admits any caller of the decision API and of token resolution.
+///
+/// The caller rule of Story 6.13 also admits a caller that holds `iam:validate:{service}` for the
+/// service it validates for, or for its own name when it resolves a token.
 pub const VALIDATE_ALL: &str = "iam:validate:*";
 
 /// What an operation requires of its caller.
@@ -21,6 +25,9 @@ pub enum Requirement {
     Reserved(&'static [&'static str]),
     /// The catalogue key of the operation and the reserved keys.
     CatalogueAndReserved(&'static [&'static str]),
+    /// No catalogue key and no fixed key: the keys depend on the content of the request and are
+    /// decided by the caller rule (FR-12).
+    Caller(CallerRule),
 }
 
 impl Requirement {
@@ -30,11 +37,20 @@ impl Requirement {
         matches!(self, Self::Catalogue | Self::CatalogueAndReserved(_))
     }
 
+    /// The caller rule of the row, when its keys depend on the content of the request.
+    #[must_use]
+    pub const fn caller_rule(self) -> Option<CallerRule> {
+        match self {
+            Self::Caller(rule) => Some(rule),
+            Self::Catalogue | Self::Reserved(_) | Self::CatalogueAndReserved(_) => None,
+        }
+    }
+
     /// The reserved keys the caller must hold; none for a catalogue-only operation.
     #[must_use]
     pub const fn reserved(self) -> &'static [&'static str] {
         match self {
-            Self::Catalogue => &[],
+            Self::Catalogue | Self::Caller(_) => &[],
             Self::Reserved(keys) | Self::CatalogueAndReserved(keys) => keys,
         }
     }
@@ -68,8 +84,6 @@ const fn row(
     }
 }
 
-const RESOLVE: &[&str] = &[VALIDATE_ALL];
-
 /// The rule of one GraphQL root field that IAM owns: its coordinate (`Query.roles`), the name its
 /// audit records give it and what it requires.
 ///
@@ -102,22 +116,27 @@ const GRAPHQL_RULES: &[GraphQlRule] = &[
     field(
         "Query.resolveToken",
         "token.resolve",
-        Requirement::Reserved(RESOLVE),
+        Requirement::Caller(CallerRule::ResolveToken),
     ),
     field(
         "Query.validateAccess",
         "access.validate",
-        Requirement::Reserved(RESOLVE),
+        Requirement::Caller(CallerRule::Validate),
     ),
     field(
         "Query.validateAccessBatch",
         "access.validate_batch",
-        Requirement::Reserved(RESOLVE),
+        Requirement::Caller(CallerRule::Validate),
     ),
     field("Query.role", "role.read", Requirement::Catalogue),
     field("Query.roles", "role.list", Requirement::Catalogue),
     field("Query.userRole", "user_role.read", Requirement::Catalogue),
     field("Query.userRoles", "user_role.list", Requirement::Catalogue),
+    field(
+        "Query.userRolePermissions",
+        "user_role_permission.list",
+        Requirement::Catalogue,
+    ),
     field(
         "Query.graphqlPermission",
         "graphql_permission.read",
@@ -219,19 +238,19 @@ const RULES: &[OperationRule] = &[
         HttpMethod::Post,
         "/api/token-resolutions",
         "token.resolve",
-        Requirement::Reserved(RESOLVE),
+        Requirement::Caller(CallerRule::ResolveToken),
     ),
     row(
         HttpMethod::Post,
         "/api/access-validations",
         "access.validate",
-        Requirement::Reserved(RESOLVE),
+        Requirement::Caller(CallerRule::Validate),
     ),
     row(
         HttpMethod::Post,
         "/api/access-validations/batch",
         "access.validate_batch",
-        Requirement::Reserved(RESOLVE),
+        Requirement::Caller(CallerRule::Validate),
     ),
     row(
         HttpMethod::Post,
@@ -303,6 +322,12 @@ const RULES: &[OperationRule] = &[
         HttpMethod::Delete,
         "/api/user-roles/{id}",
         "user_role.revoke",
+        Requirement::Catalogue,
+    ),
+    row(
+        HttpMethod::Get,
+        "/api/users/{userId}/role-permissions",
+        "user_role_permission.list",
         Requirement::Catalogue,
     ),
     row(

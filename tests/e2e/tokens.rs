@@ -25,8 +25,19 @@ pub(crate) const USER_ID: &str = "0190f2a8-7b3c-7d4e-8f10-1234567890ab";
 /// The administrator that the caller tokens of the scenarios name; the scenario policy gives it
 /// the keys of the bootstrapped `iam-platform-admin` role (see `administrator_policy`).
 pub(crate) const ADMINISTRATOR_ID: &str = "0190f2a8-7b3c-7d4e-8f10-00000000ad02";
+/// The administrator that lacks `iam:grant:wildcard`, for the scenarios of the escalation guard:
+/// the scenario policy gives it the keys of the bootstrapped role except that one.
+pub(crate) const RESTRICTED_ADMINISTRATOR_ID: &str = "0190f2a8-7b3c-7d4e-8f10-00000000ad03";
 /// A service caller that holds no IAM key, for the scenarios of the authorization rule.
 pub(crate) const UNPRIVILEGED_SERVICE: &str = "e2e-unprivileged-caller";
+
+/// The service callers of the scenarios of the caller rule of the decision API (Story 6.13) and the
+/// one key each of them holds, which `administrator_policy` gives them in memory: `core` validates
+/// for itself and resolves its own tokens, `e2e-validator` holds the wildcard.
+pub(crate) const SERVICE_CALLERS: [(&str, &str); 2] = [
+    ("core", "iam:validate:core"),
+    ("e2e-validator", "iam:validate:*"),
+];
 
 /// An RSA key pair: the private half signs, the public half goes into a key file.
 pub(crate) struct SigningKey {
@@ -87,6 +98,16 @@ impl SigningKey {
         ))
     }
 
+    /// A `ROLE_USER` token of [`RESTRICTED_ADMINISTRATOR_ID`], issued now and valid for 10 minutes.
+    pub(crate) fn restricted_administrator_token(&self) -> String {
+        self.sign(&user_claims(
+            RESTRICTED_ADMINISTRATOR_ID,
+            "e2e-restricted-administrator-session",
+            0,
+            600,
+        ))
+    }
+
     /// A `ROLE_SERVICE` token of [`UNPRIVILEGED_SERVICE`] that names the IAM caller audience and
     /// lives for 10 minutes; the service holds no IAM key.
     pub(crate) fn unprivileged_caller_token(&self) -> String {
@@ -94,7 +115,7 @@ impl SigningKey {
     }
 
     /// A `ROLE_SERVICE` token of `service` with the IAM caller audience, valid for 10 minutes.
-    fn service_token(&self, service: &str) -> String {
+    pub(crate) fn service_token(&self, service: &str) -> String {
         let now = seconds_from_now(0);
         self.sign(&json!({
             "iss": ISSUER,
