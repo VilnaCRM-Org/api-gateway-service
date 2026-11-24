@@ -11,6 +11,8 @@ mod export;
 #[cfg(test)]
 mod gateway;
 #[cfg(test)]
+mod gateway_bootstrap;
+#[cfg(test)]
 mod healthcheck;
 #[cfg(test)]
 mod iam_bootstrap;
