@@ -4,9 +4,11 @@
 pub mod cluster;
 pub mod krafka_cluster;
 pub mod policy_log_producer;
+pub mod policy_log_tail;
 pub mod settings;
 pub mod topic_inspector;
 
 pub use policy_log_producer::{KrafkaPolicyLogProducer, RelayMode};
+pub use policy_log_tail::KrafkaPolicyLogTail;
 pub use settings::{KafkaSecret, KafkaSecurity, KafkaSettings, SaslMechanism};
 pub use topic_inspector::KrafkaTopicInspector;

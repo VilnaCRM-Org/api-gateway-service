@@ -39,6 +39,7 @@ fn adapters(listen_pool: PgPool) -> OutboxRelayAdapters {
         listen_pool,
         wake: Arc::new(Notify::new()),
         leading: Arc::new(watch::channel(false).0),
+        anti_entropy: None,
     }
 }
 

@@ -31,6 +31,7 @@ fn adapters() -> OutboxRelayAdapters {
         listen_pool: unreachable_pool(),
         wake: Arc::new(Notify::new()),
         leading: Arc::new(watch::channel(false).0),
+        anti_entropy: None,
     }
 }
 

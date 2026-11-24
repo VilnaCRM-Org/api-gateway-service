@@ -5,6 +5,7 @@ pub mod batch;
 pub mod key;
 pub mod layout;
 pub mod model;
+pub mod shadow;
 
 #[cfg(test)]
 mod fakes;

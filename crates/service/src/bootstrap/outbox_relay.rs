@@ -12,6 +12,7 @@ use iam_infrastructure::{
 use shared_infrastructure::persistence::{PostgresSettings, connect_lazy};
 use tokio::sync::{Notify, watch};
 
+use super::anti_entropy::AntiEntropyAdapters;
 use crate::config::Config;
 
 /// How long the listener waits before it opens its connection again.
@@ -30,6 +31,8 @@ pub struct OutboxRelayAdapters {
     pub wake: Arc<Notify>,
     /// `true` while this replica leads the relay; the listener holds its connection only then.
     pub leading: Arc<watch::Sender<bool>>,
+    /// The anti-entropy task, which shares its hold with the relay; `None` runs no task.
+    pub anti_entropy: Option<AntiEntropyAdapters>,
 }
 
 impl OutboxRelayAdapters {
@@ -59,6 +62,7 @@ impl OutboxRelayAdapters {
             listen_pool: connect_lazy(&listen)?,
             wake: Arc::new(Notify::new()),
             leading: Arc::new(watch::channel(false).0),
+            anti_entropy: Some(AntiEntropyAdapters::connect(config, pool)),
         })
     }
 }

@@ -20,6 +20,7 @@ use iam_domain::{
 use shared_domain::{BoxError, Clock};
 use tokio::sync::{Notify, watch};
 
+use crate::anti_entropy::TopicAheadHold;
 use crate::singleton_loop::{SingletonInterval, SingletonLoop, SingletonWork};
 
 /// How long a published row stays in the outbox.
@@ -92,6 +93,7 @@ pub struct OutboxRelay {
     judged: Mutex<Option<Judgement>>,
     cleaned: Mutex<Option<SystemTime>>,
     leading: Arc<watch::Sender<bool>>,
+    hold: Option<Arc<TopicAheadHold>>,
 }
 
 fn log_misconfiguration(violations: &str) {
@@ -99,6 +101,10 @@ fn log_misconfiguration(violations: &str) {
         violations,
         "the Kafka topics are misconfigured: nothing is published"
     );
+}
+
+fn log_held_back() {
+    tracing::warn!("the state topic is ahead of PostgreSQL: nothing is published");
 }
 
 fn log_takeover(epoch: RelayEpoch) {
@@ -135,7 +141,21 @@ impl OutboxRelay {
             judged: Mutex::new(None),
             cleaned: Mutex::new(None),
             leading,
+            hold: None,
         }
+    }
+
+    /// The same relay, which publishes nothing while `hold` is set: the anti-entropy task sets it
+    /// when the state topic holds a version above PostgreSQL's (FR-77).
+    #[must_use]
+    pub fn with_hold(mut self, hold: Arc<TopicAheadHold>) -> Self {
+        self.hold = Some(hold);
+        self
+    }
+
+    /// Whether the topic is ahead of PostgreSQL, so that nothing may be appended to it.
+    fn held_back(&self) -> bool {
+        self.hold.as_ref().is_some_and(|hold| hold.is_set())
     }
 
     /// The loop that runs the task: a batch every [`POLL_INTERVAL`], or as soon as `wake` is
@@ -283,6 +303,10 @@ impl OutboxRelay {
 impl SingletonWork for OutboxRelay {
     async fn run(&self, _batch: &mut dyn LeaderBatch) -> Result<(), BoxError> {
         self.leading.send_replace(true);
+        if self.held_back() {
+            log_held_back();
+            return Ok(());
+        }
         if !self.configuration_allows().await? {
             return Ok(());
         }
