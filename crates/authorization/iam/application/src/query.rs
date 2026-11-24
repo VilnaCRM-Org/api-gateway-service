@@ -2,6 +2,7 @@
 
 pub mod find_graphql_spec;
 pub mod find_openapi_spec;
+pub mod get_bulk_operation;
 pub mod get_change_receipt;
 pub mod get_graphql_permission;
 pub mod get_graphql_permissions;
@@ -20,6 +21,8 @@ pub mod get_rest_permissions_created;
 pub mod get_role;
 pub mod get_role_permissions;
 pub mod get_user_role;
+pub mod get_user_role_permissions;
+pub mod list_bulk_operations;
 pub mod list_roles;
 pub mod list_user_roles;
 pub mod resolve_subject_token;

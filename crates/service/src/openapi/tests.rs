@@ -118,6 +118,7 @@ fn documents_exactly_the_twenty_four_operations() {
             "get /api/user-roles/{id}",
             "delete /api/user-roles/{id}",
             "patch /api/user-roles/{id}",
+            "get /api/users/{userId}/role-permissions",
         ]
     );
 }
@@ -1109,8 +1110,10 @@ fn defines_exactly_the_documented_schemas() {
             "CreateRoleRequest",
             "DeletedRole",
             "DependencyFailure",
+            "EffectivePermission",
             "ExampleApiResource",
             "FlagDowngrade",
+            "GrantingRole",
             "GraphQlPermission",
             "GraphQlPermissionPage",
             "GraphQlPermissionsActivation",
@@ -1147,6 +1150,7 @@ fn defines_exactly_the_documented_schemas() {
             "UpdateUserRoleRequest",
             "UserRole",
             "UserRolePage",
+            "UserRolePermissions",
             "ValidateAccessBatchRequest",
             "ValidateAccessRequest",
             "Violation",
@@ -1295,6 +1299,51 @@ fn the_paths_without_an_operation_of_the_tag_are_removed_from_a_json_document() 
     assert_eq!(
         document,
         json!({"paths": {"/kept": {"get": {"tags": ["iam"]}}}})
+    );
+}
+
+#[test]
+fn the_effective_permissions_document_their_parameters_responses_and_schemas() {
+    let json = json_document();
+    let operation = &json["paths"]["/api/users/{userId}/role-permissions"]["get"];
+
+    assert_eq!(
+        operation["operationId"],
+        "api_users_user_id_role_permissions_get"
+    );
+    assert_eq!(operation["tags"], json!(["iam"]));
+    assert_eq!(operation["security"], json!([{ "bearerAuth": [] }]));
+    assert_eq!(
+        operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/UserRolePermissions"
+    );
+    let mut statuses: Vec<&str> = operation["responses"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    statuses.sort_unstable();
+    assert_eq!(statuses, ["200", "400", "401", "403", "422", "default"]);
+    let mut parameters: Vec<(&str, &str)> = operation["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|parameter| Some((parameter["name"].as_str()?, parameter["in"].as_str()?)))
+        .collect();
+    parameters.sort_unstable();
+    assert_eq!(
+        parameters,
+        [
+            ("projectId", "query"),
+            ("service", "query"),
+            ("userId", "path")
+        ]
+    );
+    let schemas = &json["components"]["schemas"];
+    assert_eq!(
+        schemas["UserRolePermissions"]["required"],
+        json!(["userId", "policyVersion", "permissions"])
     );
 }
 

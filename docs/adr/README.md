@@ -23,6 +23,7 @@ These records explain why the structure of the template is what it is. Each one 
 | [0017](0017-policy-state-topic-transactional-outbox-and-fenced-relay.md) | Policy state topic, transactional outbox and fenced Kafka relay (draft) | IAM architecture sections 6.1, 9.1 to 9.3 and 15.1, FR-2, FR-46, FR-47, FR-70 |
 | [0018](0018-permission-catalogue-generated-from-specifications.md) | Permission catalogue generated from OpenAPI and GraphQL specifications | IAM architecture section on the catalogue, FR-1, FR-2, FR-32, FR-36, FR-38 |
 | [0019](0019-security-audit-log-and-access-decision-log.md) | Security audit log in PostgreSQL and access-decision log in Loki (draft) | IAM architecture sections 12.4 and 13, FR-49, FR-52 |
+| [0020](0020-effective-permissions-composed-at-check-time.md) | Effective permissions composed at check time | IAM architecture section 6, FR-1, FR-39, NFR-16 |
 | [0021](0021-rest-and-graphql-parity.md) | REST and GraphQL parity for IAM operations | IAM architecture sections 5.5 and 8, FR-1, FR-19, NFR-7 |
 | [0023](0023-allow-list-additions-for-the-gateway.md) | Allow-list additions for the gateway | IAM architecture section 3.1, NFR-6 |
 | [0026](0026-krafka-as-the-kafka-client.md) | krafka as the Kafka client: phase-0 spike results and rdkafka fallback | IAM architecture section 20.4, NFR-30 |

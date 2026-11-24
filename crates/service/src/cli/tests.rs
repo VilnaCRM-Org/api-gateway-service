@@ -362,6 +362,8 @@ fn serve_declares_exactly_the_variables_of_the_configuration_table() {
         "AWS_ENDPOINT_URL_SQS",
         "AWS_REGION",
         "AWS_SECRET_ACCESS_KEY",
+        "BULK_CHUNK_ENTITIES",
+        "BULK_MAX_RECORDS_PER_SECOND",
         "DATABASE_ACQUIRE_TIMEOUT",
         "DATABASE_LISTEN_URL",
         "DATABASE_MAX_CONNECTIONS",

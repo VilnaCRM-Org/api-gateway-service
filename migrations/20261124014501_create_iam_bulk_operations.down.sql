@@ -1,0 +1,2 @@
+DROP INDEX iam_bulk_operations_unfinished_idx;
+DROP TABLE iam_bulk_operations;

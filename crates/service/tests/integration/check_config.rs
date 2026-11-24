@@ -901,6 +901,48 @@ fn an_invalid_anti_entropy_interval_exits_2_naming_the_variable(
     assert_eq!(stderr(&output), problems);
 }
 
+#[rstest]
+#[case::a_zero_chunk_size(
+    &[("BULK_CHUNK_ENTITIES", "0")],
+    "BULK_CHUNK_ENTITIES: must be an integer from 1 to 1000\n"
+)]
+#[case::a_chunk_size_above_one_thousand(
+    &[("BULK_CHUNK_ENTITIES", "1001")],
+    "BULK_CHUNK_ENTITIES: must be an integer from 1 to 1000\n"
+)]
+#[case::a_zero_rate(
+    &[("BULK_MAX_RECORDS_PER_SECOND", "0")],
+    "BULK_MAX_RECORDS_PER_SECOND: must be an integer of at least 1\n"
+)]
+fn an_invalid_bulk_setting_exits_2_naming_the_variable(
+    #[case] extra: &[(&str, &str)],
+    #[case] problems: &str,
+) {
+    let scratch = Scratch::new();
+
+    let output = check_config_with(&scratch, extra);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), problems);
+}
+
+#[test]
+fn bulk_settings_at_their_bounds_are_accepted() {
+    let scratch = Scratch::new();
+
+    let output = check_config_with(
+        &scratch,
+        &[
+            ("BULK_CHUNK_ENTITIES", "1000"),
+            ("BULK_MAX_RECORDS_PER_SECOND", "1"),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout(&output), "configuration OK\n");
+}
+
 #[test]
 fn anti_entropy_intervals_within_their_rules_are_accepted() {
     let scratch = Scratch::new();

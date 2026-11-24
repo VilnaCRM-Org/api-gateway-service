@@ -17,6 +17,7 @@ pub mod role;
 pub mod role_permission;
 pub mod spec_retirement;
 pub mod user_role;
+pub mod user_role_permission;
 
 use std::sync::Arc;
 
@@ -61,6 +62,7 @@ where
         .merge(activation_router())
         .merge(user_role_router())
         .merge(role_permission_router())
+        .merge(user_role_permission_router())
 }
 
 /// The routes of the access validation, single and batch, merged into [`router`].
@@ -141,6 +143,15 @@ where
             user_role::update,
             user_role::revoke
         ))
+}
+
+/// The route of the effective permissions of a user, merged into [`router`].
+fn user_role_permission_router<S>() -> OpenApiRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+    IamState: FromRef<S>,
+{
+    OpenApiRouter::new().routes(routes!(user_role_permission::list))
 }
 
 /// The routes that upload specification documents, to be nested under `/api`.

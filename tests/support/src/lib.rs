@@ -4,6 +4,7 @@
 pub mod access_token;
 pub mod anti_entropy;
 pub mod boot_clock;
+pub mod bulk_operation;
 pub mod bus;
 pub mod cache;
 pub mod catalogue;

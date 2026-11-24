@@ -608,6 +608,21 @@ Content-Type: application/json
   "variables": { "input": { "subject": { "kind": "service", "id": "billing-worker" }, "roleId": "01a1c6b5-cb86-7134-868a-7608036facfe", "scope": { "kind": "global" } } }
 }
 
+### Read the effective permissions of a user over REST: 200 with every held key and wildcard, its granting roles, scopes (all or project ids), shortest expiry and the policyVersion; 403 without the key of the operation; 422 for an invalid userId, projectId or service
+# projectId keeps the global assignments and those of the project; service keeps the keys and wildcards of the service. Expired assignments grant nothing and a reserved iam: key counts only through a global assignment, as in a decision.
+GET {{baseUrl}}/api/users/0190f2a8-7b3c-7d4e-8f10-1234567890ab/role-permissions?projectId=0190f2a8-7b3c-7d4e-8f10-1234567890cd&service=billing
+Authorization: Bearer <caller token>
+
+### Read the effective permissions of a user over GraphQL: the same data as the REST operation; the error codes FORBIDDEN and VALIDATION_FAILED
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($userId: ID!, $projectId: String, $service: String) { userRolePermissions(userId: $userId, projectId: $projectId, service: $service) { userId policyVersion permissions { key kind service wildcard scopes expiresAt roles { id name } } } }",
+  "variables": { "userId": "0190f2a8-7b3c-7d4e-8f10-1234567890ab", "service": "billing" }
+}
+
 ### Read an assignment over REST: 200 with the ETag and the role name; 404 for an unknown or revoked assignment
 GET {{baseUrl}}/api/user-roles/01a1c6b5-cb86-7134-868a-7608036facff
 Authorization: Bearer <caller token>

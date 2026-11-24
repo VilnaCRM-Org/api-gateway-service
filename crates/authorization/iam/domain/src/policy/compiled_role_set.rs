@@ -60,6 +60,17 @@ impl CompiledRoleSet {
                 .any(|pattern| self.wildcards.contains(pattern))
     }
 
+    /// Every active grant: the exact keys (reserved keys included) in key order, then the
+    /// wildcard patterns in pattern order.
+    pub fn grants(&self) -> impl Iterator<Item = PermissionGrant> + '_ {
+        self.keys.iter().cloned().map(PermissionGrant::Key).chain(
+            self.wildcards
+                .iter()
+                .cloned()
+                .map(PermissionGrant::Wildcard),
+        )
+    }
+
     /// The number of active exact keys, reserved keys included.
     #[must_use]
     pub fn key_count(&self) -> usize {

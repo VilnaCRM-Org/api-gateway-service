@@ -4,6 +4,8 @@
 #[cfg(test)]
 mod anti_entropy_store;
 #[cfg(test)]
+mod bulk_operation_repository;
+#[cfg(test)]
 mod catalogue_activation;
 #[cfg(test)]
 mod gateway_configuration;

@@ -23,6 +23,7 @@ pub mod role_permission;
 pub mod schema_parser;
 pub mod spec_retirement;
 pub mod user_role;
+pub mod user_role_permission;
 
 use async_graphql::{
     ComplexObject, Context, Error, ErrorExtensions as _, ID, InputObject, MaybeUndefined, Object,
@@ -88,6 +89,7 @@ use user_role::{
     UserRoleFilterInput, UserRoleObject, UserRolePageObject, assign_user_role_field,
     revoke_user_role_field, update_user_role_field, user_role_field, user_roles_field,
 };
+use user_role_permission::{UserRolePermissionsObject, user_role_permissions_field};
 
 pub use authorization::IamAuthorizationExtension;
 pub use document_analyzer::AsyncGraphQlDocumentAnalyzer;
@@ -546,6 +548,22 @@ impl IamQuery {
         >,
     ) -> async_graphql::Result<UserRolePageObject> {
         user_roles_field(ctx, first, after, filter.unwrap_or_default())
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves the effective permissions of a user: every key and wildcard that its active assignments hold, each with the roles that grant it, its scopes (`all` or project ids), the shortest expiry among the contributing assignments that expire and the policy version the answer was composed at. `projectId` keeps the global assignments and those of the project; `service` keeps the keys and wildcards of the service. A user without assignments has an empty list.
+    async fn user_role_permissions(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(desc = "The user whose permissions are read.")] user_id: ID,
+        #[graphql(
+            desc = "Only assignments that apply in this project: the global ones and those of the project."
+        )]
+        project_id: Option<String>,
+        #[graphql(desc = "Only keys and wildcards of this service.")] service: Option<String>,
+    ) -> async_graphql::Result<UserRolePermissionsObject> {
+        user_role_permissions_field(ctx, &user_id, project_id, service)
             .await
             .map_err(iam_problem_to_graphql_error)
     }

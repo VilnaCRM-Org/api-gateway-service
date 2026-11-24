@@ -195,6 +195,24 @@ type DeleteRolePayload {
   version: Int!
 }
 
+"One key or wildcard that a user holds."
+type EffectivePermission {
+  "The shortest expiry among the contributing assignments that expire, as an RFC 3339 UTC time; null when none of them expires."
+  expiresAt: String
+  "The permission key or the wildcard pattern."
+  key: String!
+  "The form of the key: `rest` or `gql`, or `reserved` for a reserved `iam:` key."
+  kind: String!
+  "The roles of the active assignments that grant it, in identifier order."
+  roles: [GrantingRole!]!
+  "Where it is held: the single value `all` when a global assignment grants it, else the project ids."
+  scopes: [String!]!
+  "The service of the key."
+  service: String!
+  "Whether the entry is a wildcard pattern; a wildcard never covers a sensitive key."
+  wildcard: Boolean!
+}
+
 "Template example resource."
 type ExampleApiResource {
   "Description."
@@ -213,6 +231,14 @@ type FlagDowngrade {
   before: CoordinateFlags!
   "The coordinate, `Type.field`."
   coordinate: String!
+}
+
+"A role that grants an effective permission."
+type GrantingRole {
+  "The identifier of the role."
+  id: ID!
+  "The name of the role; null when the role is no longer stored."
+  name: String
 }
 
 "A GraphQL catalogue entry."
@@ -551,6 +577,15 @@ type Query {
   ): RolePage!
   "Retrieves a role assignment by id; null when it is unknown or revoked."
   userRole(id: ID!): UserRole
+  "Retrieves the effective permissions of a user: every key and wildcard that its active assignments hold, each with the roles that grant it, its scopes (`all` or project ids), the shortest expiry among the contributing assignments that expire and the policy version the answer was composed at. `projectId` keeps the global assignments and those of the project; `service` keeps the keys and wildcards of the service. A user without assignments has an empty list."
+  userRolePermissions(
+    "Only assignments that apply in this project: the global ones and those of the project."
+    projectId: String,
+    "Only keys and wildcards of this service."
+    service: String,
+    "The user whose permissions are read."
+    userId: ID!
+  ): UserRolePermissions!
   "Retrieves one page of role assignments that are not revoked, in a stable order, filtered by subject, role, project and expiry."
   userRoles(
     "The nextCursor of the previous page."
@@ -864,6 +899,16 @@ type UserRolePage {
   nextCursor: String
 }
 
+"The effective permissions of a user."
+type UserRolePermissions {
+  "The exact keys in key order, then the wildcard patterns."
+  permissions: [EffectivePermission!]!
+  "The policy version the permissions were composed at."
+  policyVersion: Int!
+  "The user whose permissions these are."
+  userId: ID!
+}
+
 "Input of the access-validation query."
 input ValidateAccessInput {
   "The subject's access token as the caller received it; an empty one is decided as `token_missing`."
@@ -940,6 +985,7 @@ fn the_sdl_has_the_template_and_iam_operations_and_nothing_else_to_call() {
     assert!(text.contains("revokeUserRole(input: RevokeUserRoleInput!): RevokeUserRolePayload!"));
     assert!(text.contains("userRole(id: ID!): UserRole"));
     assert!(text.contains("userRoles("));
+    assert!(text.contains("userRolePermissions("));
     assert!(text.contains("graphqlSpec("));
     assert!(text.contains("graphqlPermission(id: ID!): GraphqlPermission"));
     assert!(text.contains("graphqlPermissions("));

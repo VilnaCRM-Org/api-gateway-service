@@ -158,6 +158,7 @@ fn handlers_use_only_the_problem_aware_extractors() {
             include_str!("../user_role.rs"),
             vec!["assign", "get_one", "update", "revoke", "list"],
         ),
+        (include_str!("../user_role_permission.rs"), vec!["list"]),
     ];
 
     for (source, expected) in sources {

@@ -30,6 +30,7 @@ pub use kubernetes::{
 pub use persistence::PgPolicyEpochRepository;
 pub use persistence::advisory_lock_leadership::AdvisoryLockLeadership;
 pub use persistence::anti_entropy_store::PgAntiEntropyStore;
+pub use persistence::bulk_operation::PgBulkOperationRepository;
 pub use persistence::change_receipt::PgChangeReceiptRepository;
 pub use persistence::graphql_permission::PgGraphQlPermissionRepository;
 pub use persistence::graphql_spec::PgGraphQlSpecRepository;

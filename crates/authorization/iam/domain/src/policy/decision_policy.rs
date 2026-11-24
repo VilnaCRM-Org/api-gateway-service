@@ -199,7 +199,7 @@ impl DecisionPolicy {
 /// Whether an assignment in `scope` can hold `key`: reserved `iam:` keys administer IAM itself
 /// and are required at global scope (FR-4, FR-12, FR-25), so only a global assignment holds them;
 /// every other key is held in the scope of its assignment.
-const fn counts_for(key: &PermissionKey, scope: AssignmentScope) -> bool {
+pub(crate) const fn counts_for(key: &PermissionKey, scope: AssignmentScope) -> bool {
     !matches!(key, PermissionKey::Reserved(_)) || matches!(scope, AssignmentScope::Global)
 }
 

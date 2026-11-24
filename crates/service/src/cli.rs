@@ -189,6 +189,30 @@ pub struct ServeArgs {
     /// Settings of the anti-entropy task.
     #[command(flatten)]
     pub anti_entropy: AntiEntropyArgs,
+    /// Settings of the bulk operation runner.
+    #[command(flatten)]
+    pub bulk: BulkArgs,
+}
+
+/// Settings of the bulk operation runner of `serve`.
+#[derive(Debug, Clone, Default, Args)]
+pub struct BulkArgs {
+    /// The most entities one version of a bulk change may change, an integer from 1 to 1000
+    /// (default 1000).
+    #[arg(
+        long = "bulk-chunk-entities",
+        env = "BULK_CHUNK_ENTITIES",
+        hide_env_values = true
+    )]
+    pub chunk_entities: Option<String>,
+    /// The most records per second the bulk operation runner commits, an integer of at least 1
+    /// (default 2000).
+    #[arg(
+        long = "bulk-max-records-per-second",
+        env = "BULK_MAX_RECORDS_PER_SECOND",
+        hide_env_values = true
+    )]
+    pub max_records_per_second: Option<String>,
 }
 
 /// Settings of the anti-entropy task of `serve`.

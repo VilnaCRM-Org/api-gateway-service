@@ -75,6 +75,11 @@ uuid_identifier! {
 }
 
 uuid_identifier! {
+    /// The identifier of one bulk operation.
+    BulkOperationId
+}
+
+uuid_identifier! {
     /// The identifier of a project that scopes an assignment.
     ProjectId
 }

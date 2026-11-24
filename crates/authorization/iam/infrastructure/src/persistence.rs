@@ -3,6 +3,7 @@
 
 pub mod advisory_lock_leadership;
 pub mod anti_entropy_store;
+pub mod bulk_operation;
 pub mod catalogue;
 pub mod change_receipt;
 pub mod event_encoding;
