@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::serve::Listener;
+use iam_application::PodProbes;
 use iam_domain::PolicyView;
 use shared_domain::BoxError;
 use tokio::net::TcpListener;
@@ -126,6 +127,23 @@ fn routers(policy: &policy::PolicyAdapters) -> (Router, Router) {
     )
 }
 
+/// The router of the probe listener: with a freshness state it serves the three probes of the pod
+/// (Story 9.7), without one only `/ping`.
+fn probe_router(policy: &policy::PolicyAdapters) -> Router {
+    policy
+        .freshness
+        .as_ref()
+        .map_or_else(probe::router, |freshness| {
+            let view: Arc<dyn PolicyView> =
+                Arc::<iam_infrastructure::ArcSwapPolicySnapshot>::clone(&policy.cell);
+            probe::router_with_probes(Arc::new(PodProbes::new(
+                Arc::clone(&policy.status),
+                Arc::clone(&freshness.state),
+                view,
+            )))
+        })
+}
+
 fn start_servers(
     config: &GatewayConfig,
     sockets: Sockets,
@@ -137,7 +155,7 @@ fn start_servers(
     let tls = config.tls.as_ref();
     let public = start_public(sockets.public, tls, public_router, tasks, stopping)?;
     let internal = spawn_server(sockets.internal, internal_router, stopping.clone());
-    let probe = spawn_server(sockets.probe, probe::router(), stopping.clone());
+    let probe = spawn_server(sockets.probe, probe_router(policy), stopping.clone());
     Ok(vec![public, internal, probe])
 }
 

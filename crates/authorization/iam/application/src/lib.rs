@@ -52,6 +52,7 @@ pub mod query;
 #[cfg(test)]
 mod rate_policy_fixtures;
 pub mod rate_policy_values;
+pub mod readiness;
 #[cfg(test)]
 mod rejected_attempt_fixtures;
 pub mod rejected_attempt_writer;
@@ -273,6 +274,7 @@ pub use query::validate_access_batch::{
     BatchCheck, ValidateAccessBatchQuery, ValidateAccessBatchQueryHandler,
 };
 pub use rate_policy_values::{RatePolicyPatch, RatePolicyValues};
+pub use readiness::{LIVENESS_LIMIT, NotReady, NotStarted, PodProbes, PodStatus};
 pub use rejected_attempt_writer::{FLUSH_INTERVAL, FlushOutcome, RejectedAttemptWriter};
 pub use required_key_resolver::RequiredKeyResolver;
 pub use resync_chunks::{ResyncChunkCommitter, ResyncPorts};

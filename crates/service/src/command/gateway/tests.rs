@@ -188,6 +188,80 @@ async fn a_gateway_with_a_freshness_state_serves_the_freshness_endpoint_and_gate
     assert_eq!(report.status(), StatusCode::OK);
 }
 
+#[tokio::test]
+async fn a_gateway_without_a_freshness_state_serves_only_ping_on_the_probe_listener() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use test_support::boot_clock::FakeBootClock;
+    use test_support::policy_bootstrap_log::FakePolicyBootstrapLog;
+    use tower::ServiceExt as _;
+
+    let policy = policy::PolicyAdapters::with(
+        Arc::new(FakePolicyBootstrapLog::with(Vec::new())),
+        Arc::new(FakeBootClock::new()),
+    );
+
+    let ping = probe_router(&policy)
+        .oneshot(Request::get("/ping").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let ready = probe_router(&policy)
+        .oneshot(Request::get("/internal/ready").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(ping.status(), StatusCode::OK);
+    assert_eq!(ready.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_gateway_with_a_freshness_state_serves_the_three_probes_over_the_status_of_its_policy() {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use iam_application::FreshnessState;
+    use iam_domain::FreshnessRule;
+    use test_support::boot_clock::FakeBootClock;
+    use test_support::peer_freshness_client::FakePeerFreshnessClient;
+    use test_support::policy_bootstrap_log::FakePolicyBootstrapLog;
+    use test_support::policy_log_probe::FakePolicyLogProbe;
+    use tower::ServiceExt as _;
+
+    use crate::bootstrap::gateway::freshness::FreshnessAdapters;
+
+    let clock = Arc::new(FakeBootClock::new());
+    let freshness = FreshnessAdapters {
+        state: Arc::new(FreshnessState::new(
+            FreshnessRule::new(Duration::from_secs(15), Duration::from_secs(2)),
+            Arc::<FakeBootClock>::clone(&clock),
+        )),
+        probe: Arc::new(FakePolicyLogProbe::scripted(Vec::new())),
+        peers: Arc::new(FakePeerFreshnessClient::new()),
+        clock: Arc::<FakeBootClock>::clone(&clock),
+        probe_interval: Duration::from_secs(1),
+    };
+    let policy =
+        policy::PolicyAdapters::with(Arc::new(FakePolicyBootstrapLog::with(Vec::new())), clock)
+            .proving(freshness);
+
+    let mut statuses = Vec::new();
+    for path in ["/ping", "/internal/startup", "/internal/ready"] {
+        let response = probe_router(&policy)
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        statuses.push(response.status());
+    }
+
+    assert_eq!(
+        statuses,
+        [
+            StatusCode::OK,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::SERVICE_UNAVAILABLE
+        ]
+    );
+}
+
 async fn raw_get(address: SocketAddr) -> String {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 

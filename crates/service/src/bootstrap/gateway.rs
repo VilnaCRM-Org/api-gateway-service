@@ -61,12 +61,15 @@ impl GatewayAdapters {
     /// Returns the error of reading or parsing `JWT_PUBLIC_KEYS_FILE` or of setting up the
     /// endpoint discovery.
     pub fn from_config(config: &GatewayConfig) -> Result<Self, GatewayAdapterError> {
+        let keys = JwtKeySet::load(&config.tokens.public_keys_file)?;
+        let policy = PolicyAdapters::from_config(config);
+        policy.status.mark_keys_parsed();
         Ok(Self {
             rng: Arc::new(SeededRng::from_os()),
             clock: Arc::new(SystemClock),
-            keys: JwtKeySet::load(&config.tokens.public_keys_file)?,
+            keys,
             endpoints: EndpointAdapters::from_config(config)?,
-            policy: PolicyAdapters::from_config(config),
+            policy,
         })
     }
 }

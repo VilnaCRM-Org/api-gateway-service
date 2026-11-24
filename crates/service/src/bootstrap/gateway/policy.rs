@@ -10,7 +10,9 @@
 //! task that dies ends the process. The apply thread also checks the derived structures against the
 //! raw records (Story 9.6): a mismatch withdraws the snapshot and the tail ends through the same
 //! rebootstrap path. Before the first bootstrap the pod waits for the topic to pass
-//! the configuration verdict under `KAFKA_CONFIG_GATES`.
+//! the configuration verdict under `KAFKA_CONFIG_GATES`. The task also records what the probes of
+//! Story 9.7 read in the [`PodStatus`]: the gates passed, a bootstrap installed a verified snapshot
+//! and a fenced pod is rebootstrapping.
 
 use std::sync::Arc;
 
@@ -18,8 +20,8 @@ use std::time::Duration;
 
 use iam_application::{
     BootstrapMachine, BootstrapOutcome, BootstrapPorts, BootstrapSnapshot, DerivedStateChecker,
-    FenceCause, FreshnessProber, ProofSink, TailApplier, TailEnd, TailMachine, TailPorts,
-    TailProgress, rebootstrap_delay, run_bootstrap, run_tail,
+    FenceCause, FreshnessProber, PodStatus, ProofSink, TailApplier, TailEnd, TailMachine,
+    TailPorts, TailProgress, rebootstrap_delay, run_bootstrap, run_tail,
 };
 use iam_domain::{
     BootClock, KafkaTopicInspector, PolicyBootstrapLog, PolicyDigest, PolicyTailLog, Rng,
@@ -91,6 +93,8 @@ pub struct PolicyAdapters {
     pub tail: Option<TailAdapters>,
     /// The proof of freshness and its probe; `None` leaves the pod without a proof (Story 9.5).
     pub freshness: Option<FreshnessAdapters>,
+    /// What the probes read about the start of the pod (Story 9.7).
+    pub status: Arc<PodStatus>,
 }
 
 impl PolicyAdapters {
@@ -160,6 +164,7 @@ impl PolicyAdapters {
             boot_clock,
             tail: None,
             freshness: None,
+            status: Arc::new(PodStatus::new()),
         }
     }
 }
@@ -245,6 +250,7 @@ async fn policy_task(
     {
         return;
     }
+    policy.status.mark_config_gates_passed();
     match (attempt(&policy, &thread).await, policy.tail.clone()) {
         (Some(installed), Some(tail)) => {
             if !follow(&policy, tail, &thread, installed, stopping).await {
@@ -327,10 +333,16 @@ async fn tail_loop(
         match ended {
             TailEnd::Stopped => return true,
             TailEnd::ApplierGone => return false,
-            TailEnd::Fenced(cause) => log_fenced(&cause),
+            TailEnd::Fenced(cause) => {
+                policy.status.begin_rebootstrap();
+                log_fenced(&cause);
+            }
         }
         match rebootstrap(&policy, &tail, &thread, &mut stopping).await {
-            Some(next) => installed = next,
+            Some(next) => {
+                installed = next;
+                policy.status.end_rebootstrap();
+            }
             None => return true,
         }
     }
@@ -361,6 +373,7 @@ async fn attempt(policy: &PolicyAdapters, thread: &ApplyThread) -> Option<Instal
     let started = policy.boot_clock.now();
     match bootstrap(policy, thread).await {
         Ok(installed) => {
+            policy.status.mark_bootstrapped();
             report_started(
                 &installed,
                 policy.boot_clock.now().saturating_since(started),

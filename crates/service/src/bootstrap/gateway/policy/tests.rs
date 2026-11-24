@@ -487,3 +487,89 @@ async fn a_cluster_that_cannot_be_asked_is_asked_again_until_the_gateway_stops()
     assert_eq!(tasks.stop(BOUND).await, crate::bootstrap::TaskStop::Drained);
     drop(death);
 }
+
+#[tokio::test]
+async fn a_pod_without_a_tail_has_no_gate_to_pass_and_is_bootstrapped_after_its_bootstrap() {
+    let adapters = adapters(FakePolicyBootstrapLog::with(Vec::new()));
+    let (stop, mut tasks) = supervisor();
+    assert!(!adapters.status.is_bootstrapped());
+
+    let death = start_policy(&adapters, &mut tasks).unwrap();
+
+    wait_for_snapshot(&adapters).await;
+    eventually(|| adapters.status.is_bootstrapped()).await;
+    assert!(adapters.status.are_config_gates_passed());
+    assert!(!adapters.status.is_rebootstrapping());
+    stop.send_replace(true);
+    assert_eq!(tasks.stop(BOUND).await, crate::bootstrap::TaskStop::Drained);
+    drop(death);
+}
+
+#[tokio::test]
+async fn a_topic_that_breaks_a_rule_leaves_the_gates_unpassed_and_the_pod_unbootstrapped() {
+    let violation = Violation::new("cleanup.policy", "compact", "delete");
+    let adapters = following(
+        adapters(FakePolicyBootstrapLog::with(Vec::new())),
+        Arc::new(FakePolicyTailLog::scripted(Vec::new(), 0)),
+        FakeTopicInspector::failing(vec![violation]),
+    );
+    let (stop, mut tasks) = supervisor();
+
+    let death = start_policy(&adapters, &mut tasks).unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert!(!adapters.status.are_config_gates_passed());
+    assert!(!adapters.status.is_bootstrapped());
+    stop.send_replace(true);
+    assert_eq!(tasks.stop(BOUND).await, crate::bootstrap::TaskStop::Drained);
+    drop(death);
+}
+
+#[tokio::test]
+async fn a_fenced_pod_is_rebootstrapping_until_the_new_snapshot_is_installed() {
+    let log = Arc::new(FakePolicyBootstrapLog::with(Vec::new()));
+    let tail = fencing_tail();
+    let mut base = adapters(FakePolicyBootstrapLog::with(Vec::new()));
+    base.log = Arc::<FakePolicyBootstrapLog>::clone(&log);
+    let mut waiting = following(
+        base,
+        Arc::<FakePolicyTailLog>::clone(&tail),
+        FakeTopicInspector::passing(),
+    );
+    if let Some(tail) = waiting.tail.as_mut() {
+        tail.rng = Arc::new(LongestDraw);
+        tail.settings.ready_bound = Duration::from_mins(1);
+    }
+    let (stop, mut tasks) = supervisor();
+
+    let death = start_policy(&waiting, &mut tasks).unwrap();
+    eventually(|| waiting.status.is_rebootstrapping()).await;
+
+    assert!(waiting.status.is_bootstrapped(), "the first bootstrap held");
+    stop.send_replace(true);
+    assert_eq!(tasks.stop(BOUND).await, crate::bootstrap::TaskStop::Drained);
+    drop(death);
+}
+
+#[tokio::test]
+async fn a_completed_rebootstrap_lifts_the_flag() {
+    let log = Arc::new(FakePolicyBootstrapLog::with(Vec::new()));
+    let tail = fencing_tail();
+    let mut base = adapters(FakePolicyBootstrapLog::with(Vec::new()));
+    base.log = Arc::<FakePolicyBootstrapLog>::clone(&log);
+    let adapters = following(
+        base,
+        Arc::<FakePolicyTailLog>::clone(&tail),
+        FakeTopicInspector::passing(),
+    );
+    let (stop, mut tasks) = supervisor();
+
+    let death = start_policy(&adapters, &mut tasks).unwrap();
+
+    eventually(|| log.captures() >= 2 && tail.positions().len() >= 2).await;
+    assert!(!adapters.status.is_rebootstrapping());
+    assert!(adapters.status.is_bootstrapped());
+    stop.send_replace(true);
+    assert_eq!(tasks.stop(BOUND).await, crate::bootstrap::TaskStop::Drained);
+    drop(death);
+}

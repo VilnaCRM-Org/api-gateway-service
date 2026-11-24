@@ -32,6 +32,7 @@ pub struct FreshnessReading {
 pub struct FreshnessState {
     rule: FreshnessRule,
     clock: Arc<dyn BootClock>,
+    created: BootInstant,
     held: RwLock<Held>,
 }
 
@@ -49,6 +50,7 @@ impl FreshnessState {
     pub fn new(rule: FreshnessRule, clock: Arc<dyn BootClock>) -> Self {
         Self {
             rule,
+            created: clock.now(),
             clock,
             held: RwLock::new(Held::default()),
         }
@@ -83,6 +85,15 @@ impl FreshnessState {
         }
         held.last_tick = Some(now);
         gap
+    }
+
+    /// How long the watchdog has been silent: the time since its last tick, or since the state was
+    /// created while it has not ticked yet.
+    #[must_use]
+    pub fn watchdog_silence(&self) -> Duration {
+        let now = self.clock.now();
+        let held = read(&self.held);
+        now.saturating_since(held.last_tick.unwrap_or(self.created))
     }
 
     /// Withdraws the proof: the pod is stale until a new proof is attached.

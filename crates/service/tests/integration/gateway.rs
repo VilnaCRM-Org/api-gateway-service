@@ -157,6 +157,62 @@ fn without_a_snapshot_the_public_listener_answers_503_iam_stale_and_ping_answers
 }
 
 #[test]
+fn before_its_bootstrap_startup_and_ready_answer_503_and_ping_answers_200() {
+    let scratch = Scratch::new();
+    let (server, ports) = plain(&scratch, &[]);
+
+    let startup = get_on(ports.probe, "/internal/startup");
+    let ready = get_on(ports.probe, "/internal/ready");
+    let ping = get_on(ports.probe, "/ping");
+    let public = server.get("/api/users");
+    let finished = server.terminate();
+
+    assert_eq!(startup.status, 503);
+    assert!(
+        startup
+            .head
+            .contains("content-type: application/problem+json"),
+        "{}",
+        startup.head
+    );
+    assert_eq!(ready.status, 503);
+    assert_eq!(ping.status, 200);
+    assert_eq!(ping.body, "pong");
+    assert_eq!(public.status, 503);
+    assert!(
+        public.body.contains("/problems/iam_stale"),
+        "{}",
+        public.body
+    );
+    assert_eq!(finished.code, Some(0));
+}
+
+#[test]
+fn an_unparsable_key_file_keeps_the_gateway_from_listening_so_startup_never_passes() {
+    let scratch = Scratch::new();
+    let keys = scratch.path().join("keys.pem");
+    std::fs::write(&keys, "not a PEM key").unwrap();
+
+    let output = scratch.run(
+        &["gateway"],
+        &[
+            ("APP_ENV", "test"),
+            ("GATEWAY_LISTEN", "127.0.0.1:0"),
+            ("GATEWAY_INTERNAL_LISTEN", "127.0.0.1:0"),
+            ("GATEWAY_PROBE_LISTEN", "127.0.0.1:0"),
+            ("JWT_PUBLIC_KEYS_FILE", keys.to_str().unwrap()),
+        ],
+    );
+
+    assert!(!output.status.success());
+    assert!(
+        !stdout(&output).contains("\"listening\""),
+        "{}",
+        stdout(&output)
+    );
+}
+
+#[test]
 fn the_gateway_starts_without_a_database_and_never_connects_to_one() {
     let scratch = Scratch::new();
     let (unset, ports) = plain(&scratch, &[]);

@@ -30,6 +30,14 @@ fn the_adapters_need_no_database_and_draw_from_the_operating_system() {
 }
 
 #[test]
+fn a_parsed_key_set_is_recorded_in_the_status_the_probes_read() {
+    let adapters = GatewayAdapters::from_config(&config()).unwrap();
+
+    assert!(adapters.policy.status.are_keys_parsed());
+    assert!(!adapters.policy.status.is_bootstrapped());
+}
+
+#[test]
 fn a_key_file_that_cannot_be_parsed_fails_the_start() {
     let mut config = config();
     config.tokens.public_keys_file = PathBuf::from("/nonexistent/keys.pem");
