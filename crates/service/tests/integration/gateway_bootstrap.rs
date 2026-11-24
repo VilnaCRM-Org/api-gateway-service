@@ -34,10 +34,10 @@ use service::bootstrap::gateway::policy::{
 };
 use service::bootstrap::{TaskMode, TaskStop, TaskSupervisor};
 
-const BOUND: Duration = Duration::from_secs(20);
+pub(crate) const BOUND: Duration = Duration::from_secs(20);
 const ROLE_KEY: &str = "role/0192f6a0-0000-7000-8000-000000000001";
 
-fn settings(topic: &str) -> KafkaSettings {
+pub(crate) fn settings(topic: &str) -> KafkaSettings {
     KafkaSettings {
         bootstrap_servers: stack_variable("KAFKA_BOOTSTRAP_SERVERS"),
         security: KafkaSecurity::Plaintext,
@@ -51,7 +51,7 @@ fn settings(topic: &str) -> KafkaSettings {
     }
 }
 
-fn unique_topic() -> String {
+pub(crate) fn unique_topic() -> String {
     format!("iam-it-gateway-bootstrap-{}", UuidV7Generator.generate())
 }
 
@@ -108,7 +108,7 @@ async fn create_topic(topic: &str) {
 }
 
 /// Creates the topic and publishes the rows in one relay transaction, within [`BOUND`].
-async fn publish(topic: &str, rows: &[OutboxRow]) {
+pub(crate) async fn publish(topic: &str, rows: &[OutboxRow]) {
     let created = tokio::time::timeout(BOUND, create_topic(topic)).await;
     assert!(created.is_ok(), "the topic was not created in time");
     publish_more(topic, rows).await;
@@ -168,7 +168,10 @@ fn adapters(topic: &str) -> (PolicyAdapters, Arc<AtomicUsize>) {
 }
 
 /// The adapters of a pod on `topic` whose snapshot builder measures time with `boot_clock`.
-fn adapters_on(topic: &str, boot_clock: Arc<dyn BootClock>) -> (PolicyAdapters, Arc<AtomicUsize>) {
+pub(crate) fn adapters_on(
+    topic: &str,
+    boot_clock: Arc<dyn BootClock>,
+) -> (PolicyAdapters, Arc<AtomicUsize>) {
     let captures = Arc::new(AtomicUsize::new(0));
     let log = CountingLog {
         inner: KrafkaPolicyLogTail::bootstrap(settings(topic)),
@@ -263,13 +266,14 @@ fn following_adapters(topic: &str) -> (PolicyAdapters, Arc<AtomicUsize>) {
             retry_delay: Duration::from_millis(100),
             ready_bound: Duration::from_millis(200),
             hard_bound: Duration::from_secs(15),
+            derived_check_interval: Duration::from_secs(1),
         },
     });
     (adapters, captures)
 }
 
 /// Waits until the pod serves `version`, within [`BOUND`].
-async fn serves(adapters: &PolicyAdapters, version: i64) {
+pub(crate) async fn serves(adapters: &PolicyAdapters, version: i64) {
     let expected = PolicyVersion::new(version).unwrap();
     let reached = tokio::time::timeout(BOUND, async {
         while adapters.cell.current().map(|snapshot| snapshot.version()) != Some(expected) {

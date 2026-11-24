@@ -73,6 +73,14 @@ impl Shards {
         self.shards.iter().flat_map(|shard| shard.iter())
     }
 
+    /// The live entries of the shard at `index`; none for an index outside the range.
+    pub(super) fn shard(&self, index: usize) -> impl Iterator<Item = (&StateKey, &Entry)> {
+        self.shards
+            .get(index)
+            .into_iter()
+            .flat_map(|shard| shard.iter())
+    }
+
     /// How many shards were cloned since the last call of [`Self::take_copies`].
     #[cfg(test)]
     pub(super) const fn copies(&self) -> usize {

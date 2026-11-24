@@ -88,3 +88,34 @@ fn the_destructor_of_a_retired_snapshot_runs_on_the_thread_that_reclaims() {
     assert_eq!(cell.last_reclaimed_on(), Some(reclaimer));
     assert_ne!(cell.last_reclaimed_on(), Some(std::thread::current().id()));
 }
+
+#[test]
+fn a_cleared_cell_shows_readers_no_snapshot_until_the_next_publication() {
+    let clock = Arc::new(FakeBootClock::new());
+    let cell = ArcSwapPolicySnapshot::new();
+    cell.publish(data(&clock));
+
+    cell.clear();
+    assert!(cell.current().is_none());
+    assert_eq!(cell.retired(), 0);
+
+    cell.publish(data(&clock));
+    assert!(cell.current().is_some());
+}
+
+#[test]
+fn a_deferred_cell_retires_the_snapshot_it_withdraws() {
+    let clock = Arc::new(FakeBootClock::new());
+    let cell = ArcSwapPolicySnapshot::deferred();
+    cell.publish(data(&clock));
+    let held = cell.current().unwrap();
+
+    cell.clear();
+    cell.clear();
+
+    assert!(cell.current().is_none());
+    assert_eq!(cell.retired(), 1);
+    assert_eq!(held.version(), iam_domain::PolicyVersion::ZERO);
+    drop(held);
+    assert_eq!(cell.reclaim(), 1);
+}

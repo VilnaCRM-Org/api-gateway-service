@@ -212,7 +212,7 @@ impl Applier {
         working.derived_hash = derived_hash;
     }
 
-    fn item_hash(&self, text: &str) -> PolicyDigestValue {
+    pub(in crate::policy_snapshot) fn item_hash(&self, text: &str) -> PolicyDigestValue {
         self.digest.entity_hash(&StateKey::Head, text)
     }
 

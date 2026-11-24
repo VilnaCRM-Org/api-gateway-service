@@ -8,7 +8,9 @@ use test_support::seed::TestRng;
 
 use super::*;
 
+mod derived_audit;
 mod history;
+mod revocation_tombstone;
 mod size;
 mod support;
 

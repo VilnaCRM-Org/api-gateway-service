@@ -65,6 +65,10 @@ pub(super) fn subject_ref(number: u32) -> SubjectRef {
     SubjectRef::user(uuid(offset(1_000, number)))
 }
 
+pub(super) fn subject_key(number: u32) -> StateKey {
+    StateKey::Subject(subject_ref(number))
+}
+
 /// A subject that holds `roles`, or a tombstone when there are none.
 pub(super) fn subject(number: u32, roles: &[u32]) -> Edit {
     let subject = subject_ref(number);

@@ -8,6 +8,7 @@ pub mod builder;
 pub mod matchit_route_table_compiler;
 pub mod snapshot_revocation_view;
 
+mod audit;
 mod data;
 mod derived;
 mod fnv;

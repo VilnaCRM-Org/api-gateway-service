@@ -51,6 +51,15 @@ impl ArcSwapPolicySnapshot {
         }
     }
 
+    /// Withdraws the published snapshot: readers see no snapshot until the next publication, so
+    /// the gateway answers `iam_stale`. The withdrawn snapshot is retired like a replaced one.
+    pub fn clear(&self) {
+        let withdrawn = self.current.swap(None);
+        if let Some(withdrawn) = withdrawn.filter(|_snapshot| self.deferred) {
+            locked(&self.retired).push(withdrawn);
+        }
+    }
+
     /// Frees the retired snapshots that no reader holds any more (strong count 1) on the calling
     /// thread and returns how many it freed; a snapshot a request still reads stays queued.
     pub fn reclaim(&self) -> usize {

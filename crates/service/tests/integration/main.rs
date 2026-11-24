@@ -7,6 +7,8 @@ mod bootstrap;
 #[cfg(test)]
 mod check_config;
 #[cfg(test)]
+mod derived_state;
+#[cfg(test)]
 mod export;
 #[cfg(test)]
 mod gateway;
