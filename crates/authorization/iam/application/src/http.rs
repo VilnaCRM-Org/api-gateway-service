@@ -5,6 +5,7 @@ pub mod access_validation;
 pub mod bulk_operation;
 pub mod dto;
 pub mod extract;
+pub mod global_token_cutoff;
 pub mod graphql_activation;
 pub mod graphql_permission;
 pub mod graphql_spec;
@@ -21,6 +22,7 @@ pub mod role_permission;
 pub mod route;
 pub mod route_configuration;
 pub mod security_audit_event;
+pub mod session_revocation;
 pub mod spec_retirement;
 pub mod upstream;
 pub mod user_role;
@@ -73,6 +75,7 @@ where
         .merge(rate_policy_router())
         .merge(bulk_operation_router())
         .merge(policy_resync_router())
+        .merge(revocation_router())
         .merge(upstream_router())
         .merge(route_router())
         .merge(route_configuration_router())
@@ -186,6 +189,17 @@ where
     IamState: FromRef<S>,
 {
     OpenApiRouter::new().routes(routes!(policy_resync::create))
+}
+
+/// The routes that revoke sessions and set the global token cut-off, merged into [`router`].
+fn revocation_router<S>() -> OpenApiRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+    IamState: FromRef<S>,
+{
+    OpenApiRouter::new()
+        .routes(routes!(session_revocation::create))
+        .routes(routes!(global_token_cutoff::create))
 }
 
 /// The routes of the rate policies, merged into [`router`].

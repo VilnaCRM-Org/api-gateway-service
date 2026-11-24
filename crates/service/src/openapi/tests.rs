@@ -90,6 +90,7 @@ fn documents_exactly_the_twenty_four_operations() {
             "get /api/example_api_resources",
             "post /api/example_api_resources",
             "get /api/example_api_resources/{id}",
+            "post /api/global-token-cutoffs",
             "get /api/graphql-permissions",
             "get /api/graphql-permissions/{id}",
             "get /api/graphql-specs",
@@ -129,6 +130,7 @@ fn documents_exactly_the_twenty_four_operations() {
             "patch /api/routes/{id}",
             "get /api/security-audit-events",
             "get /api/security-audit-events/{id}",
+            "post /api/session-revocations",
             "post /api/token-resolutions",
             "get /api/upstreams",
             "post /api/upstreams",
@@ -875,6 +877,67 @@ fn the_policy_resync_documents_its_responses_headers_and_schemas() {
 }
 
 #[test]
+fn the_revocation_writes_document_their_responses_headers_and_schemas() {
+    let json = json_document();
+
+    for (path, operation_id, request) in [
+        (
+            "/api/session-revocations",
+            "api_session_revocations_post",
+            "RevokeSessionsRequest",
+        ),
+        (
+            "/api/global-token-cutoffs",
+            "api_global_token_cutoffs_post",
+            "SetGlobalTokenCutoffRequest",
+        ),
+    ] {
+        let operation = &json["paths"][path]["post"];
+
+        assert_eq!(operation["operationId"], operation_id);
+        assert_eq!(operation["tags"], json!(["iam"]));
+        assert_eq!(operation["security"], json!([{ "bearerAuth": [] }]));
+        let mut documented: Vec<&str> = operation["responses"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        documented.sort_unstable();
+        assert_eq!(
+            documented,
+            [
+                "201", "202", "400", "401", "403", "413", "415", "422", "default"
+            ]
+        );
+        assert_eq!(
+            operation["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+            format!("#/components/schemas/{request}")
+        );
+        assert_eq!(
+            operation["responses"]["201"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/RevocationResult"
+        );
+        assert!(operation["responses"]["201"]["headers"]["iam-policy-version"].is_object());
+        assert!(operation["responses"]["202"]["headers"]["iam-propagation-status"].is_object());
+        let names: Vec<&str> = operation["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|parameter| parameter["name"].as_str())
+            .collect();
+        assert_eq!(names, ["Idempotency-Key"]);
+    }
+    let request = &json["components"]["schemas"]["RevokeSessionsRequest"];
+    assert_eq!(request["additionalProperties"], false);
+    assert_eq!(request["properties"]["sessionIds"]["maxItems"], 100);
+    assert!(
+        json["components"]["schemas"]["RevocationResult"]["properties"]["policyVersion"]
+            .is_object()
+    );
+}
+
+#[test]
 fn there_is_no_cache_flush_operation_in_the_contract() {
     let json = json_document();
 
@@ -1337,6 +1400,8 @@ fn defines_exactly_the_documented_schemas() {
             "RestPermissionsActivation",
             "ResyncPolicyRequest",
             "RetireSpecRequest",
+            "RevocationResult",
+            "RevokeSessionsRequest",
             "Role",
             "RolePage",
             "RolePermission",
@@ -1354,6 +1419,7 @@ fn defines_exactly_the_documented_schemas() {
             "RouteTraffic",
             "SecurityAuditEvent",
             "SecurityAuditEventPage",
+            "SetGlobalTokenCutoffRequest",
             "SetRolePermissionsRequest",
             "SpecRetirement",
             "TokenResolution",

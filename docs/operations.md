@@ -8,6 +8,7 @@ Runbooks for operating the service and for maintaining the repository that hosts
 - [Health-probe runbook](#health-probe-runbook)
 - [Anti-entropy alerts](#anti-entropy-alerts)
 - [Resync the policy state](#resync-the-policy-state)
+- [Revoke sessions and cut off tokens](#revoke-sessions-and-cut-off-tokens)
 - [The first IAM administrator](#the-first-iam-administrator)
 - [Logs and request ids](#logs-and-request-ids)
 - [Shutdown sequence](#shutdown-sequence)
@@ -252,6 +253,15 @@ Notes:
 - A change that commits while the resync runs is published under the new epoch by its own transaction. A resync of a policy that is changing fast can miss an entity that moved in the order of the listing between two chunks; the anti-entropy task republishes such a key, or run the resync again.
 - A resync is refused with 409 when the policy holds no entity, when the log epoch changed while it started, and when the highest version of the topic is at the end of the range of a policy version.
 - Revocation records (`revocation/...`) are not part of a resync; the revocation story owns their republication and tombstones.
+
+## Revoke sessions and cut off tokens
+
+A security officer who holds `iam:revoke:sessions` revokes the sessions of a user with `POST /api/session-revocations` or the GraphQL mutation `revokeSessions`, and one who holds `iam:revoke:global` sets the global cut-off with `POST /api/global-token-cutoffs` or `setGlobalTokenCutoff` (Story 13.1). Both are audited, and each commits in one versioned transaction its revocation rows with `source = operator` and the revoker, the state records `revocation/session/<sid>`, `revocation/user/<uid>` or `revocation/global`, the event `iam.session.revoked`, `iam.user_tokens.cut_off` or `iam.global_tokens.cut_off`, and the audit record. Once a gateway pod applied that policy version it refuses the tokens.
+
+- A list of `sessionIds` revokes those sessions. An empty or missing list sets the cut-off of the user instead: tokens of the user issued at or before the commit time plus 2 seconds are refused, and a token issued after it is accepted.
+- The global cut-off refuses every token issued at or before the commit time plus 2 seconds. A cut-off never moves back.
+- A revocation record is kept until its prune instant: the later of the revocation time and the cut-off instant, plus the longest `MAX_TOKEN_LIFETIME` ever configured, plus 120 seconds of clock-skew allowance and a 60-second margin. The longest lifetime is kept in the single-row table `iam_token_lifetime_floor` and is raised at startup when the configured `MAX_TOKEN_LIFETIME` is higher; lowering the setting later does not shorten how long records are kept.
+- A repeated `Idempotency-Key` with the same body within 24 hours returns the original result and writes no second record.
 
 ## Logs and request ids
 

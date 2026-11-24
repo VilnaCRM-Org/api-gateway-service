@@ -4,7 +4,10 @@ use iam_domain::{
     AuditAction, HttpMethod, PermissionKey, PermissionKeyKind, ReservedPermission, ServiceScope,
 };
 
-use super::{AUDIT_READ, CallerRule, OperationRules, POLICY_RESYNC, Requirement, VALIDATE_ALL};
+use super::{
+    AUDIT_READ, CallerRule, OperationRules, POLICY_RESYNC, REVOKE_GLOBAL, REVOKE_SESSIONS,
+    Requirement, VALIDATE_ALL,
+};
 use crate::http::{IamState, router, specification_router};
 
 fn rows_of(requirement: fn(Requirement) -> bool) -> Vec<(&'static str, &'static str)> {
@@ -136,7 +139,7 @@ fn a_row_with_fixed_keys_has_no_caller_rule() {
 fn every_other_operation_requires_its_catalogue_key() {
     let catalogue = rows_of(|requirement| requirement == Requirement::Catalogue);
 
-    assert_eq!(catalogue.len(), OperationRules::all().len() - 6);
+    assert_eq!(catalogue.len(), OperationRules::all().len() - 8);
     for rule in OperationRules::all() {
         if rule.requirement == Requirement::Catalogue {
             assert!(rule.requirement.needs_catalogue());
@@ -362,6 +365,41 @@ fn the_policy_resync_needs_the_reserved_key_and_no_catalogue_key_on_both_interfa
         assert_eq!(requirement, Requirement::Reserved(&[POLICY_RESYNC]));
         assert!(!requirement.needs_catalogue());
         assert_eq!(requirement.reserved(), ["iam:policy:resync"]);
+    }
+}
+
+#[test]
+fn the_revocation_writes_need_their_reserved_key_and_no_catalogue_key_on_both_interfaces() {
+    const SESSIONS: &[&str] = &[REVOKE_SESSIONS];
+    const GLOBAL: &[&str] = &[REVOKE_GLOBAL];
+    let cases = [
+        (
+            "/api/session-revocations",
+            "Mutation.revokeSessions",
+            "session.revoke",
+            SESSIONS,
+            "iam:revoke:sessions",
+        ),
+        (
+            "/api/global-token-cutoffs",
+            "Mutation.setGlobalTokenCutoff",
+            "global_token.cut_off",
+            GLOBAL,
+            "iam:revoke:global",
+        ),
+    ];
+
+    for (template, coordinate, action, keys, text) in cases {
+        let rest = OperationRules::find("POST", template).unwrap();
+        let graphql = OperationRules::find_graphql(coordinate).unwrap();
+
+        assert_eq!(rest.action, action);
+        assert_eq!(graphql.action, action);
+        for requirement in [rest.requirement, graphql.requirement] {
+            assert_eq!(requirement, Requirement::Reserved(keys));
+            assert!(!requirement.needs_catalogue());
+            assert_eq!(requirement.reserved(), [text]);
+        }
     }
 }
 

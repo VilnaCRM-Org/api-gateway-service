@@ -672,8 +672,12 @@ type Mutation {
   retireGraphqlSpec(input: RetireGraphqlSpecInput!): SpecRetirement!
   "Retires an active `OpenAPI` specification version: its operations leave the catalogue of the service unless another active version holds them, the next policy version is taken and `iam.openapi_spec.retired` is recorded. A retirement that would orphan grants fails with `ORPHAN_CONFIRMATION_REQUIRED` unless `confirmOrphans` is true; with the confirmation the grants become inactive and `iam.permissions.orphaned` is recorded."
   retireOpenapiSpec(input: RetireOpenapiSpecInput!): SpecRetirement!
+  "Revokes sessions of a user: each listed session gets a revocation record and its state record, the next policy version is committed, and `iam.session.revoked` and an audit record are written in the same transaction. An empty or missing `sessionIds` sets the cut-off of every token of the user to the commit time plus 2 seconds instead and records `iam.user_tokens.cut_off`. Needs `iam:revoke:sessions`. A repeated `idempotencyKey` with the same input within 24 hours returns the original result."
+  revokeSessions(input: RevokeSessionsInput!): RevocationPayload!
   "Revokes an assignment when `expectedVersion` is the current version: it leaves the active listings at once, the next policy version is committed, and `iam.user_role.revoked` and an audit record are written in the same transaction."
   revokeUserRole(input: RevokeUserRoleInput!): RevokeUserRolePayload!
+  "Sets the global token cut-off: every token issued before the commit time plus 2 seconds is refused, the next policy version is committed, and `iam.global_tokens.cut_off` and an audit record are written in the same transaction. A cut-off never moves back. Needs `iam:revoke:global`. A repeated `idempotencyKey` within 24 hours returns the original result."
+  setGlobalTokenCutoff(input: SetGlobalTokenCutoffInput!): RevocationPayload!
   "Replaces the whole grant set of a role when `expectedVersion` is the current version: every key must be in an active catalogue or be one of the four wildcard forms of a service that has a catalogue, and at most 5,000 keys are accepted; unknown keys fail with `VALIDATION_FAILED` and one violation per key. The change increases the version, updates the grant count, takes the next policy version and records `iam.role_permissions.changed` with the added and removed keys; an added wildcard is audited with `coversFutureElements=true`."
   setRolePermissions(input: SetRolePermissionsInput!): Role!
   "Changes the fields of a rate policy that the input names when `expectedVersion` is the current version, increases the version, takes the next policy version and records `iam.rate_policy.updated`."
@@ -1071,6 +1075,28 @@ input RetireOpenapiSpecInput {
   idempotencyKey: String
 }
 
+"The result of a revocation write."
+type RevocationPayload {
+  "What the audit record of the change targets: the first revoked session's revocation, the user of a cut-off, or `current` for the global cut-off."
+  id: ID!
+  "The policy version that the change produced."
+  policyVersion: Int
+  "What the change learned about the publication of its policy version."
+  propagation: Propagation
+}
+
+"Input of the session revocation mutation."
+input RevokeSessionsInput {
+  "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
+  consistency: String
+  "Makes the revocation safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
+  "The sessions to revoke, at most 100, each 1 to 255 visible ASCII characters; an empty or missing list sets the cut-off of every token of the user instead."
+  sessionIds: [String!]! = []
+  "The user whose sessions or tokens are revoked."
+  userId: ID!
+}
+
 "Input of the assignment-revocation mutation."
 input RevokeUserRoleInput {
   "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
@@ -1387,6 +1413,14 @@ type SecurityAuditEventPage {
   items: [SecurityAuditEvent!]!
   "The `after` value of the next, older page; null on the last page."
   nextCursor: String
+}
+
+"Input of the global token cut-off mutation."
+input SetGlobalTokenCutoffInput {
+  "What the write waits for: `PUBLISHED` (the default) returns once Kafka acknowledged the policy version; `PROPAGATED` is refused with `VALIDATION_FAILED` until the gateway pods report their versions."
+  consistency: String
+  "Makes the write safe to repeat for 24 hours: 1 to 255 visible ASCII characters."
+  idempotencyKey: String
 }
 
 "Input of the mutation that replaces the grants of a role."
@@ -1736,6 +1770,12 @@ fn the_sdl_has_the_template_and_iam_operations_and_nothing_else_to_call() {
         "createRestPermissions(input: CreateRestPermissionsInput!): RestPermissionsActivation!"
     ));
     assert!(text.contains("resyncPolicy(input: ResyncPolicyInput!): BulkOperation!"));
+    assert!(text.contains("revokeSessions(input: RevokeSessionsInput!): RevocationPayload!"));
+    assert!(
+        text.contains(
+            "setGlobalTokenCutoff(input: SetGlobalTokenCutoffInput!): RevocationPayload!"
+        )
+    );
     assert!(text.contains("retireGraphqlSpec(input: RetireGraphqlSpecInput!): SpecRetirement!"));
     assert!(text.contains("retireOpenapiSpec(input: RetireOpenapiSpecInput!): SpecRetirement!"));
     assert!(text.contains("updateRole(input: UpdateRoleInput!): Role!"));

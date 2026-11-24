@@ -22,6 +22,7 @@ use crate::persistence::gateway_configuration;
 use crate::persistence::graphql_spec;
 use crate::persistence::openapi_spec;
 use crate::persistence::outbox_listener::OUTBOX_CHANNEL;
+use crate::persistence::revocation_statement;
 use crate::persistence::role::save_within;
 use crate::persistence::security_audit_log::{PgSecurityAuditLog, emit};
 use crate::persistence::state_writer::{StateCapture, Versioned};
@@ -297,6 +298,7 @@ async fn run_statement(
         | ChangeStatement::SaveGateway(_)
         | ChangeStatement::SaveBulkProgress(_)
         | ChangeStatement::StartResync(_)
+        | ChangeStatement::SaveRevocation(_)
         | ChangeStatement::RepublishState(_) => run_aggregate(connection, statement).await,
     }
 }
@@ -320,6 +322,9 @@ async fn run_aggregate(
         }
         ChangeStatement::StartResync(start) => {
             bulk_operation::insert_within(connection, start.operation()).await
+        }
+        ChangeStatement::SaveRevocation(statement) => {
+            revocation_statement::save_within(connection, statement).await
         }
         ChangeStatement::ExpectPolicyVersion(_)
         | ChangeStatement::SaveGraphQlSpec(_)

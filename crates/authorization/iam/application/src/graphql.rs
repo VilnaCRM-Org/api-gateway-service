@@ -12,6 +12,7 @@ pub mod access_validation;
 pub mod authorization;
 pub mod bulk_operation;
 pub mod document_analyzer;
+pub mod global_token_cutoff;
 pub mod graphql_activation;
 pub mod graphql_permission;
 pub mod graphql_spec;
@@ -27,6 +28,7 @@ pub mod route;
 pub mod route_configuration;
 pub mod schema_parser;
 pub mod security_audit_event;
+pub mod session_revocation;
 pub mod spec_retirement;
 pub mod upstream;
 pub mod user_role;
@@ -62,6 +64,7 @@ use access_validation::{
 use bulk_operation::{
     BulkOperationObject, BulkOperationPageObject, bulk_operation_field, bulk_operations_field,
 };
+use global_token_cutoff::{SetGlobalTokenCutoffInput, set_global_token_cutoff_field};
 use graphql_activation::{
     CreateGraphQlPermissionsInput, GraphQlPermissionsActivationObject,
     create_graphql_permissions_field,
@@ -109,6 +112,7 @@ use security_audit_event::{
     SecurityAuditEventFilterInput, SecurityAuditEventObject, SecurityAuditEventPageObject,
     security_audit_event_field, security_audit_events_field,
 };
+use session_revocation::{RevocationPayload, RevokeSessionsInput, revoke_sessions_field};
 use spec_retirement::{
     RetireGraphQlSpecInput, RetireOpenApiSpecInput, SpecRetirementObject,
     retire_graphql_spec_field, retire_openapi_spec_field,
@@ -623,6 +627,28 @@ impl IamMutation {
         input: ResyncPolicyInput,
     ) -> async_graphql::Result<BulkOperationObject> {
         resync_policy_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Revokes sessions of a user: each listed session gets a revocation record and its state record, the next policy version is committed, and `iam.session.revoked` and an audit record are written in the same transaction. An empty or missing `sessionIds` sets the cut-off of every token of the user to the commit time plus 2 seconds instead and records `iam.user_tokens.cut_off`. Needs `iam:revoke:sessions`. A repeated `idempotencyKey` with the same input within 24 hours returns the original result.
+    async fn revoke_sessions(
+        &self,
+        ctx: &Context<'_>,
+        input: RevokeSessionsInput,
+    ) -> async_graphql::Result<RevocationPayload> {
+        revoke_sessions_field(ctx, input)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Sets the global token cut-off: every token issued before the commit time plus 2 seconds is refused, the next policy version is committed, and `iam.global_tokens.cut_off` and an audit record are written in the same transaction. A cut-off never moves back. Needs `iam:revoke:global`. A repeated `idempotencyKey` within 24 hours returns the original result.
+    async fn set_global_token_cutoff(
+        &self,
+        ctx: &Context<'_>,
+        input: SetGlobalTokenCutoffInput,
+    ) -> async_graphql::Result<RevocationPayload> {
+        set_global_token_cutoff_field(ctx, input)
             .await
             .map_err(iam_problem_to_graphql_error)
     }

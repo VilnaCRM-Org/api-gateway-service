@@ -13,8 +13,8 @@ use iam_domain::{
     AssignmentScope, AssignmentState, CatalogueEntryState, CatalogueLayout, ChangeStatement,
     EntityVersion, GrantState, InvalidIamValue, LogEpoch, PolicyDigestValue, PolicyState,
     PolicyVersion, ProjectId, RatePolicyId, RatePolicyState, RepositoryError, RoleId, RoleKind,
-    RoleState, RouteId, RouteState, ServiceName, StateBatch, StateChange, StateKey, StateRow,
-    SubjectRef, SubjectState, UpstreamName, UpstreamState,
+    RoleState, RouteId, RouteState, ServiceName, SessionId, StateBatch, StateChange, StateKey,
+    StateRow, SubjectRef, SubjectState, UpstreamName, UpstreamState,
 };
 use sha2::{Digest as _, Sha256};
 use shared_domain::Uuid;
@@ -24,6 +24,7 @@ use sqlx::types::time::OffsetDateTime;
 use sqlx::{PgConnection, Row as _};
 
 use crate::persistence::rate_policy;
+use crate::persistence::revocation_statement;
 use crate::persistence::role::translate;
 use crate::persistence::route;
 use crate::persistence::upstream;
@@ -202,8 +203,9 @@ async fn read_all(
     Ok(states)
 }
 
-/// An entity whose state a versioned transaction writes: a role, a subject, an upstream, a route or
-/// a rate policy; no other kind of entity is written from these tables.
+/// An entity whose state a versioned transaction writes: a role, a subject, an upstream, a route, a
+/// rate policy, a revoked session or a cut-off; no other kind of entity is written from these
+/// tables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Entity<'key> {
     /// A role with its grants.
@@ -216,6 +218,19 @@ enum Entity<'key> {
     Route(RouteId),
     /// A rate policy.
     RatePolicy(RatePolicyId),
+    /// A revoked session or a cut-off.
+    Revocation(Revocation<'key>),
+}
+
+/// A record of the revocation state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Revocation<'key> {
+    /// A revoked session, named by its record key.
+    Session(&'key SessionId),
+    /// The cut-off of a user.
+    User(Uuid),
+    /// The global cut-off.
+    Global,
 }
 
 /// The entity of `key`, or `None` for a key whose state is not written from these tables.
@@ -226,12 +241,12 @@ const fn entity(key: &StateKey) -> Option<Entity<'_>> {
         StateKey::Upstream(name) => Some(Entity::Upstream(name)),
         StateKey::Route(id) => Some(Entity::Route(*id)),
         StateKey::RatePolicy(id) => Some(Entity::RatePolicy(*id)),
-        StateKey::CatalogueManifest(_)
-        | StateKey::CatalogueChunk { .. }
-        | StateKey::SessionRevocation(_)
-        | StateKey::UserRevocation(_)
-        | StateKey::GlobalRevocation
-        | StateKey::Head => None,
+        StateKey::SessionRevocation(session) => {
+            Some(Entity::Revocation(Revocation::Session(session)))
+        }
+        StateKey::UserRevocation(user) => Some(Entity::Revocation(Revocation::User(*user))),
+        StateKey::GlobalRevocation => Some(Entity::Revocation(Revocation::Global)),
+        StateKey::CatalogueManifest(_) | StateKey::CatalogueChunk { .. } | StateKey::Head => None,
     }
 }
 
@@ -252,6 +267,21 @@ async fn read_entity(
         Entity::RatePolicy(id) => Ok(rate_policy::select_by_id(connection, id)
             .await?
             .map(|parts| PolicyState::RatePolicy(RatePolicyState::of(&parts)))),
+        Entity::Revocation(revocation) => read_revocation(connection, revocation).await,
+    }
+}
+
+/// The state of a revoked session or of a cut-off.
+async fn read_revocation(
+    connection: &mut PgConnection,
+    revocation: Revocation<'_>,
+) -> Result<Option<PolicyState>, RepositoryError> {
+    match revocation {
+        Revocation::Session(session) => {
+            revocation_statement::session_state(connection, session).await
+        }
+        Revocation::User(user) => revocation_statement::user_state(connection, user).await,
+        Revocation::Global => revocation_statement::global_state(connection).await,
     }
 }
 

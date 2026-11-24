@@ -19,6 +19,13 @@ pub const VALIDATE_ALL: &str = "iam:validate:*";
 /// `iam:policy:resync`: the reserved key of the operation that resyncs the policy state.
 pub const POLICY_RESYNC: &str = "iam:policy:resync";
 
+/// `iam:revoke:sessions`: the reserved key of the operation that revokes sessions and cuts off the
+/// tokens of a user.
+pub const REVOKE_SESSIONS: &str = "iam:revoke:sessions";
+
+/// `iam:revoke:global`: the reserved key of the operation that sets the global token cut-off.
+pub const REVOKE_GLOBAL: &str = "iam:revoke:global";
+
 /// `iam:audit:read`: the reserved key of the operations that read the security audit log.
 pub const AUDIT_READ: &str = "iam:audit:read";
 
@@ -257,6 +264,16 @@ const GRAPHQL_RULES: &[GraphQlRule] = &[
         "security_audit.list",
         Requirement::Reserved(&[AUDIT_READ]),
     ),
+    field(
+        "Mutation.revokeSessions",
+        "session.revoke",
+        Requirement::Reserved(&[REVOKE_SESSIONS]),
+    ),
+    field(
+        "Mutation.setGlobalTokenCutoff",
+        "global_token.cut_off",
+        Requirement::Reserved(&[REVOKE_GLOBAL]),
+    ),
     field("Mutation.createRole", "role.create", Requirement::Catalogue),
     field("Mutation.updateRole", "role.update", Requirement::Catalogue),
     field("Mutation.deleteRole", "role.delete", Requirement::Catalogue),
@@ -435,6 +452,18 @@ const RULES: &[OperationRule] = &[
         "/api/policy-resyncs",
         "policy.resync",
         Requirement::Reserved(&[POLICY_RESYNC]),
+    ),
+    row(
+        HttpMethod::Post,
+        "/api/session-revocations",
+        "session.revoke",
+        Requirement::Reserved(&[REVOKE_SESSIONS]),
+    ),
+    row(
+        HttpMethod::Post,
+        "/api/global-token-cutoffs",
+        "global_token.cut_off",
+        Requirement::Reserved(&[REVOKE_GLOBAL]),
     ),
     row(
         HttpMethod::Post,

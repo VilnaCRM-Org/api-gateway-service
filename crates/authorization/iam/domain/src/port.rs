@@ -47,6 +47,7 @@ pub mod singleton_leadership;
 pub mod startup_lock;
 pub mod state_record_codec;
 pub mod task_state_repository;
+pub mod token_lifetime_floor;
 pub mod token_memo;
 pub mod token_repository;
 pub mod upstream_repository;

@@ -58,6 +58,8 @@ mod rest_activation_fixtures;
 mod rest_permission_fixtures;
 pub mod resync_chunks;
 #[cfg(test)]
+mod revocation_fixtures;
+#[cfg(test)]
 mod role_permission_fixtures;
 #[cfg(test)]
 mod route_configuration_fixtures;
@@ -120,6 +122,7 @@ pub use command::resync_policy::{
 };
 pub use command::retire_graphql_spec::{RetireGraphQlSpecCommand, RetireGraphQlSpecCommandHandler};
 pub use command::retire_openapi_spec::{RetireOpenApiSpecCommand, RetireOpenApiSpecCommandHandler};
+pub use command::revoke_sessions::{RevokeSessionsCommand, RevokeSessionsCommandHandler};
 pub use command::revoke_user_role::{
     RevokeUserRoleCommand, RevokeUserRoleCommandHandler, RevokeUserRoleReads,
 };
@@ -127,6 +130,9 @@ pub use command::route_checks::RoutePorts;
 pub use command::run_maintenance::{RunMaintenanceCommand, RunMaintenanceCommandHandler};
 pub use command::seed_iam_gateway::{
     SeedIamGatewayCommand, SeedIamGatewayCommandHandler, SeedMode,
+};
+pub use command::set_global_token_cutoff::{
+    SetGlobalTokenCutoffCommand, SetGlobalTokenCutoffCommandHandler,
 };
 pub use command::set_role_permissions::{
     SetRolePermissionsCommand, SetRolePermissionsCommandHandler, SetRolePermissionsReads,

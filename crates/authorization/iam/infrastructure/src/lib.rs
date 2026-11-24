@@ -52,6 +52,7 @@ pub use persistence::route::PgRouteRepository;
 pub use persistence::security_audit_log::PgSecurityAuditLog;
 pub use persistence::startup_lock::PgStartupLock;
 pub use persistence::task_state::PgTaskStateRepository;
+pub use persistence::token_lifetime_floor::PgTokenLifetimeFloor;
 pub use persistence::unit_of_work::PgIamUnitOfWork;
 pub use persistence::upstream::PgUpstreamRepository;
 pub use persistence::user_role::PgUserRoleRepository;

@@ -339,6 +339,45 @@ Content-Type: application/json
   "variables": { "input": { "reason": "The state topic lost records after a broker failure.", "idempotencyKey": "resync-2027-01-15" } }
 }
 
+### Revoke sessions of a user over REST: each listed session gets a revocation record and its state record revocation/session/<sid>, source operator, with iam.session.revoked and an audit record in the same transaction; an empty or missing sessionIds sets the cut-off of every token of the user to the commit time plus 2 seconds (iam.user_tokens.cut_off); needs iam:revoke:sessions, 201 with the policy version, 403 without the key, 422 for invalid values or a reused Idempotency-Key
+POST {{baseUrl}}/api/session-revocations
+Authorization: Bearer <caller token>
+Content-Type: application/json
+Idempotency-Key: revoke-2027-01-15
+
+{
+  "userId": "0190f2a8-7b3c-7d4e-8f10-1234567890ab",
+  "sessionIds": ["session-1"]
+}
+
+### Revoke sessions of a user over GraphQL: the mutation returns the policy version; a repeated idempotencyKey with the same input returns the original result
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: RevokeSessionsInput!) { revokeSessions(input: $input) { id policyVersion } }",
+  "variables": { "input": { "userId": "0190f2a8-7b3c-7d4e-8f10-1234567890ab", "sessionIds": ["session-1"], "idempotencyKey": "revoke-2027-01-15" } }
+}
+
+### Set the global token cut-off over REST: every token issued before the commit time plus 2 seconds is refused on every gateway pod; the body is an empty object; needs iam:revoke:global, 201 with the policy version, 403 without the key
+POST {{baseUrl}}/api/global-token-cutoffs
+Authorization: Bearer <caller token>
+Content-Type: application/json
+Idempotency-Key: global-cutoff-2027-01-15
+
+{}
+
+### Set the global token cut-off over GraphQL: the mutation returns the policy version
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "mutation ($input: SetGlobalTokenCutoffInput!) { setGlobalTokenCutoff(input: $input) { id policyVersion } }",
+  "variables": { "input": { "idempotencyKey": "global-cutoff-2027-01-15" } }
+}
+
 ### Read the permissions of a role over REST: every grant in key order with its key, kind (rest, gql or reserved), service, active flag and wildcard flag, and the ETag of the role; 404 for an unknown role, 422 for an id that is not a UUID
 GET {{baseUrl}}/api/roles/01a1c6b5-cb86-7134-868a-7608036facfe/permissions
 Authorization: Bearer <caller token>

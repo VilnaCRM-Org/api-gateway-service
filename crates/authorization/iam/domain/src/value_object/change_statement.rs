@@ -6,6 +6,7 @@ use crate::gateway_statement::GatewayStatement;
 use crate::graphql_spec::statement::GraphQlSpecStatement;
 use crate::openapi_spec::statement::OpenApiSpecStatement;
 use crate::resync::{EpochChange, Republication, ResyncStart};
+use crate::revocation::statement::RevocationStatement;
 use crate::role::statement::RoleStatement;
 use crate::state::key::StateKey;
 use crate::user_role::statement::UserRoleStatement;
@@ -59,6 +60,9 @@ pub enum ChangeStatement {
     /// Publish the unchanged state of the named entities and catalogues again under the version of
     /// the change; no entity changes and the digest stays.
     RepublishState(Box<Republication>),
+    /// Record a revoked session or set a user or the global cut-off; the storage keeps the first
+    /// record of a session and never moves a cut-off back.
+    SaveRevocation(Box<RevocationStatement>),
 }
 
 impl ChangeStatement {
@@ -76,7 +80,8 @@ impl ChangeStatement {
             | Self::SaveGateway(_)
             | Self::SaveBulkProgress(_)
             | Self::StartResync(_)
-            | Self::RepublishState(_) => true,
+            | Self::RepublishState(_)
+            | Self::SaveRevocation(_) => true,
         }
     }
 
@@ -97,6 +102,7 @@ impl ChangeStatement {
                 vec![StateKey::Subject(statement.user_role().subject.clone())]
             }
             Self::SaveGateway(statement) => vec![statement.state_key()],
+            Self::SaveRevocation(statement) => vec![statement.state_key()],
             Self::ApplyCatalogue(statement) => {
                 let parts = statement.parts();
                 parts
@@ -129,7 +135,8 @@ impl ChangeStatement {
             | Self::SaveGateway(_)
             | Self::SaveBulkProgress(_)
             | Self::StartResync(_)
-            | Self::RepublishState(_) => None,
+            | Self::RepublishState(_)
+            | Self::SaveRevocation(_) => None,
         }
     }
 
@@ -146,7 +153,8 @@ impl ChangeStatement {
             | Self::ApplyCatalogue(_)
             | Self::SaveGateway(_)
             | Self::SaveBulkProgress(_)
-            | Self::StartResync(_) => &[],
+            | Self::StartResync(_)
+            | Self::SaveRevocation(_) => &[],
         }
     }
 
@@ -163,7 +171,8 @@ impl ChangeStatement {
             | Self::ApplyCatalogue(_)
             | Self::SaveGateway(_)
             | Self::SaveBulkProgress(_)
-            | Self::RepublishState(_) => None,
+            | Self::RepublishState(_)
+            | Self::SaveRevocation(_) => None,
         }
     }
 

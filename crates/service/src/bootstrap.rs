@@ -77,7 +77,10 @@ use iam_application::{
 use iam_application::{GetSecurityAuditEventQueryHandler, GetSecurityAuditEventsQueryHandler};
 use iam_application::{GuardReads, GuardedUnitOfWork};
 use iam_application::{IamAccessGuard, RecordRejectedAttemptCommandHandler};
-use iam_application::{PolicyTopicHead, ResyncPolicyCommandHandler, ResyncPolicyPorts};
+use iam_application::{
+    PolicyTopicHead, ResyncPolicyCommandHandler, ResyncPolicyPorts, RevokeSessionsCommandHandler,
+    SetGlobalTokenCutoffCommandHandler,
+};
 use iam_application::{RegisterOwnSpecsCommand, RegisterOwnSpecsCommandHandler};
 use iam_application::{ResolveSubjectTokenQueryHandler, ResolveTokenQueryHandler};
 use iam_application::{RetireGraphQlSpecCommandHandler, RetireOpenApiSpecCommandHandler};
@@ -90,6 +93,7 @@ use iam_domain::RoleRepository;
 use iam_domain::RouteRepository;
 use iam_domain::SingletonLeadership;
 use iam_domain::StartupLock;
+use iam_domain::TokenLifetimeFloor;
 use iam_domain::UpstreamRepository;
 use iam_domain::UserRoleRepository;
 use iam_domain::{
@@ -119,6 +123,7 @@ use iam_infrastructure::{
 };
 use iam_infrastructure::{
     CachingTokenRepository, MokaTokenMemo, PgRevocationRepository, PgRevocationView,
+    PgTokenLifetimeFloor,
 };
 use iam_infrastructure::{JsonStateRecordCodec, KrafkaPolicyLogTail, PgPolicyStateInventory};
 use iam_infrastructure::{
@@ -231,6 +236,11 @@ pub struct Adapters {
     pub tokens: Arc<dyn TokenRepository>,
     /// Writer and reader of session revocations, cut-offs and consumed User service events.
     pub revocations: Arc<dyn RevocationRepository>,
+    /// The longest `MAX_TOKEN_LIFETIME` ever configured, which sizes how long revocation records
+    /// are kept.
+    pub token_lifetime_floor: Arc<dyn TokenLifetimeFloor>,
+    /// The `MAX_TOKEN_LIFETIME` of this start, raised into the floor at startup.
+    pub max_token_lifetime: Duration,
     /// Health probes in the order database, cache, message broker, Kafka.
     pub probes: Vec<Arc<dyn HealthProbe>>,
     /// Bus the command handlers publish domain events to.
@@ -256,6 +266,9 @@ pub enum BootstrapError {
     /// The startup lock could not be taken.
     #[error("the startup lock could not be taken")]
     Lock(#[source] RepositoryError),
+    /// The floor of the token lifetime could not be raised.
+    #[error("the floor of the token lifetime could not be raised")]
+    TokenLifetimeFloor(#[source] RepositoryError),
     /// IAM's own `OpenAPI` document could not be generated.
     #[error(transparent)]
     OwnDocument(#[from] ExportError),
@@ -319,6 +332,8 @@ impl Adapters {
             rest_permissions: Arc::new(PgRestPermissionRepository::new(pool.clone())),
             tokens: token_repository(config, Arc::clone(&access_tokens), &clock, &pool),
             revocations: Arc::new(PgRevocationRepository::new(pool.clone())),
+            token_lifetime_floor: Arc::new(PgTokenLifetimeFloor::new(pool.clone())),
+            max_token_lifetime: config.tokens.jwt.lifetime.max_lifetime(),
             access_tokens,
             probes: probes(config, pool).await,
             event_bus: event_bus(),
@@ -518,6 +533,27 @@ fn register_rate_policy_commands(
         Arc::clone(&adapters.uuid_generator),
     );
     Ok(bus.register(create)?.register(update)?.register(delete)?)
+}
+
+/// Registers the command handlers of the session revocations and the global token cut-off.
+fn register_revocation_commands(
+    bus: InMemoryCommandBus,
+    adapters: &Adapters,
+    unit_of_work: &Arc<dyn IamUnitOfWork>,
+) -> Result<InMemoryCommandBus, BootstrapError> {
+    let sessions = RevokeSessionsCommandHandler::new(
+        Arc::clone(unit_of_work),
+        Arc::clone(&adapters.token_lifetime_floor),
+        adapters.max_token_lifetime,
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    let global = SetGlobalTokenCutoffCommandHandler::new(
+        Arc::clone(unit_of_work),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    Ok(bus.register(sessions)?.register(global)?)
 }
 
 /// Registers the command handler of the policy resync.
@@ -1055,6 +1091,7 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
     let commands = register_route_commands(commands, adapters, &guarded, max_routes)?;
     let commands = register_rate_policy_commands(commands, adapters, &guarded)?;
     let commands = register_resync_commands(commands, adapters, &guarded)?;
+    let commands = register_revocation_commands(commands, adapters, &guarded)?;
     let commands = register_graphql_spec_commands(commands, adapters, &guarded)?;
     let commands = register_graphql_activation_commands(commands, adapters, &guarded)?;
     let commands = register_openapi_spec_commands(commands, adapters, &guarded)?;
@@ -1114,6 +1151,11 @@ fn registration_buses(adapters: &Adapters) -> Result<Buses, BootstrapError> {
 /// [`BootstrapError::DuplicateHandler`] when a message has two handlers and
 /// [`BootstrapError::Registration`] when the database refuses the registration.
 pub async fn register_iam_specs(adapters: &Adapters) -> Result<(), BootstrapError> {
+    adapters
+        .token_lifetime_floor
+        .raise_to(adapters.max_token_lifetime)
+        .await
+        .map_err(BootstrapError::TokenLifetimeFloor)?;
     let command = RegisterOwnSpecsCommand {
         openapi_document: openapi::iam_document()?,
         graphql_sdl: schema::iam_sdl(),

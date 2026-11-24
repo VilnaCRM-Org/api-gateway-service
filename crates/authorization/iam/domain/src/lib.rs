@@ -178,6 +178,7 @@ pub use port::startup_lock::{
 };
 pub use port::state_record_codec::StateRecordCodec;
 pub use port::task_state_repository::{TaskState, TaskStateRepository};
+pub use port::token_lifetime_floor::TokenLifetimeFloor;
 pub use port::token_memo::{TokenMemo, Verification};
 pub use port::token_repository::TokenRepository;
 pub use port::upstream_repository::{UpstreamPageQuery, UpstreamRepository};
@@ -194,12 +195,14 @@ pub use rejected_attempt::{
 };
 pub use rest_permission::{RestPermission, RestPermissionParts};
 pub use resync::{EpochChange, InventoryEntry, PolicyResynced, Republication, ResyncStart};
+pub use revocation::event::{GlobalTokensCutOff, SessionRevoked, UserTokensCutOff};
 pub use revocation::global_token_cutoff::GlobalTokenCutoff;
 pub use revocation::inbound_event::{InboundEvent, InboundOutcome};
 pub use revocation::prune_policy::{CUTOFF_MARGIN, PRUNE_MARGIN, PrunePolicy, SKEW_ALLOWANCE};
 pub use revocation::revocation_rule::{RevocationRule, RevocationStatus};
 pub use revocation::revocation_source::RevocationSource;
 pub use revocation::session_revocation::SessionRevocation;
+pub use revocation::statement::RevocationStatement;
 pub use revocation::user_token_cutoff::UserTokenCutoff;
 pub use role::event::{RoleCreated, RoleDeleted, RolePermissionsChanged, RoleUpdated};
 pub use role::statement::RoleStatement;

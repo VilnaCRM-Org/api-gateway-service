@@ -434,6 +434,116 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+  /api/global-token-cutoffs:
+    post:
+      tags:
+      - iam
+      summary: Sets the global token cut-off.
+      description: 'Refuses every token issued before the commit time plus 2 seconds, for an emergency key compromise: the cut-off row and its state record `revocation/global` are written, the next policy version is committed, and `iam.global_tokens.cut_off` and an audit record are written in the same transaction. A cut-off never moves back. The operation needs the reserved key `iam:revoke:global`. The body is an empty object. A repeated `Idempotency-Key` within 24 hours returns the original result.'
+      operationId: api_global_token_cutoffs_post
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        description: Makes the write safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetGlobalTokenCutoffRequest'
+        required: true
+      responses:
+        '201':
+          description: The global cut-off was set.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the change record in double quotes.
+            iam-policy-offset:
+              schema:
+                type: string
+              description: The offset at which Kafka stored the `__head` record of the policy version; present when the change was acknowledged.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevocationResult'
+        '202':
+          description: The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the change record in double quotes.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+            iam-propagation-status:
+              schema:
+                type: string
+              description: '`committed_pending_propagation`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevocationResult'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller does not hold `iam:revoke:global`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed, or the idempotency key was used for another request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
   /api/graphql-permissions:
     get:
       tags:
@@ -4107,6 +4217,116 @@ paths:
                 $ref: '#/components/schemas/Problem'
       security:
       - bearerAuth: []
+  /api/session-revocations:
+    post:
+      tags:
+      - iam
+      summary: Revokes sessions of a user.
+      description: 'Revokes the listed sessions of the user: a revocation record and its state record `revocation/session/<sid>` are written with `source = operator`, the revoker and the instant after which they may be pruned, the next policy version is committed, and `iam.session.revoked` and an audit record are written in the same transaction. An empty or missing `sessionIds` sets the cut-off of every token of the user to the commit time plus 2 seconds instead and records `iam.user_tokens.cut_off`. The operation needs the reserved key `iam:revoke:sessions`. A repeated `Idempotency-Key` with the same body within 24 hours returns the original result.'
+      operationId: api_session_revocations_post
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        description: Makes the revocation safe to repeat for 24 hours; 1 to 255 visible ASCII characters.
+        required: false
+        schema:
+          type:
+          - string
+          - 'null'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevokeSessionsRequest'
+        required: true
+      responses:
+        '201':
+          description: The sessions or the tokens of the user were revoked.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the change record in double quotes.
+            iam-policy-offset:
+              schema:
+                type: string
+              description: The offset at which Kafka stored the `__head` record of the policy version; present when the change was acknowledged.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevocationResult'
+        '202':
+          description: The change is committed and its policy version was not acknowledged by Kafka within `PUBLISH_WAIT_TIMEOUT`; it may not be in force on the gateway yet.
+          headers:
+            etag:
+              schema:
+                type: string
+              description: The version of the change record in double quotes.
+            iam-policy-version:
+              schema:
+                type: string
+              description: The policy version that the change produced.
+            iam-propagation-status:
+              schema:
+                type: string
+              description: '`committed_pending_propagation`.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevocationResult'
+        '400':
+          description: Invalid input.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller does not hold `iam:revoke:sessions`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: Request body too large.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '415':
+          description: Unsupported media type.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed, or the idempotency key was used for another request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
   /api/token-resolutions:
     post:
       tags:
@@ -7000,6 +7220,43 @@ components:
             Accepts that grants of keys that leave the catalogue become inactive. Without it, a
             retirement that would orphan grants is refused with 409 and lists them.
       additionalProperties: false
+    RevocationResult:
+      type: object
+      description: The result of a revocation write.
+      required:
+      - id
+      properties:
+        id:
+          type: string
+          description: |-
+            What the audit record of the change targets: the first revoked session's revocation, the
+            user of a cut-off, or `current` for the global cut-off.
+        policyVersion:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: The policy version that the change produced.
+          minimum: 1
+    RevokeSessionsRequest:
+      type: object
+      description: Body of the operation that revokes sessions of a user, or cuts off all of the user's tokens.
+      required:
+      - userId
+      properties:
+        sessionIds:
+          type: array
+          items:
+            type: string
+          description: |-
+            The sessions to revoke, at most 100, each 1 to 255 visible ASCII characters. An empty or
+            missing list sets the cut-off of every token of the user instead.
+          maxItems: 100
+        userId:
+          type: string
+          format: uuid
+          description: The user whose sessions or tokens are revoked.
+      additionalProperties: false
     Role:
       type: object
       description: A role.
@@ -7602,6 +7859,16 @@ components:
           - string
           - 'null'
           description: The `after` value of the next, older page; absent on the last page.
+    SetGlobalTokenCutoffRequest:
+      type: object
+      description: |-
+        Body of the operation that sets the global token cut-off: an empty object, because the cut-off
+        instant is the commit time of the request plus a 2-second margin.
+      additionalProperties:
+        type: string
+      propertyNames:
+        type: string
+      example: {}
     SetRolePermissionsRequest:
       type: object
       description: Body of the operation that replaces the grants of a role.

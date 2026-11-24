@@ -142,13 +142,15 @@ fn the_router_documents_the_role_operations_under_the_iam_tag_behind_the_bearer_
     let configuration = &document.paths.paths["/route-configurations/{host}"];
     assert!(configuration.get.is_some() && configuration.put.is_some());
     assert!(document.paths.paths["/policy-resyncs"].post.is_some());
+    assert!(document.paths.paths["/session-revocations"].post.is_some());
+    assert!(document.paths.paths["/global-token-cutoffs"].post.is_some());
     assert!(document.paths.paths["/security-audit-events"].get.is_some());
     assert!(
         document.paths.paths["/security-audit-events/{id}"]
             .get
             .is_some()
     );
-    assert_eq!(document.paths.paths.len(), 29);
+    assert_eq!(document.paths.paths.len(), 31);
 }
 
 #[test]

@@ -47,6 +47,7 @@ use test_support::singleton_leadership::FakeSingletonLeadership;
 use test_support::startup_lock::FakeStartupLock;
 use test_support::task_state::FakeTaskStateRepository;
 use test_support::token::FakeTokenRepository;
+use test_support::token_lifetime_floor::FakeTokenLifetimeFloor;
 use test_support::unit_of_work::FakeIamUnitOfWork;
 use test_support::upstream::FakeUpstreamRepository;
 use test_support::user_role::FakeUserRoleRepository;
@@ -123,6 +124,8 @@ async fn a_panic_is_one_json_line_with_the_request_id_and_a_500_problem() {
         access_tokens: Arc::new(FakeAccessTokenVerifier::new()),
         tokens: Arc::new(FakeTokenRepository::new()),
         revocations: Arc::new(FakeRevocationRepository::new()),
+        token_lifetime_floor: Arc::new(FakeTokenLifetimeFloor::new()),
+        max_token_lifetime: std::time::Duration::from_mins(15),
         rejected_attempts: Arc::new(BufferedRejectedAttemptLog::new()),
         probes: vec![Arc::new(StubProbe::panicking(Dependency::Database))],
         event_bus: event_bus(),

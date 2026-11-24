@@ -77,7 +77,10 @@ fn only_the_entities_of_the_tables_of_the_change_are_read() {
         Some(Entity::Subject(&subject))
     );
     assert_eq!(entity(&StateKey::Head), None);
-    assert_eq!(entity(&StateKey::GlobalRevocation), None);
+    assert_eq!(
+        entity(&StateKey::GlobalRevocation),
+        Some(Entity::Revocation(Revocation::Global))
+    );
 }
 
 #[test]
@@ -95,5 +98,20 @@ fn an_upstream_a_route_and_a_rate_policy_are_read_from_their_tables() {
     assert_eq!(
         entity(&StateKey::RatePolicy(policy)),
         Some(Entity::RatePolicy(policy))
+    );
+}
+
+#[test]
+fn a_revoked_session_and_a_user_cutoff_are_read_from_the_revocation_tables() {
+    let session = SessionId::new("sid-1").unwrap();
+    let user = Uuid::parse("0192f6a0-0000-7000-8000-0000000000b1").unwrap();
+
+    assert_eq!(
+        entity(&StateKey::SessionRevocation(session.clone())),
+        Some(Entity::Revocation(Revocation::Session(&session)))
+    );
+    assert_eq!(
+        entity(&StateKey::UserRevocation(user)),
+        Some(Entity::Revocation(Revocation::User(user)))
     );
 }

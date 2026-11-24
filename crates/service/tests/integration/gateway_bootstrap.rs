@@ -1,30 +1,37 @@
 //! The bootstrap of a gateway pod against the compose broker (Story 9.3): the pod rebuilds the
 //! policy from the state topic under the bootstrap principal, publishes the version before an
 //! incomplete trailing version, and stays not started after one retry when a record carries a
-//! version above the highest complete head.
+//! version above the highest complete head. Story 9.4 adds the tail: a pod that follows the topic
+//! applies the versions that arrive after its bootstrap in order and ignores a version that a relay
+//! takeover published again, without a fence and without a rebootstrap.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use iam_domain::{
-    ConfigGates, FramedRecord, LogEpoch, OutboxKind, OutboxRow, PolicyBootstrapLog,
+    BootClock, ConfigGates, FramedRecord, LogEpoch, OutboxKind, OutboxRow, PolicyBootstrapLog,
     PolicyDigestValue, PolicyHead, PolicyLogProducer as _, PolicyLogRecord, PolicyLogTailError,
     PolicyState, PolicyVersion, PolicyView as _, RelayEpoch, StateRecordCodec as _,
 };
 use iam_infrastructure::{
     JsonStateRecordCodec, KafkaSecurity, KafkaSettings, KrafkaPolicyLogProducer,
-    KrafkaPolicyLogTail, RelayMode,
+    KrafkaPolicyLogTail, LinuxBootClock, RelayMode,
 };
 use krafka::Kafka;
 use krafka::admin::{CreateTopicsOptions, NewTopic};
 use shared_domain::UuidGenerator as _;
+use shared_infrastructure::clock::SystemClock;
 use shared_infrastructure::id::UuidV7Generator;
 use test_support::boot_clock::FakeBootClock;
+use test_support::rng::FakeRng;
+use test_support::topic_inspector::FakeTopicInspector;
 use tokio::sync::watch;
 
 use crate::support::stack_variable;
-use service::bootstrap::gateway::policy::{PolicyAdapters, start_policy};
+use service::bootstrap::gateway::policy::{
+    PolicyAdapters, TailAdapters, TailSettings, start_policy,
+};
 use service::bootstrap::{TaskMode, TaskStop, TaskSupervisor};
 
 const BOUND: Duration = Duration::from_secs(20);
@@ -102,12 +109,18 @@ async fn create_topic(topic: &str) {
 
 /// Creates the topic and publishes the rows in one relay transaction, within [`BOUND`].
 async fn publish(topic: &str, rows: &[OutboxRow]) {
+    let created = tokio::time::timeout(BOUND, create_topic(topic)).await;
+    assert!(created.is_ok(), "the topic was not created in time");
+    publish_more(topic, rows).await;
+}
+
+/// Publishes the rows to an existing topic in one relay transaction, within [`BOUND`].
+async fn publish_more(topic: &str, rows: &[OutboxRow]) {
     let records: Vec<_> = rows
         .iter()
         .map(|row| PolicyLogRecord::of(row, RelayEpoch::new(1).unwrap()))
         .collect();
     let published = tokio::time::timeout(BOUND, async {
-        create_topic(topic).await;
         KrafkaPolicyLogProducer::new(
             &settings(topic),
             RelayMode::Transactional {
@@ -151,15 +164,17 @@ impl PolicyBootstrapLog for CountingLog {
 }
 
 fn adapters(topic: &str) -> (PolicyAdapters, Arc<AtomicUsize>) {
+    adapters_on(topic, Arc::new(FakeBootClock::new()))
+}
+
+/// The adapters of a pod on `topic` whose snapshot builder measures time with `boot_clock`.
+fn adapters_on(topic: &str, boot_clock: Arc<dyn BootClock>) -> (PolicyAdapters, Arc<AtomicUsize>) {
     let captures = Arc::new(AtomicUsize::new(0));
     let log = CountingLog {
         inner: KrafkaPolicyLogTail::bootstrap(settings(topic)),
         captures: Arc::clone(&captures),
     };
-    (
-        PolicyAdapters::with(Arc::new(log), Arc::new(FakeBootClock::new())),
-        captures,
-    )
+    (PolicyAdapters::with(Arc::new(log), boot_clock), captures)
 }
 
 /// Bootstraps a pod on `topic` and returns the published version, if the pod started.
@@ -227,4 +242,87 @@ async fn a_record_above_the_highest_head_leaves_the_pod_not_started_after_one_re
 
     assert_eq!(version, None);
     assert_eq!(captures, 2, "one first attempt and exactly one retry");
+}
+
+/// A pod that bootstraps and then follows `topic` in tail mode. Its snapshot builder runs on the
+/// boot clock of the host: the builder publishes the versions of the tail once its publish interval
+/// has passed, which a clock that never moves would never let happen.
+fn following_adapters(topic: &str) -> (PolicyAdapters, Arc<AtomicUsize>) {
+    let (adapters, captures) = adapters_on(topic, Arc::new(LinuxBootClock));
+    let mut tail_settings = settings(topic);
+    tail_settings.client_id = "iam-gateway-integration".to_owned();
+    let adapters = adapters.following(TailAdapters {
+        log: Arc::new(KrafkaPolicyLogTail::tail(
+            tail_settings,
+            Duration::from_millis(100),
+        )),
+        inspector: Arc::new(FakeTopicInspector::passing()),
+        clock: Arc::new(SystemClock),
+        rng: Arc::new(FakeRng::seeded(1)),
+        settings: TailSettings {
+            retry_delay: Duration::from_millis(100),
+            ready_bound: Duration::from_millis(200),
+            hard_bound: Duration::from_secs(15),
+        },
+    });
+    (adapters, captures)
+}
+
+/// Waits until the pod serves `version`, within [`BOUND`].
+async fn serves(adapters: &PolicyAdapters, version: i64) {
+    let expected = PolicyVersion::new(version).unwrap();
+    let reached = tokio::time::timeout(BOUND, async {
+        while adapters.cell.current().map(|snapshot| snapshot.version()) != Some(expected) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(reached.is_ok(), "the pod did not reach version {version}");
+}
+
+#[tokio::test]
+async fn a_pod_in_tail_mode_applies_the_versions_after_its_bootstrap_in_order() {
+    let topic = unique_topic();
+    publish(&topic, &[empty_head(&topic, 1)]).await;
+    let (adapters, captures) = following_adapters(&topic);
+    let (stop, stopping) = watch::channel(false);
+    let mut tasks = TaskSupervisor::new(TaskMode::Test, stopping);
+    let death = start_policy(&adapters, &mut tasks).unwrap();
+    serves(&adapters, 1).await;
+
+    publish_more(&topic, &[empty_head(&topic, 2), empty_head(&topic, 3)]).await;
+    serves(&adapters, 3).await;
+
+    stop.send_replace(true);
+    assert_eq!(tasks.stop(BOUND).await, TaskStop::Drained);
+    drop(death);
+    assert_eq!(
+        captures.load(Ordering::SeqCst),
+        1,
+        "the pod never rebootstrapped"
+    );
+}
+
+#[tokio::test]
+async fn versions_published_again_after_a_relay_takeover_are_ignored_without_a_fence() {
+    let topic = unique_topic();
+    publish(&topic, &[empty_head(&topic, 1), empty_head(&topic, 2)]).await;
+    let (adapters, captures) = following_adapters(&topic);
+    let (stop, stopping) = watch::channel(false);
+    let mut tasks = TaskSupervisor::new(TaskMode::Test, stopping);
+    let death = start_policy(&adapters, &mut tasks).unwrap();
+    serves(&adapters, 2).await;
+
+    publish_more(&topic, &[empty_head(&topic, 1), empty_head(&topic, 2)]).await;
+    publish_more(&topic, &[empty_head(&topic, 3)]).await;
+    serves(&adapters, 3).await;
+
+    stop.send_replace(true);
+    assert_eq!(tasks.stop(BOUND).await, TaskStop::Drained);
+    drop(death);
+    assert_eq!(
+        captures.load(Ordering::SeqCst),
+        1,
+        "the pod never rebootstrapped"
+    );
 }

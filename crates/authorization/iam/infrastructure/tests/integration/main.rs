@@ -44,6 +44,8 @@ mod repository;
 #[cfg(test)]
 mod revocation_repository;
 #[cfg(test)]
+mod revocation_statements;
+#[cfg(test)]
 mod role_repository;
 #[cfg(test)]
 mod security_audit_log;
@@ -55,6 +57,8 @@ mod singleton_leadership;
 mod startup_lock;
 #[cfg(test)]
 mod state_rows;
+#[cfg(test)]
+mod token_lifetime_floor;
 #[cfg(test)]
 mod token_resolution;
 #[cfg(test)]

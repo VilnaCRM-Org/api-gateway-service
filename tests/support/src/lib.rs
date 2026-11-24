@@ -47,6 +47,7 @@ pub mod startup_lock;
 pub mod task_state;
 pub mod tls;
 pub mod token;
+pub mod token_lifetime_floor;
 pub mod topic_inspector;
 pub mod unit_of_work;
 pub mod upstream;
