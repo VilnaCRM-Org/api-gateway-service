@@ -249,8 +249,8 @@ pub struct TlsFiles {
     pub key: PathBuf,
 }
 
-/// The validated configuration of `gateway` and of `check-config --mode gateway`: no database,
-/// queue or Kafka setting.
+/// The validated configuration of `gateway` and of `check-config --mode gateway`: no database or
+/// queue setting; the Kafka settings are those of the bootstrap connection of the pod.
 #[derive(Debug, Clone)]
 pub struct GatewayConfig {
     /// Deployment environment.
@@ -276,6 +276,9 @@ pub struct GatewayConfig {
     pub pod_namespace: Option<String>,
     /// How the endpoints of the upstreams are discovered and preferred by zone.
     pub endpoints: EndpointSettings,
+    /// The state topic and the connection that reads it, under the principal
+    /// `iam-gateway-bootstrap` (`KAFKA_BOOTSTRAP_SASL_USERNAME`, `KAFKA_BOOTSTRAP_SASL_PASSWORD`).
+    pub kafka: KafkaSettings,
 }
 
 /// How the gateway discovers the endpoints of its upstreams (`UPSTREAM_DISCOVERY`).
@@ -323,15 +326,14 @@ impl GatewayConfig {
         let pod_namespace =
             collector.collect("POD_NAMESPACE", optional(args.pod_namespace.as_deref()));
         let endpoints = endpoint_settings(&mut collector, args);
-        match (app_env, log_level, grace, tokens, listeners, tls, endpoints) {
+        let kafka = gateway_kafka(&mut collector, args, app_env);
+        match (
+            (app_env, log_level, grace, tokens),
+            (listeners, tls, endpoints, kafka),
+        ) {
             (
-                Some(app_env),
-                Some(log_level),
-                Some(shutdown_grace_period),
-                Some(tokens),
-                Some(listeners),
-                Some(tls),
-                Some(endpoints),
+                (Some(app_env), Some(log_level), Some(shutdown_grace_period), Some(tokens)),
+                (Some(listeners), Some(tls), Some(endpoints), Some(kafka)),
             ) if collector.problems.is_empty() => Ok(Self {
                 app_env,
                 log_level,
@@ -344,10 +346,56 @@ impl GatewayConfig {
                 pod_name: pod_name.flatten(),
                 pod_namespace: pod_namespace.flatten(),
                 endpoints,
+                kafka,
             }),
             _ => Err(ConfigErrors(collector.problems)),
         }
     }
+}
+
+/// The placeholder that stands for a bootstrap credential that is missing, so that the shared
+/// parser reports the other Kafka variables without naming a control-plane variable twice. The
+/// configuration is refused whenever it is used.
+const MISSING_CREDENTIAL: &str = "missing";
+
+/// The Kafka variables of the gateway: the control-plane connection variables, read under the
+/// principal `iam-gateway-bootstrap`, whose `KAFKA_BOOTSTRAP_SASL_USERNAME` and
+/// `KAFKA_BOOTSTRAP_SASL_PASSWORD` `SASL_SSL` requires (the control-plane principal is not the
+/// gateway's). `KAFKA_CLIENT_ID` is not read: the client id is the name of the principal.
+fn gateway_kafka(
+    collector: &mut Collector,
+    args: &GatewayArgs,
+    app_env: Option<AppEnv>,
+) -> Option<KafkaSettings> {
+    let mut forwarded = args.service.kafka.clone();
+    forwarded.client_id = None;
+    let mut principal = (String::new(), KafkaSecret::new(String::new()));
+    if matches!(
+        security_protocol(forwarded.security_protocol.as_deref()),
+        Ok(Protocol::SaslSsl)
+    ) {
+        principal = bootstrap_principal(collector, args);
+        forwarded.sasl_username = Some(MISSING_CREDENTIAL.to_owned());
+        forwarded.sasl_password = Some(MISSING_CREDENTIAL.to_owned());
+    }
+    let settings = kafka(collector, &forwarded, app_env)?;
+    Some(settings.bootstrap_principal(principal.0, principal.1))
+}
+
+/// `KAFKA_BOOTSTRAP_SASL_USERNAME` and `KAFKA_BOOTSTRAP_SASL_PASSWORD`: both required.
+fn bootstrap_principal(collector: &mut Collector, args: &GatewayArgs) -> (String, KafkaSecret) {
+    let username = collector.collect(
+        "KAFKA_BOOTSTRAP_SASL_USERNAME",
+        required(args.kafka_bootstrap_sasl_username.as_deref()),
+    );
+    let password = collector.collect(
+        "KAFKA_BOOTSTRAP_SASL_PASSWORD",
+        required(args.kafka_bootstrap_sasl_password.as_deref()),
+    );
+    (
+        username.unwrap_or_default(),
+        KafkaSecret::new(password.unwrap_or_default()),
+    )
 }
 
 /// `UPSTREAM_DISCOVERY`, `UPSTREAM_STATIC_ENDPOINTS_FILE`, `UPSTREAM_ZONE_AWARE` and

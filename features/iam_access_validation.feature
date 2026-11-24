@@ -4,7 +4,7 @@ Feature: IAM access validation
   I want to ask IAM whether a subject may perform a REST operation, run a GraphQL document or hold permission keys
 
   Scenario Outline: A check is decided the same way over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Invoice reader" that grants "rest:billing:GET /invoices/{}"
     And a subject token of a user in session "e2e-validate-1"
     When POST request is sent to "/api/openapi-specs" with body:
@@ -46,7 +46,7 @@ Feature: IAM access validation
       | service    | shipping | GET    | /parcels          | be a deny with reason "unknown_service"                  |
 
   Scenario Outline: A refused token is a deny with its reason over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And <subject token>
     When POST request is sent to "/api/access-validations" with body:
       """
@@ -68,7 +68,7 @@ Feature: IAM access validation
       | an empty subject token                                         | token_missing |
 
   Scenario: A token of a revoked session is a deny with token_revoked over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a subject token of a user in session "e2e-validate-3"
     And the session "e2e-validate-3" is revoked
     When POST request is sent to "/api/access-validations" with body:
@@ -85,7 +85,7 @@ Feature: IAM access validation
     And no response should contain the subject token
 
   Scenario: Permission keys are decided by project scope over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Invoice reader" that grants "rest:billing:GET /invoices"
     And a subject token of a user in session "e2e-validate-4"
     When POST request is sent to "/api/openapi-specs" with body:
@@ -136,7 +136,7 @@ Feature: IAM access validation
     And both access validations should deny "rest:billing:GET /invoices"
 
   Scenario: An unknown key and a key of another service are denied as unknown operations over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a subject token of a user in session "e2e-validate-5"
     When POST request is sent to "/api/openapi-specs" with body:
       """
@@ -161,7 +161,7 @@ Feature: IAM access validation
     And both access validations should deny "rest:billing:GET /nothing"
 
   Scenario: A revoked assignment is denied at once over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Invoice reader" that grants "rest:billing:GET /invoices"
     And a subject token of a user in session "e2e-validate-6"
     When POST request is sent to "/api/openapi-specs" with body:
@@ -199,7 +199,7 @@ Feature: IAM access validation
     And both access validations should be a deny with reason "permission_missing"
 
   Scenario: A deleted role is denied at once over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Invoice reader" that grants "rest:billing:GET /invoices"
     And a subject token of a user in session "e2e-validate-7"
     When POST request is sent to "/api/openapi-specs" with body:
@@ -232,7 +232,7 @@ Feature: IAM access validation
     And both access validations should be a deny with reason "permission_missing"
 
   Scenario: A request with no target form or two target forms is refused over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a subject token of a user in session "e2e-validate-8"
     When POST request is sent to "/api/access-validations" with body:
       """
@@ -258,7 +258,7 @@ Feature: IAM access validation
     And no response should contain the subject token
 
   Scenario: More than 100 permission keys are refused over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a subject token of a user in session "e2e-validate-9"
     When a check of 101 permission keys is sent over REST and GraphQL
     Then the response status code should be 200
@@ -269,7 +269,7 @@ Feature: IAM access validation
     And the GraphQL response should have no errors
 
   Scenario: A minimum policy version above the current one is refused over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a subject token of a user in session "e2e-validate-10"
     When POST request is sent to "/api/access-validations" with body:
       """
@@ -300,7 +300,7 @@ Feature: IAM access validation
     And no response should contain the subject token
 
   Scenario: A document is denied as a whole when one coordinate is missing, listing every denied coordinate, over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Invoice reader" that grants "gql:billing:Query.invoice"
     And a subject token of a user in session "e2e-validate-12"
     When POST request is sent to "/api/graphql-specs" with body:
@@ -334,7 +334,7 @@ Feature: IAM access validation
     And no response should contain the subject token
 
   Scenario: A document is allowed when the subject holds every coordinate it selects over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Invoice reader" that grants "gql:billing:Query.invoice, gql:billing:Invoice.id, gql:billing:Invoice.total"
     And a subject token of a user in session "e2e-validate-13"
     When POST request is sent to "/api/graphql-specs" with body:
@@ -367,7 +367,7 @@ Feature: IAM access validation
     And no response should contain the subject token
 
   Scenario: A document over a limit is a deny with limits_exceeded over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a subject token of a user in session "e2e-validate-14"
     When POST request is sent to "/api/graphql-specs" with body:
       """
@@ -389,7 +389,7 @@ Feature: IAM access validation
     And both access validations should be a deny with reason "permission_missing"
 
   Scenario: A newly activated GraphQL version is evaluated at once over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a subject token of a user in session "e2e-validate-15"
     When POST request is sent to "/api/graphql-specs" with body:
       """
@@ -441,7 +441,7 @@ Feature: IAM access validation
     And both access validations should be an allow for every project
 
   Scenario: A batch of mixed checks is decided in request order over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Invoice reader" that grants "rest:billing:GET /invoices/{}"
     And a subject token of a user in session "e2e-validate-16"
     When POST request is sent to "/api/openapi-specs" with body:
@@ -467,7 +467,7 @@ Feature: IAM access validation
     And no response should contain the subject token
 
   Scenario Outline: A batch of no check or of too many is refused over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a subject token of a user in session "e2e-validate-17"
     When a batch of <count> checks is sent over REST and GraphQL
     Then the REST status of the check should be 422
@@ -479,7 +479,7 @@ Feature: IAM access validation
       | 101   |
 
   Scenario: A batch of one hundred checks over two credentials is decided in request order
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Invoice reader" that grants "rest:billing:GET /invoices/{}"
     And a subject token of a user in session "e2e-validate-18"
     When POST request is sent to "/api/openapi-specs" with body:

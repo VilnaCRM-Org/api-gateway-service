@@ -9,6 +9,7 @@
 //! second.
 
 pub mod access_validation;
+pub mod authorization;
 pub mod document_analyzer;
 pub mod graphql_activation;
 pub mod graphql_permission;
@@ -88,6 +89,7 @@ use user_role::{
     revoke_user_role_field, update_user_role_field, user_role_field, user_roles_field,
 };
 
+pub use authorization::IamAuthorizationExtension;
 pub use document_analyzer::AsyncGraphQlDocumentAnalyzer;
 pub use schema_parser::AsyncGraphQlSchemaParser;
 

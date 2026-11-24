@@ -3,15 +3,20 @@
 //! The reader is a consumer without a group that assigns partition 0 by hand and reads
 //! `read_committed`, so a record of a transaction that did not commit is never seen. It never
 //! commits an offset. Every read seeks to its own start, polls until the end of the range or the
-//! request timeout, and returns at most [`TAIL_READ_LIMIT`] records. Story 9.3 adds the bootstrap
-//! principal, the tail mode and the reseek of the gateway.
+//! request timeout, and returns at most [`TAIL_READ_LIMIT`] records.
+//!
+//! The same adapter serves the bootstrap of a gateway pod (Story 9.3): [`KrafkaPolicyLogTail::bootstrap`]
+//! opens it under the principal `iam-gateway-bootstrap` with the client id of the same name, it
+//! never resets an offset by itself, and [`PolicyBootstrapLog`] returns the records with their
+//! whole framing. The tail mode and the reseek of the gateway follow in Story 9.4.
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use iam_domain::{
-    PolicyLogTail, PolicyLogTailError, PolicyVersion, RelayEpoch, STATE_PARTITION, TAIL_READ_LIMIT,
-    TailRecord,
+    FramedRecord, LogEpoch, PolicyBootstrapLog, PolicyDigestValue, PolicyLogTail,
+    PolicyLogTailError, PolicyVersion, RelayEpoch, STATE_PARTITION, StateKey, TAIL_READ_LIMIT,
+    TailRecord, VersionedRecord,
 };
 use krafka::KrafkaError;
 use krafka::consumer::{AutoOffsetReset, Consumer, ConsumerRecord, IsolationLevel};
@@ -33,6 +38,7 @@ struct ReadTimedOut;
 /// A failed read drops the consumer, so the next read opens a new one.
 pub struct KrafkaPolicyLogTail {
     settings: KafkaSettings,
+    reset: AutoOffsetReset,
     consumer: Mutex<Option<Arc<Consumer>>>,
 }
 
@@ -55,6 +61,19 @@ impl KrafkaPolicyLogTail {
     pub const fn new(settings: KafkaSettings) -> Self {
         Self {
             settings,
+            reset: AutoOffsetReset::Earliest,
+            consumer: Mutex::new(None),
+        }
+    }
+
+    /// A reader for the bootstrap of a gateway pod. `settings` carry the bootstrap principal (see
+    /// [`KafkaSettings::bootstrap_principal`]); the reader assigns partition 0, reads
+    /// `read_committed` and never resets an offset by itself: every read seeks to its own start.
+    #[must_use]
+    pub const fn bootstrap(settings: KafkaSettings) -> Self {
+        Self {
+            settings,
+            reset: AutoOffsetReset::None,
             consumer: Mutex::new(None),
         }
     }
@@ -64,7 +83,7 @@ impl KrafkaPolicyLogTail {
         if let Some(consumer) = open {
             return Ok(consumer);
         }
-        let consumer = Arc::new(open_consumer(&self.settings).await?);
+        let consumer = Arc::new(open_consumer(&self.settings, self.reset).await?);
         *locked(&self.consumer) = Some(Arc::clone(&consumer));
         Ok(consumer)
     }
@@ -95,7 +114,17 @@ impl KrafkaPolicyLogTail {
     }
 
     async fn range(&self, from: i64, up_to: i64) -> Result<Vec<TailRecord>, PolicyLogTailError> {
-        let read = self.collect(from, up_to).await;
+        self.converted(from, up_to, record_of).await
+    }
+
+    /// The records of `from..up_to` converted by `convert`; a failed read drops the consumer.
+    async fn converted<T>(
+        &self,
+        from: i64,
+        up_to: i64,
+        convert: Convert<T>,
+    ) -> Result<Vec<T>, PolicyLogTailError> {
+        let read = self.collect(from, up_to, convert).await;
         if read.is_err() {
             self.release().await;
         }
@@ -103,7 +132,12 @@ impl KrafkaPolicyLogTail {
     }
 
     /// The records of `from..min(up_to, watermark)`, at most [`TAIL_READ_LIMIT`].
-    async fn collect(&self, from: i64, up_to: i64) -> Result<Vec<TailRecord>, PolicyLogTailError> {
+    async fn collect<T>(
+        &self,
+        from: i64,
+        up_to: i64,
+        convert: Convert<T>,
+    ) -> Result<Vec<T>, PolicyLogTailError> {
         let end = up_to.min(self.high_watermark().await.map_err(unavailable)?);
         if from >= end {
             return Ok(Vec::new());
@@ -122,7 +156,7 @@ impl KrafkaPolicyLogTail {
                 .poll(POLL_TIMEOUT)
                 .await
                 .map_err(into_unavailable)?;
-            take_range(&mut records, polled, from, end)?;
+            take_converted(&mut records, polled, (from, end), convert)?;
             let position = consumer
                 .position(&self.settings.policy_topic, STATE_PARTITION)
                 .await;
@@ -146,10 +180,7 @@ fn log_unclosed(error: &KrafkaError) {
 
 /// The records of a finished read, at most [`TAIL_READ_LIMIT`]; a read that did not finish within
 /// the request timeout is unavailable.
-fn completed(
-    mut records: Vec<TailRecord>,
-    done: bool,
-) -> Result<Vec<TailRecord>, PolicyLogTailError> {
+fn completed<T>(mut records: Vec<T>, done: bool) -> Result<Vec<T>, PolicyLogTailError> {
     if !done {
         return Err(unavailable(Box::new(ReadTimedOut)));
     }
@@ -172,27 +203,34 @@ fn finished(count: usize, position: Option<i64>, end: i64) -> bool {
     count >= TAIL_READ_LIMIT || position.is_some_and(|next| next >= end)
 }
 
-/// Adds the records of `polled` that lie in `from..end` to `records`.
-fn take_range(
-    records: &mut Vec<TailRecord>,
+/// How a consumed record becomes the record a port returns.
+type Convert<T> = fn(&ConsumerRecord) -> Result<T, PolicyLogTailError>;
+
+/// Adds the records of `polled` that lie in `range`, converted, to `records`.
+fn take_converted<T>(
+    records: &mut Vec<T>,
     polled: Vec<ConsumerRecord>,
-    from: i64,
-    end: i64,
+    range: (i64, i64),
+    convert: Convert<T>,
 ) -> Result<(), PolicyLogTailError> {
+    let (from, end) = range;
     for record in polled {
         if record.offset >= from && record.offset < end {
-            records.push(record_of(&record)?);
+            records.push(convert(&record)?);
         }
     }
     Ok(())
 }
 
-async fn open_consumer(settings: &KafkaSettings) -> Result<Consumer, KrafkaError> {
+async fn open_consumer(
+    settings: &KafkaSettings,
+    reset: AutoOffsetReset,
+) -> Result<Consumer, KrafkaError> {
     let kafka = builder(settings, authenticated(settings)).connect().await?;
     let consumer = kafka
         .consumer_without_group()
         .isolation_level(IsolationLevel::ReadCommitted)
-        .auto_offset_reset(AutoOffsetReset::Earliest)
+        .auto_offset_reset(reset)
         .enable_auto_commit(false)
         .max_poll_records(i32::try_from(TAIL_READ_LIMIT).unwrap_or(i32::MAX))
         .build()
@@ -235,6 +273,42 @@ pub(super) fn record_of(record: &ConsumerRecord) -> Result<TailRecord, PolicyLog
     })
 }
 
+/// The framed record of a consumed record: the tail record and the headers that frame its version.
+///
+/// # Errors
+///
+/// [`PolicyLogTailError::Malformed`] for a record that is malformed as a tail record, whose key is
+/// not a state key, or that lacks `iam-seq`, `iam-count`, `iam-digest-after` or `iam-log-epoch` or
+/// carries a value of them that does not parse.
+pub(super) fn framed_of(record: &ConsumerRecord) -> Result<FramedRecord, PolicyLogTailError> {
+    let tail = record_of(record)?;
+    let malformed = || PolicyLogTailError::Malformed {
+        offset: record.offset,
+    };
+    let key = StateKey::parse(&tail.key).map_err(|_invalid| malformed())?;
+    let count = |name: &str| -> Option<u32> { record.header_str(name)?.parse().ok() };
+    let digest_after = record
+        .header_str("iam-digest-after")
+        .and_then(|hex| PolicyDigestValue::from_hex(hex).ok());
+    let log_epoch = record
+        .header_str("iam-log-epoch")
+        .and_then(|text| text.parse().ok())
+        .and_then(|value| LogEpoch::new(value).ok());
+    Ok(FramedRecord {
+        offset: tail.offset,
+        record: VersionedRecord {
+            key,
+            payload: tail.payload,
+            version: tail.version,
+            seq: count("iam-seq").ok_or_else(malformed)?,
+            count: count("iam-count").ok_or_else(malformed)?,
+            digest_after: digest_after.ok_or_else(malformed)?,
+            log_epoch: log_epoch.ok_or_else(malformed)?,
+            relay_epoch: tail.relay_epoch,
+        },
+    })
+}
+
 fn unavailable(error: BoxError) -> PolicyLogTailError {
     PolicyLogTailError::Unavailable(error)
 }
@@ -260,6 +334,25 @@ impl PolicyLogTail for KrafkaPolicyLogTail {
     async fn read_at(&self, offset: i64) -> Result<Option<TailRecord>, PolicyLogTailError> {
         let records = self.range(offset, offset.saturating_add(1)).await?;
         Ok(records.into_iter().find(|record| record.offset == offset))
+    }
+
+    async fn close(&self) {
+        self.release().await;
+    }
+}
+
+#[async_trait::async_trait]
+impl PolicyBootstrapLog for KrafkaPolicyLogTail {
+    async fn stable_end(&self) -> Result<i64, PolicyLogTailError> {
+        self.checked_watermark().await
+    }
+
+    async fn read_framed(
+        &self,
+        from: i64,
+        up_to: i64,
+    ) -> Result<Vec<FramedRecord>, PolicyLogTailError> {
+        self.converted(from, up_to, framed_of).await
     }
 
     async fn close(&self) {

@@ -337,6 +337,21 @@ pub struct GatewayArgs {
     /// `iam-gateway-peers` `EndpointSlices`.
     #[arg(long = "gateway-zone", env = "GATEWAY_ZONE", hide_env_values = true)]
     pub gateway_zone: Option<String>,
+    /// SASL user name of the bootstrap principal `iam-gateway-bootstrap` (required with
+    /// `SASL_SSL`).
+    #[arg(
+        long = "kafka-bootstrap-sasl-username",
+        env = "KAFKA_BOOTSTRAP_SASL_USERNAME",
+        hide_env_values = true
+    )]
+    pub kafka_bootstrap_sasl_username: Option<String>,
+    /// SASL password of the bootstrap principal (required with `SASL_SSL`).
+    #[arg(
+        long = "kafka-bootstrap-sasl-password",
+        env = "KAFKA_BOOTSTRAP_SASL_PASSWORD",
+        hide_env_values = true
+    )]
+    pub kafka_bootstrap_sasl_password: Option<String>,
 }
 
 /// Arguments of `check-config`: the run mode and the settings of both modes.

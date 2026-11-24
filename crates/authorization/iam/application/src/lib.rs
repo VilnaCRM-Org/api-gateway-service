@@ -31,6 +31,7 @@ mod openapi_spec_fixtures;
 pub mod operation_rules;
 pub mod outbox_relay;
 pub mod policy_maintenance;
+pub mod policy_tail;
 pub mod principal;
 pub mod publishing_unit_of_work;
 pub mod query;
@@ -88,10 +89,16 @@ pub use command::update_user_role::{UpdateUserRoleCommand, UpdateUserRoleCommand
 pub use endpoint_directory::{EndpointDirectory, EndpointView, ZoneSource};
 pub use endpoint_watcher::{EndpointWatcher, WatcherSettings};
 pub use error::IamError;
-pub use iam_access_guard::{AuthorizationUnavailable, IamAccessGuard, OperationRequest};
-pub use operation_rules::{OperationRule, OperationRules, Requirement};
+pub use iam_access_guard::{
+    AuthorizationUnavailable, GraphQlOperationRequest, IamAccessGuard, OperationRequest,
+};
+pub use operation_rules::{GraphQlRule, OperationRule, OperationRules, Requirement};
 pub use outbox_relay::{OutboxRelay, OutboxRelayPorts, OutboxRelaySettings};
 pub use policy_maintenance::{MaintenanceSettings, PolicyMaintenance};
+pub use policy_tail::{
+    BootstrapAction, BootstrapEntry, BootstrapFailure, BootstrapInput, BootstrapMachine,
+    BootstrapOutcome, BootstrapPorts, BootstrapSnapshot, run_bootstrap,
+};
 pub use principal::Principal;
 pub use publishing_unit_of_work::PublishingUnitOfWork;
 pub use query::find_graphql_spec::{FindGraphQlSpecQuery, FindGraphQlSpecQueryHandler};

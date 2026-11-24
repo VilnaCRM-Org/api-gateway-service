@@ -4,7 +4,7 @@ Feature: IAM permission catalogue
   I want to browse the GraphQL and the REST permission catalogue over REST or GraphQL
 
   Scenario: An activated catalogue is listed with its keys, flags, versions and granting roles over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Payer" that grants "gql:billing:Mutation.pay"
     When POST request is sent to "/api/graphql-specs" with body:
       """
@@ -51,7 +51,7 @@ Feature: IAM permission catalogue
     And the response body should contain '"versions":["{id}"]'
 
   Scenario: The list is filtered by service, type, active state, the sensitive flag and the key prefix over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And the catalogue holds the inactive sensitive key "gql:shipping:Query.legacy"
     When POST request is sent to "/api/graphql-specs" with body:
       """
@@ -118,7 +118,7 @@ Feature: IAM permission catalogue
     And the JSON pointer "/data/graphqlPermissions/nextCursor" should be present
 
   Scenario: Two active versions are both listed on the entries they share
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/graphql-specs" with body:
       """
       {"service": "billing", "sdl": "type Query {\n  invoices: [String!]!\n}\n"}
@@ -153,7 +153,7 @@ Feature: IAM permission catalogue
     And the JSON array at "/items/0/versions" should have 2 items
 
   Scenario: One permission is read by its identifier over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/graphql-specs" with body:
       """
       {"service": "billing", "sdl": "type Query {\n  invoices: [String!]!\n}\n"}
@@ -185,7 +185,7 @@ Feature: IAM permission catalogue
     And the response body should contain '"versions":["{id}"]'
 
   Scenario: An unknown permission is a 404 over REST and null over GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When GET request is sent to "/api/graphql-permissions/0190f2a8-7b3c-7d4e-8f12-1234567890ad"
     Then the response status code should be 404
     When GET request is sent to "/api/graphql-permissions/not-a-uuid"
@@ -198,7 +198,7 @@ Feature: IAM permission catalogue
     And the JSON pointer "/data/graphqlPermission" should be null
 
   Scenario: An invalid filter is a validation failure over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When GET request is sent to "/api/graphql-permissions?limit=0"
     Then the response status code should be 422
     When GET request is sent to "/api/graphql-permissions?after=nope"
@@ -218,7 +218,7 @@ Feature: IAM permission catalogue
     Then the response status code should be 401
 
   Scenario: An activated REST catalogue is listed with its keys, flags, versions and granting roles over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Payer" that grants "rest:billing:POST /invoices/{}/pay"
     When POST request is sent to "/api/openapi-specs" with body:
       """
@@ -264,7 +264,7 @@ Feature: IAM permission catalogue
     And the response body should contain '"versions":["{id}"]'
 
   Scenario: The REST list is filtered by service, method, active state, the sensitive flag and the template prefix over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And the catalogue holds the inactive sensitive REST key "rest:shipping:GET /legacy"
     When POST request is sent to "/api/openapi-specs" with body:
       """
@@ -331,7 +331,7 @@ Feature: IAM permission catalogue
     And the JSON pointer "/data/restPermissions/nextCursor" should be present
 
   Scenario: Two active versions are both listed on the REST entries they share
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/openapi-specs" with body:
       """
       {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{}}}}"}
@@ -363,7 +363,7 @@ Feature: IAM permission catalogue
     And the response body should contain '"versions":["{id}"]'
 
   Scenario: One REST permission is read by its identifier over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/openapi-specs" with body:
       """
       {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{}}}}"}
@@ -396,7 +396,7 @@ Feature: IAM permission catalogue
     And the response body should contain '"versions":["{id}"]'
 
   Scenario: An unknown REST permission is a 404 over REST and null over GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When GET request is sent to "/api/rest-permissions/0190f2a8-7b3c-7d4e-8f12-1234567890ad"
     Then the response status code should be 404
     When GET request is sent to "/api/rest-permissions/not-a-uuid"
@@ -409,7 +409,7 @@ Feature: IAM permission catalogue
     And the JSON pointer "/data/restPermission" should be null
 
   Scenario: An invalid REST filter is a validation failure over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When GET request is sent to "/api/rest-permissions?limit=0"
     Then the response status code should be 422
     When GET request is sent to "/api/rest-permissions?after=nope"

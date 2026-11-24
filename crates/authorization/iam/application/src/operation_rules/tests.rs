@@ -159,3 +159,60 @@ fn a_row_built_at_run_time_holds_its_parts() {
         }
     );
 }
+
+#[test]
+fn every_graphql_row_has_the_requirement_of_the_rest_operation_of_its_action() {
+    for rule in OperationRules::graphql() {
+        let rest = OperationRules::all()
+            .iter()
+            .find(|row| row.action == rule.action)
+            .unwrap_or_else(|| panic!("no REST operation for {}", rule.action));
+
+        assert_eq!(rule.requirement, rest.requirement, "{}", rule.coordinate);
+    }
+}
+
+#[test]
+fn graphql_rows_are_unique_valid_root_coordinates_with_valid_actions() {
+    let rules = OperationRules::graphql();
+    let coordinates: BTreeSet<_> = rules.iter().map(|rule| rule.coordinate).collect();
+    let actions: BTreeSet<_> = rules.iter().map(|rule| rule.action).collect();
+
+    assert_eq!(coordinates.len(), rules.len());
+    assert_eq!(actions.len(), rules.len());
+    for rule in rules {
+        assert!(AuditAction::new(rule.action).is_ok(), "{}", rule.action);
+        assert!(
+            rule.coordinate.starts_with("Query.") || rule.coordinate.starts_with("Mutation."),
+            "{}",
+            rule.coordinate
+        );
+        assert!(
+            PermissionKey::parse(&format!("gql:iam:{}", rule.coordinate)).is_ok(),
+            "{}",
+            rule.coordinate
+        );
+    }
+}
+
+#[test]
+fn a_graphql_field_that_iam_does_not_own_has_no_row() {
+    assert!(OperationRules::find_graphql("Query.roles").is_some());
+    assert!(OperationRules::find_graphql("Mutation.createRole").is_some());
+    assert!(OperationRules::find_graphql("Query.exampleApiResource").is_none());
+    assert!(OperationRules::find_graphql("Mutation.roles").is_none());
+}
+
+#[test]
+fn a_graphql_row_built_at_run_time_holds_its_parts() {
+    let rule = super::field("Query.roles", "role.list", Requirement::Catalogue);
+
+    assert_eq!(
+        rule,
+        super::GraphQlRule {
+            coordinate: "Query.roles",
+            action: "role.list",
+            requirement: Requirement::Catalogue,
+        }
+    );
+}

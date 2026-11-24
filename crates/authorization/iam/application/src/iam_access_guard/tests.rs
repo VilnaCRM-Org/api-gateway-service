@@ -5,9 +5,10 @@ use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
 use iam_domain::{
     AccessToken, AccessTokenParts, AssignmentScope, AuditOutcome, CompiledRoleSet, GrantStatus,
-    HttpMethod, PathTemplate, PermissionFlags, PermissionGrant, PolicyReadRepository,
-    RepositoryError, RestOperation, RestOperationSet, RoleAssignment, RoleId, ServiceCatalog,
-    ServiceName, SessionId, SubjectId, SubjectPolicy, SubjectRef, TokenId, TokenIdentity,
+    GraphQlSchemaParser as _, HttpMethod, PathTemplate, PermissionFlags, PermissionGrant,
+    PolicyReadRepository, RepositoryError, RestOperation, RestOperationSet, RoleAssignment, RoleId,
+    ServiceCatalog, ServiceName, SessionId, SubjectId, SubjectPolicy, SubjectRef, TokenId,
+    TokenIdentity,
 };
 use rstest::rstest;
 use shared_domain::{CommandHandler as _, Uuid};
@@ -19,12 +20,13 @@ use test_support::policy_read::FakePolicyReadRepository;
 use test_support::security_audit::FakeSecurityAuditLog;
 use test_support::token::FakeTokenRepository;
 
-use super::{IamAccessGuard, OperationRequest, Verdict};
+use super::{GraphQlOperationRequest, IamAccessGuard, OperationRequest, Verdict};
 use crate::access_decision_service::AccessDecisionService;
 use crate::command::record_rejected_attempt::{
     RecordRejectedAttemptCommand, RecordRejectedAttemptCommandHandler,
 };
 use crate::error::IamError;
+use crate::graphql::AsyncGraphQlSchemaParser;
 use crate::operation_rules::{OperationRule, Requirement};
 use crate::principal::Principal;
 use crate::rejected_attempt_fixtures::FakeRejectedAttemptLog;
@@ -34,6 +36,7 @@ use crate::service_catalog_loader::ServiceCatalogLoader;
 const USER: &str = "0190f2a8-7b3c-7d4e-8f10-1234567890ab";
 const NOW: u64 = 1_800_000_000;
 const ROLES: &str = "/api/roles";
+const IAM_SDL: &str = "type Query { roles: String } type Mutation { createRole: String }";
 
 type Recorded = Arc<Mutex<Vec<RecordRejectedAttemptCommand>>>;
 
@@ -75,11 +78,12 @@ fn catalog() -> ServiceCatalog {
             })
             .unwrap();
     }
+    let graph = AsyncGraphQlSchemaParser.parse(IAM_SDL).unwrap();
     ServiceCatalog::new(
         ServiceName::iam().clone(),
         seeded_policy_epoch(),
         vec![operations],
-        Vec::new(),
+        vec![graph],
     )
 }
 
@@ -420,7 +424,116 @@ async fn a_row_whose_reserved_key_does_not_parse_is_undecidable() {
         requirement: Requirement::Reserved(&["not a key"]),
     };
 
-    let verdict = guard.reserved_verdict(user(), &rule).await;
+    let verdict = guard.reserved_verdict(user(), rule.requirement).await;
 
     assert_eq!(verdict, Verdict::Unavailable);
+}
+
+fn fields(coordinates: &[String]) -> GraphQlOperationRequest<'_> {
+    GraphQlOperationRequest {
+        coordinates,
+        request_id: Some("req-1"),
+    }
+}
+
+fn selected(coordinates: &[&str]) -> Vec<String> {
+    coordinates.iter().map(|name| (*name).to_owned()).collect()
+}
+
+#[tokio::test]
+async fn a_caller_holding_the_field_keys_passes_a_graphql_document() {
+    let (guard, recorded) = guard_over(repository(&[
+        "gql:iam:Query.roles",
+        "gql:iam:Mutation.createRole",
+    ]));
+    let coordinates = selected(&["Query.roles", "Mutation.createRole"]);
+
+    let outcome = guard
+        .authorize_graphql(&principal(), &fields(&coordinates))
+        .await;
+
+    assert!(outcome.is_ok(), "{outcome:?}");
+    assert!(refusals(&recorded).is_empty());
+}
+
+#[tokio::test]
+async fn a_caller_lacking_one_field_key_is_forbidden_and_the_refusal_is_audited() {
+    let (guard, recorded) = guard_over(repository(&["gql:iam:Query.roles"]));
+    let coordinates = selected(&["Query.roles", "Mutation.createRole"]);
+
+    let outcome = guard
+        .authorize_graphql(&principal(), &fields(&coordinates))
+        .await;
+
+    assert!(matches!(outcome, Err(IamError::Forbidden)));
+    let offered = refusals(&recorded);
+    assert_eq!(offered.len(), 1);
+    assert_eq!(offered[0].action.as_str(), "role.create");
+    assert_eq!(offered[0].reason.as_str(), "forbidden");
+    assert_eq!(offered[0].target.target_id(), "role.create");
+}
+
+#[tokio::test]
+async fn a_wildcard_grant_covers_the_graphql_fields_of_iam() {
+    let (guard, _recorded) = guard_over(repository(&["gql:iam:*"]));
+    let coordinates = selected(&["Query.roles"]);
+
+    let outcome = guard
+        .authorize_graphql(&principal(), &fields(&coordinates))
+        .await;
+
+    assert!(outcome.is_ok(), "{outcome:?}");
+}
+
+#[tokio::test]
+async fn graphql_validation_needs_the_reserved_key_and_no_catalogue_key() {
+    let (allowed, _recorded) = guard_over(repository(&["iam:validate:*"]));
+    let (refused, recorded) = guard_over(repository(&["gql:iam:*"]));
+    let coordinates = selected(&["Query.validateAccess"]);
+
+    let passed = allowed
+        .authorize_graphql(&principal(), &fields(&coordinates))
+        .await;
+    let denied = refused
+        .authorize_graphql(&principal(), &fields(&coordinates))
+        .await;
+
+    assert!(passed.is_ok(), "{passed:?}");
+    assert!(matches!(denied, Err(IamError::Forbidden)));
+    assert_eq!(refusals(&recorded)[0].action.as_str(), "access.validate");
+}
+
+#[tokio::test]
+async fn a_graphql_coordinate_without_a_row_is_refused_and_audited() {
+    let (guard, recorded) = guard_over(repository(&["gql:iam:*"]));
+    let coordinates = selected(&["Query.cacheFlush"]);
+
+    let outcome = guard
+        .authorize_graphql(&principal(), &fields(&coordinates))
+        .await;
+
+    assert!(matches!(outcome, Err(IamError::Forbidden)));
+    let offered = refusals(&recorded);
+    assert_eq!(offered[0].action.as_str(), "operation.unlisted");
+    assert_eq!(offered[0].target.target_id(), "Query.cacheFlush");
+}
+
+#[tokio::test]
+async fn an_unreadable_policy_fails_a_graphql_document_closed() {
+    let (guard, recorded) = guard_over(Failing);
+    let coordinates = selected(&["Query.roles"]);
+
+    let outcome = guard
+        .authorize_graphql(&principal(), &fields(&coordinates))
+        .await;
+
+    assert!(matches!(outcome, Err(IamError::Storage(_))), "{outcome:?}");
+    assert!(refusals(&recorded).is_empty());
+}
+
+#[test]
+fn a_check_that_cannot_be_built_is_undecidable() {
+    let error = super::undecidable(iam_domain::InvalidAccessCheck::PermissionCount);
+
+    assert!(matches!(error, IamError::Storage(_)));
 }

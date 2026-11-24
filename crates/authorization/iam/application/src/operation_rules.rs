@@ -70,6 +70,149 @@ const fn row(
 
 const RESOLVE: &[&str] = &[VALIDATE_ALL];
 
+/// The rule of one GraphQL root field that IAM owns: its coordinate (`Query.roles`), the name its
+/// audit records give it and what it requires.
+///
+/// The requirement of a field is that of the REST operation of the same name, so both interfaces
+/// enforce one rule (FR-4); the catalogue key of a field is `gql:iam:{coordinate}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GraphQlRule {
+    /// The `{Type}.{field}` coordinate of the root field.
+    pub coordinate: &'static str,
+    /// The audited action of a refusal, such as `role.create`.
+    pub action: &'static str,
+    /// What the caller must hold.
+    pub requirement: Requirement,
+}
+
+const fn field(
+    coordinate: &'static str,
+    action: &'static str,
+    requirement: Requirement,
+) -> GraphQlRule {
+    GraphQlRule {
+        coordinate,
+        action,
+        requirement,
+    }
+}
+
+/// The rows of every GraphQL root field that IAM owns.
+const GRAPHQL_RULES: &[GraphQlRule] = &[
+    field(
+        "Query.resolveToken",
+        "token.resolve",
+        Requirement::Reserved(RESOLVE),
+    ),
+    field(
+        "Query.validateAccess",
+        "access.validate",
+        Requirement::Reserved(RESOLVE),
+    ),
+    field(
+        "Query.validateAccessBatch",
+        "access.validate_batch",
+        Requirement::Reserved(RESOLVE),
+    ),
+    field("Query.role", "role.read", Requirement::Catalogue),
+    field("Query.roles", "role.list", Requirement::Catalogue),
+    field("Query.userRole", "user_role.read", Requirement::Catalogue),
+    field("Query.userRoles", "user_role.list", Requirement::Catalogue),
+    field(
+        "Query.graphqlPermission",
+        "graphql_permission.read",
+        Requirement::Catalogue,
+    ),
+    field(
+        "Query.graphqlPermissions",
+        "graphql_permission.list",
+        Requirement::Catalogue,
+    ),
+    field(
+        "Query.restPermission",
+        "rest_permission.read",
+        Requirement::Catalogue,
+    ),
+    field(
+        "Query.restPermissions",
+        "rest_permission.list",
+        Requirement::Catalogue,
+    ),
+    field(
+        "Query.graphqlSpec",
+        "graphql_spec.read",
+        Requirement::Catalogue,
+    ),
+    field(
+        "Query.graphqlSpecs",
+        "graphql_spec.list",
+        Requirement::Catalogue,
+    ),
+    field(
+        "Query.openapiSpec",
+        "openapi_spec.read",
+        Requirement::Catalogue,
+    ),
+    field(
+        "Query.openapiSpecs",
+        "openapi_spec.list",
+        Requirement::Catalogue,
+    ),
+    field("Mutation.createRole", "role.create", Requirement::Catalogue),
+    field("Mutation.updateRole", "role.update", Requirement::Catalogue),
+    field("Mutation.deleteRole", "role.delete", Requirement::Catalogue),
+    field(
+        "Mutation.setRolePermissions",
+        "role_permission.replace",
+        Requirement::Catalogue,
+    ),
+    field(
+        "Mutation.assignUserRole",
+        "user_role.assign",
+        Requirement::Catalogue,
+    ),
+    field(
+        "Mutation.updateUserRole",
+        "user_role.update",
+        Requirement::Catalogue,
+    ),
+    field(
+        "Mutation.revokeUserRole",
+        "user_role.revoke",
+        Requirement::Catalogue,
+    ),
+    field(
+        "Mutation.loadGraphqlSpec",
+        "graphql_spec.load",
+        Requirement::Catalogue,
+    ),
+    field(
+        "Mutation.createGraphqlPermissions",
+        "graphql_spec.activate",
+        Requirement::Catalogue,
+    ),
+    field(
+        "Mutation.retireGraphqlSpec",
+        "graphql_spec.retire",
+        Requirement::Catalogue,
+    ),
+    field(
+        "Mutation.loadOpenapiSpec",
+        "openapi_spec.load",
+        Requirement::Catalogue,
+    ),
+    field(
+        "Mutation.createRestPermissions",
+        "openapi_spec.activate",
+        Requirement::Catalogue,
+    ),
+    field(
+        "Mutation.retireOpenapiSpec",
+        "openapi_spec.retire",
+        Requirement::Catalogue,
+    ),
+];
+
 /// The rows of every IAM operation delivered so far.
 const RULES: &[OperationRule] = &[
     row(
@@ -278,6 +421,22 @@ impl OperationRules {
         RULES
             .iter()
             .find(|rule| rule.method.as_str() == method && rule.template == template)
+    }
+
+    /// Every row of the GraphQL root fields that IAM owns; a root field of the served schema that
+    /// has a row here is IAM's, any other is the template's.
+    #[must_use]
+    pub const fn graphql() -> &'static [GraphQlRule] {
+        GRAPHQL_RULES
+    }
+
+    /// The row of the root field at `coordinate` (`Query.roles`); `None` for a field that IAM
+    /// does not own.
+    #[must_use]
+    pub fn find_graphql(coordinate: &str) -> Option<&'static GraphQlRule> {
+        GRAPHQL_RULES
+            .iter()
+            .find(|rule| rule.coordinate == coordinate)
     }
 }
 

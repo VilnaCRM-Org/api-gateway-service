@@ -21,6 +21,7 @@ pub mod log;
 pub mod maintenance_store;
 pub mod openapi_spec;
 pub mod outbox_store;
+pub mod policy_bootstrap_log;
 pub mod policy_epoch;
 pub mod policy_log_producer;
 pub mod policy_read;

@@ -11,6 +11,8 @@ fn config() -> GatewayConfig {
     let mut args = GatewayArgs::default();
     args.service.app_env = Some("test".to_owned());
     args.service.tokens.public_keys_file = Some(DEVELOPMENT_PUBLIC_KEYS_FILE.to_owned());
+    args.service.kafka.bootstrap_servers = Some("localhost:9092".to_owned());
+    args.service.kafka.security_protocol = Some("PLAINTEXT".to_owned());
     args.upstream_discovery = Some("static".to_owned());
     args.upstream_static_endpoints_file = Some(DEVELOPMENT_ENDPOINTS_FILE.to_owned());
     GatewayConfig::from_args(&args).unwrap()

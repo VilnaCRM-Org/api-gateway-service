@@ -4,7 +4,7 @@ Feature: The first IAM administrator
   I want the platform to refuse every change that would leave it without an active administrator
 
   Scenario: The last administrator assignment cannot be revoked over REST and the refusal is audited
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And the first administrator is bootstrapped
     When DELETE request is sent to "/api/user-roles/{id}"
     Then the response status code should be 409
@@ -16,7 +16,7 @@ Feature: The first IAM administrator
     And the audit log should hold 0 committed "user_role.revoke" records
 
   Scenario: The last administrator assignment cannot be given an expiry over REST and the refusal is audited
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And the first administrator is bootstrapped
     When PATCH request is sent to "/api/user-roles/{id}" with body:
       """
@@ -29,7 +29,7 @@ Feature: The first IAM administrator
     And the audit log should hold 0 committed "user_role.update" records
 
   Scenario: The last administrator assignment cannot be revoked over GraphQL and the refusal is audited
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And the first administrator is bootstrapped
     When the GraphQL operation is sent:
       """
@@ -40,7 +40,7 @@ Feature: The first IAM administrator
     And the audit log should hold 1 rejected "user_role.revoke" record with the reason "last_administrator"
 
   Scenario: The last administrator assignment cannot be given an expiry over GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And the first administrator is bootstrapped
     When the GraphQL operation is sent:
       """
@@ -51,7 +51,7 @@ Feature: The first IAM administrator
     And the audit log should hold 1 rejected "user_role.update" record with the reason "last_administrator"
 
   Scenario: The bootstrapped system role cannot be renamed or deleted over either interface
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And the first administrator is bootstrapped
     And the If-Match header '"2"'
     When DELETE request is sent to "/api/roles/{role}"

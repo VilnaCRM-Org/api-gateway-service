@@ -1,12 +1,13 @@
 //! `KrafkaPolicyLogTail` against the compose broker `kafka` (Story 7.7): the watermark, the bounded
 //! range reads, the read at one offset, a transaction marker that holds no record, and the failure
-//! of a cluster that cannot be reached.
+//! of a cluster that cannot be reached; and the bootstrap reader of a gateway pod (Story 9.3), which
+//! reads the framed records from offset 0 up to the stable end.
 
 use std::time::Duration;
 
 use iam_domain::{
     ConfigGates, LogEpoch, OutboxKind, OutboxRow, PolicyDigestValue, PolicyLogProducer as _,
-    PolicyLogRecord, PolicyLogTail as _, PolicyLogTailError, PolicyVersion, RelayEpoch,
+    PolicyLogRecord, PolicyLogTail as _, PolicyLogTailError, PolicyVersion, RelayEpoch, StateKey,
 };
 use iam_infrastructure::{
     KafkaSecurity, KafkaSettings, KrafkaPolicyLogProducer, KrafkaPolicyLogTail, RelayMode,
@@ -192,4 +193,55 @@ async fn a_cluster_that_cannot_be_reached_is_unavailable() {
         Err(PolicyLogTailError::Unavailable(_))
     ));
     drop(tail);
+}
+
+const ROLE_KEY: &str = "role/0192f6a0-0000-7000-8000-000000000001";
+
+#[tokio::test]
+async fn the_bootstrap_reader_reads_the_framed_records_up_to_the_stable_end() {
+    let topic = unique("bootstrap");
+    create_topic(&topic).await;
+    let settings = settings(stack_variable("KAFKA_BOOTSTRAP_SERVERS"), &topic);
+    let records: Vec<_> = [
+        row(&topic, ROLE_KEY, Some("{\"a\":1}"), 1, 1),
+        row(&topic, "__head", Some("{}"), 1, 2),
+    ]
+    .iter()
+    .map(|row| PolicyLogRecord::of(row, RelayEpoch::new(1).unwrap()))
+    .collect();
+    let offsets = KrafkaPolicyLogProducer::new(
+        &settings,
+        RelayMode::Transactional {
+            transaction_timeout: Duration::from_secs(10),
+        },
+    )
+    .with_transactional_id(unique("relay"))
+    .publish(&records)
+    .await
+    .unwrap();
+    let tail = KrafkaPolicyLogTail::bootstrap(settings);
+
+    let end = iam_domain::PolicyBootstrapLog::stable_end(&tail)
+        .await
+        .unwrap();
+    let framed = iam_domain::PolicyBootstrapLog::read_framed(&tail, 0, end)
+        .await
+        .unwrap();
+    iam_domain::PolicyBootstrapLog::close(&tail).await;
+    drop(tail);
+
+    assert!(end > *offsets.last().unwrap());
+    let keys: Vec<_> = framed
+        .iter()
+        .map(|framed| framed.record.key.clone())
+        .collect();
+    assert_eq!(keys, [StateKey::parse(ROLE_KEY).unwrap(), StateKey::Head]);
+    assert_eq!(framed[0].offset, offsets[0]);
+    assert_eq!(framed[0].record.payload.as_deref(), Some("{\"a\":1}"));
+    assert_eq!((framed[0].record.seq, framed[0].record.count), (1, 3));
+    assert_eq!(framed[1].record.seq, 2);
+    assert_eq!(framed[0].record.version.value(), 1);
+    assert_eq!(framed[0].record.relay_epoch.value(), 1);
+    assert_eq!(framed[0].record.log_epoch, LogEpoch::new(0).unwrap());
+    assert_eq!(framed[0].record.digest_after, PolicyDigestValue::ZERO);
 }

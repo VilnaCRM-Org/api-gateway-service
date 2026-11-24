@@ -1256,3 +1256,26 @@ fn the_iam_sdl_holds_no_operation_of_another_context() {
 fn the_same_build_produces_the_same_iam_sdl() {
     assert_eq!(iam_sdl(), iam_sdl());
 }
+
+#[test]
+fn every_iam_root_field_has_an_authorization_row_and_every_row_a_field() {
+    use iam_application::OperationRules;
+    use iam_application::graphql::AsyncGraphQlSchemaParser;
+    use iam_domain::GraphQlSchemaParser as _;
+
+    let graph = AsyncGraphQlSchemaParser.parse(&iam_sdl()).unwrap();
+    let roots: std::collections::BTreeSet<String> = graph
+        .coordinates()
+        .iter()
+        .map(|(coordinate, _flags)| coordinate.to_string())
+        .filter(|coordinate| {
+            coordinate.starts_with("Query.") || coordinate.starts_with("Mutation.")
+        })
+        .collect();
+    let rows: std::collections::BTreeSet<String> = OperationRules::graphql()
+        .iter()
+        .map(|rule| rule.coordinate.to_owned())
+        .collect();
+
+    assert_eq!(rows, roots);
+}

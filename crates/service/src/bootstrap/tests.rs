@@ -732,6 +732,7 @@ async fn the_resolve_token_query_reaches_the_iam_state_of_the_assembled_schema()
         );
     let mut wiring = adapters();
     wiring.tokens = Arc::new(tokens);
+    wiring.policy_reads = Arc::new(validating_caller());
     let app = app(wiring);
     let query = serde_json::json!({
         "query": r#"{ resolveToken(input: {credential: "subject-token"}) { resolved sessionId } }"#
@@ -1088,18 +1089,27 @@ mod access_validation {
 
     #[tokio::test]
     async fn a_failing_database_is_a_200_deny_with_unavailable_over_rest_and_graphql() {
-        let failing = FailsAfterTheCaller {
-            inner: holding_policy(),
-            subject_reads: AtomicUsize::new(0),
+        // One application per interface: each request authorizes its caller with the first read.
+        let failing = || {
+            wiring(
+                FailsAfterTheCaller {
+                    inner: holding_policy(),
+                    subject_reads: AtomicUsize::new(0),
+                },
+                FakePolicyEpochRepository::new(),
+            )
         };
-        let app = wiring(failing, FakePolicyEpochRepository::new());
 
         let over_rest = send(
-            &app,
+            &failing(),
             rest(Some("caller-token"), &get_order("/api/orders/42"), None),
         )
         .await;
-        let over_graphql = graphql(&app, "rest: {method: \"GET\", path: \"/api/orders/42\"}").await;
+        let over_graphql = graphql(
+            &failing(),
+            "rest: {method: \"GET\", path: \"/api/orders/42\"}",
+        )
+        .await;
 
         assert_eq!(over_rest.status, StatusCode::OK);
         assert_eq!(over_rest.json()["decision"], "deny");

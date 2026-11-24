@@ -25,12 +25,15 @@ pub(crate) const VALID_ENVIRONMENT: [(&str, &str); 2] = [
 ];
 
 /// The Kafka variables that [`Scratch::service`] sets so that a configuration is valid in every
-/// `APP_ENV`: a bootstrap address that nothing listens on and SASL credentials. The connection is
-/// opened lazily, so a test that never inspects the cluster never touches it.
-pub(crate) const KAFKA_ENVIRONMENT: [(&str, &str); 3] = [
+/// `APP_ENV` and run mode: a bootstrap address that nothing listens on, the SASL credentials of the
+/// control plane and those of the gateway's bootstrap principal. The connection is opened lazily,
+/// so a test that never inspects the cluster never touches it.
+pub(crate) const KAFKA_ENVIRONMENT: [(&str, &str); 5] = [
     ("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:1"),
     ("KAFKA_SASL_USERNAME", "iam-control"),
     ("KAFKA_SASL_PASSWORD", "unused-password"),
+    ("KAFKA_BOOTSTRAP_SASL_USERNAME", "iam-gateway-bootstrap"),
+    ("KAFKA_BOOTSTRAP_SASL_PASSWORD", "unused-bootstrap-password"),
 ];
 
 /// URL that nothing listens on: the "unreachable database" case. No container is stopped.
@@ -246,6 +249,20 @@ impl Finished {
     pub(crate) fn messages(&self) -> Vec<&str> {
         self.lines
             .iter()
+            .map(|line| line["message"].as_str().unwrap())
+            .collect()
+    }
+
+    /// The messages of the log lines of the run commands (`service::command`): the lifecycle of
+    /// the process, without the entries of the tasks it starts, such as the gateway bootstrap.
+    pub(crate) fn lifecycle_messages(&self) -> Vec<&str> {
+        self.lines
+            .iter()
+            .filter(|line| {
+                line["target"]
+                    .as_str()
+                    .is_some_and(|target| target.starts_with("service::command"))
+            })
             .map(|line| line["message"].as_str().unwrap())
             .collect()
     }

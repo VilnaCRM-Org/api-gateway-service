@@ -14,12 +14,15 @@ use shared_infrastructure::clock::SystemClock;
 use tokio::sync::watch;
 
 use self::endpoints::{EndpointAdapters, EndpointSetupError};
+use self::policy::PolicyAdapters;
 use super::{TaskMode, TaskSupervisor};
 use crate::config::GatewayConfig;
 
+pub mod apply_thread;
 pub mod endpoints;
 pub mod internal;
 pub mod listener;
+pub mod policy;
 pub mod probe;
 
 /// Every driven port of the gateway.
@@ -32,6 +35,8 @@ pub struct GatewayAdapters {
     pub keys: JwtKeySet,
     /// The discovery of the upstream endpoints and the zone of this pod.
     pub endpoints: EndpointAdapters,
+    /// The reads of the state topic and the published snapshot.
+    pub policy: PolicyAdapters,
 }
 
 /// The adapters of the gateway cannot be wired.
@@ -60,6 +65,7 @@ impl GatewayAdapters {
             clock: Arc::new(SystemClock),
             keys: JwtKeySet::load(&config.tokens.public_keys_file)?,
             endpoints: EndpointAdapters::from_config(config)?,
+            policy: PolicyAdapters::from_config(config),
         })
     }
 }
@@ -71,6 +77,7 @@ impl std::fmt::Debug for GatewayAdapters {
             .field("rng", &self.rng)
             .field("clock", &self.clock)
             .field("endpoints", &self.endpoints)
+            .field("policy", &self.policy)
             .finish_non_exhaustive()
     }
 }

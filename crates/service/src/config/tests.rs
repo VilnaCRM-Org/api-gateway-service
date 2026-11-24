@@ -1520,7 +1520,17 @@ fn valid_gateway() -> GatewayArgs {
     let mut args = GatewayArgs::default();
     args.service.app_env = some("test");
     args.service.tokens.public_keys_file = some(DEVELOPMENT_PUBLIC_KEYS_FILE);
+    args.service.kafka.bootstrap_servers = some("localhost:9092");
+    args.service.kafka.security_protocol = some("PLAINTEXT");
     args
+}
+
+/// A gateway outside `dev` and `test` reads the state topic over `SASL_SSL` under the bootstrap
+/// principal, since `PLAINTEXT` is refused there.
+fn over_sasl_ssl(args: &mut GatewayArgs) {
+    args.service.kafka.security_protocol = some("SASL_SSL");
+    args.kafka_bootstrap_sasl_username = some("iam-gateway-bootstrap");
+    args.kafka_bootstrap_sasl_password = some("bootstrap-password");
 }
 
 fn gateway_problems(args: &GatewayArgs) -> Vec<(&'static str, String)> {
@@ -1576,11 +1586,10 @@ fn the_gateway_defaults_are_the_documented_ones() {
 }
 
 #[test]
-fn the_gateway_needs_no_database_queue_or_kafka_setting() {
+fn the_gateway_needs_no_database_or_queue_setting() {
     let mut args = valid_gateway();
     args.service.database.url = some("not-a-url");
     args.service.aws_region = None;
-    args.service.kafka.bootstrap_servers = some("???");
 
     assert!(GatewayConfig::from_args(&args).is_ok());
 }
@@ -1683,6 +1692,7 @@ fn an_address_without_a_port_is_refused(#[case] variable: &str) {
 fn tls_files_are_required_outside_dev_and_test() {
     let mut args = valid_gateway();
     args.service.app_env = None;
+    over_sasl_ssl(&mut args);
 
     assert_eq!(
         gateway_problems(&args),
@@ -1743,6 +1753,7 @@ fn a_usable_pair_is_accepted_in_every_environment() {
     let (cert, key) = certificate_pair("accepted");
     let mut args = valid_gateway();
     args.service.app_env = some("prod");
+    over_sasl_ssl(&mut args);
     args.tls_cert_file = Some(cert.clone());
     args.tls_key_file = Some(key.clone());
 
@@ -2054,4 +2065,67 @@ fn a_full_interval_shorter_than_the_head_interval_names_the_full_interval() {
     };
 
     assert_eq!(variables(args), vec!["ANTI_ENTROPY_FULL_INTERVAL"]);
+}
+
+#[test]
+fn the_gateway_needs_the_kafka_bootstrap_servers() {
+    let mut args = valid_gateway();
+    args.service.kafka.bootstrap_servers = None;
+
+    assert_eq!(gateway_variables(&args), vec!["KAFKA_BOOTSTRAP_SERVERS"]);
+}
+
+#[test]
+fn the_gateway_reads_the_state_topic_under_the_bootstrap_principal() {
+    let mut args = valid_gateway();
+    args.service.kafka.client_id = some("iam-control");
+    args.service.kafka.security_protocol = some("SASL_SSL");
+    args.kafka_bootstrap_sasl_username = some("iam-gateway-bootstrap");
+    args.kafka_bootstrap_sasl_password = some("hunter2-bootstrap");
+
+    let config = GatewayConfig::from_args(&args).unwrap();
+
+    assert_eq!(config.kafka.client_id, "iam-gateway-bootstrap");
+    assert_eq!(config.kafka.policy_topic, "iam.policy.state.v1");
+    let KafkaSecurity::SaslSsl {
+        username, password, ..
+    } = config.kafka.security
+    else {
+        panic!("SASL_SSL was requested");
+    };
+    assert_eq!(username, "iam-gateway-bootstrap");
+    assert_eq!(password.expose(), "hunter2-bootstrap");
+}
+
+#[test]
+fn missing_bootstrap_credentials_are_refused_naming_each_variable() {
+    let mut args = valid_gateway();
+    args.service.kafka.security_protocol = some("SASL_SSL");
+    args.service.kafka.sasl_username = some("iam-control");
+    args.service.kafka.sasl_password = some("control-password");
+
+    assert_eq!(
+        gateway_variables(&args),
+        vec![
+            "KAFKA_BOOTSTRAP_SASL_USERNAME",
+            "KAFKA_BOOTSTRAP_SASL_PASSWORD"
+        ]
+    );
+}
+
+#[test]
+fn a_plaintext_gateway_needs_no_bootstrap_credentials() {
+    let config = GatewayConfig::from_args(&valid_gateway()).unwrap();
+
+    assert_eq!(config.kafka.security, KafkaSecurity::Plaintext);
+}
+
+#[test]
+fn the_gateway_does_not_need_the_control_plane_principal() {
+    let mut args = valid_gateway();
+    args.service.kafka.security_protocol = some("SASL_SSL");
+    args.kafka_bootstrap_sasl_username = some("iam-gateway-bootstrap");
+    args.kafka_bootstrap_sasl_password = some("bootstrap-password");
+
+    assert!(GatewayConfig::from_args(&args).is_ok());
 }

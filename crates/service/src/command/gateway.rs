@@ -14,14 +14,14 @@ use axum::serve::Listener;
 use shared_domain::BoxError;
 use tokio::net::TcpListener;
 use tokio::runtime::{Builder, Runtime};
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 
 use super::serve::{
     FORCED_EXIT_LIMIT, Shutdown, Signals, log_forced, log_signal, log_stopped, mode, stopped,
 };
 use crate::bootstrap::gateway::listener::{self, ReloadableCertificate, TlsListener};
-use crate::bootstrap::gateway::{self, GatewayAdapters, internal, probe};
+use crate::bootstrap::gateway::{self, GatewayAdapters, internal, policy, probe};
 use crate::bootstrap::{TaskStop, TaskSupervisor};
 use crate::config::{GatewayConfig, TlsFiles};
 use crate::telemetry;
@@ -193,19 +193,40 @@ async fn drain(servers: Vec<Server>, tasks: TaskSupervisor, grace_period: Durati
     }
 }
 
-/// Wires the adapters, binds, serves and drains.
+/// The apply thread ended without being asked to: the pod cannot apply the policy log any more.
+#[derive(Debug, thiserror::Error)]
+#[error("the apply thread died")]
+struct ApplyThreadDied;
+
+/// Completes when the apply thread dies; a thread that ends cleanly never completes it.
+async fn apply_thread_died(death: oneshot::Receiver<()>) {
+    if death.await.is_err() {
+        std::future::pending::<()>().await;
+    }
+}
+
+/// Wires the adapters, binds, serves and drains. A dead apply thread ends the gateway with a
+/// failure once the servers drained.
 async fn gateway(config: &GatewayConfig) -> Result<Shutdown, BoxError> {
     let signals = Signals::install()?;
     let adapters = GatewayAdapters::from_config(config)?;
     let (stop, stopping) = watch::channel(false);
     let mut tasks = gateway::start_tasks(&adapters, stopping.clone());
+    let death = policy::start_policy(&adapters.policy, &mut tasks)?;
     let sockets = bind_all(config).await?;
     let bound = sockets.addresses()?;
     let servers = start_servers(config, sockets, &mut tasks, &stopping)?;
     log_listening(config, &bound);
-    log_signal(signals.received().await);
+    let outcome = tokio::select! {
+        received = signals.received() => {
+            log_signal(received);
+            Ok(())
+        }
+        () = apply_thread_died(death) => Err(ApplyThreadDied),
+    };
     stop.send_replace(true);
-    Ok(drain(servers, tasks, config.shutdown_grace_period).await)
+    let shutdown = drain(servers, tasks, config.shutdown_grace_period).await;
+    outcome.map(|()| shutdown).map_err(BoxError::from)
 }
 
 fn start(config: &GatewayConfig) -> Result<Shutdown, BoxError> {

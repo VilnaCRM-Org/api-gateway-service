@@ -123,6 +123,7 @@ pub use port::openapi_document_parser::OpenApiDocumentParser;
 pub use port::openapi_spec_repository::{OpenApiSpecPageQuery, OpenApiSpecRepository};
 pub use port::outbox_store::{OutboxKind, OutboxRow, OutboxStore, PublishedRow, RelayTakeover};
 pub use port::permission_page_query::PermissionPageQuery;
+pub use port::policy_bootstrap_log::{FramedRecord, PolicyBootstrapLog};
 pub use port::policy_digest::PolicyDigest;
 pub use port::policy_epoch_repository::PolicyEpochRepository;
 pub use port::policy_log_producer::{

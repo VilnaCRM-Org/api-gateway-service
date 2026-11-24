@@ -44,9 +44,9 @@ async fn policy_epoch_should_be_the_one_of_the_startup_registration(world: &mut 
     assert_eq!(epoch.relay_epoch().value(), fenced);
 }
 
-#[given("a caller authenticated with a valid service token")]
-fn caller_with_a_valid_service_token(world: &mut AppWorld) {
-    world.authenticate_as_service();
+#[given("a caller authenticated as the bootstrapped administrator")]
+fn caller_as_the_administrator(world: &mut AppWorld) {
+    world.authenticate_as_administrator();
 }
 
 #[given("a caller authenticated with a valid service token that holds no IAM key")]

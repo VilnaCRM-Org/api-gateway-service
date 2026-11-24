@@ -18,6 +18,7 @@ pub mod openapi_document_parser;
 pub mod openapi_spec_repository;
 pub mod outbox_store;
 pub mod permission_page_query;
+pub mod policy_bootstrap_log;
 pub mod policy_digest;
 pub mod policy_epoch_repository;
 pub mod policy_log_producer;

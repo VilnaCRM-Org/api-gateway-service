@@ -6,6 +6,7 @@
 
 pub mod bucket_local_rate_limiter;
 pub mod buffered_rejected_attempt_log;
+pub mod clock;
 pub mod kafka;
 pub mod kubernetes;
 pub mod persistence;
@@ -17,9 +18,10 @@ pub mod token;
 
 pub use bucket_local_rate_limiter::BucketLocalRateLimiter;
 pub use buffered_rejected_attempt_log::BufferedRejectedAttemptLog;
+pub use clock::LinuxBootClock;
 pub use kafka::{
-    KafkaSecret, KafkaSecurity, KafkaSettings, KrafkaPolicyLogProducer, KrafkaPolicyLogTail,
-    KrafkaTopicInspector, RelayMode, SaslMechanism,
+    BOOTSTRAP_PRINCIPAL, KafkaSecret, KafkaSecurity, KafkaSettings, KrafkaPolicyLogProducer,
+    KrafkaPolicyLogTail, KrafkaTopicInspector, RelayMode, SaslMechanism,
 };
 pub use kubernetes::{
     KubernetesEndpointWatch, KubernetesSettings, KubernetesSetupError, StaticEndpointWatch,
@@ -51,7 +53,8 @@ pub use persistence::unit_of_work::PgIamUnitOfWork;
 pub use persistence::upstream::PgUpstreamRepository;
 pub use persistence::user_role::PgUserRoleRepository;
 pub use policy_snapshot::{
-    ArcSwapPolicySnapshot, MatchitRouteTableCompiler, PolicySnapshotBuilder, SnapshotPorts,
+    ArcSwapPolicySnapshot, MatchitRouteTableCompiler, PUBLISH_INTERVAL, PolicySnapshotBuilder,
+    RawEntry, SnapshotBuildError, SnapshotPorts,
 };
 pub use policy_state::json_state_record_codec::JsonStateRecordCodec;
 pub use policy_state::sha256_policy_digest::Sha256PolicyDigest;

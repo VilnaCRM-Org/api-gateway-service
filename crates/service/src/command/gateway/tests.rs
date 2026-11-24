@@ -54,6 +54,8 @@ fn config_on(address: SocketAddr) -> GatewayConfig {
     let mut args = GatewayArgs::default();
     args.service.app_env = Some("test".to_owned());
     args.service.tokens.public_keys_file = Some(DEVELOPMENT_PUBLIC_KEYS_FILE.to_owned());
+    args.service.kafka.bootstrap_servers = Some("localhost:9092".to_owned());
+    args.service.kafka.security_protocol = Some("PLAINTEXT".to_owned());
     let text = address.to_string();
     args.listen = Some(text.clone());
     args.internal_listen = Some(text.clone());
@@ -178,4 +180,24 @@ fn the_listening_and_runtime_entries_name_the_addresses_the_mode_and_the_workers
         "{:?}",
         lines[1].fields
     );
+}
+
+#[tokio::test]
+async fn a_death_notice_of_the_apply_thread_completes_the_wait() {
+    let (notice, death) = oneshot::channel();
+    notice.send(()).unwrap();
+
+    tokio::time::timeout(GRACE, apply_thread_died(death))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn an_apply_thread_that_ended_cleanly_never_completes_the_wait() {
+    let (notice, death) = oneshot::channel::<()>();
+    drop(notice);
+
+    let waited = tokio::time::timeout(Duration::from_millis(50), apply_thread_died(death)).await;
+
+    assert!(waited.is_err());
 }

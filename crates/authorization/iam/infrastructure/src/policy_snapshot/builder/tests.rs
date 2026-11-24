@@ -509,3 +509,41 @@ fn a_rebuild_with_an_invalid_entry_changes_nothing() {
     assert!(result.is_err());
     assert_eq!(rig.builder.applied_version(), version(1));
 }
+
+#[test]
+fn a_verified_rebuild_publishes_a_state_that_hashes_to_the_head() {
+    let mut source = Rig::new();
+    source.apply(vec![role(1, &["rest:cat-0:GET /users"]), subject(1, &[1])]);
+    let entries = history::raw_entries(&source);
+    let mut target = Rig::new();
+
+    target
+        .builder
+        .rebuild_verified(&entries, version(1), (LogEpoch::ZERO, source.digest))
+        .unwrap();
+
+    assert_eq!(target.builder.digest(), source.digest);
+    assert_eq!(target.snapshot().version(), version(1));
+}
+
+#[test]
+fn a_verified_rebuild_refuses_a_state_that_does_not_hash_to_the_head() {
+    use iam_domain::PolicyView as _;
+
+    let mut source = Rig::new();
+    source.apply(vec![role(1, &["rest:cat-0:GET /users"])]);
+    let entries = history::raw_entries(&source);
+    let mut target = Rig::new();
+
+    let refused = target.builder.rebuild_verified(
+        &entries,
+        version(1),
+        (LogEpoch::ZERO, PolicyDigestValue::ZERO),
+    );
+
+    assert!(matches!(
+        refused,
+        Err(SnapshotBuildError::DigestMismatch { .. })
+    ));
+    assert!(target.cell.current().is_none(), "nothing is published");
+}

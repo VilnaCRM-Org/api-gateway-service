@@ -22,9 +22,9 @@ const CALLER_AUDIENCE: &str = "vilnacrm-iam";
 
 /// The user that the subject tokens of the scenarios name.
 pub(crate) const USER_ID: &str = "0190f2a8-7b3c-7d4e-8f10-1234567890ab";
-/// The service that the caller tokens of the scenarios name; the scenario policy gives it the
-/// administrator's keys (see `administrator_policy`).
-pub(crate) const CALLER_SERVICE: &str = "e2e-caller";
+/// The administrator that the caller tokens of the scenarios name; the scenario policy gives it
+/// the keys of the bootstrapped `iam-platform-admin` role (see `administrator_policy`).
+pub(crate) const ADMINISTRATOR_ID: &str = "0190f2a8-7b3c-7d4e-8f10-00000000ad02";
 /// A service caller that holds no IAM key, for the scenarios of the authorization rule.
 pub(crate) const UNPRIVILEGED_SERVICE: &str = "e2e-unprivileged-caller";
 
@@ -67,23 +67,28 @@ impl SigningKey {
 
     /// A `ROLE_USER` token of [`USER_ID`] in `session`, issued now and valid for 10 minutes.
     pub(crate) fn user_token(&self, session: &str) -> String {
-        self.sign(&user_claims(session, 0, 600))
+        self.sign(&user_claims(USER_ID, session, 0, 600))
     }
 
     /// A `ROLE_USER` token of [`USER_ID`] in `session` that expired 10 minutes ago, far beyond the
     /// clock skew, with a lifetime within the maximum.
     pub(crate) fn expired_user_token(&self, session: &str) -> String {
-        self.sign(&user_claims(session, -1200, -600))
+        self.sign(&user_claims(USER_ID, session, -1200, -600))
     }
 
-    /// A `ROLE_SERVICE` token of [`CALLER_SERVICE`] that names the IAM caller audience and lives
-    /// for 10 minutes: what a microservice presents to call IAM.
-    pub(crate) fn caller_token(&self) -> String {
-        self.service_token(CALLER_SERVICE)
+    /// A `ROLE_USER` token of [`ADMINISTRATOR_ID`], the bootstrapped administrator, issued now and
+    /// valid for 10 minutes: what an operator presents to call IAM.
+    pub(crate) fn administrator_token(&self) -> String {
+        self.sign(&user_claims(
+            ADMINISTRATOR_ID,
+            "e2e-administrator-session",
+            0,
+            600,
+        ))
     }
 
-    /// A caller token like [`Self::caller_token`] of [`UNPRIVILEGED_SERVICE`], which holds no IAM
-    /// key.
+    /// A `ROLE_SERVICE` token of [`UNPRIVILEGED_SERVICE`] that names the IAM caller audience and
+    /// lives for 10 minutes; the service holds no IAM key.
     pub(crate) fn unprivileged_caller_token(&self) -> String {
         self.service_token(UNPRIVILEGED_SERVICE)
     }
@@ -105,13 +110,13 @@ impl SigningKey {
     }
 }
 
-/// The claims of a `ROLE_USER` token that was issued `issued` seconds from now and expires
-/// `expires` seconds from now.
-fn user_claims(session: &str, issued: i64, expires: i64) -> Value {
+/// The claims of a `ROLE_USER` token of `subject` that was issued `issued` seconds from now and
+/// expires `expires` seconds from now.
+fn user_claims(subject: &str, session: &str, issued: i64, expires: i64) -> Value {
     json!({
         "iss": ISSUER,
         "aud": AUDIENCE,
-        "sub": USER_ID,
+        "sub": subject,
         "sid": session,
         "jti": format!("e2e-token-{session}"),
         "roles": ["ROLE_USER"],

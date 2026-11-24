@@ -14,7 +14,7 @@ use health_check_domain::HealthProbe;
 use health_check_infrastructure::{CacheProbe, PostgresProbe, SqsProbe};
 use iam_application::MaintenanceSettings;
 use iam_application::PublishingUnitOfWork;
-use iam_application::graphql::AsyncGraphQlSchemaParser;
+use iam_application::graphql::{AsyncGraphQlSchemaParser, IamAuthorizationExtension};
 use iam_application::http::IamState;
 use iam_application::http::JsonOpenApiDocumentParser;
 use iam_application::{
@@ -859,7 +859,7 @@ fn registration_handler(
 }
 
 /// Registers every handler, builds the command and query buses, the state, the `GraphQL` schema
-/// and the router with its middleware.
+/// (with the authorization of IAM's own fields) and the router with its middleware.
 ///
 /// # Errors
 ///
@@ -906,6 +906,7 @@ pub fn router_with_iam_routes(
     let schema = schema::builder()
         .data(some_module.clone())
         .data(iam.clone())
+        .extension(IamAuthorizationExtension::new(Arc::clone(&guard)))
         .finish();
     let state = AppState {
         health_check,

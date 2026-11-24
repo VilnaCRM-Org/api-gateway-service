@@ -91,5 +91,33 @@ pub struct KafkaSettings {
     pub events_topic: String,
 }
 
+/// The principal and the client id of the bootstrap connection of a gateway pod.
+pub const BOOTSTRAP_PRINCIPAL: &str = "iam-gateway-bootstrap";
+
+impl KafkaSettings {
+    /// The settings of the bootstrap connection of a gateway pod: the client id
+    /// [`BOOTSTRAP_PRINCIPAL`] and, over SASL, the credentials of that principal; a plaintext
+    /// connection carries none.
+    #[must_use]
+    pub fn bootstrap_principal(&self, username: String, password: KafkaSecret) -> Self {
+        let security = match &self.security {
+            KafkaSecurity::Plaintext => KafkaSecurity::Plaintext,
+            KafkaSecurity::SaslSsl {
+                mechanism, ca_file, ..
+            } => KafkaSecurity::SaslSsl {
+                mechanism: *mechanism,
+                username,
+                password,
+                ca_file: ca_file.clone(),
+            },
+        };
+        Self {
+            security,
+            client_id: BOOTSTRAP_PRINCIPAL.to_owned(),
+            ..self.clone()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

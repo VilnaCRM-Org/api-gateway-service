@@ -2216,6 +2216,7 @@ dependencies = [
  "moka",
  "rand 0.10.3",
  "rstest",
+ "rustix",
  "rustls",
  "rustls-pki-types",
  "serde",

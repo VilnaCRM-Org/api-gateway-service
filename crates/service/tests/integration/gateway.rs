@@ -199,8 +199,9 @@ fn an_idle_gateway_stops_on_sigterm_within_the_grace_period_with_exit_status_0()
         "{:?}",
         started.elapsed()
     );
+    // The bootstrap meets no broker here, so its own entries are left out.
     assert_eq!(
-        finished.messages(),
+        finished.lifecycle_messages(),
         [
             "runtime started",
             "listening",

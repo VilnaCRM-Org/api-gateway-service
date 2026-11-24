@@ -4,7 +4,7 @@ Feature: IAM specification retirement
   I want to retire specification versions and confirm the grants that this orphans over REST or GraphQL
 
   Scenario: Retiring a GraphQL version that would orphan grants needs confirmOrphans over REST and GraphQL, and confirming orphans them
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Payer"
     And the If-Match header '"1"'
     When POST request is sent to "/api/graphql-specs" with body:
@@ -62,7 +62,7 @@ Feature: IAM specification retirement
     And the response body should contain '"active":false'
 
   Scenario: Retiring a GraphQL version over GraphQL needs confirmOrphans and then orphans the grants
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Payer"
     And the If-Match header '"1"'
     When POST request is sent to "/api/graphql-specs" with body:
@@ -105,7 +105,7 @@ Feature: IAM specification retirement
     And the audit log should hold 1 committed "graphql_spec.retire" record
 
   Scenario: Retiring an OpenAPI version that would orphan grants needs confirmOrphans over REST and GraphQL, and confirming orphans them
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Payer"
     And the If-Match header '"1"'
     When POST request is sent to "/api/openapi-specs" with body:
@@ -157,7 +157,7 @@ Feature: IAM specification retirement
     And the JSON pointer "/status" should equal "retired"
 
   Scenario: Retiring an OpenAPI version over GraphQL needs confirmOrphans and then orphans the grants
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Payer"
     And the If-Match header '"1"'
     When POST request is sent to "/api/openapi-specs" with body:
@@ -192,7 +192,7 @@ Feature: IAM specification retirement
     And the outbox should hold 1 "iam.permissions.orphaned" event
 
   Scenario: A version without grants retires without confirmation and its keys leave the catalogue
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/graphql-specs" with body:
       """
       {"service": "billing", "sdl": "type Query {\n  invoices: [String!]!\n}\n"}
@@ -221,7 +221,7 @@ Feature: IAM specification retirement
     And the outbox should hold 1 "iam.graphql_spec.retired" event
 
   Scenario: Repeating a REST retirement with the same idempotency key returns the original result and no second event
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Payer"
     And the If-Match header '"1"'
     When POST request is sent to "/api/graphql-specs" with body:
@@ -256,7 +256,7 @@ Feature: IAM specification retirement
     And the audit log should hold 1 committed "graphql_spec.retire" record
 
   Scenario: Repeating a GraphQL retirement with the same idempotency key returns the original result and no second event
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Payer"
     And the If-Match header '"1"'
     When POST request is sent to "/api/openapi-specs" with body:
@@ -290,7 +290,7 @@ Feature: IAM specification retirement
     And the audit log should hold 1 committed "openapi_spec.retire" record
 
   Scenario: An orphaned grant stays inactive when a later GraphQL version contains its key
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Payer"
     And the If-Match header '"1"'
     When POST request is sent to "/api/graphql-specs" with body:
@@ -333,7 +333,7 @@ Feature: IAM specification retirement
     And the response body should contain '"active":false'
 
   Scenario: An orphaned grant stays inactive when a later OpenAPI version contains its key
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Payer"
     And the If-Match header '"1"'
     When POST request is sent to "/api/openapi-specs" with body:
@@ -375,7 +375,7 @@ Feature: IAM specification retirement
     And the response body should contain '"active":false'
 
   Scenario: A rename in a GraphQL activation moves the grants that were created through the API and is audited
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Payer"
     And the If-Match header '"1"'
     When POST request is sent to "/api/graphql-specs" with body:
@@ -417,7 +417,7 @@ Feature: IAM specification retirement
     And the JSON pointer "/permissions/0/key" should equal "gql:billing:Query.invoices"
 
   Scenario: A rename in an OpenAPI activation moves the grants that were created through the API and is audited
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Payer"
     And the If-Match header '"1"'
     When POST request is sent to "/api/openapi-specs" with body:
@@ -459,7 +459,7 @@ Feature: IAM specification retirement
     And the JSON pointer "/permissions/0/key" should equal "rest:billing:GET /invoices"
 
   Scenario: An unknown version, a draft, an invalid identifier and a missing token are refused
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/graphql-specs/0190f2a8-7b3c-7d4e-8f10-1234567890ad/retirement" with body:
       """
       {}

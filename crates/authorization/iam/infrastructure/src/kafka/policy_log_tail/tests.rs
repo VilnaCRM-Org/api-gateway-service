@@ -5,8 +5,8 @@ use krafka::consumer::ConsumerRecord;
 use std::time::Duration;
 
 use super::{
-    KrafkaPolicyLogTail, completed, finished, into_unavailable, polls_within, record_of,
-    report_close, take_range,
+    KrafkaPolicyLogTail, completed, finished, framed_of, into_unavailable, polls_within, record_of,
+    report_close, take_converted,
 };
 use crate::kafka::settings::{KafkaSecurity, KafkaSettings};
 use iam_domain::TAIL_READ_LIMIT;
@@ -113,7 +113,7 @@ fn only_the_records_inside_the_range_are_taken() {
     ];
     let mut records = Vec::new();
 
-    take_range(&mut records, polled, 2, 3).unwrap();
+    take_converted(&mut records, polled, (2, 3), record_of).unwrap();
 
     let offsets: Vec<_> = records.iter().map(|record| record.offset).collect();
     assert_eq!(offsets, [2]);
@@ -123,7 +123,12 @@ fn only_the_records_inside_the_range_are_taken() {
 fn a_malformed_record_in_the_range_fails_the_read() {
     let mut records = Vec::new();
 
-    let failed = take_range(&mut records, vec![consumed(2, None, None)], 0, 10);
+    let failed = take_converted(
+        &mut records,
+        vec![consumed(2, None, None)],
+        (0, 10),
+        record_of,
+    );
 
     assert!(failed.is_err());
 }
@@ -166,7 +171,7 @@ fn a_read_that_did_not_finish_in_time_is_unavailable_and_a_finished_one_is_cut_a
         .collect();
 
     assert!(matches!(
-        completed(Vec::new(), false),
+        completed(Vec::<iam_domain::TailRecord>::new(), false),
         Err(PolicyLogTailError::Unavailable(_))
     ));
     assert_eq!(completed(many, true).unwrap().len(), TAIL_READ_LIMIT);
@@ -184,4 +189,102 @@ fn a_client_error_is_an_unavailable_topic() {
 fn a_close_that_fails_is_reported_and_a_clean_one_is_not() {
     report_close(Err(krafka::KrafkaError::timeout("consumer close")));
     report_close(Ok(()));
+}
+
+const ROLE_KEY: &str = "role/0192f6a0-0000-7000-8000-000000000001";
+
+fn framed(offset: i64, key: &str) -> ConsumerRecord {
+    let mut record = consumed(offset, Some(key), Some("{}"));
+    record.headers.extend([
+        ("iam-seq".to_owned(), Some(Bytes::from_static(b"2"))),
+        ("iam-count".to_owned(), Some(Bytes::from_static(b"5"))),
+        (
+            "iam-digest-after".to_owned(),
+            Some(Bytes::from("00".repeat(16))),
+        ),
+        ("iam-log-epoch".to_owned(), Some(Bytes::from_static(b"4"))),
+    ]);
+    record
+}
+
+#[test]
+fn a_consumed_record_becomes_a_framed_record_with_the_whole_framing() {
+    let framed = framed_of(&framed(9, ROLE_KEY)).unwrap();
+
+    assert_eq!(framed.offset, 9);
+    assert_eq!(framed.record.key.to_string(), ROLE_KEY);
+    assert_eq!(framed.record.payload.as_deref(), Some("{}"));
+    assert_eq!(framed.record.version.value(), 7);
+    assert_eq!((framed.record.seq, framed.record.count), (2, 5));
+    assert_eq!(framed.record.log_epoch.value(), 4);
+    assert_eq!(framed.record.relay_epoch.value(), 3);
+    assert_eq!(framed.record.digest_after.to_hex(), "00".repeat(16));
+}
+
+#[test]
+fn a_record_that_is_not_a_tail_record_is_not_a_framed_record() {
+    let refused = framed_of(&consumed(4, None, Some("{}")));
+
+    assert!(matches!(
+        refused,
+        Err(PolicyLogTailError::Malformed { offset: 4 })
+    ));
+}
+
+#[test]
+fn a_key_that_is_not_a_state_key_is_malformed() {
+    let refused = framed_of(&framed(6, "not-a-state-key"));
+
+    assert!(matches!(
+        refused,
+        Err(PolicyLogTailError::Malformed { offset: 6 })
+    ));
+}
+
+#[test]
+fn a_record_that_lacks_a_framing_header_is_malformed() {
+    for missing in ["iam-seq", "iam-count", "iam-digest-after", "iam-log-epoch"] {
+        let mut record = framed(8, ROLE_KEY);
+        record.headers.retain(|(name, _)| name != missing);
+
+        assert!(
+            matches!(
+                framed_of(&record),
+                Err(PolicyLogTailError::Malformed { offset: 8 })
+            ),
+            "{missing}"
+        );
+    }
+}
+
+#[test]
+fn a_framing_header_that_does_not_parse_is_malformed() {
+    let mut record = framed(3, ROLE_KEY);
+    record
+        .headers
+        .iter_mut()
+        .filter(|(name, _)| name == "iam-count")
+        .for_each(|(_, value)| *value = Some(Bytes::from_static(b"many")));
+
+    assert!(matches!(
+        framed_of(&record),
+        Err(PolicyLogTailError::Malformed { offset: 3 })
+    ));
+}
+
+#[test]
+fn the_bootstrap_reader_never_resets_an_offset_by_itself() {
+    let reader = KrafkaPolicyLogTail::bootstrap(KafkaSettings {
+        bootstrap_servers: "localhost:1".to_owned(),
+        security: KafkaSecurity::Plaintext,
+        client_id: "iam-gateway-bootstrap".to_owned(),
+        connect_timeout: Duration::from_millis(10),
+        request_timeout: Duration::from_millis(20),
+        retry_delay: Duration::from_millis(1),
+        gates: iam_domain::ConfigGates::Relaxed,
+        policy_topic: "state".to_owned(),
+        events_topic: "events".to_owned(),
+    });
+
+    assert_eq!(reader.reset, krafka::consumer::AutoOffsetReset::None);
 }

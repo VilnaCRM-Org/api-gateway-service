@@ -10,15 +10,15 @@ use std::sync::Arc;
 
 use iam_domain::{
     AccessCheck, AccessTarget, AuditAction, AuditReason, AuditTarget, DecisionOutcome,
-    DecisionReason, InvalidIamValue, InvalidPermissionKey, PermissionKey, RequestId, RestTarget,
-    ServiceName, SubjectId, SubjectRef,
+    DecisionReason, InvalidAccessCheck, InvalidIamValue, InvalidPermissionKey, PermissionKey,
+    PermissionsTarget, RequestId, RestTarget, ServiceName, SubjectId, SubjectRef,
 };
 use shared_domain::CommandBus;
 
 use crate::access_decision_service::AccessDecisionService;
 use crate::command::record_rejected_attempt::RecordRejectedAttemptCommand;
 use crate::error::IamError;
-use crate::operation_rules::{OperationRule, OperationRules};
+use crate::operation_rules::{GraphQlRule, OperationRule, OperationRules, Requirement};
 use crate::principal::Principal;
 
 /// The audited action of a request for an operation that has no row in the table.
@@ -49,6 +49,22 @@ pub struct OperationRequest<'request> {
     pub path: &'request str,
     /// The request id, recorded with a refusal.
     pub request_id: Option<&'request str>,
+}
+
+/// The GraphQL document an IAM root field was selected in.
+#[derive(Debug, Clone, Copy)]
+pub struct GraphQlOperationRequest<'request> {
+    /// The `{Type}.{field}` coordinates of the IAM-owned root fields the executed operation
+    /// selects.
+    pub coordinates: &'request [String],
+    /// The request id, recorded with a refusal.
+    pub request_id: Option<&'request str>,
+}
+
+/// What a row of a rule table says about an operation: its audited action and what it requires.
+struct Row {
+    action: &'static str,
+    requirement: Requirement,
 }
 
 /// What a refusal says about the request: the audited action, the target and the reason code.
@@ -111,23 +127,82 @@ impl IamAccessGuard {
         request: &OperationRequest<'_>,
     ) -> Result<(), IamError> {
         let Some(rule) = OperationRules::find(request.method, request.template) else {
-            let refusal = Refusal {
-                action: UNLISTED_ACTION,
-                target: request.template,
-                reason: REASON_UNLISTED,
-            };
-            self.refuse(principal, &refusal, request.request_id).await;
-            return Err(IamError::Forbidden);
+            return self
+                .refuse_unlisted(principal, request.template, request.request_id)
+                .await;
         };
-        match self.verdict(principal, rule, request).await {
+        let check = catalogue_check(rule, request);
+        let row = Row {
+            action: rule.action,
+            requirement: rule.requirement,
+        };
+        self.enforce(principal, &row, &check, request.request_id)
+            .await
+    }
+
+    /// Lets a GraphQL document through when `principal` holds what the row of every IAM root field
+    /// it selects requires; the fields are checked in order and the first refusal is the answer.
+    ///
+    /// # Errors
+    ///
+    /// [`IamError::Forbidden`] when a coordinate has no row or the caller lacks a key (the
+    /// refusal is offered to the audit log), and [`IamError::Storage`] when the policy cannot be
+    /// read.
+    pub async fn authorize_graphql(
+        &self,
+        principal: &Principal,
+        request: &GraphQlOperationRequest<'_>,
+    ) -> Result<(), IamError> {
+        for coordinate in request.coordinates {
+            let Some(rule) = OperationRules::find_graphql(coordinate) else {
+                return self
+                    .refuse_unlisted(principal, coordinate, request.request_id)
+                    .await;
+            };
+            let row = Row {
+                action: rule.action,
+                requirement: rule.requirement,
+            };
+            self.enforce(principal, &row, &field_check(rule)?, request.request_id)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Refuses an operation that has no row and offers the refusal to the audit log.
+    async fn refuse_unlisted(
+        &self,
+        principal: &Principal,
+        target: &str,
+        request_id: Option<&str>,
+    ) -> Result<(), IamError> {
+        let refusal = Refusal {
+            action: UNLISTED_ACTION,
+            target,
+            reason: REASON_UNLISTED,
+        };
+        self.refuse(principal, &refusal, request_id).await;
+        Err(IamError::Forbidden)
+    }
+
+    /// Decides one row: an allow passes, a deny is refused and audited, an undecidable policy is
+    /// an error.
+    async fn enforce(
+        &self,
+        principal: &Principal,
+        row: &Row,
+        check: &AccessCheck,
+        request_id: Option<&str>,
+    ) -> Result<(), IamError> {
+        match self.verdict(principal, row.requirement, check).await {
             Verdict::Allowed => Ok(()),
             Verdict::Denied => {
                 let refusal = Refusal {
-                    action: rule.action,
-                    target: rule.action,
+                    action: row.action,
+                    target: row.action,
                     reason: REASON_FORBIDDEN,
                 };
-                self.refuse(principal, &refusal, request.request_id).await;
+                self.refuse(principal, &refusal, request_id).await;
                 Err(IamError::Forbidden)
             }
             Verdict::Unavailable => Err(IamError::Storage(Box::new(AuthorizationUnavailable))),
@@ -138,38 +213,37 @@ impl IamAccessGuard {
     async fn verdict(
         &self,
         principal: &Principal,
-        rule: &OperationRule,
-        request: &OperationRequest<'_>,
+        requirement: Requirement,
+        check: &AccessCheck,
     ) -> Verdict {
         let subject = subject_of(principal);
-        let catalogue = self.catalogue_verdict(&subject, rule, request).await;
+        let catalogue = self.catalogue_verdict(&subject, requirement, check).await;
         if catalogue != Verdict::Allowed {
             return catalogue;
         }
-        self.reserved_verdict(subject, rule).await
+        self.reserved_verdict(subject, requirement).await
     }
 
     /// Decides the catalogue key of the operation; a row without one is allowed.
     async fn catalogue_verdict(
         &self,
         subject: &SubjectRef,
-        rule: &OperationRule,
-        request: &OperationRequest<'_>,
+        requirement: Requirement,
+        check: &AccessCheck,
     ) -> Verdict {
-        if !rule.requirement.needs_catalogue() {
+        if !requirement.needs_catalogue() {
             return Verdict::Allowed;
         }
-        let check = catalogue_check(rule, request);
         let outcome = self
             .decisions
-            .decide_for_subject(subject.clone(), &check)
+            .decide_for_subject(subject.clone(), check)
             .await;
         Verdict::of(&outcome)
     }
 
     /// Decides the reserved keys of the row; a row without one is allowed.
-    async fn reserved_verdict(&self, subject: SubjectRef, rule: &OperationRule) -> Verdict {
-        let Ok(keys) = reserved_keys(rule) else {
+    async fn reserved_verdict(&self, subject: SubjectRef, requirement: Requirement) -> Verdict {
+        let Ok(keys) = reserved_keys(requirement) else {
             return Verdict::Unavailable;
         };
         if keys.is_empty() {
@@ -220,9 +294,26 @@ fn catalogue_check(rule: &OperationRule, request: &OperationRequest<'_>) -> Acce
     )
 }
 
+/// The check of the catalogue key of an IAM root field: its permission key against service `iam`.
+fn field_check(rule: &GraphQlRule) -> Result<AccessCheck, IamError> {
+    let key = format!("gql:iam:{}", rule.coordinate);
+    let target = PermissionsTarget::new(vec![key]).map_err(undecidable)?;
+    Ok(AccessCheck::new(
+        ServiceName::iam().clone(),
+        AccessTarget::Permissions(target),
+        None,
+        None,
+    ))
+}
+
+/// The error of a check that cannot be built: the request fails closed like an unreadable policy.
+fn undecidable(_error: InvalidAccessCheck) -> IamError {
+    IamError::Storage(Box::new(AuthorizationUnavailable))
+}
+
 /// The reserved keys of the row; a row that names a key that does not parse is a defect.
-fn reserved_keys(rule: &OperationRule) -> Result<Vec<PermissionKey>, InvalidPermissionKey> {
-    rule.requirement
+fn reserved_keys(requirement: Requirement) -> Result<Vec<PermissionKey>, InvalidPermissionKey> {
+    requirement
         .reserved()
         .iter()
         .map(|raw| PermissionKey::parse(raw))

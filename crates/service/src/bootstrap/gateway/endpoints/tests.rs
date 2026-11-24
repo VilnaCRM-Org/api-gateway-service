@@ -34,6 +34,8 @@ fn config(edit: impl FnOnce(&mut GatewayArgs)) -> GatewayConfig {
     let mut args = GatewayArgs::default();
     args.service.app_env = Some("test".to_owned());
     args.service.tokens.public_keys_file = Some(DEVELOPMENT_PUBLIC_KEYS_FILE.to_owned());
+    args.service.kafka.bootstrap_servers = Some("localhost:9092".to_owned());
+    args.service.kafka.security_protocol = Some("PLAINTEXT".to_owned());
     edit(&mut args);
     GatewayConfig::from_args(&args).unwrap()
 }

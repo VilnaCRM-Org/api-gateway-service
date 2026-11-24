@@ -4,7 +4,7 @@ Feature: IAM token resolution
   I want to resolve a User service token into its subject over REST or GraphQL
 
   Scenario: A valid user token resolves to the same subject over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a subject token of a user in session "e2e-session-1"
     When POST request is sent to "/api/token-resolutions" with body:
       """
@@ -21,7 +21,7 @@ Feature: IAM token resolution
     And no response should contain the subject token
 
   Scenario: An expired token is refused with its reason over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an expired subject token of a user in session "e2e-session-2"
     When POST request is sent to "/api/token-resolutions" with body:
       """
@@ -36,7 +36,7 @@ Feature: IAM token resolution
     And no response should contain the subject token
 
   Scenario: A token signed by an unknown key is invalid over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a subject token signed by an unknown key
     When POST request is sent to "/api/token-resolutions" with body:
       """
@@ -51,7 +51,7 @@ Feature: IAM token resolution
     And no response should contain the subject token
 
   Scenario: An empty credential is missing over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an empty subject token
     When POST request is sent to "/api/token-resolutions" with body:
       """
@@ -65,7 +65,7 @@ Feature: IAM token resolution
     And both token resolutions should be unresolved with reason "token_missing"
 
   Scenario: A token of a revoked session is refused over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a subject token of a user in session "e2e-session-3"
     And the session "e2e-session-3" is revoked
     When POST request is sent to "/api/token-resolutions" with body:

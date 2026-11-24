@@ -1,13 +1,15 @@
-//! The policy that lets the service caller of the scenarios call IAM's own operations.
+//! The policy that makes the caller of the scenarios the administrator of IAM.
 //!
-//! IAM refuses every caller of its REST operations that lacks the keys of the rule table
-//! (Story 6.11). The scenarios that predate that rule authenticate as the service
-//! [`CALLER_SERVICE`] and exercise the operations themselves, not their authorization, so the
-//! policy reads of their application instance give that service one global assignment of a role
-//! that grants exactly the keys of the bootstrapped `iam-platform-admin` role. Every other subject,
-//! and every catalogue, is read from the scenario database unchanged, and no row is written, so
-//! policy versions, listings and audit records stay as the scenarios expect. Story 6.12 moves the
-//! scenarios onto the bootstrapped administrator itself.
+//! IAM refuses every caller of its REST operations and GraphQL fields that lacks the keys of the
+//! rule table (Stories 6.11 and 6.12). The scenarios exercise the operations themselves, not their
+//! authorization, so they authenticate as the administrator [`ADMINISTRATOR_ID`]: the policy reads
+//! of their application instance give that user one global assignment of a role that grants
+//! exactly the keys of the bootstrapped `iam-platform-admin` role (`PlatformAdministrator::GRANTS`).
+//! The assignment lives in memory because a real bootstrap would add a role, an assignment and a
+//! policy version to every scenario database and move the listings, counts and events that the
+//! scenarios assert; the scenarios of the first administrator bootstrap it for real. Every other
+//! subject, and every catalogue, is read from the scenario database unchanged, and no row is
+//! written.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -18,14 +20,15 @@ use iam_domain::{
     PolicyReadRepository, RepositoryError, RoleAssignment, RoleId, ServiceCatalog, ServiceName,
     SubjectPolicy, SubjectRef,
 };
+use shared_domain::Uuid;
 
-use crate::tokens::CALLER_SERVICE;
+use crate::tokens::ADMINISTRATOR_ID;
 
 /// The id of the in-memory role that holds the administrator's keys; no stored role has it.
 const ADMINISTRATOR_ROLE: &str = "0190f2a8-7b3c-7d4e-8f10-00000000ad01";
 
-/// Policy reads of the scenario database in which the service caller holds the administrator's
-/// keys.
+/// Policy reads of the scenario database in which the administrator holds the keys of the
+/// bootstrapped role.
 #[derive(Debug)]
 pub(crate) struct AdministratorCallerPolicy {
     inner: Arc<dyn PolicyReadRepository>,
@@ -35,7 +38,7 @@ pub(crate) struct AdministratorCallerPolicy {
 }
 
 impl AdministratorCallerPolicy {
-    /// Reads through `inner` and adds the administrator's keys to the policy of the caller.
+    /// Reads through `inner` and adds the administrator's keys to the policy of the administrator.
     ///
     /// # Panics
     ///
@@ -49,9 +52,7 @@ impl AdministratorCallerPolicy {
         });
         Self {
             inner,
-            caller: SubjectRef::service(
-                ServiceName::new(CALLER_SERVICE).expect("a valid service name"),
-            ),
+            caller: SubjectRef::user(Uuid::parse(ADMINISTRATOR_ID).expect("a valid user id")),
             role: RoleId::parse(ADMINISTRATOR_ROLE).expect("a valid role id"),
             role_set: CompiledRoleSet::compile(grants),
         }

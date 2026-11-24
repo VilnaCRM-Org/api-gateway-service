@@ -562,9 +562,9 @@ impl AppWorld {
         self.signing.as_ref().expect("generated above")
     }
 
-    /// Makes the following requests carry the bearer token of a valid service caller.
-    pub(crate) fn authenticate_as_service(&mut self) {
-        self.caller_token = Some(self.signing_key().caller_token());
+    /// Makes the following requests carry the bearer token of the bootstrapped administrator.
+    pub(crate) fn authenticate_as_administrator(&mut self) {
+        self.caller_token = Some(self.signing_key().administrator_token());
     }
 
     /// Makes the following requests carry the bearer token of a valid service caller that holds
@@ -576,7 +576,7 @@ impl AppWorld {
     /// Makes the following requests carry a bearer token that no key file of the application
     /// holds the key of.
     pub(crate) fn authenticate_with_unknown_key(&mut self) {
-        self.caller_token = Some(SigningKey::generate().caller_token());
+        self.caller_token = Some(SigningKey::generate().administrator_token());
     }
 
     /// Sets the credential that `{token}` stands for.

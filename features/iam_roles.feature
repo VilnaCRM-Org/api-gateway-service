@@ -4,7 +4,7 @@ Feature: IAM roles
   I want to create, read and update roles over REST or GraphQL
 
   Scenario: Creating a role over REST commits the role, its event and its audit record
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/roles" with body:
       """
       {"name": "Billing administrator", "description": "Manages invoices."}
@@ -22,7 +22,7 @@ Feature: IAM roles
     And the audit log should hold 1 committed "role.create" record
 
   Scenario: Creating a role over GraphQL returns the same data
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When the GraphQL operation is sent:
       """
       mutation { createRole(input: {name: "Billing administrator", description: "Manages invoices."}) { id name description kind grantCount version createdAt updatedAt } }
@@ -40,7 +40,7 @@ Feature: IAM roles
     And the audit log should hold 1 committed "role.create" record
 
   Scenario: Waiting for the propagated mode is refused before Story 13.4 over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And the Prefer header "wait=propagated"
     When POST request is sent to "/api/roles" with body:
       """
@@ -58,7 +58,7 @@ Feature: IAM roles
     And the outbox should hold 0 "iam.role.created" events
 
   Scenario: A duplicate name is a conflict over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a role exists with name "Billing administrator"
     When POST request is sent to "/api/roles" with body:
       """
@@ -75,7 +75,7 @@ Feature: IAM roles
     And the audit log should hold 1 committed "role.create" record
 
   Scenario: An invalid name is a validation failure with the same violations over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/roles" with body:
       """
       {"name": ""}
@@ -92,7 +92,7 @@ Feature: IAM roles
     And the outbox should hold 0 "iam.role.created" events
 
   Scenario: Repeating a REST creation with the same idempotency key returns the original result
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And the idempotency key "create-billing-rest"
     When POST request is sent to "/api/roles" with body:
       """
@@ -109,7 +109,7 @@ Feature: IAM roles
     And the audit log should hold 1 committed "role.create" record
 
   Scenario: Repeating a GraphQL creation with the same idempotency key returns the original result
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When the GraphQL operation is sent:
       """
       mutation { createRole(input: {name: "Billing administrator", idempotencyKey: "create-billing-graphql"}) { id name version } }
@@ -125,7 +125,7 @@ Feature: IAM roles
     And the audit log should hold 1 committed "role.create" record
 
   Scenario: Reusing an idempotency key for another request is refused
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And the idempotency key "create-billing-reused"
     When POST request is sent to "/api/roles" with body:
       """
@@ -140,7 +140,7 @@ Feature: IAM roles
     And the role "Support agent" should be stored 0 times
 
   Scenario: Reading a role by id over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a role exists with name "Billing administrator"
     When GET request is sent to "/api/roles/{id}"
     Then the response status code should be 200
@@ -162,7 +162,7 @@ Feature: IAM roles
     And the JSON pointer "/data/role/version" should equal the number 1
 
   Scenario: An unknown role is 404 over REST and null over GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When GET request is sent to "/api/roles/00000000-0000-7000-8000-000000000000"
     Then the response status code should be 404
     When the GraphQL operation is sent:
@@ -173,7 +173,7 @@ Feature: IAM roles
     And the JSON pointer "/data/role" should be null
 
   Scenario: Roles are listed with cursor pagination over REST
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a role exists with name "Alpha role"
     And a role exists with name "Beta role"
     And a role exists with name "Gamma role"
@@ -191,7 +191,7 @@ Feature: IAM roles
     And the JSON pointer "/nextCursor" should be absent
 
   Scenario: Roles are filtered by name prefix and kind over REST
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a role exists with name "Alpha role"
     And a role exists with name "Beta role"
     When GET request is sent to "/api/roles?namePrefix=ALP"
@@ -204,7 +204,7 @@ Feature: IAM roles
     Then the JSON array at "/items" should have 0 items
 
   Scenario: Roles are listed with cursor pagination and filters over GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a role exists with name "Alpha role"
     And a role exists with name "Beta role"
     And a role exists with name "Gamma role"
@@ -247,7 +247,7 @@ Feature: IAM roles
     Then the GraphQL error code should be "UNAUTHENTICATED"
 
   Scenario: Renaming a role over REST with its current ETag commits the update, its event and its audit record
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a role exists with name "Billing administrator"
     And the If-Match header is the ETag of the last response
     When PATCH request is sent to "/api/roles/{id}" with body:
@@ -264,7 +264,7 @@ Feature: IAM roles
     And the audit log should hold 1 committed "role.update" record
 
   Scenario: Renaming a role over GraphQL with its current version commits the update, its event and its audit record
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a role exists with name "Billing administrator"
     When the GraphQL operation is sent:
       """
@@ -278,7 +278,7 @@ Feature: IAM roles
     And the audit log should hold 1 committed "role.update" record
 
   Scenario: An update without a version is refused over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a role exists with name "Billing administrator"
     When PATCH request is sent to "/api/roles/{id}" with body:
       """
@@ -294,7 +294,7 @@ Feature: IAM roles
     And the outbox should hold 0 "iam.role.updated" events
 
   Scenario: An update with a stale version is refused over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a role exists with name "Billing administrator"
     And the If-Match header '"7"'
     When PATCH request is sent to "/api/roles/{id}" with body:
@@ -311,7 +311,7 @@ Feature: IAM roles
     And the outbox should hold 0 "iam.role.updated" events
 
   Scenario: A system role cannot be updated over REST or GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a system role exists with name "Platform administrator"
     And the If-Match header '"1"'
     When PATCH request is sent to "/api/roles/{id}" with body:
@@ -330,7 +330,7 @@ Feature: IAM roles
     And the outbox should hold 0 "iam.role.updated" events
 
   Scenario: Deleting a role over REST revokes its assignments and commits the events, the audit records and one policy version
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -372,7 +372,7 @@ Feature: IAM roles
     And the JSON array at "/items" should have 0 items
 
   Scenario: Deleting a role over GraphQL revokes its assignments and reports their number
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -417,7 +417,7 @@ Feature: IAM roles
     Then the JSON array at "/data/userRoles/items" should have 0 items
 
   Scenario: A deletion whose statement fails changes nothing and leaves no event or audit record
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -449,7 +449,7 @@ Feature: IAM roles
     And the JSON pointer "/version" should equal the number 1
 
   Scenario: A system role cannot be deleted and a stale or missing version is refused
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And a system role exists with name "iam-platform-admin"
     And the If-Match header '"1"'
     When DELETE request is sent to "/api/roles/{id}"
@@ -477,7 +477,7 @@ Feature: IAM roles
     And the IAM policy version should be 2
 
   Scenario: A deletion without a version is refused over REST and a deleted role is not found again
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When DELETE request is sent to "/api/roles/{role}"
     Then the response status code should be 428
@@ -491,7 +491,7 @@ Feature: IAM roles
     And the IAM policy version should be 3
 
   Scenario: Repeating a deletion with the same idempotency key returns the original result and changes nothing a second time
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -519,7 +519,7 @@ Feature: IAM roles
     And the IAM policy version should be 5
 
   Scenario: Repeating a GraphQL deletion with the same idempotency key returns the original result
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -553,7 +553,7 @@ Feature: IAM roles
     Then the GraphQL error code should be "UNAUTHENTICATED"
 
   Scenario: Replacing the grants of a role over REST commits the grants, the event, the audit record and a policy version
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     And the If-Match header '"1"'
     When POST request is sent to "/api/graphql-specs" with body:
@@ -600,7 +600,7 @@ Feature: IAM roles
     And the audit log should hold 1 committed "role.permissions.set" record
 
   Scenario: The grants of a role are read over REST with the ETag of the role
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator" that grants "gql:billing:Query.invoices, rest:orders:GET /orders"
     When GET request is sent to "/api/roles/{role}/permissions"
     Then the response status code should be 200
@@ -615,7 +615,7 @@ Feature: IAM roles
     Then the response status code should be 404
 
   Scenario: Replacing the grants of a role over GraphQL returns the same data and the new grants through the role
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator" that grants "gql:billing:Query.invoices, rest:orders:GET /orders"
     When POST request is sent to "/api/graphql-specs" with body:
       """
@@ -660,7 +660,7 @@ Feature: IAM roles
     And the JSON pointer "/data/role/permissions/1/key" should equal "rest:orders:*"
 
   Scenario: A wildcard grant of an existing service is audited as covering future elements
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     And the If-Match header '"1"'
     When POST request is sent to "/api/graphql-specs" with body:
@@ -692,7 +692,7 @@ Feature: IAM roles
     And the audit log should hold 1 committed "role.permissions.set" record whose summary holds "rest:orders:GET *"
 
   Scenario: Unknown keys are one violation each over REST and GraphQL and change nothing
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     And the If-Match header '"1"'
     When POST request is sent to "/api/graphql-specs" with body:
@@ -732,7 +732,7 @@ Feature: IAM roles
     And the audit log should hold 0 committed "role.permissions.set" records
 
   Scenario: More than 5000 keys are refused over REST
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     And the If-Match header '"1"'
     When 5001 generated keys replace the grants of the seeded role over REST
@@ -741,7 +741,7 @@ Feature: IAM roles
     And the outbox should hold 0 "iam.role_permissions.changed" events
 
   Scenario: A missing or stale version refuses the replacement over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When PUT request is sent to "/api/roles/{role}/permissions" with body:
       """
@@ -761,7 +761,7 @@ Feature: IAM roles
     And the outbox should hold 0 "iam.role_permissions.changed" events
 
   Scenario: Replacing the grants of an unknown role is 404 and needs a valid bearer token
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And the If-Match header '"1"'
     When PUT request is sent to "/api/roles/00000000-0000-7000-8000-000000000000/permissions" with body:
       """

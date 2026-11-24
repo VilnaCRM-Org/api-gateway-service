@@ -23,6 +23,7 @@ krafka.workspace = true
 matchit.workspace = true
 moka.workspace = true
 rand.workspace = true
+rustix.workspace = true
 rustls.workspace = true
 rustls-pki-types.workspace = true
 serde.workspace = true

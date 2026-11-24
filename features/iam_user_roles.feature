@@ -4,7 +4,7 @@ Feature: IAM role assignments
   I want to assign roles to users and services, globally or per project, and see the assignments
 
   Scenario: A write that affects decisions returns after the Kafka acknowledgement of its policy version over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -22,7 +22,7 @@ Feature: IAM role assignments
     And the GraphQL propagation status should be "PUBLISHED" with the version of a stored head row
 
   Scenario: Assigning a role to a user at global scope over REST commits the assignment, its event, its audit record and a policy version
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -50,7 +50,7 @@ Feature: IAM role assignments
     And the audit log should hold 1 committed "user_role.assign" record
 
   Scenario: Assigning a role to a user at project scope with an expiry over GraphQL returns the same data
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When the GraphQL operation is sent:
       """
@@ -71,7 +71,7 @@ Feature: IAM role assignments
     And the audit log should hold 1 committed "user_role.assign" record
 
   Scenario: Assigning a role to a project over REST keeps the project scope and the expiry
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -83,7 +83,7 @@ Feature: IAM role assignments
     And the JSON pointer "/expiresAt" should equal "2099-01-01T00:00:00.000000Z"
 
   Scenario: Assigning a role to a service subject over REST stores and lists it with the subject kind service
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -101,7 +101,7 @@ Feature: IAM role assignments
     And the JSON pointer "/items/0/subject/id" should equal "billing-worker"
 
   Scenario: Assigning a role to a service subject over GraphQL stores and lists it with the subject kind service
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When the GraphQL operation is sent:
       """
@@ -120,7 +120,7 @@ Feature: IAM role assignments
     And the JSON pointer "/data/userRoles/items/0/subject/id" should equal "billing-worker"
 
   Scenario: Assigning a role that grants a wildcard or a reserved key also commits the privileged alert
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Operator" that grants "iam:audit:read, rest:billing:*, rest:billing:GET /invoices"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -134,7 +134,7 @@ Feature: IAM role assignments
     And the audit log should hold 1 committed "user_role.assign" record
 
   Scenario: Assigning a role that grants only ordinary keys commits no privileged alert
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Invoice reader" that grants "rest:billing:GET /invoices"
     When the GraphQL operation is sent:
       """
@@ -145,7 +145,7 @@ Feature: IAM role assignments
     And the outbox should hold 0 "iam.privileged_role.assigned" events
 
   Scenario: A duplicate assignment is a conflict over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -168,7 +168,7 @@ Feature: IAM role assignments
     And the audit log should hold 1 committed "user_role.assign" record
 
   Scenario: The same role may be assigned at another scope or to another subject
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -187,7 +187,7 @@ Feature: IAM role assignments
     And the IAM policy version should be 5
 
   Scenario: A past expiry is a validation failure over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -208,7 +208,7 @@ Feature: IAM role assignments
     And the audit log should hold 0 committed "user_role.assign" records
 
   Scenario: An unknown role is a validation failure on roleId over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/user-roles" with body:
       """
       {"subject": {"kind": "user", "id": "0190f2a8-7b3c-7d4e-8f10-1234567890ab"}, "roleId": "00000000-0000-7000-8000-000000000000", "scope": {"kind": "global"}}
@@ -226,7 +226,7 @@ Feature: IAM role assignments
     And the outbox should hold 0 "iam.user_role.assigned" events
 
   Scenario: Invalid subjects, scopes and identifiers are validation failures that name their property
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -261,7 +261,7 @@ Feature: IAM role assignments
     And the store should hold 0 assignments of subject kind "user"
 
   Scenario: Repeating an assignment with the same idempotency key returns the original result
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     And the idempotency key "assign-billing-rest"
     When POST request is sent to "/api/user-roles" with body:
@@ -280,7 +280,7 @@ Feature: IAM role assignments
     And the audit log should hold 1 committed "user_role.assign" record
 
   Scenario: Reading an assignment by id over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -308,7 +308,7 @@ Feature: IAM role assignments
     And the JSON pointer "/data/userRole/version" should equal the number 1
 
   Scenario: An unknown assignment is 404 over REST and null over GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When GET request is sent to "/api/user-roles/00000000-0000-7000-8000-000000000000"
     Then the response status code should be 404
     When GET request is sent to "/api/user-roles/not-a-uuid"
@@ -321,7 +321,7 @@ Feature: IAM role assignments
     And the JSON pointer "/data/userRole" should be null
 
   Scenario: Assignments are listed with cursor pagination over REST
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -353,7 +353,7 @@ Feature: IAM role assignments
     And the JSON pointer "/nextCursor" should be absent
 
   Scenario: Assignments are filtered by subject, role and project over REST
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -382,7 +382,7 @@ Feature: IAM role assignments
     Then the JSON array at "/items" should have 3 items
 
   Scenario: Assignments are listed with cursor pagination and filters over GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When the GraphQL operation is sent:
       """
@@ -420,7 +420,7 @@ Feature: IAM role assignments
     Then the JSON array at "/data/userRoles/items" should have 2 items
 
   Scenario: Invalid list parameters are validation failures over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When GET request is sent to "/api/user-roles?limit=0"
     Then the response status code should be 422
     When GET request is sent to "/api/user-roles?subjectKind=robot"
@@ -432,7 +432,7 @@ Feature: IAM role assignments
     Then the GraphQL error code should be "VALIDATION_FAILED"
 
   Scenario: Setting, shortening and clearing an expiry over REST commits each update, its event, its audit record and a policy version
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -473,7 +473,7 @@ Feature: IAM role assignments
     And the JSON pointer "/version" should equal the number 4
 
   Scenario: Changing an expiry over GraphQL returns the new expiry and version
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -499,7 +499,7 @@ Feature: IAM role assignments
     And the audit log should hold 2 committed "user_role.update" records
 
   Scenario: An expiry that is not in the future is a validation failure on update over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -521,7 +521,7 @@ Feature: IAM role assignments
     And the IAM policy version should be 3
 
   Scenario: An update without a version or with a stale version is refused over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -552,7 +552,7 @@ Feature: IAM role assignments
     And the outbox should hold 0 "iam.user_role.updated" events
 
   Scenario: Revoking an assignment over REST removes it from the listings and commits its event, its audit record and a policy version
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -575,7 +575,7 @@ Feature: IAM role assignments
     And the JSON array at "/items" should have 0 items
 
   Scenario: Revoking an assignment over GraphQL removes it from the listings and commits its event, its audit record and a policy version
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -606,7 +606,7 @@ Feature: IAM role assignments
     Then the JSON array at "/data/userRoles/items" should have 0 items
 
   Scenario: A revocation without a version, with a stale version or of an assignment that is already revoked is refused
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """
@@ -643,7 +643,7 @@ Feature: IAM role assignments
     And the outbox should hold 1 "iam.user_role.revoked" event
 
   Scenario: Repeating a revocation with the same idempotency key returns the original result
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Billing administrator"
     When POST request is sent to "/api/user-roles" with body:
       """

@@ -199,6 +199,33 @@ impl PolicySnapshotBuilder {
         version: PolicyVersion,
         log_epoch: LogEpoch,
     ) -> Result<(), SnapshotBuildError> {
+        self.rebuild_expecting(entries, version, log_epoch, None)
+    }
+
+    /// Like [`rebuild`](Self::rebuild), and the digest of the entries must equal `expected`, the
+    /// digest of the head of `version`: the bootstrap of a pod refuses a state that does not hash
+    /// to its head.
+    ///
+    /// # Errors
+    ///
+    /// [`SnapshotBuildError::DigestMismatch`] when the digest differs, otherwise the errors of
+    /// [`rebuild`](Self::rebuild); nothing changes then.
+    pub fn rebuild_verified(
+        &mut self,
+        entries: &[RawEntry],
+        version: PolicyVersion,
+        (log_epoch, expected): (LogEpoch, PolicyDigestValue),
+    ) -> Result<(), SnapshotBuildError> {
+        self.rebuild_expecting(entries, version, log_epoch, Some(expected))
+    }
+
+    fn rebuild_expecting(
+        &mut self,
+        entries: &[RawEntry],
+        version: PolicyVersion,
+        log_epoch: LogEpoch,
+        expected: Option<PolicyDigestValue>,
+    ) -> Result<(), SnapshotBuildError> {
         let mut working = Working::empty(log_epoch);
         let changes = entries
             .iter()
@@ -208,7 +235,7 @@ impl PolicySnapshotBuilder {
             })
             .collect::<Result<Vec<_>, _>>()?;
         self.applier
-            .apply(&mut working, changes, None, (version, log_epoch))?;
+            .apply(&mut working, changes, expected, (version, log_epoch))?;
         self.ring = DigestRing::default();
         self.ring.record(version, working.digest);
         self.working = working;

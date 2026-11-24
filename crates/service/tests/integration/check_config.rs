@@ -814,6 +814,30 @@ fn missing_tls_files_outside_dev_and_test_exit_2_naming_both_variables() {
     );
 }
 
+#[rstest]
+#[case::username("KAFKA_BOOTSTRAP_SASL_USERNAME")]
+#[case::password("KAFKA_BOOTSTRAP_SASL_PASSWORD")]
+fn a_missing_bootstrap_credential_outside_dev_and_test_exits_2_naming_the_variable(
+    #[case] variable: &str,
+) {
+    let scratch = Scratch::new();
+    let pair = test_support::tls::self_signed(scratch.path(), "gateway", "bootstrap");
+    let mut command = scratch.service(
+        &["check-config", "--mode", "gateway"],
+        &[
+            ("APP_ENV", "prod"),
+            ("GATEWAY_TLS_CERT_FILE", pair.cert.to_str().unwrap()),
+            ("GATEWAY_TLS_KEY_FILE", pair.key.to_str().unwrap()),
+        ],
+    );
+    command.env_remove(variable);
+
+    let output = command.output().unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stderr(&output), format!("{variable}: is required\n"));
+}
+
 #[test]
 fn a_usable_tls_pair_is_accepted_in_prod() {
     let scratch = Scratch::new();

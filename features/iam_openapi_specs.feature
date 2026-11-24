@@ -4,7 +4,7 @@ Feature: IAM OpenAPI specifications
   I want to upload the OpenAPI document of the service and see what it changes
 
   Scenario: Uploading a new document over REST creates a draft and commits its event and audit record
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/openapi-specs" with body:
       """
       {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{\"operationId\":\"listInvoices\"}},\"/invoices/{invoiceId}\":{\"post\":{\"operationId\":\"payInvoice\",\"x-iam-sensitive\":true}}}}"}
@@ -23,7 +23,7 @@ Feature: IAM OpenAPI specifications
     And the audit log should hold 2 committed "openapi_spec.load" records
 
   Scenario: Uploading a new document over GraphQL returns the same data
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When the GraphQL operation is sent:
       """
       mutation { loadOpenapiSpec(input: {service: "billing", document: "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{}}}}"}) { id service status contentHash operationCount diff { added removed } } }
@@ -39,7 +39,7 @@ Feature: IAM OpenAPI specifications
     And the audit log should hold 2 committed "openapi_spec.load" records
 
   Scenario: Uploading identical content again returns the existing version and changes nothing
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/openapi-specs" with body:
       """
       {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{}}}}"}
@@ -56,7 +56,7 @@ Feature: IAM OpenAPI specifications
     And the audit log should hold 2 committed "openapi_spec.load" records
 
   Scenario: A document with an external reference is a validation failure with its JSON pointer over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/openapi-specs" with body:
       """
       {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"a\",\"version\":\"1\"},\"paths\":{\"/a\":{\"get\":{\"responses\":{\"200\":{\"$ref\":\"https://example.com/a.json\"}}}}}}"}
@@ -74,7 +74,7 @@ Feature: IAM OpenAPI specifications
     And the outbox should hold 1 "iam.openapi_spec.loaded" event
 
   Scenario: Two operations with the same normalised key are a validation failure over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/openapi-specs" with body:
       """
       {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"a\",\"version\":\"1\"},\"paths\":{\"/a/{x}\":{\"get\":{}},\"/a/{y}\":{\"get\":{}}}}"}
@@ -91,7 +91,7 @@ Feature: IAM OpenAPI specifications
     And the outbox should hold 1 "iam.openapi_spec.loaded" event
 
   Scenario: An invalid service name is a validation failure over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/openapi-specs" with body:
       """
       {"service": "Not A Service", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"a\",\"version\":\"1\"},\"paths\":{}}"}
@@ -106,7 +106,7 @@ Feature: IAM OpenAPI specifications
     And the outbox should hold 1 "iam.openapi_spec.loaded" event
 
   Scenario: The reserved service iam is refused to every actor but the startup registration
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/openapi-specs" with body:
       """
       {"service": "iam", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"a\",\"version\":\"1\"},\"paths\":{}}"}
@@ -129,13 +129,13 @@ Feature: IAM OpenAPI specifications
     And the service "billing" should have 0 OpenAPI specification versions
 
   Scenario: A body over 6 MiB on a specification route is refused
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/openapi-specs" with a JSON body of 6500000 bytes
     Then the response status code should be 413
     And the service "billing" should have 0 OpenAPI specification versions
 
   Scenario: Versions of several services are listed with filters over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/openapi-specs" with body:
       """
       {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{\"operationId\":\"listInvoices\"}},\"/invoices/{invoiceId}/pay\":{\"post\":{\"operationId\":\"payInvoice\"}}}}"}
@@ -208,7 +208,7 @@ Feature: IAM OpenAPI specifications
     And the JSON pointer "/data/openapiSpec/document" should be present
 
   Scenario: The diff of a draft that removes a granted operation lists the affected role over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Payer" that grants "rest:billing:POST /invoices/{}/pay"
     When POST request is sent to "/api/openapi-specs" with body:
       """
@@ -240,7 +240,7 @@ Feature: IAM OpenAPI specifications
     And the JSON pointer "/data/openapiSpec/diff/removedGrants/0/roles/0" should be the seeded role
 
   Scenario: The diff lists the wildcard grants that gain the operations a draft adds
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Reader" that grants "rest:billing:GET *"
     When POST request is sent to "/api/openapi-specs" with body:
       """
@@ -270,7 +270,7 @@ Feature: IAM OpenAPI specifications
     And the JSON pointer "/data/openapiSpec/diff/wildcardGains/0/pattern" should equal "rest:billing:GET *"
 
   Scenario: A draft that drops x-iam-sensitive from an active operation is listed as a flag downgrade over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/openapi-specs" with body:
       """
       {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{\"operationId\":\"listInvoices\"}},\"/invoices/{invoiceId}/pay\":{\"post\":{\"operationId\":\"payInvoice\",\"x-iam-sensitive\":true}}}}"}
@@ -297,7 +297,7 @@ Feature: IAM OpenAPI specifications
     And the response body should contain '"before":{"sensitive":true,"auditAlways":false}'
 
   Scenario: An unknown version is a 404 over REST and null over GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When GET request is sent to "/api/openapi-specs/0190f2a8-7b3c-7d4e-8f10-1234567890ad"
     Then the response status code should be 404
     When GET request is sent to "/api/openapi-specs/0190f2a8-7b3c-7d4e-8f10-1234567890ad/diff"
@@ -320,7 +320,7 @@ Feature: IAM OpenAPI specifications
     Then the response status code should be 401
 
   Scenario: Activating a draft over REST makes its operations grantable and commits its event and audit record
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/openapi-specs" with body:
       """
       {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{}},\"/invoices/{invoiceId}/pay\":{\"post\":{\"x-iam-sensitive\":true}}}}"}
@@ -349,7 +349,7 @@ Feature: IAM OpenAPI specifications
     And the JSON pointer "/activatedAt" should be present
 
   Scenario: Activating a draft over GraphQL returns the same data
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/openapi-specs" with body:
       """
       {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{}},\"/invoices/{invoiceId}/pay\":{\"post\":{\"x-iam-sensitive\":true}}}}"}
@@ -370,7 +370,7 @@ Feature: IAM OpenAPI specifications
     And the audit log should hold 2 committed "openapi_spec.activate" records
 
   Scenario: An activation that would drop a sensitive flag needs confirmFlagDowngrade over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And the catalogue holds the inactive sensitive REST key "rest:billing:POST /invoices/{}/pay"
     When POST request is sent to "/api/openapi-specs" with body:
       """
@@ -401,7 +401,7 @@ Feature: IAM OpenAPI specifications
     And the "iam.rest_permissions.created" event should carry '"before":' in its payload
 
   Scenario: Repeating an activation with the same idempotency key returns the original result and no second event
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/openapi-specs" with body:
       """
       {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{}}}}"}
@@ -424,7 +424,7 @@ Feature: IAM OpenAPI specifications
     And the audit log should hold 2 committed "openapi_spec.activate" records
 
   Scenario: An activation that would orphan grants needs confirmOrphans over REST and GraphQL
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Payer" that grants "rest:billing:POST /invoices/{}/pay"
     When POST request is sent to "/api/openapi-specs" with body:
       """
@@ -455,7 +455,7 @@ Feature: IAM OpenAPI specifications
     And the outbox should hold 1 "iam.permissions.orphaned" event
 
   Scenario: A rename moves the grants of the old key to the new key instead of orphaning them
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     And an assignable role "Biller" that grants "rest:billing:GET /bills"
     When POST request is sent to "/api/openapi-specs" with body:
       """
@@ -473,7 +473,7 @@ Feature: IAM OpenAPI specifications
     And the "iam.rest_permissions.created" event should carry "rest:billing:GET /bills" in its payload
 
   Scenario: Activating a version that is active already is a no-op
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/openapi-specs" with body:
       """
       {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{}}}}"}
@@ -495,7 +495,7 @@ Feature: IAM OpenAPI specifications
     And the audit log should hold 2 committed "openapi_spec.activate" records
 
   Scenario: Two active versions of one service make the catalogue their union
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/openapi-specs" with body:
       """
       {"service": "billing", "document": "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"Billing\",\"version\":\"1\"},\"paths\":{\"/invoices\":{\"get\":{}}}}"}
@@ -524,7 +524,7 @@ Feature: IAM OpenAPI specifications
     And the JSON array at "/items" should have 2 items
 
   Scenario: An unknown version, an invalid identifier or rename and a missing token are refused
-    Given a caller authenticated with a valid service token
+    Given a caller authenticated as the bootstrapped administrator
     When POST request is sent to "/api/openapi-specs/0190f2a8-7b3c-7d4e-8f10-1234567890ad/permissions" with body:
       """
       {}
