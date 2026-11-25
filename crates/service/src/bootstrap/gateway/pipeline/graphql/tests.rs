@@ -176,3 +176,52 @@ fn a_method_that_is_not_post_is_told_to_use_post() {
     assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
     assert_eq!(response.headers().get(ALLOW).unwrap(), "POST");
 }
+
+fn parts_of(uri: &str) -> Parts {
+    axum::http::Request::builder()
+        .uri(uri)
+        .body(())
+        .unwrap()
+        .into_parts()
+        .0
+}
+
+#[rstest]
+#[case("/graphql?query=%7Bme%7D")]
+#[case("/graphql?operationName=Me")]
+#[case("/graphql?variables=%7B%7D&x=1")]
+#[case("/graphql?extensions=%7B%7D")]
+#[case("/graphql?documentId=abc")]
+#[case("/graphql?a=1&QUERY=x")]
+#[case("/graphql?%71uery=x")]
+#[case("/graphql?query")]
+#[case("/graphql?id=abc")]
+#[case("/graphql?queryId=abc")]
+#[case("/graphql?doc_id=abc")]
+#[case("/graphql?a=1;query=x")]
+#[case("/graphql?a=1;ID=x&b=2")]
+fn a_query_string_that_names_an_operation_is_refused(#[case] uri: &str) {
+    assert!(matches!(
+        query_string(&parts_of(uri)),
+        Err(Refusal::BadRequest(_))
+    ));
+}
+
+#[rstest]
+#[case("/graphql")]
+#[case("/graphql?trace=1&queries=2")]
+#[case("/graphql?x=query")]
+#[case("/graphql?%zz=1&q+uery=2")]
+fn any_other_query_string_is_forwarded(#[case] uri: &str) {
+    assert_eq!(query_string(&parts_of(uri)), Ok(()));
+}
+
+#[test]
+fn more_than_one_content_type_is_unsupported() {
+    let mut twice = headers(Some("application/json"));
+    twice.append(CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+    assert_eq!(content_type(&twice), Err(Refusal::UnsupportedMediaType));
+    let mut same = headers(Some("application/json"));
+    same.append(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    assert_eq!(content_type(&same), Err(Refusal::UnsupportedMediaType));
+}

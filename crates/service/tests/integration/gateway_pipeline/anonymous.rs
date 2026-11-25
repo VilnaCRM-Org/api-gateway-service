@@ -87,10 +87,19 @@ async fn serve(seen: Upstream) -> SocketAddr {
 /// `POST /api/signin` of the service `users` that is `anonymous` or protected, with a body limit
 /// of [`LIMIT`] bytes. Neither the service nor any subject holds a key.
 fn state(anonymous: bool) -> GatewaySnapshot {
+    state_of(
+        RouteFlags::default().with(RouteFlag::Anonymous, anonymous),
+        true,
+    )
+}
+
+/// [`state`] with the flags of the route and the upstream `users` that forwards credentials or not.
+fn state_of(flags: RouteFlags, forwards: bool) -> GatewaySnapshot {
     let mut rng = TestRng::from_env();
-    let users = UpstreamState::of(upstream_forwarding(&mut rng, "users", "users", true).parts());
+    let users =
+        UpstreamState::of(upstream_forwarding(&mut rng, "users", "users", forwards).parts());
     let mut draft = route_draft(HOST, "/api/signin", &[HttpMethod::Post], "users", users.id);
-    draft.flags = RouteFlags::default().with(RouteFlag::Anonymous, anonymous);
+    draft.flags = flags;
     draft.body_limit = LIMIT;
     GatewaySnapshot::at(PolicyVersion::new(7).unwrap())
         .with_upstream(users)
@@ -178,5 +187,76 @@ async fn a_route_that_a_new_version_makes_protected_answers_401_without_a_token(
 
     assert_eq!(before.status(), StatusCode::OK);
     assert_eq!(after.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(seen.received().len(), 1);
+}
+
+fn cookie_signin(origin: Option<&str>) -> Request<Body> {
+    let mut builder = Request::post("/api/signin")
+        .header("host", HOST)
+        .header("cookie", "__Host-auth_token=session");
+    if let Some(origin) = origin {
+        builder = builder.header("origin", origin);
+    }
+    builder.body(Body::from("{}")).unwrap()
+}
+
+#[tokio::test]
+async fn a_cross_site_request_with_the_cookie_to_an_anonymous_route_that_forwards_it_is_a_403() {
+    let seen = Upstream::default();
+    let (router, _clock) = proxy_over(serve(seen.clone()).await, state(true));
+
+    let foreign = router
+        .clone()
+        .oneshot(cookie_signin(Some("https://evil.example.test")))
+        .await
+        .unwrap();
+    let own = router
+        .oneshot(cookie_signin(Some(&format!("https://{HOST}"))))
+        .await
+        .unwrap();
+
+    assert_eq!(foreign.status(), StatusCode::FORBIDDEN);
+    assert_eq!(problem_type(foreign).await, "/problems/csrf_rejected");
+    assert_eq!(own.status(), StatusCode::OK);
+    assert_eq!(seen.received().len(), 1);
+}
+
+#[tokio::test]
+async fn a_cookie_header_with_a_non_ascii_value_does_not_hide_the_token_from_the_csrf_rule() {
+    let seen = Upstream::default();
+    let (router, _clock) = proxy_over(serve(seen.clone()).await, state(true));
+    let request = Request::post("/api/signin")
+        .header("host", HOST)
+        .header("origin", "https://evil.example.test")
+        .header(
+            "cookie",
+            axum::http::HeaderValue::from_bytes(b"x=\x80; __Host-auth_token=session").unwrap(),
+        )
+        .body(Body::from("{}"))
+        .unwrap();
+
+    let foreign = router.oneshot(request).await.unwrap();
+
+    assert_eq!(foreign.status(), StatusCode::FORBIDDEN);
+    assert_eq!(seen.received(), []);
+}
+
+#[tokio::test]
+async fn a_cross_site_request_to_an_anonymous_route_that_does_not_forward_credentials_is_served() {
+    let seen = Upstream::default();
+    let (router, _clock) = proxy_over(
+        serve(seen.clone()).await,
+        state_of(
+            RouteFlags::default().with(RouteFlag::Anonymous, true),
+            false,
+        ),
+    );
+
+    let foreign = router
+        .oneshot(cookie_signin(Some("https://evil.example.test")))
+        .await
+        .unwrap();
+
+    assert_eq!(foreign.status(), StatusCode::OK);
     assert_eq!(seen.received().len(), 1);
 }

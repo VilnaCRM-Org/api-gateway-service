@@ -1,5 +1,9 @@
 use super::DocumentKey;
+use crate::value_object::log_epoch::LogEpoch;
+use crate::value_object::policy_digest_value::PolicyDigestValue;
+use crate::value_object::policy_epoch::PolicyEpoch;
 use crate::value_object::policy_version::PolicyVersion;
+use crate::value_object::relay_epoch::RelayEpoch;
 
 fn version(value: i64) -> PolicyVersion {
     PolicyVersion::new(value).unwrap()
@@ -60,4 +64,25 @@ fn different_keys_never_confirm_even_for_equal_text() {
 
     assert!(!first.confirms(other_operation, "{ a }", "{ a }"));
     assert!(!first.confirms(other_version, "{ a }", "{ a }"));
+}
+
+fn epoch(log_epoch: i64, digest_byte: u8) -> PolicyEpoch {
+    PolicyEpoch::new(
+        version(3),
+        PolicyDigestValue::from_bytes([digest_byte; PolicyDigestValue::LENGTH]),
+        LogEpoch::new(log_epoch).unwrap(),
+        RelayEpoch::ZERO,
+        0,
+    )
+    .unwrap()
+}
+
+#[test]
+fn the_log_epoch_and_the_digest_are_part_of_the_key_of_an_epoch() {
+    let key = DocumentKey::in_epoch("{ a }", None, &epoch(1, 0));
+
+    assert_eq!(key, DocumentKey::in_epoch("{ a }", None, &epoch(1, 0)));
+    assert_ne!(key, DocumentKey::in_epoch("{ a }", None, &epoch(2, 0)));
+    assert_ne!(key, DocumentKey::in_epoch("{ a }", None, &epoch(1, 1)));
+    assert_ne!(key, DocumentKey::of("{ a }", None, version(3)));
 }

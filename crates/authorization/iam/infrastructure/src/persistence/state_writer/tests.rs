@@ -115,3 +115,61 @@ fn a_revoked_session_and_a_user_cutoff_are_read_from_the_revocation_tables() {
         Some(Entity::Revocation(Revocation::User(user)))
     );
 }
+
+/// Stores an active GraphQL version of `orders` whose `Query.order` returns `return_type`.
+async fn seed_version(pool: &sqlx::PgPool, (return_type, tag): (&str, u8)) {
+    sqlx::query(
+        "WITH spec AS (
+            INSERT INTO iam_graphql_specs (id, service, content_hash, sdl, status, uploaded_by,
+                created_at)
+            VALUES (gen_random_uuid(), 'orders', sha256(convert_to($1, 'UTF8')), $1, 'active',
+                'system:test', now())
+            RETURNING id
+        )
+        INSERT INTO iam_graphql_spec_fields (spec_id, type_name, field_name, return_type,
+            sensitive, audit_always)
+        SELECT id, 'Query', 'order', $2, FALSE, FALSE FROM spec",
+    )
+    .bind(format!("type Query {{ order: {return_type} }} # {tag}"))
+    .bind(return_type)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn published_return_type(pool: &sqlx::PgPool) -> Option<String> {
+    sqlx::query(
+        "INSERT INTO iam_graphql_permissions (id, permission_key, service, type_name, field_name,
+            sensitive, audit_always, created_at)
+        VALUES (gen_random_uuid(), 'gql:orders:Query.order', 'orders', 'Query', 'order', FALSE,
+            FALSE, now())",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    let service = ServiceName::new("orders").unwrap();
+    read_entries(&mut connection, &service)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.key == "gql:orders:Query.order")
+        .unwrap()
+        .return_type
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn active_versions_that_agree_publish_the_return_type(pool: sqlx::PgPool) {
+    seed_version(&pool, ("Order", 1)).await;
+    seed_version(&pool, ("Order", 2)).await;
+
+    assert_eq!(published_return_type(&pool).await.as_deref(), Some("Order"));
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn active_versions_that_disagree_publish_no_return_type(pool: sqlx::PgPool) {
+    seed_version(&pool, ("Order", 1)).await;
+    seed_version(&pool, ("Parcel", 2)).await;
+
+    assert_eq!(published_return_type(&pool).await, None);
+}

@@ -438,3 +438,47 @@ async fn an_endpoint_without_a_valid_address_is_refused_before_anything_is_sent(
 
     assert_eq!(outcome.unwrap_err(), ForwardError::NoEndpoint);
 }
+
+/// A body that declares ten bytes and never delivers any.
+struct Trickle;
+
+impl hyper::body::Body for Trickle {
+    type Data = axum::body::Bytes;
+    type Error = std::convert::Infallible;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+    ) -> Poll<Option<Result<hyper::body::Frame<Self::Data>, Self::Error>>> {
+        Poll::Pending
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        hyper::body::SizeHint::with_exact(10)
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_trickling_body_holds_no_permit_and_ends_with_the_request_timeout() {
+    let forwarder = forwarder_over(vec![endpoint("10.0.0.1", 8080)]);
+    let target = target().with_route(&route_fields(RetryPolicy::Idempotent, false));
+    let request = Request::builder()
+        .method("PUT")
+        .uri("/x")
+        .body(Body::new(Trickle))
+        .unwrap();
+    let started = Instant::now();
+    let mut forwarding = Box::pin(forwarder.forward(target, request));
+
+    tokio::select! {
+        biased;
+        _ = &mut forwarding => panic!("the body never completes"),
+        () = std::future::ready(()) => {}
+    }
+    assert_eq!(forwarder.registry.in_flight("user-service"), 0);
+    let outcome = forwarding.await;
+
+    assert_eq!(outcome.unwrap_err(), ForwardError::ResponseTimeout);
+    assert!(started.elapsed() >= Duration::from_millis(2_500));
+    assert_eq!(forwarder.registry.in_flight("user-service"), 0);
+}

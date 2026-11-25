@@ -3,7 +3,7 @@
 //! The composition root decodes the envelope of the body into [`GraphQlOperation`]s. The
 //! [`GraphQlRequestAnalyzer`] turns them into the coordinates they select, against the type graphs
 //! of the catalogue of the route's service: a document that was analysed before under the same
-//! catalogue version comes from the [`DocumentCache`]; one that was not is charged to the parse
+//! catalogue epoch (version, log epoch and digest) comes from the [`DocumentCache`]; one that was not is charged to the parse
 //! budget of the subject and parsed, on the request worker up to
 //! [`BLOCKING_THRESHOLD_BYTES`] and on the bounded blocking pool above it, so that a large
 //! document never holds a request worker.
@@ -225,10 +225,10 @@ impl GraphQlRequestAnalyzer {
         operation: &GraphQlOperation,
     ) -> Analysis {
         let service = catalog.service();
-        let key = DocumentKey::of(
+        let key = DocumentKey::in_epoch(
             &operation.document,
             operation.operation_name.as_deref(),
-            catalog.policy_version(),
+            &catalog.epoch(),
         );
         if let Some(found) = self.cache.get(service, key, &operation.document) {
             self.looked_up(true);

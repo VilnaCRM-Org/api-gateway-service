@@ -467,8 +467,11 @@ async fn read_entries(
 
 /// The active permissions of a service. A GraphQL key also carries the return type of its field and
 /// the possible types of that type, read from the active versions of the specification of the
-/// service (the greatest name when two active versions disagree), so the gateway can analyse a
-/// document against the catalogue it replicates (Story 10.8).
+/// service, so the gateway can analyse a document against the catalogue it replicates (Story
+/// 10.8). The catalogue carries one return type per key, not one per version: when the active
+/// versions disagree on the return type of a field, the entry is published without a type, so the
+/// gateway cannot analyse a selection of it and denies the request (fail closed) instead of
+/// analysing it against a type that only one of the versions declares.
 const ENTRIES_QUERY: &str = "SELECT permission_key, sensitive, audit_always,
         NULL::text AS return_type, ARRAY[]::text[] AS possible_types
     FROM iam_rest_permissions
@@ -478,7 +481,8 @@ const ENTRIES_QUERY: &str = "SELECT permission_key, sensitive, audit_always,
         COALESCE(t.possible_types, ARRAY[]::text[]) AS possible_types
     FROM iam_graphql_permissions p
     LEFT JOIN LATERAL (
-        SELECT max(f.return_type) AS return_type
+        SELECT CASE WHEN count(DISTINCT f.return_type) > 1 THEN NULL
+                ELSE max(f.return_type) END AS return_type
         FROM iam_graphql_spec_fields f
         JOIN iam_graphql_specs s ON s.id = f.spec_id
         WHERE s.service = p.service AND s.status = 'active'

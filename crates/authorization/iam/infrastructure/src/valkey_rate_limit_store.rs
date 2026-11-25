@@ -35,7 +35,38 @@ const GCRA_SCRIPT: &str = include_str!("valkey_rate_limit_store/script.lua");
 pub struct ValkeyRateLimitStore {
     endpoint: ValkeyEndpoint,
     script: Script,
-    connection: Mutex<Option<MultiplexedConnection>>,
+    connection: Mutex<ConnectionSlot<MultiplexedConnection>>,
+}
+
+/// The cached connection and the number of the one that is cached, so that a call which used an
+/// older connection cannot drop a newer one that another caller cached since.
+#[derive(Debug)]
+struct ConnectionSlot<C> {
+    generation: u64,
+    connection: Option<C>,
+}
+
+impl<C: Clone> ConnectionSlot<C> {
+    const fn empty() -> Self {
+        Self {
+            generation: 0,
+            connection: None,
+        }
+    }
+
+    /// Caches `connection` and returns its generation.
+    fn store(&mut self, connection: C) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
+        self.connection = Some(connection);
+        self.generation
+    }
+
+    /// Clears the slot only while it still holds the connection of `generation`.
+    fn clear(&mut self, generation: u64) {
+        if self.generation == generation {
+            self.connection = None;
+        }
+    }
 }
 
 impl ValkeyRateLimitStore {
@@ -45,7 +76,7 @@ impl ValkeyRateLimitStore {
         Self {
             endpoint,
             script: Script::new(GCRA_SCRIPT),
-            connection: Mutex::new(None),
+            connection: Mutex::new(ConnectionSlot::empty()),
         }
     }
 
@@ -55,27 +86,27 @@ impl ValkeyRateLimitStore {
         format!("rl:{policy_id}:{}", key.key_hash())
     }
 
-    fn cached(&self) -> Option<MultiplexedConnection> {
+    fn slot(&self) -> std::sync::MutexGuard<'_, ConnectionSlot<MultiplexedConnection>> {
         self.connection
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The cached connection with its generation.
+    fn cached(&self) -> Option<(u64, MultiplexedConnection)> {
+        let slot = self.slot();
+        slot.connection
             .clone()
+            .map(|connection| (slot.generation, connection))
     }
 
-    fn keep(&self, connection: Option<MultiplexedConnection>) {
-        *self
-            .connection
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = connection;
-    }
-
-    async fn connected(&self) -> redis::RedisResult<MultiplexedConnection> {
-        if let Some(connection) = self.cached() {
-            return Ok(connection);
+    async fn connected(&self) -> redis::RedisResult<(u64, MultiplexedConnection)> {
+        if let Some(cached) = self.cached() {
+            return Ok(cached);
         }
         let fresh = self.endpoint.connect().await?;
-        self.keep(Some(fresh.clone()));
-        Ok(fresh)
+        let generation = self.slot().store(fresh.clone());
+        Ok((generation, fresh))
     }
 
     async fn decide(
@@ -84,8 +115,8 @@ impl ValkeyRateLimitStore {
         key: &RateKey,
         rule: &RateDecisionRule,
     ) -> Result<RateDecision, RateLimitStoreError> {
-        let mut connection = self.connected().await.map_err(unavailable)?;
-        let mut guard = DropConnection::armed(self);
+        let (generation, mut connection) = self.connected().await.map_err(unavailable)?;
+        let mut guard = DropConnection::armed(self, generation);
         let reply: (i64, i64) = self
             .script
             .key(Self::key_of(policy_id, key))
@@ -101,15 +132,20 @@ impl ValkeyRateLimitStore {
 
 /// Drops the cached connection of the store unless it is disarmed, which a call does only once
 /// the server answered: a call that fails, or whose future its caller drops, leaves the guard
-/// armed.
+/// armed. It drops only the connection its call used, never a newer one.
 struct DropConnection<'store> {
     store: &'store ValkeyRateLimitStore,
+    generation: u64,
     armed: bool,
 }
 
 impl<'store> DropConnection<'store> {
-    const fn armed(store: &'store ValkeyRateLimitStore) -> Self {
-        Self { store, armed: true }
+    const fn armed(store: &'store ValkeyRateLimitStore, generation: u64) -> Self {
+        Self {
+            store,
+            generation,
+            armed: true,
+        }
     }
 
     const fn disarm(&mut self) {
@@ -120,7 +156,7 @@ impl<'store> DropConnection<'store> {
 impl Drop for DropConnection<'_> {
     fn drop(&mut self) {
         if self.armed {
-            self.store.keep(None);
+            self.store.slot().clear(self.generation);
         }
     }
 }

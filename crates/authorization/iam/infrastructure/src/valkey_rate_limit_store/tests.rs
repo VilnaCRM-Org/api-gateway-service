@@ -6,7 +6,9 @@ use iam_domain::{
 };
 use test_support::request_digester::FakeRequestDigester;
 
-use super::{GCRA_SCRIPT, ValkeyEndpoint, ValkeyRateLimitStore, decision_of, micros_up};
+use super::{
+    ConnectionSlot, GCRA_SCRIPT, ValkeyEndpoint, ValkeyRateLimitStore, decision_of, micros_up,
+};
 
 fn policy() -> RatePolicyId {
     RatePolicyId::parse("0197b6c4-5d4a-7a52-8f0e-2d2f4f1c9a11").unwrap()
@@ -75,4 +77,17 @@ async fn a_server_that_cannot_be_reached_makes_the_store_unavailable() {
 
     assert!(matches!(outcome, Err(RateLimitStoreError::Unavailable(_))));
     assert_eq!(format!("{store:?}"), "ValkeyRateLimitStore { .. }");
+}
+
+#[test]
+fn a_call_clears_only_the_connection_it_used() {
+    let mut slot = ConnectionSlot::empty();
+    let older = slot.store("first");
+    let newer = slot.store("second");
+
+    slot.clear(older);
+    assert_eq!(slot.connection, Some("second"));
+
+    slot.clear(newer);
+    assert_eq!(slot.connection, None);
 }

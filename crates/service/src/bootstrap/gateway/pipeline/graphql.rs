@@ -122,8 +122,69 @@ pub(super) fn post_route<'snapshot>(
     route_of(snapshot, parts, HttpMethod::Post, path).filter(|route| route.fields.flags().graphql())
 }
 
-/// 415 unless the body is declared `application/json`, with or without parameters.
+/// The parameters of the URL that carry a GraphQL operation: only the body is authorized, so an
+/// upstream that read one of them could run an operation nobody authorized.
+const OPERATION_PARAMETERS: [&str; 8] = [
+    "query",
+    "operationName",
+    "variables",
+    "extensions",
+    "documentId",
+    "queryId",
+    "id",
+    "doc_id",
+];
+
+/// 400 when the query string of a GraphQL route carries a parameter that names an operation. The
+/// pairs are split on `&` and `;`, as some upstream frameworks do. The names are compared after percent-decoding and without regard to case, so no spelling slips by.
+/// Other parameters are forwarded as they came.
+pub(super) fn query_string(parts: &Parts) -> Result<(), Refusal> {
+    let carries = parts.uri.query().is_some_and(|query| {
+        query
+            .split(['&', ';'])
+            .filter_map(|pair| pair.split('=').next())
+            .map(decode_component)
+            .any(|name| {
+                OPERATION_PARAMETERS
+                    .iter()
+                    .any(|parameter| parameter.eq_ignore_ascii_case(&name))
+            })
+    });
+    if carries {
+        Err(invalid(
+            "A GraphQL operation is sent in the body, not in the query string.",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// A query-string name with `+` and `%XX` decoded; an escape that is not valid stays as written.
+fn decode_component(component: &str) -> String {
+    let mut parts = component.split('%');
+    let mut decoded: Vec<u8> = parts.next().unwrap_or_default().bytes().collect();
+    for part in parts {
+        if let Some(value) = part
+            .get(..2)
+            .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+        {
+            decoded.push(value);
+            decoded.extend(part.get(2..).unwrap_or_default().bytes());
+        } else {
+            decoded.push(b'%');
+            decoded.extend(part.bytes());
+        }
+    }
+    let text = String::from_utf8_lossy(&decoded);
+    text.replace('+', " ")
+}
+
+/// 415 unless the body is declared `application/json`, with or without parameters, and declared
+/// once: two `Content-Type` headers could be read differently by the gateway and the upstream.
 fn content_type(headers: &HeaderMap) -> Result<(), Refusal> {
+    if headers.get_all(CONTENT_TYPE).iter().count() > 1 {
+        return Err(Refusal::UnsupportedMediaType);
+    }
     let declared = headers
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())

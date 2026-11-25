@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use iam_domain::{
     DecisionReason, DocumentCache, GqlName, GraphQlCoordinate, GraphQlField, GraphQlTypeGraph,
-    PermissionFlags, ServiceCatalog, ServiceName,
+    LogEpoch, PermissionFlags, PolicyDigestValue, PolicyEpoch, PolicyVersion, RelayEpoch,
+    ServiceCatalog, ServiceName,
 };
 use test_support::log::LogRecorder;
 use test_support::policy_epoch::seeded_policy_epoch;
@@ -22,6 +23,10 @@ fn service() -> ServiceName {
 }
 
 fn catalog() -> ServiceCatalog {
+    catalog_at(seeded_policy_epoch())
+}
+
+fn catalog_at(epoch: PolicyEpoch) -> ServiceCatalog {
     let field = |coordinate: &str, return_type: &str| {
         (
             GraphQlCoordinate::parse(coordinate).unwrap(),
@@ -40,7 +45,7 @@ fn catalog() -> ServiceCatalog {
         [],
     )
     .unwrap();
-    ServiceCatalog::new(service(), seeded_policy_epoch(), Vec::new(), vec![graph])
+    ServiceCatalog::new(service(), epoch, Vec::new(), vec![graph])
 }
 
 fn operation(document: &str) -> GraphQlOperation {
@@ -165,6 +170,41 @@ async fn a_document_that_was_analysed_is_served_from_the_cache() {
 
     assert_eq!(first, second);
     assert_eq!(cache.len(), 1);
+}
+
+/// The seeded epoch with the log epoch and the digest given: the version stays 0.
+fn epoch_with(log_epoch: i64, digest_byte: u8) -> PolicyEpoch {
+    PolicyEpoch::new(
+        PolicyVersion::new(0).unwrap(),
+        PolicyDigestValue::from_bytes([digest_byte; PolicyDigestValue::LENGTH]),
+        LogEpoch::new(log_epoch).unwrap(),
+        RelayEpoch::ZERO,
+        0,
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_version_that_comes_back_in_another_log_epoch_or_with_another_digest_is_analysed_again() {
+    let cache = Arc::new(MapDocumentCache::default());
+    let analyzer = analyzer(&cache);
+    let same = [operation("{ orders { id } }")];
+
+    analyzer
+        .analyze(&catalog_at(epoch_with(1, 0)), "subject", &same)
+        .await;
+    analyzer
+        .analyze(&catalog_at(epoch_with(1, 0)), "subject", &same)
+        .await;
+    assert_eq!(cache.len(), 1);
+    analyzer
+        .analyze(&catalog_at(epoch_with(2, 0)), "subject", &same)
+        .await;
+    assert_eq!(cache.len(), 2);
+    analyzer
+        .analyze(&catalog_at(epoch_with(2, 9)), "subject", &same)
+        .await;
+    assert_eq!(cache.len(), 3);
 }
 
 #[tokio::test(start_paused = true)]

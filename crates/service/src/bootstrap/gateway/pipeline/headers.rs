@@ -157,6 +157,23 @@ fn strip_auth_cookie(headers: &mut HeaderMap) {
     }
 }
 
+/// Whether any `Cookie` header holds a non-empty `__Host-auth_token` pair. It reads raw bytes like
+/// the forwarding does, so a value with bytes outside ASCII in another pair hides nothing.
+pub(super) fn carries_auth_token(headers: &HeaderMap) -> bool {
+    headers.get_all(COOKIE).iter().any(|value| {
+        value
+            .as_bytes()
+            .split(|byte| *byte == b';')
+            .filter(|pair| is_auth_pair(pair))
+            .any(|pair| {
+                pair.trim_ascii()
+                    .splitn(2, |byte| *byte == b'=')
+                    .nth(1)
+                    .is_some_and(|token| !token.trim_ascii().is_empty())
+            })
+    })
+}
+
 fn holds_auth_cookie(value: &HeaderValue) -> bool {
     value
         .as_bytes()

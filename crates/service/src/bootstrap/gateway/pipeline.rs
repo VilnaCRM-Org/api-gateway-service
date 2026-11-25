@@ -395,6 +395,9 @@ impl Pipeline {
             route,
             request: &request,
         };
+        if route.fields.flags().graphql() {
+            graphql::query_string(parts)?;
+        }
         let (principal, body) = self.principal_and_body(&matched, body, seen).await?;
         let upstream = snapshot
             .upstream_by_id(route.fields.upstream_id())
@@ -447,7 +450,11 @@ impl Pipeline {
             } = RequestAuthorizer::authorize_anonymous(request);
             seen.decision(trace, denied);
             seen.hold_audit_slot(audit_slot);
-            return permitted(authorization).map(|()| None);
+            permitted(authorization)?;
+            if forwards_credentials(request.snapshot, route) {
+                cors::csrf(parts, request.method, route)?;
+            }
+            return Ok(None);
         }
         let principal = self
             .authenticate(request.snapshot, &parts.headers, seen)
@@ -626,6 +633,14 @@ fn request_id_of(headers: &HeaderMap) -> Option<&str> {
 
 /// Where the request of `route` goes and how it is delivered: the Service, protocol and timeouts
 /// of its upstream, and the body limit, flags, retry policy and request timeout of the route.
+/// Whether the upstream of the route gets the client's credentials, so that an anonymous route
+/// that forwards the auth cookie needs the CSRF rule as an authenticated one does.
+fn forwards_credentials(snapshot: &Arc<dyn PolicySnapshot>, route: &RouteState) -> bool {
+    snapshot
+        .upstream_by_id(route.fields.upstream_id())
+        .is_some_and(|upstream| upstream.settings.forward_credentials())
+}
+
 fn target_of(upstream: &iam_domain::UpstreamState, route: &RouteState) -> UpstreamTarget {
     UpstreamTarget::new(upstream.name.clone(), route.id)
         .with_settings(&upstream.settings)

@@ -13,7 +13,7 @@ use iam_domain::{
 use rstest::rstest;
 use shared_domain::Uuid;
 
-use super::{Propagated, rewrite, rewrite_anonymous, stamp_version};
+use super::{Propagated, carries_auth_token, rewrite, rewrite_anonymous, stamp_version};
 use crate::bootstrap::gateway::pipeline::ClientAddress;
 
 const USER: &str = "3d9b7c1e-5a2f-4e8d-b6c0-9f1e2d3c4b5a";
@@ -300,4 +300,32 @@ fn an_anonymous_request_forwards_an_invalid_token_unchanged_only_to_a_credential
     );
     assert_eq!(text(&withheld, "authorization"), None);
     assert_eq!(text(&withheld, "cookie"), Some("theme=dark"));
+}
+
+#[rstest]
+#[case(&["__Host-auth_token=session"], true)]
+#[case(&["a=1; __Host-auth_token=session"], true)]
+#[case(&["a=1", "__Host-auth_token=session"], true)]
+#[case(&["__Host-auth_token="], false)]
+#[case(&["__Host-auth_token"], false)]
+#[case(&["a=1;b=2"], false)]
+#[case(&["x__Host-auth_token=session"], false)]
+fn the_token_cookie_is_found_when_it_has_a_value(#[case] values: &[&str], #[case] found: bool) {
+    let mut headers = axum::http::HeaderMap::new();
+    for value in values {
+        headers.append(COOKIE, HeaderValue::from_str(value).unwrap());
+    }
+
+    assert_eq!(carries_auth_token(&headers), found);
+}
+
+#[test]
+fn the_token_cookie_is_found_beside_a_value_with_non_ascii_bytes() {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.append(
+        COOKIE,
+        HeaderValue::from_bytes(b"x=\x80; __Host-auth_token=session").unwrap(),
+    );
+
+    assert!(carries_auth_token(&headers));
 }

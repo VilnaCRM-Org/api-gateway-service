@@ -160,3 +160,56 @@ fn a_policy_without_allowed_headers_adds_no_allow_headers_to_a_preflight() {
         Some("POST")
     );
 }
+
+#[test]
+fn every_cors_header_of_an_upstream_is_removed_even_without_a_grant() {
+    let mut response = StatusCode::OK.into_response();
+    for name in [
+        "access-control-allow-origin",
+        "access-control-allow-credentials",
+        "access-control-allow-methods",
+        "access-control-allow-headers",
+        "access-control-expose-headers",
+        "access-control-max-age",
+    ] {
+        response
+            .headers_mut()
+            .insert(name, HeaderValue::from_static("x"));
+    }
+
+    decorate(&mut response, None);
+
+    assert!(response.headers().is_empty());
+}
+
+#[test]
+fn a_route_with_a_policy_varies_on_origin_when_no_grant_applies() {
+    let mut response = StatusCode::OK.into_response();
+    response
+        .headers_mut()
+        .insert("access-control-allow-origin", HeaderValue::from_static("*"));
+    response.headers_mut().insert(
+        "access-control-expose-headers",
+        HeaderValue::from_static("x-secret"),
+    );
+
+    decorate(&mut response, Some(&Applied::Withheld));
+
+    assert_eq!(header(&response, "access-control-allow-origin"), None);
+    assert_eq!(header(&response, "access-control-expose-headers"), None);
+    assert_eq!(header(&response, VARY.as_str()).as_deref(), Some("Origin"));
+}
+
+#[test]
+fn an_upstream_expose_headers_claim_is_removed_from_a_granted_response() {
+    let applied = Applied::Simple(CorsRule::grant(Some(&policy(true)), CRM).unwrap());
+    let mut response = StatusCode::OK.into_response();
+    response.headers_mut().insert(
+        "access-control-expose-headers",
+        HeaderValue::from_static("x-secret"),
+    );
+
+    decorate(&mut response, Some(&applied));
+
+    assert_eq!(header(&response, "access-control-expose-headers"), None);
+}

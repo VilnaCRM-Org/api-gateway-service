@@ -25,8 +25,8 @@ use iam_domain::{
 use shared_application::http::Problem;
 
 use super::access::Observed;
+use super::headers::carries_auth_token;
 use super::{Refusal, route_of};
-use crate::http::authentication::cookie;
 
 /// The `type` of the 403 problem of a preflight that the route's CORS policy does not allow.
 pub const TYPE_CORS_REJECTED: &str = "/problems/cors_rejected";
@@ -41,6 +41,17 @@ const ALLOW_CREDENTIALS: HeaderName = HeaderName::from_static("access-control-al
 const ALLOW_METHODS: HeaderName = HeaderName::from_static("access-control-allow-methods");
 const ALLOW_HEADERS: HeaderName = HeaderName::from_static("access-control-allow-headers");
 const MAX_AGE: HeaderName = HeaderName::from_static("access-control-max-age");
+const EXPOSE_HEADERS: HeaderName = HeaderName::from_static("access-control-expose-headers");
+
+/// The CORS headers of the response: only the gateway sets them, never the upstream.
+const RESPONSE_HEADERS: [HeaderName; 6] = [
+    ALLOW_ORIGIN,
+    ALLOW_CREDENTIALS,
+    ALLOW_METHODS,
+    ALLOW_HEADERS,
+    EXPOSE_HEADERS,
+    MAX_AGE,
+];
 
 /// The value of a header that is not text: it matches no allowed value.
 const UNREADABLE: &str = "\u{0}";
@@ -52,6 +63,9 @@ pub(super) enum Applied {
     Simple(CorsGrant),
     /// An allowed preflight.
     Preflight(PreflightGrant),
+    /// A route with a CORS policy whose response gets no grant: the upstream's CORS headers are
+    /// removed and the response still varies on `Origin`.
+    Withheld,
 }
 
 /// Answers a preflight, when the request is one: `Ok(())` for any other request, `Err` with the
@@ -91,11 +105,14 @@ fn preflight_request(headers: &HeaderMap) -> Option<(&str, &str)> {
 
 /// Notes the CORS headers of an ordinary request from an allowed origin.
 pub(super) fn simple(parts: &Parts, route: &RouteState, slot: &mut Option<Applied>) {
-    let Some(origin) = parts.headers.get(ORIGIN) else {
+    let Some(policy) = route.fields.cors() else {
         return;
     };
-    let origin = origin.to_str().unwrap_or(UNREADABLE);
-    *slot = CorsRule::grant(route.fields.cors(), origin).map(Applied::Simple);
+    let granted = parts
+        .headers
+        .get(ORIGIN)
+        .and_then(|origin| CorsRule::grant(Some(policy), origin.to_str().unwrap_or(UNREADABLE)));
+    *slot = Some(granted.map_or(Applied::Withheld, Applied::Simple));
 }
 
 /// The CSRF rule for a request that has just been authenticated.
@@ -105,8 +122,7 @@ pub(super) fn csrf(parts: &Parts, method: HttpMethod, route: &RouteState) -> Res
     let request = CsrfRequest {
         method,
         websocket_upgrade: is_websocket_upgrade(headers),
-        cookie_authenticated: !headers.contains_key(AUTHORIZATION)
-            && cookie(headers).is_some_and(|token| !token.is_empty()),
+        cookie_authenticated: !headers.contains_key(AUTHORIZATION) && carries_auth_token(headers),
         origin: text(headers, &ORIGIN),
         referer: text(headers, &REFERER),
         own_origin: &own_origin,
@@ -149,17 +165,22 @@ fn own_origin(parts: &Parts) -> String {
     format!("{scheme}://{authority}")
 }
 
-/// Puts the CORS headers of `applied` on the response, replacing the ones an upstream set.
+/// Puts the CORS headers of `applied` on the response. Whatever CORS headers an upstream set are
+/// removed first, with or without a grant: the policy of the route is the only authority.
 pub(super) fn decorate(response: &mut Response, applied: Option<&Applied>) {
-    let Some(applied) = applied else {
-        return;
-    };
-    let (grant, preflight) = match applied {
-        Applied::Simple(grant) => (grant, None),
-        Applied::Preflight(answer) => (answer.grant(), Some(answer)),
-    };
     let headers = response.headers_mut();
-    headers.remove(&ALLOW_CREDENTIALS);
+    for name in &RESPONSE_HEADERS {
+        headers.remove(name);
+    }
+    let (grant, preflight) = match applied {
+        None => return,
+        Some(Applied::Withheld) => {
+            headers.append(VARY, HeaderValue::from_static("Origin"));
+            return;
+        }
+        Some(Applied::Simple(grant)) => (grant, None),
+        Some(Applied::Preflight(answer)) => (answer.grant(), Some(answer)),
+    };
     drop(HeaderValue::from_str(grant.origin()).map(|origin| headers.insert(ALLOW_ORIGIN, origin)));
     if grant.allow_credentials() {
         headers.insert(ALLOW_CREDENTIALS, HeaderValue::from_static("true"));

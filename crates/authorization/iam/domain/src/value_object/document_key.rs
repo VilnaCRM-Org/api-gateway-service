@@ -2,7 +2,14 @@
 
 use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 
+use crate::value_object::log_epoch::LogEpoch;
+use crate::value_object::policy_digest_value::PolicyDigestValue;
+use crate::value_object::policy_epoch::PolicyEpoch;
 use crate::value_object::policy_version::PolicyVersion;
+
+/// What besides the version tells two catalogues of one version apart: the epoch of the log and
+/// the digest of the state.
+type Stamp = Option<(LogEpoch, PolicyDigestValue)>;
 
 /// A 128-bit hash of the document, the operation name and the catalogue version.
 ///
@@ -19,9 +26,31 @@ impl DocumentKey {
         operation_name: Option<&str>,
         catalogue_version: PolicyVersion,
     ) -> Self {
-        let high = Self::half(0, document, operation_name, catalogue_version);
-        let low = Self::half(1, document, operation_name, catalogue_version);
-        Self((u128::from(high) << 64) | u128::from(low))
+        Self::stamped(document, operation_name, catalogue_version, None)
+    }
+
+    /// The key of `document` analysed for `operation_name` under the catalogue read at `epoch`.
+    ///
+    /// The version alone is not enough: after a resync to a new log epoch a version can come back
+    /// with other content, so the log epoch and the digest of the state are part of the key.
+    #[must_use]
+    pub fn in_epoch(document: &str, operation_name: Option<&str>, epoch: &PolicyEpoch) -> Self {
+        Self::stamped(
+            document,
+            operation_name,
+            epoch.version(),
+            Some((epoch.log_epoch(), epoch.digest())),
+        )
+    }
+
+    fn stamped(
+        document: &str,
+        operation_name: Option<&str>,
+        catalogue_version: PolicyVersion,
+        stamp: Stamp,
+    ) -> Self {
+        let half = |seed| Self::half(seed, (document, operation_name), catalogue_version, stamp);
+        Self((u128::from(half(0)) << 64) | u128::from(half(1)))
     }
 
     /// A key with a given digest; a test hook that forces two documents to one hash.
@@ -45,15 +74,16 @@ impl DocumentKey {
 
     fn half(
         seed: u8,
-        document: &str,
-        operation_name: Option<&str>,
+        (document, operation_name): (&str, Option<&str>),
         catalogue_version: PolicyVersion,
+        stamp: Stamp,
     ) -> u64 {
         let mut hasher = DefaultHasher::new();
         seed.hash(&mut hasher);
         document.hash(&mut hasher);
         operation_name.hash(&mut hasher);
         catalogue_version.value().hash(&mut hasher);
+        stamp.hash(&mut hasher);
         hasher.finish()
     }
 }

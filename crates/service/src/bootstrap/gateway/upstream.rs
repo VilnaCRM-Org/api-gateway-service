@@ -222,10 +222,13 @@ impl HyperUpstreamForwarder {
         if declared_above(request.headers(), target.body_limit()) {
             return Err(ForwardError::BodyTooLarge);
         }
-        let permit = self.registry.admit(&target)?;
         let deadline = deadline_of(&target);
         let (parts, body) = request.into_parts();
-        let payload = Payload::prepare(body, target.body_limit(), buffers(&target, &parts)).await?;
+        // The body is read under the deadline and before the permit is taken: a client that
+        // trickles it neither holds a slot of the upstream nor outlasts the request timeout.
+        let buffering = Payload::prepare(body, target.body_limit(), buffers(&target, &parts));
+        let payload = within(deadline, buffering).await??;
+        let permit = self.registry.admit(&target)?;
         let template = Template::of(parts, &target);
         let shared = Shared {
             target: &target,
