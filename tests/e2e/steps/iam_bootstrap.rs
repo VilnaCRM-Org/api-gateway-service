@@ -19,14 +19,12 @@ const ADMINISTRATORS: &str = "SELECT count(*) FROM iam_user_roles assignments \
 
 #[given("the first administrator is bootstrapped")]
 async fn first_administrator(world: &mut AppWorld) {
-    world.bootstrap_administrator(USER_ID).await;
+    Box::pin(world.bootstrap_administrator(USER_ID)).await;
 }
 
 #[given(expr = "the first administrator is bootstrapped with the IAM host {string}")]
 async fn first_administrator_with_iam_host(world: &mut AppWorld, host: String) {
-    world
-        .bootstrap_administrator_with_iam_host(USER_ID, &host)
-        .await;
+    Box::pin(world.bootstrap_administrator_with_iam_host(USER_ID, &host)).await;
 }
 
 #[given(expr = "the seeded IAM route {string} is remembered")]

@@ -4,9 +4,10 @@ use rstest::rstest;
 use test_support::access_token::DEVELOPMENT_PUBLIC_KEYS_FILE;
 
 use super::*;
-use crate::cli::RouteConfigurationArgs;
+use crate::cli::{AccessLogQueryArgs, RouteConfigurationArgs};
 
 mod access_log;
+mod access_log_query;
 mod audit_lane;
 mod endpoints;
 mod rate_limit;
@@ -27,6 +28,10 @@ fn valid() -> ServeArgs {
             sasl_username: Some("iam-control".to_owned()),
             sasl_password: Some("secret-password".to_owned()),
             ..KafkaArgs::default()
+        },
+        access_log_query: AccessLogQueryArgs {
+            loki_query_url: Some("http://loki:3100".to_owned()),
+            ..AccessLogQueryArgs::default()
         },
         ..ServeArgs::default()
     }
@@ -442,6 +447,12 @@ fn every_variable_accepts_a_valid_value() {
         bulk: valid().bulk,
         route_configuration: valid().route_configuration,
         iam_namespace: some("iam"),
+        access_log_query: AccessLogQueryArgs {
+            loki_query_url: some("http://loki:3100"),
+            loki_tenant_id: some("tenant-7"),
+            max_range: some("2h"),
+            timeout: some("750ms"),
+        },
     };
 
     let config = Config::from_args(args).unwrap();
@@ -1077,7 +1088,7 @@ type Mutator = fn(&mut ServeArgs);
 
 /// One row per variable of `ServeArgs`: the variable, a way to make it the only problem, and the
 /// variable that the problem names.
-const FIELDS: [(&str, Mutator, &str); 54] = [
+const FIELDS: [(&str, Mutator, &str); 58] = [
     ("APP_ENV", |a| a.app_env = some("x"), "APP_ENV"),
     ("APP_HOST", |a| a.app_host = some("x"), "APP_HOST"),
     ("APP_PORT", |a| a.app_port = some("x"), "APP_PORT"),
@@ -1319,6 +1330,26 @@ const FIELDS: [(&str, Mutator, &str); 54] = [
         "EVENTS_TOPIC",
         |a| a.kafka.events_topic = some("x y"),
         "EVENTS_TOPIC",
+    ),
+    (
+        "LOKI_QUERY_URL",
+        |a| a.access_log_query.loki_query_url = some("x"),
+        "LOKI_QUERY_URL",
+    ),
+    (
+        "LOKI_TENANT_ID",
+        |a| a.access_log_query.loki_tenant_id = some(""),
+        "LOKI_TENANT_ID",
+    ),
+    (
+        "ACCESS_LOG_QUERY_MAX_RANGE",
+        |a| a.access_log_query.max_range = some("x"),
+        "ACCESS_LOG_QUERY_MAX_RANGE",
+    ),
+    (
+        "ACCESS_LOG_QUERY_TIMEOUT",
+        |a| a.access_log_query.timeout = some("x"),
+        "ACCESS_LOG_QUERY_TIMEOUT",
     ),
 ];
 

@@ -83,6 +83,8 @@ fn documents_exactly_the_twenty_four_operations() {
     assert_eq!(
         operations,
         [
+            "get /api/access-decisions",
+            "get /api/access-decisions/{id}",
             "post /api/access-validations",
             "post /api/access-validations/batch",
             "get /api/bulk-operations",
@@ -130,6 +132,7 @@ fn documents_exactly_the_twenty_four_operations() {
             "delete /api/routes/{id}",
             "patch /api/routes/{id}",
             "get /api/security-audit-events",
+            "get /api/security-audit-events/chain-verification",
             "get /api/security-audit-events/{id}",
             "get /api/session-revocations",
             "post /api/session-revocations",
@@ -1348,6 +1351,8 @@ fn defines_exactly_the_documented_schemas() {
     assert_eq!(
         names,
         [
+            "AccessDecision",
+            "AccessDecisionPage",
             "AccessScopes",
             "AccessSubject",
             "AccessValidation",
@@ -1422,6 +1427,7 @@ fn defines_exactly_the_documented_schemas() {
             "RoutePage",
             "RouteRetryPolicy",
             "RouteTraffic",
+            "SecurityAuditChainVerification",
             "SecurityAuditEvent",
             "SecurityAuditEventPage",
             "SessionRevocation",
@@ -2030,6 +2036,106 @@ fn the_security_audit_schemas_name_the_members_of_fr_52() {
             "targetType",
             "targetId",
             "outcome"
+        ]
+    );
+}
+
+#[test]
+fn documents_the_access_decision_reads_with_the_bearer_requirement_and_the_iam_tag() {
+    let json = json_document();
+    let cases = [
+        (
+            "/api/access-decisions",
+            "api_access_decisions_get",
+            "AccessDecisionPage",
+            ["200", "400", "401", "403", "422", "503", "504", "default"].as_slice(),
+        ),
+        (
+            "/api/access-decisions/{id}",
+            "api_access_decisions_id_get",
+            "AccessDecision",
+            [
+                "200", "400", "401", "403", "404", "422", "503", "504", "default",
+            ]
+            .as_slice(),
+        ),
+    ];
+
+    for (path, operation_id, schema, statuses) in cases {
+        let operation = &json["paths"][path]["get"];
+        assert_eq!(operation["operationId"], operation_id);
+        assert_eq!(operation["tags"], json!(["iam"]), "{operation_id}");
+        assert_eq!(
+            operation["security"],
+            json!([{ "bearerAuth": [] }]),
+            "{operation_id}"
+        );
+        let mut documented: Vec<&str> = operation["responses"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        documented.sort_unstable();
+        assert_eq!(documented, statuses, "{operation_id}");
+        assert_eq!(
+            operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            format!("#/components/schemas/{schema}"),
+            "{operation_id}"
+        );
+    }
+}
+
+#[test]
+fn the_access_decision_schemas_and_parameters_name_the_members_of_fr_51() {
+    let json = json_document();
+    let record = &json["components"]["schemas"]["AccessDecision"]["properties"];
+
+    for member in [
+        "id",
+        "occurredAt",
+        "method",
+        "host",
+        "routeId",
+        "routeTemplate",
+        "status",
+        "upstream",
+        "latencyUs",
+        "bytesIn",
+        "bytesOut",
+        "requestId",
+        "subjectId",
+        "subjectKind",
+        "decision",
+        "reason",
+        "permissionKey",
+        "denied",
+        "projectId",
+        "policyVersion",
+    ] {
+        assert!(record[member].is_object(), "{member}");
+    }
+    assert!(record["credentialDigestPrefix"].is_null());
+    let parameters: Vec<&str> = json["paths"]["/api/access-decisions"]["get"]["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|parameter| parameter["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        parameters,
+        [
+            "limit",
+            "after",
+            "from",
+            "until",
+            "subjectId",
+            "subjectKind",
+            "decision",
+            "reason",
+            "upstream",
+            "routeId",
+            "status"
         ]
     );
 }

@@ -5,14 +5,19 @@
 
 use iam_domain::{
     ActorRef, AssignmentScope, AuditAction, AuditChainHead, AuditHash, AuditOutcome, AuditReason,
-    AuditSummary, AuditTarget, IdempotencyKey, InvalidIamValue, PolicyVersion, RepositoryError,
-    RequestId, SecurityAuditEvent, SecurityAuditEventId, SecurityAuditEventParts, SecurityAuditLog,
-    SecurityAuditSearch, ServiceName, StoredSecurityAuditEvent,
+    AuditSummary, AuditTarget, ChainBreak, ChainVerification, IdempotencyKey, InvalidIamValue,
+    PolicyVersion, RepositoryError, RequestId, SecurityAuditEvent, SecurityAuditEventId,
+    SecurityAuditEventParts, SecurityAuditLog, SecurityAuditSearch, ServiceName,
+    StoredSecurityAuditEvent,
 };
 use shared_domain::Uuid;
 use sqlx::postgres::PgRow;
 use sqlx::types::Uuid as SqlUuid;
 use sqlx::{PgConnection, Row as _};
+
+use chain_walk::{ChainWalk, Link};
+
+mod chain_walk;
 
 /// The message of the `tracing` event of an appended record.
 const AUDIT_MESSAGE: &str = "security audit event";
@@ -40,6 +45,15 @@ const SEARCH: &str =
         AND ($8::text IS NULL OR outcome = $8)
     ORDER BY seq DESC
     LIMIT $9";
+
+/// The number of records that a verification reads, and digests, per round trip.
+const VERIFY_PAGE_SIZE: u32 = 1000;
+
+/// The digests of a page, in the order of its records: `sha256(prev_hash || canonical_form)`,
+/// computed by the same function that extended the chain.
+const DIGESTS: &str = "SELECT sha256(link.prev_hash || convert_to(link.form, 'UTF8')) AS digest
+    FROM unnest($1::bytea[], $2::text[]) WITH ORDINALITY AS link(prev_hash, form, ordinal)
+    ORDER BY link.ordinal";
 
 /// The append-only, hash-chained `iam_security_audit_events` table.
 #[derive(Debug)]
@@ -156,12 +170,8 @@ impl PgSecurityAuditLog {
         restore(&row)
     }
 
-    async fn select_after(
-        &self,
-        after_seq: i64,
-        limit: u32,
-    ) -> Result<Vec<StoredSecurityAuditEvent>, RepositoryError> {
-        let rows = sqlx::query_as!(
+    async fn fetch_after(&self, after_seq: i64, limit: u32) -> Result<Vec<Row>, RepositoryError> {
+        sqlx::query_as!(
             Row,
             r#"SELECT seq, id, (extract(epoch FROM occurred_at) * 1000000)::bigint AS "occurred_at_micros!",
                 actor, caller_service, action, target_type, target_id, scope, before_summary,
@@ -173,8 +183,85 @@ impl PgSecurityAuditLog {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(unavailable)?;
+        .map_err(unavailable)
+    }
+
+    async fn select_after(
+        &self,
+        after_seq: i64,
+        limit: u32,
+    ) -> Result<Vec<StoredSecurityAuditEvent>, RepositoryError> {
+        let rows = self.fetch_after(after_seq, limit).await?;
         rows.iter().map(restore).collect()
+    }
+
+    /// Walks the chain page by page from the first record and stops at the first break.
+    async fn verify(
+        &self,
+        anchors: &[AuditChainHead],
+    ) -> Result<ChainVerification, RepositoryError> {
+        let mut walk = ChainWalk::new(anchors);
+        loop {
+            let rows = self.fetch_after(walk.last_seq(), VERIFY_PAGE_SIZE).await?;
+            if rows.is_empty() {
+                return Ok(walk.finish());
+            }
+            if let Some(broken) = self.verify_page(&mut walk, &rows).await? {
+                return Ok(walk.broken(broken));
+            }
+        }
+    }
+
+    /// Checks the records of one page against `walk`; returns where the chain breaks.
+    async fn verify_page(
+        &self,
+        walk: &mut ChainWalk<'_>,
+        rows: &[Row],
+    ) -> Result<Option<ChainBreak>, RepositoryError> {
+        let forms: Vec<Option<String>> = rows
+            .iter()
+            .map(|row| restore(row).ok())
+            .map(|record| record.map(|record| record.event().canonical_form()))
+            .collect();
+        let digests = self.digests(rows, &forms).await?;
+        for ((row, form), digest) in rows.iter().zip(&forms).zip(&digests) {
+            let link = Link {
+                seq: row.seq,
+                id: SecurityAuditEventId::from_uuid(Uuid::from_uuid(row.id)),
+                prev_hash: &row.prev_hash,
+                hash: &row.hash,
+                digest: form.as_ref().map(|_form| digest.as_slice()),
+            };
+            if let Some(broken) = walk.step(&link) {
+                return Ok(Some(broken));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The digest of every record of a page; a record that cannot be read back gets an empty one
+    /// that the walk never compares.
+    async fn digests(
+        &self,
+        rows: &[Row],
+        forms: &[Option<String>],
+    ) -> Result<Vec<Vec<u8>>, RepositoryError> {
+        let prev_hashes: Vec<Vec<u8>> = rows.iter().map(|row| row.prev_hash.clone()).collect();
+        let texts: Vec<String> = forms
+            .iter()
+            .map(|form| form.clone().unwrap_or_default())
+            .collect();
+        let found = sqlx::query(DIGESTS)
+            .bind(prev_hashes)
+            .bind(texts)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(unavailable)?;
+        let digests = found
+            .iter()
+            .map(|row| row.try_get::<Vec<u8>, _>("digest").map_err(unavailable))
+            .collect::<Result<Vec<_>, _>>()?;
+        aligned(digests, rows.len())
     }
 
     async fn select_search(
@@ -376,6 +463,16 @@ fn translate(error: sqlx::Error) -> RepositoryError {
 }
 
 /// Any failure, a missing chain-head row included, is an unavailable repository.
+/// `digests` when there is exactly one per record of the page; storage that answers otherwise is
+/// unavailable.
+fn aligned(digests: Vec<Vec<u8>>, records: usize) -> Result<Vec<Vec<u8>>, RepositoryError> {
+    if digests.len() == records {
+        Ok(digests)
+    } else {
+        Err(unavailable(sqlx::Error::RowNotFound))
+    }
+}
+
 fn unavailable(error: sqlx::Error) -> RepositoryError {
     RepositoryError::Unavailable(Box::new(error))
 }
@@ -461,6 +558,13 @@ impl SecurityAuditLog for PgSecurityAuditLog {
         search: &SecurityAuditSearch,
     ) -> Result<Vec<StoredSecurityAuditEvent>, RepositoryError> {
         self.select_search(search).await
+    }
+
+    async fn verify_chain(
+        &self,
+        anchors: &[AuditChainHead],
+    ) -> Result<ChainVerification, RepositoryError> {
+        self.verify(anchors).await
     }
 }
 

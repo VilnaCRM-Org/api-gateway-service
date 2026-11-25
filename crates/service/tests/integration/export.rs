@@ -7,7 +7,7 @@ use crate::support::{Scratch, stderr};
 
 #[rstest]
 #[case("openapi-export", "openapi: 3.1.0\n")]
-#[case("graphql-export", "\"The GraphQL document that a check names.\"\n")]
+#[case("graphql-export", "\"One access decision of the gateway.\"\n")]
 fn twenty_runs_with_an_empty_environment_are_byte_identical(
     #[case] command: &str,
     #[case] beginning: &str,

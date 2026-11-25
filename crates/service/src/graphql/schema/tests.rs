@@ -13,7 +13,81 @@ use test_support::request_digester::FakeRequestDigester;
 
 use super::*;
 
-const EXPECTED_SDL: &str = r#""The GraphQL document that a check names."
+const EXPECTED_SDL: &str = r#""One access decision of the gateway."
+type AccessDecision {
+  "The bytes of the request body that were announced."
+  bytesIn: Int!
+  "The bytes of the response body that were announced."
+  bytesOut: Int!
+  "The kind of the decision: `allow`, `deny` or `error`."
+  decision: String!
+  "The keys that were denied, for a denial."
+  denied: [String!]!
+  "The host of the request."
+  host: String!
+  "The identifier of the decision, a UUID v7."
+  id: ID!
+  "Microseconds from the receipt of the request to the end of the response."
+  latencyUs: Int!
+  "The HTTP method of the request."
+  method: String!
+  "When the decision was made, as an RFC 3339 UTC time."
+  occurredAt: String!
+  "The permission key the operation required."
+  permissionKey: String
+  "The version of the policy snapshot that decided."
+  policyVersion: Int
+  "The project of the request, when it names one."
+  projectId: ID
+  "The reason code of the decision."
+  reason: String!
+  "The request id of the request."
+  requestId: String
+  "The matched route."
+  routeId: ID
+  "The path template of the matched route; never the concrete path."
+  routeTemplate: String
+  "The status of the answer."
+  status: Int!
+  "The subject that the token proved; null without a valid token."
+  subjectId: String
+  "The kind of the subject: `user` or `service`."
+  subjectKind: String
+  "The registered name of the upstream."
+  upstream: String
+}
+
+"The time range and the filters of the access decision search: a decision must meet every filter that is given; the range is required and nullable here so that a missing bound is `VALIDATION_FAILED` like over REST."
+input AccessDecisionFilterInput {
+  "Only the decisions of this kind: `allow`, `deny` or `error`."
+  decision: String
+  "The decisions from this RFC 3339 UTC time on; required."
+  from: String
+  "Only the decisions with this reason code, such as `permission_missing`."
+  reason: String
+  "Only the decisions of this route."
+  routeId: String
+  "Only the decisions with this response status."
+  status: Int
+  "Only the decisions about this subject: a user id or a service name."
+  subjectId: String
+  "Only the decisions about subjects of this kind: `user` or `service`."
+  subjectKind: String
+  "The decisions before this RFC 3339 UTC time; required, and at most `ACCESS_LOG_QUERY_MAX_RANGE` after `from`."
+  until: String
+  "Only the decisions that went to this upstream."
+  upstream: String
+}
+
+"One page of access decisions."
+type AccessDecisionPage {
+  "The decisions of the page, newest first."
+  items: [AccessDecision!]!
+  "The `after` value of the next, older page; null on the last page."
+  nextCursor: String
+}
+
+"The GraphQL document that a check names."
 input AccessGraphQlTargetInput {
   "The document as the caller received it; IAM resolves every field it selects against the active GraphQL versions of the service. A document over a limit is decided as a deny with `limits_exceeded`."
   document: String!
@@ -802,6 +876,17 @@ type Propagation {
 
 "Query root."
 type Query {
+  "Retrieves an access decision of the gateway by id from the log store and records the read in the audit log; null when the log store holds none. Needs `iam:audit:read`."
+  accessDecision(id: ID!): AccessDecision
+  "Retrieves one page of the access decisions of the gateway from the log store, newest first, and records the search in the audit log. The filter needs a time range (`from` and `until`, at most `ACCESS_LOG_QUERY_MAX_RANGE` long) and keeps the decisions that match every other field given. A query that exceeds `ACCESS_LOG_QUERY_TIMEOUT` fails with `QUERY_TIMEOUT` and no partial page; a log store that cannot be reached fails with `SERVICE_UNAVAILABLE`. Needs `iam:audit:read`."
+  accessDecisions(
+    "The nextCursor of the previous page."
+    after: String,
+    "The required time range and the subject, decision, reason, upstream, route and status that the decisions must have."
+    filter: AccessDecisionFilterInput,
+    "Page size, from 1 to 500."
+    first: Int = 30
+  ): AccessDecisionPage!
   "Retrieves a bulk operation by id; null when it is unknown."
   bulkOperation(id: ID!): BulkOperation
   "Retrieves one page of bulk operations, oldest first."
@@ -901,6 +986,11 @@ type Query {
     "Page size, from 1 to 100."
     first: Int = 30
   ): RoutePage!
+  "Verifies the security audit hash chain and records the verification in the audit log; the result is valid with the number of records checked, or invalid with the id of the first record where the chain breaks. Needs `iam:audit:read`."
+  securityAuditChainVerification(
+    "Anchors published as iam.security_audit.anchored, at most 100; the chain is invalid at an anchored record whose hash differs."
+    anchors: [SecurityAuditAnchorInput!]
+  ): SecurityAuditChainVerification!
   "Retrieves a security audit record by id and records the read in the audit log; null when it is unknown. Needs `iam:audit:read`."
   securityAuditEvent(id: ID!): SecurityAuditEvent
   "Retrieves one page of the security audit records, newest first, and records the search in the audit log; the filter keeps the records that match every field given. Needs `iam:audit:read`."
@@ -1376,6 +1466,31 @@ type RoutePage {
   items: [Route!]!
   "The `after` value of the next page; null on the last page."
   nextCursor: String
+}
+
+"""
+An anchor of the audit chain: the sequence number and the hash that were published as
+`iam.security_audit.anchored`.
+"""
+input SecurityAuditAnchorInput {
+  "The hash of the anchored record, 64 lower-case hexadecimal digits."
+  hash: String!
+  "The sequence number of the anchored record, at least 1."
+  seq: Int!
+}
+
+"The result of verifying the security audit hash chain."
+type SecurityAuditChainVerification {
+  "Why the chain breaks: `gap`, `link`, `digest`, `unreadable`, `anchor` or `anchor_missing`; null when the chain is valid."
+  cause: String
+  "The id of the record where the chain breaks; null when the chain is valid or the broken record is missing."
+  invalidRecordId: ID
+  "The sequence number where the chain breaks; null when the chain is valid."
+  invalidSeq: Int
+  "The number of records checked, the broken one included."
+  recordsChecked: Int!
+  "`valid` when every record, link and anchor checked out, `invalid` when the chain breaks."
+  status: String!
 }
 
 "One security audit record with its place in the hash chain."
@@ -2159,6 +2274,28 @@ async fn the_revocation_queries_are_merged_into_the_query_root_and_need_an_authe
             error_code(&response),
             Some(async_graphql::Value::String("UNAUTHENTICATED".to_owned())),
             "{query}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_access_decision_queries_are_merged_into_the_query_root_and_need_an_authenticated_caller()
+ {
+    let schema: ApiSchema = builder().data(iam_state()).finish();
+    let single =
+        Request::new("{ accessDecision(id: \"0190f2a8-7b3c-7d4e-8f10-1234567890cd\") { id } }");
+    let page = Request::new(
+        "{ accessDecisions(filter: { from: \"2026-11-25T08:00:00Z\", until: \"2026-11-25T09:00:00Z\", \
+         decision: \"deny\" }) { items { id } nextCursor } }",
+    );
+
+    let single = schema.execute(single).await;
+    let page = schema.execute(page).await;
+
+    for response in [single, page] {
+        assert_eq!(
+            error_code(&response),
+            Some(async_graphql::Value::String("UNAUTHENTICATED".to_owned()))
         );
     }
 }

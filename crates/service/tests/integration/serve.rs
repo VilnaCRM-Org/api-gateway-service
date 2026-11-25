@@ -415,9 +415,10 @@ async fn entries_inside_nested_spans_carry_the_request_id(pool: PgPool) {
     let scratch = Scratch::new();
     let url = database_url(&pool).await;
     let mut owned = stack_with(&url);
-    // The Kafka client writes its connection entries from tasks of its own, outside any span of
-    // the service; only the service's entries are this test's subject.
-    owned.push(("LOG_LEVEL", "debug,krafka=warn".to_owned()));
+    // The Kafka client and the HTTP client of the access log store probe write their connection
+    // entries from tasks of their own, outside any span of the service; only the service's entries
+    // are this test's subject.
+    owned.push(("LOG_LEVEL", "debug,krafka=warn,hyper_util=warn".to_owned()));
     let server = serve(&scratch, &as_pairs(&owned));
 
     let health = server.request("GET", "/api/health", &[("x-request-id", REQUEST_ID)], "");

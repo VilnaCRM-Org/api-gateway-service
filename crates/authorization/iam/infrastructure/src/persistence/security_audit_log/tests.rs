@@ -269,3 +269,16 @@ fn an_emitted_record_writes_absent_values_as_empty_text() {
         assert_eq!(line.field(name), Some(""), "{name}");
     }
 }
+
+#[test]
+fn a_page_whose_digests_are_not_one_per_record_is_unavailable() {
+    let digests = vec![vec![1_u8], vec![2_u8]];
+
+    assert_eq!(aligned(digests.clone(), 2).unwrap(), digests);
+    for records in [1, 3] {
+        assert!(matches!(
+            aligned(digests.clone(), records),
+            Err(RepositoryError::Unavailable(_))
+        ));
+    }
+}

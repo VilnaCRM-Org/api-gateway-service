@@ -1,3 +1,77 @@
+"One access decision of the gateway."
+type AccessDecision {
+  "The bytes of the request body that were announced."
+  bytesIn: Int!
+  "The bytes of the response body that were announced."
+  bytesOut: Int!
+  "The kind of the decision: `allow`, `deny` or `error`."
+  decision: String!
+  "The keys that were denied, for a denial."
+  denied: [String!]!
+  "The host of the request."
+  host: String!
+  "The identifier of the decision, a UUID v7."
+  id: ID!
+  "Microseconds from the receipt of the request to the end of the response."
+  latencyUs: Int!
+  "The HTTP method of the request."
+  method: String!
+  "When the decision was made, as an RFC 3339 UTC time."
+  occurredAt: String!
+  "The permission key the operation required."
+  permissionKey: String
+  "The version of the policy snapshot that decided."
+  policyVersion: Int
+  "The project of the request, when it names one."
+  projectId: ID
+  "The reason code of the decision."
+  reason: String!
+  "The request id of the request."
+  requestId: String
+  "The matched route."
+  routeId: ID
+  "The path template of the matched route; never the concrete path."
+  routeTemplate: String
+  "The status of the answer."
+  status: Int!
+  "The subject that the token proved; null without a valid token."
+  subjectId: String
+  "The kind of the subject: `user` or `service`."
+  subjectKind: String
+  "The registered name of the upstream."
+  upstream: String
+}
+
+"The time range and the filters of the access decision search: a decision must meet every filter that is given; the range is required and nullable here so that a missing bound is `VALIDATION_FAILED` like over REST."
+input AccessDecisionFilterInput {
+  "Only the decisions of this kind: `allow`, `deny` or `error`."
+  decision: String
+  "The decisions from this RFC 3339 UTC time on; required."
+  from: String
+  "Only the decisions with this reason code, such as `permission_missing`."
+  reason: String
+  "Only the decisions of this route."
+  routeId: String
+  "Only the decisions with this response status."
+  status: Int
+  "Only the decisions about this subject: a user id or a service name."
+  subjectId: String
+  "Only the decisions about subjects of this kind: `user` or `service`."
+  subjectKind: String
+  "The decisions before this RFC 3339 UTC time; required, and at most `ACCESS_LOG_QUERY_MAX_RANGE` after `from`."
+  until: String
+  "Only the decisions that went to this upstream."
+  upstream: String
+}
+
+"One page of access decisions."
+type AccessDecisionPage {
+  "The decisions of the page, newest first."
+  items: [AccessDecision!]!
+  "The `after` value of the next, older page; null on the last page."
+  nextCursor: String
+}
+
 "The GraphQL document that a check names."
 input AccessGraphQlTargetInput {
   "The document as the caller received it; IAM resolves every field it selects against the active GraphQL versions of the service. A document over a limit is decided as a deny with `limits_exceeded`."
@@ -473,6 +547,18 @@ type FlagDowngrade {
   coordinate: String!
 }
 
+"The cut-off of every token."
+type GlobalTokenCutoff {
+  "The actor that set the cut-off: `user:<uuid>`, `service:<name>` or `system:<component>`."
+  actor: String!
+  "When the cut-off was set, as an RFC 3339 UTC time."
+  setAt: String!
+  "Who caused the cut-off; the global cut-off is always set by an operator."
+  source: String!
+  "Tokens issued at or before this RFC 3339 UTC time are refused."
+  tokensValidAfter: String!
+}
+
 "A role that grants an effective permission."
 type GrantingRole {
   "The identifier of the role."
@@ -775,6 +861,17 @@ type Propagation {
 
 "Query root."
 type Query {
+  "Retrieves an access decision of the gateway by id from the log store and records the read in the audit log; null when the log store holds none. Needs `iam:audit:read`."
+  accessDecision(id: ID!): AccessDecision
+  "Retrieves one page of the access decisions of the gateway from the log store, newest first, and records the search in the audit log. The filter needs a time range (`from` and `until`, at most `ACCESS_LOG_QUERY_MAX_RANGE` long) and keeps the decisions that match every other field given. A query that exceeds `ACCESS_LOG_QUERY_TIMEOUT` fails with `QUERY_TIMEOUT` and no partial page; a log store that cannot be reached fails with `SERVICE_UNAVAILABLE`. Needs `iam:audit:read`."
+  accessDecisions(
+    "The nextCursor of the previous page."
+    after: String,
+    "The required time range and the subject, decision, reason, upstream, route and status that the decisions must have."
+    filter: AccessDecisionFilterInput,
+    "Page size, from 1 to 500."
+    first: Int = 30
+  ): AccessDecisionPage!
   "Retrieves a bulk operation by id; null when it is unknown."
   bulkOperation(id: ID!): BulkOperation
   "Retrieves one page of bulk operations, oldest first."
@@ -793,6 +890,8 @@ type Query {
     "Page number, from 1."
     page: Int! = 1
   ): [ExampleApiResource!]!
+  "Retrieves the global token cut-off with its source and actor; null when it was never set. Needs `iam:audit:read`."
+  globalTokenCutoff: GlobalTokenCutoff
   "Retrieves a GraphQL permission by id with the active versions that contain its key and the roles that grant it by its exact key; null when it is unknown."
   graphqlPermission(id: ID!): GraphqlPermission
   "Retrieves one page of GraphQL permissions in a stable order, filtered by service, type, active state, the sensitive flag and key prefix."
@@ -872,6 +971,11 @@ type Query {
     "Page size, from 1 to 100."
     first: Int = 30
   ): RoutePage!
+  "Verifies the security audit hash chain and records the verification in the audit log; the result is valid with the number of records checked, or invalid with the id of the first record where the chain breaks. Needs `iam:audit:read`."
+  securityAuditChainVerification(
+    "Anchors published as iam.security_audit.anchored, at most 100; the chain is invalid at an anchored record whose hash differs."
+    anchors: [SecurityAuditAnchorInput!]
+  ): SecurityAuditChainVerification!
   "Retrieves a security audit record by id and records the read in the audit log; null when it is unknown. Needs `iam:audit:read`."
   securityAuditEvent(id: ID!): SecurityAuditEvent
   "Retrieves one page of the security audit records, newest first, and records the search in the audit log; the filter keeps the records that match every field given. Needs `iam:audit:read`."
@@ -883,6 +987,17 @@ type Query {
     "Page size, from 1 to 100."
     first: Int = 30
   ): SecurityAuditEventPage!
+  "Retrieves a session revocation by id with its source and actor; null when it is unknown. Needs `iam:audit:read`."
+  sessionRevocation(id: ID!): SessionRevocation
+  "Retrieves one page of the session revocations, newest first; the filter keeps the revocations that match every field given. Needs `iam:audit:read`."
+  sessionRevocations(
+    "The nextCursor of the previous page."
+    after: String,
+    "Keeps the revocations of a user, of a source and in a time range."
+    filter: SessionRevocationFilterInput,
+    "Page size, from 1 to 100."
+    first: Int = 30
+  ): SessionRevocationPage!
   "Retrieves an upstream by id; null when it is unknown or deleted."
   upstream(id: ID!): Upstream
   "Retrieves one page of the upstreams that are not deleted, in a stable order."
@@ -912,6 +1027,8 @@ type Query {
     "Page size, from 1 to 100."
     first: Int = 30
   ): UserRolePage!
+  "Retrieves the token cut-off of a user with its source and actor; null when the user has none. Needs `iam:audit:read`."
+  userTokenCutoff(userId: ID!): UserTokenCutoff
   "Decides whether a subject may perform a REST operation or hold permission keys; a valid request always gets a decision."
   validateAccess(input: ValidateAccessInput!): AccessValidation!
   "Decides 1 to 100 checks of the shape of `validateAccess` and returns one decision per input, in the order of the inputs, each with its own `decisionId`; an input that cannot be read is a `deny` with the reason `malformed_operation` and does not fail the others. A batch of no input or of more than 100 fails with `VALIDATION_FAILED`."
@@ -1336,6 +1453,31 @@ type RoutePage {
   nextCursor: String
 }
 
+"""
+An anchor of the audit chain: the sequence number and the hash that were published as
+`iam.security_audit.anchored`.
+"""
+input SecurityAuditAnchorInput {
+  "The hash of the anchored record, 64 lower-case hexadecimal digits."
+  hash: String!
+  "The sequence number of the anchored record, at least 1."
+  seq: Int!
+}
+
+"The result of verifying the security audit hash chain."
+type SecurityAuditChainVerification {
+  "Why the chain breaks: `gap`, `link`, `digest`, `unreadable`, `anchor` or `anchor_missing`; null when the chain is valid."
+  cause: String
+  "The id of the record where the chain breaks; null when the chain is valid or the broken record is missing."
+  invalidRecordId: ID
+  "The sequence number where the chain breaks; null when the chain is valid."
+  invalidSeq: Int
+  "The number of records checked, the broken one included."
+  recordsChecked: Int!
+  "`valid` when every record, link and anchor checked out, `invalid` when the chain breaks."
+  status: String!
+}
+
 "One security audit record with its place in the hash chain."
 type SecurityAuditEvent {
   "What was done, such as `role.create`."
@@ -1396,6 +1538,42 @@ input SecurityAuditEventFilterInput {
 type SecurityAuditEventPage {
   "The records of the page, newest first."
   items: [SecurityAuditEvent!]!
+  "The `after` value of the next, older page; null on the last page."
+  nextCursor: String
+}
+
+"One revoked session with the source and the actor of its revocation."
+type SessionRevocation {
+  "The actor that recorded the revocation: `user:<uuid>`, `service:<name>` or `system:<component>`."
+  actor: String!
+  "The identifier of the revocation."
+  id: ID!
+  "When the revocation was recorded, as an RFC 3339 UTC time."
+  revokedAt: String!
+  "The revoked session."
+  sessionId: String!
+  "Who caused the revocation: `user-service` or `operator`."
+  source: String!
+  "The user the session belongs to."
+  userId: ID!
+}
+
+"The filters of the session revocation list: a revocation must meet every one that is given."
+input SessionRevocationFilterInput {
+  "Only the revocations from this RFC 3339 UTC time on."
+  from: String
+  "Only the revocations that this source caused: `user-service` or `operator`."
+  source: String
+  "Only the revocations before this RFC 3339 UTC time."
+  until: String
+  "Only the revocations of the sessions of this user."
+  userId: ID
+}
+
+"One page of session revocations."
+type SessionRevocationPage {
+  "The revocations of the page, newest first."
+  items: [SessionRevocation!]!
   "The `after` value of the next, older page; null on the last page."
   nextCursor: String
 }
@@ -1688,6 +1866,20 @@ type UserRolePermissions {
   "The policy version the permissions were composed at."
   policyVersion: Int!
   "The user whose permissions these are."
+  userId: ID!
+}
+
+"The cut-off of the tokens of one user."
+type UserTokenCutoff {
+  "The actor that set the cut-off: `system:user-service` for a cut-off of a User service event and the actor of the audit record for an operator cut-off; null when the audit log holds no record of it."
+  actor: String
+  "Who caused the cut-off: `user-service` or `operator`."
+  source: String!
+  "Tokens issued at or before this RFC 3339 UTC time are refused."
+  tokensValidAfter: String!
+  "When the cut-off was last moved, as an RFC 3339 UTC time."
+  updatedAt: String!
+  "The user."
   userId: ID!
 }
 

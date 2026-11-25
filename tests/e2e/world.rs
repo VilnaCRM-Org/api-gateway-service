@@ -35,6 +35,7 @@ use tower::ServiceExt as _;
 
 use crate::administrator_policy::AdministratorCallerPolicy;
 use crate::events_topic::{self, EventRecord};
+use crate::gateway_proxy::{GatewayHarness, GatewayPlan};
 use crate::tokens::{ADMINISTRATOR_ID, SigningKey, USER_ID, instant_after};
 
 /// Counter that makes the database names of the scenarios of one process unique.
@@ -123,6 +124,10 @@ pub(crate) struct AppWorld {
     /// application instance of the scenario offers its refusals to it, as one `service serve`
     /// process does.
     rejected_attempts: Option<Arc<dyn RejectedAttemptLog>>,
+    /// The plan of the in-process gateway of a proxy scenario, until its first request.
+    pub(crate) gateway_plan: Option<GatewayPlan>,
+    /// The in-process gateway with its fake upstream, built at the first request.
+    pub(crate) gateway: Option<GatewayHarness>,
 }
 
 /// The configuration as the binary reads it from the environment.
@@ -1100,6 +1105,30 @@ impl AppWorld {
         self.tasks = Some((stop, supervisor));
     }
 
+    /// Verifies the audit hash chain of the scenario database through the production wiring: the
+    /// final step of every scenario, so that no scenario leaves a broken chain behind. A scenario
+    /// that made no database has no chain.
+    ///
+    /// # Panics
+    ///
+    /// When the chain cannot be read or does not verify.
+    pub(crate) async fn verify_audit_chain(&mut self) {
+        if self.database.is_none() {
+            return;
+        }
+        let config = self.config().await;
+        let adapters = Adapters::connect(&config).await.expect("production wiring");
+        let verification = adapters
+            .security_audit_log
+            .verify_chain(&[])
+            .await
+            .expect("the audit chain of the scenario database can be read");
+        assert!(
+            verification.is_valid(),
+            "the audit chain of the scenario database does not verify: {verification:?}"
+        );
+    }
+
     /// Drops the scenario database and the scenario key file, if the scenario made them.
     pub(crate) async fn drop_database(&mut self) {
         if let Some((stop, supervisor)) = self.tasks.take() {
@@ -1214,6 +1243,28 @@ impl AppWorld {
         let remembered = self.remembered.take();
         self.send(method, path, content_type, body).await;
         self.remembered = self.remembered.take().or(remembered);
+    }
+
+    /// Sends the request of the subject `name` through the in-process gateway and keeps the answer
+    /// as the last reply.
+    ///
+    /// # Panics
+    ///
+    /// When the scenario described no gateway.
+    pub(crate) async fn send_through_gateway(&mut self, name: &str, method: &str, path: &str) {
+        if self.gateway.is_none() {
+            let plan = self.gateway_plan.as_ref().expect("a gateway was described");
+            self.gateway = Some(GatewayHarness::start(plan).await);
+        }
+        let gateway = self.gateway.as_ref().expect("the gateway is built");
+        let answer = gateway.send(name, method, path).await;
+        let reply = Reply {
+            status: answer.status,
+            headers: answer.headers,
+            body: answer.body,
+        };
+        self.history.push(reply.clone());
+        self.reply = Some(reply);
     }
 
     /// Remembers the id of a created resource: a 201 body or a GraphQL mutation result.

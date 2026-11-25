@@ -5,7 +5,7 @@ use std::sync::PoisonError;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
-use iam_domain::AuditOutcome;
+use iam_domain::{AuditOutcome, ChainBreak, ChainBreakCause, ChainVerification};
 use serde_json::Value;
 use tower::ServiceExt as _;
 
@@ -13,7 +13,8 @@ use crate::error::IamError;
 use crate::fixtures::principal;
 use crate::http::{IamState, router};
 use crate::security_audit_fixtures::{
-    Asked, COMMITTED, REJECTED, UNKNOWN, actor, asked_count, scenario, stored,
+    Asked, COMMITTED, REJECTED, UNKNOWN, Verified, actor, asked_count, scenario, stored, uuid,
+    verification_scenario,
 };
 
 fn app(failure: Option<fn() -> IamError>) -> (Router, Asked) {
@@ -205,4 +206,157 @@ async fn a_storage_failure_is_a_500_problem() {
 
     assert_eq!(list_status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(get_status, StatusCode::INTERNAL_SERVER_ERROR);
+}
+
+const HASH: &str = "00000000000000000000000000000000000000000000000000000000000000ab";
+
+fn verifying_app(answer: Result<ChainVerification, fn() -> IamError>) -> (Router, Verified) {
+    let (state, verified) = verification_scenario(answer);
+    let (routes, _document) = router::<IamState>().split_for_parts();
+    (routes.with_state(state), verified)
+}
+
+#[tokio::test]
+async fn a_valid_chain_is_verified_with_the_number_of_records_checked() {
+    let (app, verified) = verifying_app(Ok(ChainVerification::valid(12)));
+
+    let (status, body) = answer(app, get("/security-audit-events/chain-verification", true)).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "valid");
+    assert_eq!(body["recordsChecked"], 12);
+    assert!(body.get("invalidRecordId").is_none());
+    assert!(body.get("invalidSeq").is_none());
+    assert!(body.get("cause").is_none());
+    let asked = verified.lock().unwrap_or_else(PoisonError::into_inner);
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].actor, actor());
+    assert_eq!(asked[0].anchors, Vec::new());
+    drop(asked);
+}
+
+#[tokio::test]
+async fn a_broken_chain_names_the_record_its_place_and_the_cause() {
+    let broken = ChainBreak::new(
+        4,
+        Some(iam_domain::SecurityAuditEventId::from_uuid(uuid(4))),
+        ChainBreakCause::Digest,
+    );
+    let (app, _verified) = verifying_app(Ok(ChainVerification::invalid(4, broken)));
+
+    let (status, body) = answer(app, get("/security-audit-events/chain-verification", true)).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "invalid");
+    assert_eq!(body["recordsChecked"], 4);
+    assert_eq!(
+        body["invalidRecordId"],
+        "00000000-0000-0000-0000-000000000004"
+    );
+    assert_eq!(body["invalidSeq"], 4);
+    assert_eq!(body["cause"], "digest");
+}
+
+#[tokio::test]
+async fn the_anchors_reach_the_query() {
+    let (app, verified) = verifying_app(Ok(ChainVerification::valid(3)));
+    let uri = format!("/security-audit-events/chain-verification?anchors=2:{HASH},3:{HASH}");
+
+    let (status, _body) = answer(app, get(&uri, true)).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let asked = verified.lock().unwrap_or_else(PoisonError::into_inner);
+    let seqs: Vec<i64> = asked[0]
+        .anchors
+        .iter()
+        .map(iam_domain::AuditChainHead::seq)
+        .collect();
+    assert_eq!(seqs, [2, 3]);
+    assert_eq!(asked[0].anchors[0].hash().to_string(), HASH);
+}
+
+#[tokio::test]
+async fn the_literal_path_is_not_read_as_a_record_id() {
+    let (app, verified) = verifying_app(Ok(ChainVerification::valid(0)));
+
+    let (status, _body) = answer(app, get("/security-audit-events/chain-verification", true)).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        verified
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn an_invalid_anchor_is_a_422_problem_without_a_query() {
+    let (app, verified) = verifying_app(Ok(ChainVerification::valid(0)));
+
+    let (status, body) = answer(
+        app,
+        get(
+            "/security-audit-events/chain-verification?anchors=nope",
+            true,
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["violations"][0]["propertyPath"], "anchors");
+    assert!(
+        verified
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn an_unknown_parameter_is_refused_without_a_query() {
+    let (app, verified) = verifying_app(Ok(ChainVerification::valid(0)));
+
+    let (status, _body) = answer(
+        app,
+        get(
+            "/security-audit-events/chain-verification?from=2026-01-01T00:00:00Z",
+            true,
+        ),
+    )
+    .await;
+
+    assert!(status.is_client_error());
+    assert!(
+        verified
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn a_verification_without_a_principal_is_a_401_problem_without_a_query() {
+    let (app, verified) = verifying_app(Ok(ChainVerification::valid(0)));
+
+    let (status, _body) =
+        answer(app, get("/security-audit-events/chain-verification", false)).await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(
+        verified
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn a_verification_that_cannot_be_audited_is_a_500_problem() {
+    let (app, _verified) = verifying_app(Err(|| IamError::Storage("down".into())));
+
+    let (status, _body) = answer(app, get("/security-audit-events/chain-verification", true)).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
 }

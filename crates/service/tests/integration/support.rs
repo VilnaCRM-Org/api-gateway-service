@@ -28,12 +28,15 @@ pub(crate) const VALID_ENVIRONMENT: [(&str, &str); 2] = [
 /// `APP_ENV` and run mode: a bootstrap address that nothing listens on, the SASL credentials of the
 /// control plane and those of the gateway's bootstrap principal. The connection is opened lazily,
 /// so a test that never inspects the cluster never touches it.
-pub(crate) const KAFKA_ENVIRONMENT: [(&str, &str); 5] = [
+pub(crate) const KAFKA_ENVIRONMENT: [(&str, &str); 6] = [
     ("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:1"),
     ("KAFKA_SASL_USERNAME", "iam-control"),
     ("KAFKA_SASL_PASSWORD", "unused-password"),
     ("KAFKA_BOOTSTRAP_SASL_USERNAME", "iam-gateway-bootstrap"),
     ("KAFKA_BOOTSTRAP_SASL_PASSWORD", "unused-bootstrap-password"),
+    // The log store of the access decision queries, which every `APP_ENV` outside dev and test needs;
+    // nothing listens there either.
+    ("LOKI_QUERY_URL", "http://127.0.0.1:1"),
 ];
 
 /// URL that nothing listens on: the "unreachable database" case. No container is stopped.
@@ -151,7 +154,8 @@ pub(crate) fn stack_variable(name: &str) -> String {
 }
 
 /// The variables that let `serve` start against the compose services: the AWS ones of the test
-/// stack, the compose broker with the relaxed gates that only `APP_ENV=test` allows, and the given
+/// stack, the compose broker with the relaxed gates that only `APP_ENV=test` allows, the compose Loki
+/// that the access log store probe asks, and the given
 /// database URL, with long budgets so that a request that must succeed does
 /// not depend on how fast a loaded machine opens its first connection (request > probe >=
 /// acquire and operation, as the configuration requires).
@@ -165,6 +169,7 @@ pub(crate) fn stack_with(database_url: &str) -> Vec<(&'static str, String)> {
         ),
         ("KAFKA_SECURITY_PROTOCOL", "PLAINTEXT".to_owned()),
         ("KAFKA_CONFIG_GATES", "relaxed".to_owned()),
+        ("LOKI_QUERY_URL", stack_variable("LOKI_QUERY_URL")),
         ("AWS_REGION", stack_variable("AWS_REGION")),
         (
             "AWS_ENDPOINT_URL_SQS",

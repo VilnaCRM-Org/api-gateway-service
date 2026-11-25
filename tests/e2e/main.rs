@@ -5,6 +5,8 @@ mod administrator_policy;
 #[cfg(test)]
 mod events_topic;
 #[cfg(test)]
+mod gateway_proxy;
+#[cfg(test)]
 mod steps;
 #[cfg(test)]
 mod tokens;
@@ -25,6 +27,10 @@ async fn main() {
         .after(|_feature, _rule, _scenario, _event, world| {
             Box::pin(async move {
                 if let Some(world) = world {
+                    // The final step of every scenario: the audit chain must still verify. A failed
+                    // verification panics before the database is dropped, and
+                    // `drop_leftover_databases` removes that database at the next start.
+                    world.verify_audit_chain().await;
                     world.drop_database().await;
                 }
             })

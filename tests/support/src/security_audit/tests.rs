@@ -1,9 +1,10 @@
 use iam_domain::{
-    AuditChainHead, AuditOutcome, RepositoryError, SecurityAuditFilter, SecurityAuditLog,
-    SecurityAuditSearch,
+    AuditChainHead, AuditHash, AuditOutcome, ChainBreak, ChainBreakCause, ChainVerification,
+    RepositoryError, SecurityAuditFilter, SecurityAuditLog, SecurityAuditSearch,
+    StoredSecurityAuditEvent,
 };
 
-use super::{FakeSecurityAuditLog, security_audit_event};
+use super::{FakeSecurityAuditLog, break_of, link, security_audit_event};
 use crate::block_on;
 use crate::seed::TestRng;
 
@@ -135,11 +136,8 @@ fn search(filter: SecurityAuditFilter, before_seq: Option<i64>, limit: u32) -> S
     }
 }
 
-fn seqs(records: &[iam_domain::StoredSecurityAuditEvent]) -> Vec<i64> {
-    records
-        .iter()
-        .map(iam_domain::StoredSecurityAuditEvent::seq)
-        .collect()
+fn seqs(records: &[StoredSecurityAuditEvent]) -> Vec<i64> {
+    records.iter().map(StoredSecurityAuditEvent::seq).collect()
 }
 
 #[test]
@@ -175,4 +173,96 @@ fn a_search_keeps_only_the_records_that_meet_the_filter() {
 
     assert_eq!(seqs(&one), [2]);
     assert_eq!(seqs(&none), Vec::<i64>::new());
+}
+
+#[test]
+fn an_intact_chain_verifies_and_a_matching_anchor_keeps_it_valid() {
+    let mut rng = TestRng::from_seed(18);
+    let events: Vec<_> = (0..3).map(|_| security_audit_event(&mut rng)).collect();
+    let log = FakeSecurityAuditLog::new();
+    let port: &dyn SecurityAuditLog = &log;
+    block_on(port.append_batch(&events)).unwrap();
+    let anchor = AuditChainHead::new(2, log.recorded()[1].hash()).unwrap();
+
+    let plain = block_on(port.verify_chain(&[])).unwrap();
+    let anchored = block_on(port.verify_chain(&[anchor])).unwrap();
+
+    assert_eq!(plain, ChainVerification::valid(3));
+    assert_eq!(anchored, ChainVerification::valid(3));
+}
+
+#[test]
+fn an_empty_log_verifies_with_no_record_checked() {
+    let log = FakeSecurityAuditLog::new();
+    let port: &dyn SecurityAuditLog = &log;
+
+    assert_eq!(
+        block_on(port.verify_chain(&[])).unwrap(),
+        ChainVerification::valid(0)
+    );
+}
+
+#[test]
+fn an_anchor_with_another_hash_breaks_the_chain_at_the_anchored_record() {
+    let mut rng = TestRng::from_seed(19);
+    let events: Vec<_> = (0..3).map(|_| security_audit_event(&mut rng)).collect();
+    let log = FakeSecurityAuditLog::new();
+    let port: &dyn SecurityAuditLog = &log;
+    block_on(port.append_batch(&events)).unwrap();
+    let anchor = AuditChainHead::new(2, log.recorded()[2].hash()).unwrap();
+
+    let verification = block_on(port.verify_chain(&[anchor])).unwrap();
+
+    let id = events[1].parts().id;
+    assert_eq!(
+        verification,
+        ChainVerification::invalid(2, ChainBreak::new(2, Some(id), ChainBreakCause::Anchor))
+    );
+}
+
+#[test]
+fn an_anchor_beyond_the_newest_record_means_records_are_missing() {
+    let mut rng = TestRng::from_seed(20);
+    let events = [security_audit_event(&mut rng)];
+    let log = FakeSecurityAuditLog::new();
+    let port: &dyn SecurityAuditLog = &log;
+    block_on(port.append_batch(&events)).unwrap();
+    let anchor = AuditChainHead::new(4, log.recorded()[0].hash()).unwrap();
+
+    let verification = block_on(port.verify_chain(&[anchor])).unwrap();
+
+    assert_eq!(
+        verification,
+        ChainVerification::invalid(1, ChainBreak::new(4, None, ChainBreakCause::AnchorMissing))
+    );
+}
+
+#[test]
+fn the_failing_log_cannot_verify() {
+    let log = FakeSecurityAuditLog::failing();
+    let port: &dyn SecurityAuditLog = &log;
+
+    assert!(matches!(
+        block_on(port.verify_chain(&[])).unwrap_err(),
+        RepositoryError::Unavailable(_)
+    ));
+}
+
+#[test]
+fn a_record_that_breaks_the_gap_link_or_digest_rule_is_named_by_its_cause() {
+    let event = security_audit_event(&mut TestRng::from_seed(21));
+    let stored = |seq: i64, prev: AuditHash, hash: AuditHash| {
+        StoredSecurityAuditEvent::new(seq, event.clone(), prev, hash).unwrap()
+    };
+    let genesis = AuditHash::GENESIS;
+
+    let intact = break_of(&stored(1, genesis, link(1)), 1, genesis, &[]);
+    let gap = break_of(&stored(3, genesis, link(3)), 1, genesis, &[]);
+    let wrong_link = break_of(&stored(1, link(9), link(1)), 1, genesis, &[]);
+    let wrong_digest = break_of(&stored(1, genesis, link(9)), 1, genesis, &[]);
+
+    assert_eq!(intact, None);
+    assert_eq!(gap, Some(ChainBreakCause::Gap));
+    assert_eq!(wrong_link, Some(ChainBreakCause::Link));
+    assert_eq!(wrong_digest, Some(ChainBreakCause::Digest));
 }

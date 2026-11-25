@@ -14,6 +14,225 @@ servers:
 - url: /
   description: Current host
 paths:
+  /api/access-decisions:
+    get:
+      tags:
+      - iam
+      summary: Searches the access decisions of the gateway.
+      description: 'Returns one page of the access decisions that the gateway logged in the audit lane, newest first, in the time range `from` to `until`, which is required and may span at most `ACCESS_LOG_QUERY_MAX_RANGE`. Every filter given must match: subject id, subject kind, decision, reason, upstream, route id and status. A page holds at most 500 decisions; `nextCursor` goes into `after` for the next, older page, and every decision is returned exactly once, including decisions that share a timestamp. A query that exceeds `ACCESS_LOG_QUERY_TIMEOUT` returns 504 and no partial page; a log store that cannot be reached returns 503. The caller needs `iam:audit:read`, and the search is itself recorded in the security audit log as `access_log.list`.'
+      operationId: api_access_decisions_get
+      parameters:
+      - name: limit
+        in: query
+        description: The largest number of decisions of the page; 30 when absent.
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 30
+          maximum: 500
+          minimum: 1
+      - name: after
+        in: query
+        description: The `nextCursor` of the previous page; absent for the first page.
+        required: false
+        schema:
+          type: string
+      - name: from
+        in: query
+        description: The decisions from this RFC 3339 UTC time on; required.
+        required: false
+        schema:
+          type: string
+          format: date-time
+      - name: until
+        in: query
+        description: |-
+          The decisions before this RFC 3339 UTC time; required, and at most
+          `ACCESS_LOG_QUERY_MAX_RANGE` after `from`.
+        required: false
+        schema:
+          type: string
+          format: date-time
+      - name: subjectId
+        in: query
+        description: 'Only the decisions about this subject: a user id or a service name.'
+        required: false
+        schema:
+          type: string
+      - name: subjectKind
+        in: query
+        description: 'Only the decisions about subjects of this kind: `user` or `service`.'
+        required: false
+        schema:
+          type: string
+      - name: decision
+        in: query
+        description: 'Only the decisions of this kind: `allow`, `deny` or `error`.'
+        required: false
+        schema:
+          type: string
+      - name: reason
+        in: query
+        description: Only the decisions with this reason code, such as `permission_missing`.
+        required: false
+        schema:
+          type: string
+      - name: upstream
+        in: query
+        description: Only the decisions that went to this upstream.
+        required: false
+        schema:
+          type: string
+      - name: routeId
+        in: query
+        description: Only the decisions of this route.
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: status
+        in: query
+        description: Only the decisions with this response status.
+        required: false
+        schema:
+          type: integer
+          format: int32
+          maximum: 599
+          minimum: 100
+      responses:
+        '200':
+          description: One page of access decisions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessDecisionPage'
+        '400':
+          description: Invalid query parameter.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks `iam:audit:read`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed, or the time range is missing or too long.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: The access log store is unavailable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '504':
+          description: The access log store did not answer in time.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+  /api/access-decisions/{id}:
+    get:
+      tags:
+      - iam
+      summary: Retrieves an access decision.
+      description: Returns the access decision with the identifier. The log store is searched in a window of plus or minus two seconds around the timestamp that the UUID v7 carries, so an id that is not a UUID v7, or whose decision was not logged, is not found. The caller needs `iam:audit:read`, and the read is itself recorded in the security audit log as `access_log.read`.
+      operationId: api_access_decisions_id_get
+      parameters:
+      - name: id
+        in: path
+        description: Access decision identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The access decision.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessDecision'
+        '400':
+          description: Invalid identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks `iam:audit:read`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Access decision not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '503':
+          description: The access log store is unavailable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '504':
+          description: The access log store did not answer in time.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
   /api/access-validations:
     post:
       tags:
@@ -532,6 +751,51 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '422':
           description: Validation failed, or the idempotency key was used for another request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+  /api/global-token-cutoffs/current:
+    get:
+      tags:
+      - iam
+      summary: Retrieves the current global token cut-off.
+      description: Returns the instant at or before which every token is refused, with the source and the actor that set it. A 404 means that the global cut-off was never set. The caller needs `iam:audit:read`.
+      operationId: api_global_token_cutoffs_current_get
+      responses:
+        '200':
+          description: The global token cut-off.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlobalTokenCutoff'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks `iam:audit:read`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: The global token cut-off was never set.
           content:
             application/problem+json:
               schema:
@@ -4170,6 +4434,68 @@ paths:
                 $ref: '#/components/schemas/Problem'
       security:
       - bearerAuth: []
+  /api/security-audit-events/chain-verification:
+    get:
+      tags:
+      - iam
+      summary: Verifies the security audit hash chain.
+      description: 'Recomputes the hash chain from the first record: every sequence number follows the one before it, every `prevHash` is the hash of the record before it and every `hash` is the digest of the stored values of its record. The result is `valid` with the number of records checked, or `invalid` with the id and the sequence number of the first record where the chain breaks and the cause. `anchors` are `<seq>:<hash>` pairs published as `iam.security_audit.anchored` events and kept outside the database; the chain is `invalid` at an anchored record whose hash differs, which detects a chain that was rewritten and recomputed as a whole. The caller needs `iam:audit:read`, and the verification is itself recorded in the log as `security_audit.verify`.'
+      operationId: api_security_audit_events_chain_verification_get
+      parameters:
+      - name: anchors
+        in: query
+        description: |-
+          Anchors to check the chain against: up to 100 comma-separated `<seq>:<hash>` pairs, the
+          values of `iam.security_audit.anchored` events (`hash` is 64 lower-case hexadecimal
+          digits).
+        required: false
+        schema:
+          type: string
+        example: 42:0000000000000000000000000000000000000000000000000000000000000000
+      responses:
+        '200':
+          description: The result of the verification.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityAuditChainVerification'
+        '400':
+          description: Invalid query parameter.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks `iam:audit:read`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
   /api/security-audit-events/{id}:
     get:
       tags:
@@ -4236,6 +4562,101 @@ paths:
       security:
       - bearerAuth: []
   /api/session-revocations:
+    get:
+      tags:
+      - iam
+      summary: Retrieves the collection of session revocations.
+      description: Returns one page of session revocations, newest first, each with its session, user, source (`user-service` or `operator`), actor and time. The filters `userId`, `source` and the time range `from` (inclusive) and `until` (exclusive) keep the revocations that meet every one given. `nextCursor` goes into `after` for the next, older page. The caller needs `iam:audit:read`.
+      operationId: api_session_revocations_get
+      parameters:
+      - name: limit
+        in: query
+        description: The largest number of revocations of the page; 30 when absent.
+        required: false
+        schema:
+          type: integer
+          format: int32
+          default: 30
+          maximum: 100
+          minimum: 1
+      - name: after
+        in: query
+        description: The `nextCursor` of the previous page; absent for the first page.
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: userId
+        in: query
+        description: Only the revocations of the sessions of this user.
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: source
+        in: query
+        description: 'Only the revocations that this source caused: `user-service` or `operator`.'
+        required: false
+        schema:
+          type: string
+      - name: from
+        in: query
+        description: Only the revocations from this RFC 3339 UTC time on.
+        required: false
+        schema:
+          type: string
+          format: date-time
+      - name: until
+        in: query
+        description: Only the revocations before this RFC 3339 UTC time.
+        required: false
+        schema:
+          type: string
+          format: date-time
+      responses:
+        '200':
+          description: One page of session revocations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionRevocationPage'
+        '400':
+          description: Invalid query parameter.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks `iam:audit:read`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
     post:
       tags:
       - iam
@@ -4333,6 +4754,71 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '422':
           description: Validation failed, or the idempotency key was used for another request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
+  /api/session-revocations/{id}:
+    get:
+      tags:
+      - iam
+      summary: Retrieves a session revocation.
+      description: 'Returns the session revocation with the identifier: its session, user, source (`user-service` or `operator`), actor and time. The caller needs `iam:audit:read`.'
+      operationId: api_session_revocations_id_get
+      parameters:
+      - name: id
+        in: path
+        description: Session revocation identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The session revocation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionRevocation'
+        '400':
+          description: Invalid identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks `iam:audit:read`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Session revocation not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
           content:
             application/problem+json:
               schema:
@@ -5584,8 +6070,203 @@ paths:
                 $ref: '#/components/schemas/Problem'
       security:
       - bearerAuth: []
+  /api/users/{userId}/token-cutoff:
+    get:
+      tags:
+      - iam
+      summary: Retrieves the token cut-off of a user.
+      description: Returns the instant at or before which the tokens of the user are refused, with the source (`user-service` or `operator`) and the actor of the cut-off. A user without a cut-off is a 404. The caller needs `iam:audit:read`.
+      operationId: api_users_user_id_token_cutoff_get
+      parameters:
+      - name: userId
+        in: path
+        description: User identifier
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: The token cut-off of the user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserTokenCutoff'
+        '400':
+          description: Invalid identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: The caller presented no valid bearer token.
+          headers:
+            www-authenticate:
+              schema:
+                type: string
+              description: The `Bearer` challenge.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller lacks `iam:audit:read`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: The user has no token cut-off.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: Validation failed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          description: Problem response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+      security:
+      - bearerAuth: []
 components:
   schemas:
+    AccessDecision:
+      type: object
+      description: One access decision of the gateway.
+      required:
+      - id
+      - occurredAt
+      - method
+      - host
+      - status
+      - latencyUs
+      - bytesIn
+      - bytesOut
+      - decision
+      - reason
+      - denied
+      properties:
+        bytesIn:
+          type: integer
+          format: int64
+          description: The bytes of the request body that were announced.
+          minimum: 0
+        bytesOut:
+          type: integer
+          format: int64
+          description: The bytes of the response body that were announced.
+          minimum: 0
+        decision:
+          type: string
+          description: 'The kind of the decision: `allow`, `deny` or `error`.'
+          example: deny
+        denied:
+          type: array
+          items:
+            type: string
+          description: The keys that were denied, for a denial.
+        host:
+          type: string
+          description: The host of the request.
+        id:
+          type: string
+          format: uuid
+          description: The identifier of the decision, a UUID v7.
+        latencyUs:
+          type: integer
+          format: int64
+          description: Microseconds from the receipt of the request to the end of the response.
+          minimum: 0
+        method:
+          type: string
+          description: The HTTP method of the request.
+          example: GET
+        occurredAt:
+          type: string
+          format: date-time
+          description: When the decision was made, as an RFC 3339 UTC time.
+          example: 2026-11-23T10:15:30.123456Z
+        permissionKey:
+          type:
+          - string
+          - 'null'
+          description: The permission key the operation required.
+        policyVersion:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: The version of the policy snapshot that decided.
+        projectId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The project of the request, when it names one.
+        reason:
+          type: string
+          description: The reason code of the decision.
+          example: permission_missing
+        requestId:
+          type:
+          - string
+          - 'null'
+          description: The request id of the request.
+        routeId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: The matched route.
+        routeTemplate:
+          type:
+          - string
+          - 'null'
+          description: The path template of the matched route; never the concrete path.
+        status:
+          type: integer
+          format: int32
+          description: The status of the answer.
+          example: 403
+          minimum: 0
+        subjectId:
+          type:
+          - string
+          - 'null'
+          description: The subject that the token proved; absent without a valid token.
+        subjectKind:
+          type:
+          - string
+          - 'null'
+          description: 'The kind of the subject: `user` or `service`.'
+        upstream:
+          type:
+          - string
+          - 'null'
+          description: The registered name of the upstream.
+    AccessDecisionPage:
+      type: object
+      description: One page of access decisions.
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/AccessDecision'
+          description: The decisions of the page, newest first.
+        nextCursor:
+          type:
+          - string
+          - 'null'
+          description: The `after` value of the next, older page; absent on the last page.
     AccessScopes:
       oneOf:
       - $ref: '#/components/schemas/AllProjects'
@@ -6380,6 +7061,33 @@ components:
           type: string
           description: The coordinate, `Type.field`.
           example: Mutation.pay
+    GlobalTokenCutoff:
+      type: object
+      description: The cut-off of every token.
+      required:
+      - tokensValidAfter
+      - source
+      - actor
+      - setAt
+      properties:
+        actor:
+          type: string
+          description: 'The actor that set the cut-off: `user:<uuid>`, `service:<name>` or `system:<component>`.'
+          example: user:0190f2a8-7b3c-7d4e-8f10-1234567890ab
+        setAt:
+          type: string
+          format: date-time
+          description: When the cut-off was set, as an RFC 3339 UTC time.
+          example: 2026-11-23T10:15:30.123456Z
+        source:
+          type: string
+          description: Who caused the cut-off; the global cut-off is always set by an operator.
+          example: operator
+        tokensValidAfter:
+          type: string
+          format: date-time
+          description: Tokens issued at or before this RFC 3339 UTC time are refused.
+          example: 2026-11-23T10:15:32.000000Z
     GrantingRole:
       type: object
       description: A role that grants an effective permission.
@@ -7770,6 +8478,43 @@ components:
         streaming:
           type: boolean
           description: Whether the route streams its response.
+    SecurityAuditChainVerification:
+      type: object
+      description: The result of verifying the security audit hash chain.
+      required:
+      - status
+      - recordsChecked
+      properties:
+        cause:
+          type:
+          - string
+          - 'null'
+          description: |-
+            Why the chain breaks: `gap`, `link`, `digest`, `unreadable`, `anchor` or `anchor_missing`;
+            absent when the chain is valid.
+          example: digest
+        invalidRecordId:
+          type:
+          - string
+          - 'null'
+          format: uuid
+          description: |-
+            The id of the record where the chain breaks; absent when the chain is valid or the broken
+            record is missing.
+        invalidSeq:
+          type:
+          - integer
+          - 'null'
+          format: int64
+          description: The sequence number where the chain breaks; absent when the chain is valid.
+        recordsChecked:
+          type: integer
+          format: int64
+          description: The number of records checked, the broken one included.
+        status:
+          type: string
+          description: '`valid` when every record, link and anchor checked out, `invalid` when the chain breaks.'
+          example: valid
     SecurityAuditEvent:
       type: object
       description: One security audit record with its place in the hash chain.
@@ -7876,6 +8621,60 @@ components:
           type:
           - string
           - 'null'
+          description: The `after` value of the next, older page; absent on the last page.
+    SessionRevocation:
+      type: object
+      description: One revoked session with the source and the actor of its revocation.
+      required:
+      - id
+      - sessionId
+      - userId
+      - source
+      - actor
+      - revokedAt
+      properties:
+        actor:
+          type: string
+          description: |-
+            The actor that recorded the revocation: `user:<uuid>`, `service:<name>` or
+            `system:<component>`.
+          example: user:0190f2a8-7b3c-7d4e-8f10-1234567890ab
+        id:
+          type: string
+          format: uuid
+          description: The identifier of the revocation.
+        revokedAt:
+          type: string
+          format: date-time
+          description: When the revocation was recorded, as an RFC 3339 UTC time.
+          example: 2026-11-23T10:15:30.123456Z
+        sessionId:
+          type: string
+          description: The revoked session.
+        source:
+          type: string
+          description: 'Who caused the revocation: `user-service` or `operator`.'
+          example: operator
+        userId:
+          type: string
+          format: uuid
+          description: The user the session belongs to.
+    SessionRevocationPage:
+      type: object
+      description: One page of session revocations.
+      required:
+      - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SessionRevocation'
+          description: The revocations of the page, newest first.
+        nextCursor:
+          type:
+          - string
+          - 'null'
+          format: uuid
           description: The `after` value of the next, older page; absent on the last page.
     SetGlobalTokenCutoffRequest:
       type: object
@@ -8502,6 +9301,41 @@ components:
           type: string
           format: uuid
           description: The user whose permissions these are.
+    UserTokenCutoff:
+      type: object
+      description: The cut-off of the tokens of one user.
+      required:
+      - userId
+      - tokensValidAfter
+      - source
+      - updatedAt
+      properties:
+        actor:
+          type:
+          - string
+          - 'null'
+          description: |-
+            The actor that set the cut-off: `system:user-service` for a cut-off of a User service
+            event and the actor of the audit record for an operator cut-off; absent when the audit
+            log holds no record of it.
+        source:
+          type: string
+          description: 'Who caused the cut-off: `user-service` or `operator`.'
+          example: operator
+        tokensValidAfter:
+          type: string
+          format: date-time
+          description: Tokens issued at or before this RFC 3339 UTC time are refused.
+          example: 2026-11-23T10:15:32.000000Z
+        updatedAt:
+          type: string
+          format: date-time
+          description: When the cut-off was last moved, as an RFC 3339 UTC time.
+          example: 2026-11-23T10:15:30.123456Z
+        userId:
+          type: string
+          format: uuid
+          description: The user.
     ValidateAccessBatchRequest:
       type: object
       description: |-

@@ -1,14 +1,18 @@
-use iam_domain::{ActorRef, AuditOutcome, SecurityAuditFilter};
+use iam_domain::{
+    ActorRef, AuditOutcome, ChainBreak, ChainBreakCause, ChainVerification, SecurityAuditEventId,
+    SecurityAuditFilter,
+};
 use rstest::rstest;
 use serde_json::json;
 use validator::Validate as _;
 
 use super::{
-    ListSecurityAuditEventsParams, SecurityAuditEventPageResponse, SecurityAuditEventResponse,
+    AnchorValue, ChainVerificationResponse, ListSecurityAuditEventsParams,
+    SecurityAuditEventPageResponse, SecurityAuditEventResponse, VerifyChainParams, parse_anchors,
 };
 use crate::error::IamError;
 use crate::query::get_security_audit_events::SecurityAuditEventPage;
-use crate::security_audit_fixtures::{actor, record};
+use crate::security_audit_fixtures::{actor, record, uuid};
 
 fn params(value: serde_json::Value) -> ListSecurityAuditEventsParams {
     serde_json::from_value(value).unwrap()
@@ -164,4 +168,132 @@ fn an_unknown_parameter_is_refused() {
     let refused = serde_json::from_value::<ListSecurityAuditEventsParams>(json!({ "sort": "asc" }));
 
     assert!(refused.is_err());
+}
+
+const HASH: &str = "00000000000000000000000000000000000000000000000000000000000000ab";
+
+fn anchor(seq: i64, hash: &str) -> AnchorValue {
+    AnchorValue {
+        seq,
+        hash: hash.to_owned(),
+    }
+}
+
+#[test]
+fn a_valid_verification_shows_its_status_and_count_only() {
+    let response = ChainVerificationResponse::from(&ChainVerification::valid(5));
+
+    assert_eq!(
+        serde_json::to_value(&response).unwrap(),
+        json!({ "status": "valid", "recordsChecked": 5 })
+    );
+}
+
+#[rstest]
+#[case::a_digest(ChainBreakCause::Digest, "digest")]
+#[case::an_anchor(ChainBreakCause::Anchor, "anchor")]
+fn an_invalid_verification_shows_the_record_the_place_and_the_cause(
+    #[case] cause: ChainBreakCause,
+    #[case] name: &str,
+) {
+    let id = SecurityAuditEventId::from_uuid(uuid(3));
+    let verification = ChainVerification::invalid(3, ChainBreak::new(3, Some(id), cause));
+
+    let response = ChainVerificationResponse::from(&verification);
+
+    assert_eq!(
+        serde_json::to_value(&response).unwrap(),
+        json!({
+            "status": "invalid",
+            "recordsChecked": 3,
+            "invalidRecordId": "00000000-0000-0000-0000-000000000003",
+            "invalidSeq": 3,
+            "cause": name,
+        })
+    );
+}
+
+#[test]
+fn a_missing_record_has_no_id_in_the_response() {
+    let broken = ChainBreak::new(9, None, ChainBreakCause::AnchorMissing);
+
+    let response = ChainVerificationResponse::from(&ChainVerification::invalid(2, broken));
+
+    assert_eq!(response.invalid_record_id, None);
+    assert_eq!(response.invalid_seq, Some(9));
+    assert_eq!(response.cause.as_deref(), Some("anchor_missing"));
+}
+
+#[test]
+fn anchors_are_parsed_from_comma_separated_pairs() {
+    let anchors = VerifyChainParams {
+        anchors: Some(format!("2:{HASH},7:{}", "f".repeat(64))),
+    }
+    .into_anchors()
+    .unwrap();
+
+    assert_eq!(anchors.len(), 2);
+    assert_eq!(anchors[0].seq(), 2);
+    assert_eq!(anchors[0].hash().to_string(), HASH);
+    assert_eq!(anchors[1].seq(), 7);
+    assert_eq!(anchors[1].hash().to_string(), "f".repeat(64));
+}
+
+#[rstest]
+#[case::absent(None)]
+#[case::empty(Some(""))]
+fn no_anchors_is_an_empty_list(#[case] anchors: Option<&str>) {
+    let parsed = VerifyChainParams {
+        anchors: anchors.map(str::to_owned),
+    }
+    .into_anchors()
+    .unwrap();
+
+    assert_eq!(parsed, Vec::new());
+}
+
+#[rstest]
+#[case::no_separator("nope".to_owned())]
+#[case::no_hash("2:".to_owned())]
+#[case::no_seq(":ab".to_owned())]
+#[case::a_seq_that_is_not_a_number(format!("x:{HASH}"))]
+#[case::a_short_hash("2:abcd".to_owned())]
+#[case::an_upper_case_hash(format!("2:{}", "A".repeat(64)))]
+#[case::a_hash_that_is_not_hex(format!("2:{}", "g".repeat(64)))]
+#[case::an_odd_length_hash(format!("2:{}", "a".repeat(63)))]
+#[case::a_multi_byte_hash(format!("2:{}", "\u{e9}".repeat(32)))]
+fn a_malformed_anchor_is_a_format_violation_of_anchors(#[case] anchors: String) {
+    let error = VerifyChainParams {
+        anchors: Some(anchors),
+    }
+    .into_anchors()
+    .unwrap_err();
+
+    assert_eq!(
+        violation_of(error),
+        ("anchors".to_owned(), "format".to_owned())
+    );
+}
+
+#[test]
+fn an_anchor_below_the_first_sequence_number_is_a_range_violation() {
+    let error = parse_anchors(&[anchor(0, HASH)]).unwrap_err();
+
+    assert_eq!(
+        violation_of(error),
+        ("anchors".to_owned(), "range".to_owned())
+    );
+}
+
+#[test]
+fn more_than_a_hundred_anchors_are_a_count_violation_and_a_hundred_are_accepted() {
+    let hundred: Vec<_> = (1..=100).map(|seq| anchor(seq, HASH)).collect();
+    let mut too_many = hundred.clone();
+    too_many.push(anchor(101, HASH));
+
+    assert_eq!(parse_anchors(&hundred).unwrap().len(), 100);
+    assert_eq!(
+        violation_of(parse_anchors(&too_many).unwrap_err()),
+        ("anchors".to_owned(), "count".to_owned())
+    );
 }
