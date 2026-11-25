@@ -3,8 +3,8 @@ use std::time::{Duration, SystemTime};
 
 use iam_domain::{
     AssignmentScope, AssignmentState, CatalogueEntryState, CompiledRoleSet, GrantStatus,
-    PermissionGrant, PolicyReadRepository as _, PolicySnapshot, PolicyVersion, RoleId, ServiceName,
-    SubjectRef,
+    GraphQlCoordinate, PermissionGrant, PolicyReadRepository as _, PolicySnapshot, PolicyVersion,
+    RoleId, ServiceName, SubjectRef,
 };
 use shared_domain::Uuid;
 use test_support::gateway_snapshot::GatewaySnapshot;
@@ -21,11 +21,7 @@ fn service() -> ServiceName {
 
 /// The entry of a key with its `[sensitive, audit_always]` flags.
 fn entry(key: &str, [sensitive, audit_always]: [bool; 2]) -> CatalogueEntryState {
-    CatalogueEntryState {
-        key: key.to_owned(),
-        sensitive,
-        audit_always,
-    }
+    CatalogueEntryState::untyped(key.to_owned(), [sensitive, audit_always])
 }
 
 fn reads(snapshot: GatewaySnapshot, cache: &Arc<CatalogueCache>) -> LoadedSnapshotReads {
@@ -241,4 +237,96 @@ async fn a_catalogue_is_derived_once_per_snapshot_version_and_again_for_the_next
     assert_eq!(operations(&derived.unwrap().unwrap()), ["GET /a"]);
     assert_eq!(operations(&kept.unwrap().unwrap()), ["GET /a"]);
     assert_eq!(operations(&rederived.unwrap().unwrap()), ["GET /b"]);
+}
+
+fn typed(key: &str, return_type: &str, possible: &[&str], sensitive: bool) -> CatalogueEntryState {
+    CatalogueEntryState {
+        key: key.to_owned(),
+        sensitive,
+        audit_always: false,
+        return_type: Some(return_type.to_owned()),
+        possible_types: possible.iter().map(|name| (*name).to_owned()).collect(),
+    }
+}
+
+async fn catalog_of(entries: Vec<CatalogueEntryState>) -> iam_domain::ServiceCatalog {
+    reads(at(3).with_catalogue(service(), entries), &Arc::default())
+        .read_service_catalog(&service())
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn the_typed_graphql_entries_of_a_catalogue_make_one_type_graph_with_their_flags() {
+    let catalog = catalog_of(vec![
+        typed("gql:users:Query.node", "Node", &["Admin", "Member"], false),
+        typed("gql:users:Node.id", "ID", &[], false),
+        typed("gql:users:Mutation.erase", "Boolean", &[], true),
+        entry("rest:users:GET /api/users", [false, false]),
+    ])
+    .await;
+
+    let [graph] = catalog.type_graphs() else {
+        panic!("expected one graph, got {}", catalog.type_graphs().len());
+    };
+    let erase = GraphQlCoordinate::parse("Mutation.erase").unwrap();
+    let node = GraphQlCoordinate::parse("Query.node").unwrap();
+    assert_eq!(graph.field_count(), 3);
+    assert!(graph.field(&erase).unwrap().flags.is_sensitive());
+    let node_type = &graph.field(&node).unwrap().return_type;
+    assert_eq!(
+        graph
+            .possible_types(node_type)
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["Admin", "Member"]
+    );
+}
+
+#[tokio::test]
+async fn graphql_entries_without_a_return_type_make_no_type_graph() {
+    let catalog = catalog_of(vec![
+        entry("gql:users:Query.users", [false, false]),
+        typed("gql:orders:Query.orders", "Order", &[], false),
+        typed("gql:users:Query.bad", "not a name", &[], false),
+    ])
+    .await;
+
+    assert_eq!(catalog.type_graphs(), []);
+}
+
+#[tokio::test]
+async fn entries_that_do_not_make_a_valid_graph_leave_the_service_without_one() {
+    let catalog = catalog_of(vec![
+        typed("gql:users:Query.users", "User", &[], false),
+        typed("gql:users:Query.users", "Account", &[], false),
+    ])
+    .await;
+
+    assert_eq!(catalog.type_graphs(), []);
+}
+
+#[tokio::test]
+async fn a_possible_type_that_is_no_name_is_left_out_of_the_graph() {
+    let catalog = catalog_of(vec![typed(
+        "gql:users:Query.node",
+        "Node",
+        &["Admin", "not a name"],
+        false,
+    )])
+    .await;
+
+    let [graph] = catalog.type_graphs() else {
+        panic!("expected one graph, got {}", catalog.type_graphs().len());
+    };
+    let node = GraphQlCoordinate::parse("Query.node").unwrap();
+    let node_type = &graph.field(&node).unwrap().return_type;
+    assert_eq!(
+        graph
+            .possible_types(node_type)
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        ["Admin"]
+    );
 }
