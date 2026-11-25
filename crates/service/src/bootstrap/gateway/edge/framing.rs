@@ -4,13 +4,19 @@
 //! Hop-by-hop headers, including those a `Connection` header names, are removed by the forwarder
 //! (`upstream`), so no request reaches an upstream with one.
 
+use std::sync::Arc;
+
 use axum::extract::Request;
 use axum::http::header::{CONTENT_LENGTH, TRANSFER_ENCODING};
 use axum::http::request::Parts;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, Version};
 use axum::middleware::Next;
 use axum::response::{IntoResponse as _, Response};
 use shared_application::http::Problem;
+
+mod wire;
+
+pub use wire::{Scanned, WireFraming};
 
 /// Why a request is refused as ambiguous.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -72,6 +78,19 @@ fn merge<'value>(
     }
 }
 
+fn check_wire(parts: &Parts) -> Result<(), FramingError> {
+    let conflicted = parts.version != Version::HTTP_2
+        && parts
+            .extensions
+            .get::<Arc<WireFraming>>()
+            .is_some_and(|wire| wire.conflicted());
+    if conflicted {
+        Err(FramingError::LengthAndEncoding)
+    } else {
+        Ok(())
+    }
+}
+
 fn check_path(path: &str) -> Result<(), FramingError> {
     let printable = path
         .bytes()
@@ -98,9 +117,12 @@ impl From<FramingError> for Response {
 }
 
 /// The middleware of the public router: an ambiguous request is answered 400.
+///
+/// An HTTP/1.1 request of a connection whose wire check found both length headers in a header block
+/// is refused too: the server drops the length header before the pipeline can see it.
 pub async fn reject_ambiguous(request: Request, next: Next) -> Response {
     let (parts, body) = request.into_parts();
-    match check(&parts) {
+    match check(&parts).and_then(|()| check_wire(&parts)) {
         Ok(()) => next.run(Request::from_parts(parts, body)).await,
         Err(error) => error.into(),
     }

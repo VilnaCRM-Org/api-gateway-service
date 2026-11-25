@@ -74,6 +74,7 @@ use crate::http::authentication::credential;
 use crate::http::request_id::{REQUEST_ID_HEADER, sanitize_request_id};
 
 mod access;
+mod connection_limit;
 mod cors;
 mod graphql;
 mod headers;
@@ -82,6 +83,7 @@ mod read_your_writes;
 mod wiring;
 
 pub use access::PipelineAccessLog;
+pub use connection_limit::TYPE_CONNECTION_LIMIT;
 pub use cors::{TYPE_CORS_REJECTED, TYPE_CSRF_REJECTED};
 pub use rate_limit::{ClientAddress, TYPE_RATE_LIMITED, gate_from_config};
 pub use wiring::{PipelineSetupError, UnauditedCommands, UnreachableUpstreams, from_config};
@@ -155,6 +157,8 @@ enum Refusal {
     CsrfRejected,
     /// 429: a rate limit of the route is exceeded; the seconds to wait.
     RateLimited(u64),
+    /// 429: the subject holds the most connections it may (Story 10.9).
+    ConnectionLimit,
     /// 401: the token is missing or refused.
     Unauthorized,
     /// 403: the caller may not do it.
@@ -179,6 +183,7 @@ impl From<Refusal> for Response {
             Refusal::CorsRejected => cors::cors_rejected(),
             Refusal::CsrfRejected => cors::csrf_rejected(),
             Refusal::RateLimited(seconds) => rate_limit::rate_limited(seconds),
+            Refusal::ConnectionLimit => connection_limit::refused(),
             Refusal::Unauthorized => unauthorized(),
             Refusal::Forbidden(reason) => forbidden(reason),
             Refusal::Failed(error) => failure(error),
@@ -203,7 +208,9 @@ impl Refusal {
             ) => DecisionReason::MalformedOperation,
             (Self::NoRoute, _) => DecisionReason::UnknownOperation,
             (Self::CorsRejected | Self::CsrfRejected, _) => DecisionReason::PermissionMissing,
-            (Self::PayloadTooLarge | Self::RateLimited(_), _) => DecisionReason::LimitsExceeded,
+            (Self::PayloadTooLarge | Self::RateLimited(_) | Self::ConnectionLimit, _) => {
+                DecisionReason::LimitsExceeded
+            }
             (Self::Unauthorized, Some(reason)) | (Self::Forbidden(reason), _) => reason,
             (Self::Unauthorized, None) => DecisionReason::TokenInvalid,
             (Self::Preflight | Self::Failed(_), _) => DecisionReason::Allowed,
@@ -456,9 +463,7 @@ impl Pipeline {
             }
             return Ok(None);
         }
-        let principal = self
-            .authenticate(request.snapshot, &parts.headers, seen)
-            .await?;
+        let principal = self.authenticate(request.snapshot, parts, seen).await?;
         cors::csrf(parts, request.method, route)?;
         rate_limit::subject(
             self.rate_limits.as_ref(),
@@ -494,17 +499,19 @@ impl Pipeline {
     async fn authenticate(
         &self,
         snapshot: &Arc<dyn PolicySnapshot>,
-        headers: &HeaderMap,
+        parts: &Parts,
         seen: &mut Observed,
     ) -> Result<Principal, Refusal> {
         let revocations = SnapshotRevocationView::over(Arc::clone(snapshot));
         let resolved = self
             .tokens
-            .resolve_with(&revocations, &credential(headers))
+            .resolve_with(&revocations, &credential(&parts.headers))
             .await
             .and_then(|identity| self.check_caller(identity));
         seen.token(&resolved);
-        principal_of(resolved)
+        let principal = principal_of(resolved)?;
+        connection_limit::claim(parts, &principal)?;
+        Ok(principal)
     }
 
     /// The caller rule of the east-west listener over a resolved identity; the public listener has

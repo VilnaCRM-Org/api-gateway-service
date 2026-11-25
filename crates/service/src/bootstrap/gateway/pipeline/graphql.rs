@@ -55,9 +55,7 @@ pub(super) async fn identify(
         route,
         request,
     } = *matched;
-    let principal = pipeline
-        .authenticate(request.snapshot, &parts.headers, seen)
-        .await?;
+    let principal = pipeline.authenticate(request.snapshot, parts, seen).await?;
     super::cors::csrf(parts, request.method, route)?;
     super::rate_limit::subject(
         pipeline.rate_limits.as_ref(),

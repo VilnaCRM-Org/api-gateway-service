@@ -144,3 +144,35 @@ fn every_error_is_a_400_problem() {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }
+
+async fn answer_on_wire(conflicted: bool, version: axum::http::Version) -> StatusCode {
+    let wire = std::sync::Arc::new(super::WireFraming::default());
+    if conflicted {
+        wire.mark();
+    }
+    let router = Router::new()
+        .route("/", get(ok))
+        .layer(from_fn(reject_ambiguous));
+    let mut request = Request::builder()
+        .uri("/")
+        .version(version)
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(wire);
+    router.oneshot(request).await.unwrap().status()
+}
+
+#[tokio::test]
+async fn a_connection_whose_wire_held_both_length_headers_gets_400_on_http1_only() {
+    use axum::http::Version;
+
+    assert_eq!(
+        answer_on_wire(true, Version::HTTP_11).await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(answer_on_wire(true, Version::HTTP_2).await, StatusCode::OK);
+    assert_eq!(
+        answer_on_wire(false, Version::HTTP_11).await,
+        StatusCode::OK
+    );
+}

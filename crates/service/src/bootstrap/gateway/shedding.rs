@@ -29,6 +29,7 @@ use shared_domain::BoxError;
 use tokio::sync::{Notify, watch};
 use tokio::task::JoinSet;
 
+use super::edge::framing::Scanned;
 use super::edge::{Edge, EdgeLimits, proxy};
 use super::pipeline::ClientAddress;
 
@@ -222,9 +223,11 @@ async fn admit_and_serve<Io>(
     let Some(_slot) = edge.admit(peer.ip()) else {
         return log_refused(peer);
     };
+    let (io, wire) = Scanned::new(io);
     let router = router
         .layer(Extension(ClientAddress::from(peer)))
-        .layer(Extension(edge.claims()));
+        .layer(Extension(edge.claims()))
+        .layer(Extension(wire));
     connection(io, router, signals, &edge).await;
 }
 

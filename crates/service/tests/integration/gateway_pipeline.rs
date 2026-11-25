@@ -43,6 +43,7 @@ use tower::ServiceExt as _;
 
 mod anonymous;
 mod cors;
+mod edge;
 mod graphql;
 mod headers;
 mod mesh;
