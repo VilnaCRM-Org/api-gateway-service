@@ -107,12 +107,26 @@ fn encode_subject(state: SubjectState) -> Value {
     ])
 }
 
+/// The members `possibleTypes` and `returnType` are written only when set, so the record of a REST
+/// key and of an entry without type information keeps its bytes (and its digest).
 fn encode_entry(entry: &CatalogueEntryState) -> Value {
-    object([
+    let mut members = vec![
         ("auditAlways", Value::Bool(entry.audit_always)),
         ("key", Value::String(entry.key.clone())),
-        ("sensitive", Value::Bool(entry.sensitive)),
-    ])
+    ];
+    if !entry.possible_types.is_empty() {
+        members.push(("possibleTypes", text_list(&entry.possible_types)));
+    }
+    if let Some(return_type) = &entry.return_type {
+        members.push(("returnType", Value::String(return_type.clone())));
+    }
+    members.push(("sensitive", Value::Bool(entry.sensitive)));
+    Value::Object(
+        members
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value))
+            .collect(),
+    )
 }
 
 fn encode_chunk(chunk: &CatalogueChunk) -> Value {
@@ -344,6 +358,19 @@ fn text(fields: &Fields, name: &'static str) -> Result<String, InvalidStateRecor
         .ok_or_else(|| field_error(name))
 }
 
+/// The text of an optional member: `None` when it is absent, an error when it is not text.
+fn optional_member_text(
+    fields: &Fields,
+    name: &'static str,
+) -> Result<Option<String>, InvalidStateRecord> {
+    fields.get(name).map_or(Ok(None), |value| {
+        value
+            .as_str()
+            .map(|text| Some(text.to_owned()))
+            .ok_or_else(|| field_error(name))
+    })
+}
+
 fn flag(fields: &Fields, name: &'static str) -> Result<bool, InvalidStateRecord> {
     get(fields, name)?
         .as_bool()
@@ -469,6 +496,12 @@ fn decode_chunk(fields: &Fields) -> Result<PolicyState, InvalidStateRecord> {
                 key: text(entry, "key")?,
                 sensitive: flag(entry, "sensitive")?,
                 audit_always: flag(entry, "auditAlways")?,
+                return_type: optional_member_text(entry, "returnType")?,
+                possible_types: if entry.contains_key("possibleTypes") {
+                    texts(entry, "possibleTypes")?
+                } else {
+                    Vec::new()
+                },
             })
         })
         .collect::<Result<Vec<_>, InvalidStateRecord>>()?;

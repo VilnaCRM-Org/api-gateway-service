@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use iam_domain::{
-    AssignmentState, CatalogueEntryState, CompiledRoleSet, HttpMethod, InvalidSpec, LogEpoch,
+    AssignmentState, CatalogueEntryState, CompiledRoleSet, GqlCoordinate, GqlName,
+    GraphQlCoordinate, GraphQlField, GraphQlTypeGraph, HttpMethod, InvalidSpec, LogEpoch,
     PathTemplate, PermissionFlags, PermissionKey, PolicyEpoch, PolicyReadRepository,
     PolicySnapshot, PolicyVersion, RelayEpoch, RepositoryError, RestOperation, RestOperationSet,
     RoleAssignment, RoleId, ServiceCatalog, ServiceName, SubjectPolicy, SubjectRef,
@@ -58,8 +59,9 @@ impl CatalogueCache {
 /// The [`PolicyReadRepository`] of the gateway: it answers from one snapshot, so every read of a
 /// request sees the same version (FR-13), and it does no I/O.
 ///
-/// The catalogue of a service holds its REST operations; the GraphQL type graphs are not in the
-/// snapshot, so a service has none here until Story 10.8.
+/// The catalogue of a service holds its REST operations and one GraphQL type graph over the
+/// coordinates whose entries carry their return type (Story 10.8); an entry without one is not in
+/// the graph, so a document that selects it is refused as an unknown operation.
 #[derive(Debug)]
 pub struct LoadedSnapshotReads {
     snapshot: Arc<dyn PolicySnapshot>,
@@ -107,7 +109,7 @@ impl LoadedSnapshotReads {
                 service.clone(),
                 epoch,
                 vec![rest_operations(service, entries)],
-                Vec::new(),
+                type_graph(service, entries).into_iter().collect(),
             ))
         }))
     }
@@ -152,6 +154,53 @@ fn rest_operations(service: &ServiceName, entries: &[CatalogueEntryState]) -> Re
         }
     }
     operations
+}
+
+/// The type graph of the typed GraphQL entries of `service`; `None` when there is none, or when
+/// the entries do not make a valid graph (the service then analyses no document).
+fn type_graph(service: &ServiceName, entries: &[CatalogueEntryState]) -> Option<GraphQlTypeGraph> {
+    let mut fields = Vec::new();
+    let mut possible = Vec::new();
+    for entry in entries {
+        let Some((coordinate, field)) = typed_field(service, entry) else {
+            continue;
+        };
+        for member in &entry.possible_types {
+            if let Some(member) = GqlName::parse(member) {
+                possible.push((field.return_type.clone(), member));
+            }
+        }
+        fields.push((coordinate, field));
+    }
+    if fields.is_empty() {
+        return None;
+    }
+    GraphQlTypeGraph::new(fields, possible)
+        .map_err(|error| log_dropped(&error, service))
+        .ok()
+}
+
+/// The coordinate and the field of a GraphQL entry of `service` that carries its return type.
+fn typed_field(
+    service: &ServiceName,
+    entry: &CatalogueEntryState,
+) -> Option<(GraphQlCoordinate, GraphQlField)> {
+    let PermissionKey::Gql {
+        service: owner,
+        coordinate: GqlCoordinate::Field { type_name, field },
+    } = PermissionKey::parse(&entry.key).ok()?
+    else {
+        return None;
+    };
+    (owner == *service).then_some(())?;
+    let return_type = GqlName::parse(entry.return_type.as_deref()?)?;
+    Some((
+        GraphQlCoordinate::new(type_name, field),
+        GraphQlField {
+            return_type,
+            flags: flags(entry),
+        },
+    ))
 }
 
 fn log_dropped(error: &InvalidSpec, service: &ServiceName) {

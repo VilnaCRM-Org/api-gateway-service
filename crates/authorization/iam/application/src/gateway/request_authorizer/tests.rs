@@ -27,11 +27,7 @@ fn version() -> PolicyVersion {
 }
 
 fn entry(key: &str) -> CatalogueEntryState {
-    CatalogueEntryState {
-        key: key.to_owned(),
-        sensitive: false,
-        audit_always: false,
-    }
+    CatalogueEntryState::untyped(key.to_owned(), [false, false])
 }
 
 /// A snapshot where the user of the fixtures holds `grants` globally.
@@ -431,11 +427,7 @@ fn audited_snapshot(grants: &[&str], sensitive: bool) -> Arc<dyn PolicySnapshot>
             .iter()
             .map(|raw| (PermissionGrant::parse(raw).unwrap(), GrantStatus::Active)),
     );
-    let audited = CatalogueEntryState {
-        key: AUDITED_KEY.to_owned(),
-        sensitive,
-        audit_always: !sensitive,
-    };
+    let audited = CatalogueEntryState::untyped(AUDITED_KEY.to_owned(), [sensitive, !sensitive]);
     Arc::new(
         GatewaySnapshot::at(version())
             .with_assignments(

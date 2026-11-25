@@ -199,11 +199,10 @@ fn snapshot(plan: &GatewayPlan) -> GatewaySnapshot {
         .with_route(RouteState::of(route(&mut rng, &draft).parts()))
         .with_catalogue(
             ServiceName::new(&plan.service).expect("a service name"),
-            vec![CatalogueEntryState {
-                key: plan.key.clone(),
-                sensitive: false,
-                audit_always: false,
-            }],
+            vec![CatalogueEntryState::untyped(
+                plan.key.clone(),
+                [false, false],
+            )],
         );
     for (index, (_, keys)) in plan.subjects.iter().enumerate() {
         let grants = keys.iter().map(|key| {

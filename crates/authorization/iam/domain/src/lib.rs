@@ -158,6 +158,7 @@ pub use port::bulk_chunk_committer::{BulkChunkCommitter, ChunkCommitError, Commi
 pub use port::bulk_operation_repository::BulkOperationRepository;
 pub use port::bulk_role_target_store::BulkRoleTargetStore;
 pub use port::change_receipt_repository::ChangeReceiptRepository;
+pub use port::document_cache::DocumentCache;
 pub use port::endpoint_watch::{
     EndpointListing, EndpointSlice, EndpointWatch, EndpointWatchError, SliceChange, WatchBatch,
     WatchTarget,

@@ -24,6 +24,8 @@ pub mod bulk_role_deletion;
 pub mod caller_rule;
 pub mod command;
 pub mod derived_state_checker;
+#[cfg(test)]
+mod document_cache_fixtures;
 pub mod endpoint_directory;
 pub mod endpoint_watcher;
 pub mod error;
@@ -178,11 +180,15 @@ pub use freshness::{
     FreshnessProber, FreshnessReading, FreshnessState, PEER_LAG_TOLERANCE, PeerLag, PeerLagTracker,
     ProberPorts, ProberSettings, ProofAttachment, ProofSink, WATCHDOG_INTERVAL,
 };
+pub use gateway::graphql_request::{
+    Analysis, BLOCKING_THRESHOLD_BYTES, GraphQlOperation, GraphQlRequestAnalyzer,
+    MAX_BATCH_OPERATIONS, ParseBudget, ParseBudgetSettings, ParseObserver, ParseSite,
+};
 pub use gateway::rate_limit::{
     EndpointReadyPeers, RateLimitGate, RateLimitPorts, RateRequest, RateStage, RateStoreBounds,
 };
 pub use gateway::request_authorizer::{
-    Authorization, RequestAuthorizer, RouteRequest, TracedAuthorization,
+    Authorization, GraphQlAuthorization, RequestAuthorizer, RouteRequest, TracedAuthorization,
 };
 pub use gateway::snapshot_reads::{CatalogueCache, LoadedSnapshotReads};
 pub use gateway_decision::stale::{

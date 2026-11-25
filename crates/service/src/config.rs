@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use axum::http::Uri;
 use axum::http::uri::Authority;
-use iam_application::{AntiEntropySettings, MaintenanceSettings};
+use iam_application::{AntiEntropySettings, MaintenanceSettings, ParseBudgetSettings};
 use iam_domain::{BulkChunker, BulkPacing};
 use iam_domain::{
     CallerTokenRule, ClassBudgets, ConfigGates, DEFAULT_CHANNEL_CAPACITY, InvalidAccessLogSetting,
@@ -629,6 +629,46 @@ fn access_log_value<T>(
 /// The largest accepted `READINESS_AZ_FLOOR`.
 const MAX_AZ_FLOOR: usize = 8;
 
+/// The largest accepted `GRAPHQL_PARSE_MISSES_PER_SECOND`.
+const MAX_PARSE_MISSES: u32 = 100_000;
+
+/// The smallest accepted `GRAPHQL_PARSE_BYTES_PER_SECOND`.
+const MIN_PARSE_BYTES: u64 = 1_024;
+
+/// The largest accepted `GRAPHQL_PARSE_BYTES_PER_SECOND`: 1 GiB.
+const MAX_PARSE_BYTES: u64 = 1_073_741_824;
+
+/// `GRAPHQL_PARSE_MISSES_PER_SECOND` (1 to 100000, default 20) and `GRAPHQL_PARSE_BYTES_PER_SECOND`
+/// (1024 to 1073741824, default 1048576): the parse budget of one subject.
+///
+/// `None` when a problem was reported.
+fn graphql_parse_budget(
+    collector: &mut Collector,
+    args: &GatewayArgs,
+) -> Option<ParseBudgetSettings> {
+    let defaults = ParseBudgetSettings::default();
+    let misses = collector.collect(
+        "GRAPHQL_PARSE_MISSES_PER_SECOND",
+        bounded(
+            args.graphql_parse_misses_per_second.as_deref(),
+            defaults.misses_per_second,
+            1..=MAX_PARSE_MISSES,
+        ),
+    );
+    let bytes = collector.collect(
+        "GRAPHQL_PARSE_BYTES_PER_SECOND",
+        bounded(
+            args.graphql_parse_bytes_per_second.as_deref(),
+            defaults.bytes_per_second,
+            MIN_PARSE_BYTES..=MAX_PARSE_BYTES,
+        ),
+    );
+    Some(ParseBudgetSettings {
+        misses_per_second: misses?,
+        bytes_per_second: bytes?,
+    })
+}
+
 /// The shared rate counters of the gateway (Story 12.2, FR-65).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RateLimitSettings {
@@ -642,6 +682,9 @@ pub struct RateLimitSettings {
     /// `RATE_LIMIT_GUARD_LIMIT`, `RATE_LIMIT_GUARD_PERIOD` and `RATE_LIMIT_GUARD_BURST`: the local
     /// per-IP flood guard.
     pub guard: FloodGuardSettings,
+    /// `GRAPHQL_PARSE_MISSES_PER_SECOND` and `GRAPHQL_PARSE_BYTES_PER_SECOND`: what one subject may
+    /// spend on parsing GraphQL documents that the document cache does not hold (Story 10.8).
+    pub graphql_parse: ParseBudgetSettings,
 }
 
 /// The local per-IP flood guard that runs before every rate policy (Story 12.2, FR-65): sized far
@@ -702,11 +745,13 @@ fn rate_limit_settings(collector: &mut Collector, args: &GatewayArgs) -> Option<
         rate_limit_breaker_open_duration(args.rate_limit_breaker_open_duration.as_deref()),
     );
     let guard = flood_guard_settings(collector, args);
+    let graphql_parse = graphql_parse_budget(collector, args);
     Some(RateLimitSettings {
         store: store?,
         store_timeout: timeout?,
         breaker_open_duration: breaker?,
         guard: guard?,
+        graphql_parse: graphql_parse?,
     })
 }
 

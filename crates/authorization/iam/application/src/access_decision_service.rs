@@ -163,6 +163,21 @@ impl AccessDecisionService {
             .into_traced(decision_id)
     }
 
+    /// Decides `required` for `subject` as one all-or-nothing check, with the trace of the keys.
+    ///
+    /// The keys come from the analysis of a GraphQL document, with the flags of the type graph, so
+    /// a sensitive coordinate is never covered by a wildcard.
+    pub async fn decide_required_traced(
+        &self,
+        subject: SubjectRef,
+        required: &[RequiredKey],
+    ) -> (DecisionOutcome, DecisionTrace) {
+        let decision_id = DecisionId::from_uuid(self.ids.generate());
+        self.decide_policy(subject, required, None)
+            .await
+            .into_traced(decision_id)
+    }
+
     /// Decides whether `subject` holds every key of `keys` at global scope, from its policy alone:
     /// no token is resolved and no catalogue is read, because a reserved `iam:` key has no
     /// catalogue entry.

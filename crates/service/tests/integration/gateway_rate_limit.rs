@@ -96,11 +96,7 @@ fn verifier() -> FakeAccessTokenVerifier {
 }
 
 fn entry(key: &str) -> CatalogueEntryState {
-    CatalogueEntryState {
-        key: key.to_owned(),
-        sensitive: false,
-        audit_always: false,
-    }
+    CatalogueEntryState::untyped(key.to_owned(), [false, false])
 }
 
 fn policy_id() -> RatePolicyId {

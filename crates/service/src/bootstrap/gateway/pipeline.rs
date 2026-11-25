@@ -38,6 +38,7 @@
 use std::sync::Arc;
 
 use axum::Router;
+use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::header::{HOST, RETRY_AFTER};
 use axum::http::request::Parts;
@@ -68,6 +69,7 @@ use crate::http::authentication::credential;
 use crate::http::request_id::{REQUEST_ID_HEADER, sanitize_request_id};
 
 mod access;
+mod graphql;
 mod headers;
 mod rate_limit;
 mod read_your_writes;
@@ -127,6 +129,14 @@ enum Refusal {
     AuditUnavailable,
     /// 400: the path breaks the path rule.
     MalformedPath,
+    /// 400: the body is not a GraphQL request the gateway accepts (Story 10.8).
+    BadRequest(&'static str),
+    /// 405 with `Allow: POST`: a GraphQL route was asked with another method.
+    MethodNotAllowed,
+    /// 415: the body of a GraphQL request is not `application/json`.
+    UnsupportedMediaType,
+    /// 413: the body is above the limit of the route.
+    PayloadTooLarge,
     /// 404: no route matches.
     NoRoute,
     /// 429: a rate limit of the route is exceeded; the seconds to wait.
@@ -146,6 +156,10 @@ impl From<Refusal> for Response {
             Refusal::Propagating => propagating(),
             Refusal::AuditUnavailable => audit_unavailable(),
             Refusal::MalformedPath => malformed_path(),
+            Refusal::BadRequest(detail) => graphql::bad_request(detail),
+            Refusal::MethodNotAllowed => graphql::method_not_allowed(),
+            Refusal::UnsupportedMediaType => graphql::unsupported_media_type(),
+            Refusal::PayloadTooLarge => graphql::payload_too_large(),
             Refusal::NoRoute => no_route(),
             Refusal::RateLimited(seconds) => rate_limit::rate_limited(seconds),
             Refusal::Unauthorized => unauthorized(),
@@ -163,9 +177,15 @@ impl Refusal {
             (Self::Stale | Self::Propagating | Self::AuditUnavailable, _) => {
                 DecisionReason::Unavailable
             }
-            (Self::MalformedPath, _) => DecisionReason::MalformedOperation,
+            (
+                Self::MalformedPath
+                | Self::BadRequest(_)
+                | Self::MethodNotAllowed
+                | Self::UnsupportedMediaType,
+                _,
+            ) => DecisionReason::MalformedOperation,
             (Self::NoRoute, _) => DecisionReason::UnknownOperation,
-            (Self::RateLimited(_), _) => DecisionReason::LimitsExceeded,
+            (Self::PayloadTooLarge | Self::RateLimited(_), _) => DecisionReason::LimitsExceeded,
             (Self::Unauthorized, Some(reason)) | (Self::Forbidden(reason), _) => reason,
             (Self::Unauthorized, None) => DecisionReason::TokenInvalid,
             (Self::Failed(_), _) => DecisionReason::Allowed,
@@ -196,6 +216,16 @@ struct Admitted {
     /// The caller the token proved; `None` on a route flagged `anonymous`, which resolves no token.
     principal: Option<Principal>,
     version: i64,
+    /// The body to forward: the one the client sent, buffered on a GraphQL route.
+    body: Body,
+}
+
+/// What a request matched: its parts, its route and the request the decision reads.
+#[derive(Debug, Clone, Copy)]
+struct Matched<'request> {
+    parts: &'request Parts,
+    route: &'request RouteState,
+    request: &'request RouteRequest<'request>,
 }
 
 impl Pipeline {
@@ -255,7 +285,7 @@ impl Pipeline {
             .is_some()
             .then(|| PipelineAccessLog::begin(&parts));
         let mut seen = Observed::default();
-        let admitted = self.admit(&parts, &mut seen).await;
+        let admitted = self.admit(&parts, body, &mut seen).await;
         let verdict = verdict_of(admitted.as_ref().err(), &seen);
         let mut response = match admitted {
             Ok(admitted) => {
@@ -272,7 +302,7 @@ impl Pipeline {
                     ),
                     None => headers::rewrite_anonymous(&mut parts, forward_credentials),
                 }
-                self.forward(admitted.target, Request::from_parts(parts, body))
+                self.forward(admitted.target, Request::from_parts(parts, admitted.body))
                     .await
             }
             Err(refusal) => refusal.into(),
@@ -302,13 +332,19 @@ impl Pipeline {
 
     /// Steps 3 to 8 of the pipeline: the snapshot is loaded here and dropped when this returns, so
     /// nothing of it is held while the forwarder runs.
-    async fn admit(&self, parts: &Parts, seen: &mut Observed) -> Result<Admitted, Refusal> {
+    async fn admit(
+        &self,
+        parts: &Parts,
+        body: Body,
+        seen: &mut Observed,
+    ) -> Result<Admitted, Refusal> {
         self.await_version(&parts.headers).await?;
         let snapshot = self.snapshot(seen).ok_or(Refusal::Stale)?;
         seen.snapshot(&snapshot);
         let method = HttpMethod::parse(parts.method.as_str()).ok_or(Refusal::NoRoute)?;
         let path =
             PathNormalizer::normalize(parts.uri.path()).map_err(|_rule| Refusal::MalformedPath)?;
+        graphql_posts_only(&snapshot, parts, method, &path, seen)?;
         let route = route_of(&snapshot, parts, method, &path).ok_or(Refusal::NoRoute)?;
         seen.route(&snapshot, route);
         rate_limit::before_authentication(self.rate_limits.as_ref(), parts, &snapshot, route)
@@ -321,7 +357,12 @@ impl Pipeline {
             path: &path,
             request_id: request_id_of(&parts.headers),
         };
-        let principal = self.identify(parts, route, &request, seen).await?;
+        let matched = Matched {
+            parts,
+            route,
+            request: &request,
+        };
+        let (principal, body) = self.principal_and_body(&matched, body, seen).await?;
         let upstream = snapshot
             .upstream_by_id(route.fields.upstream_id())
             .ok_or(Refusal::Failed(ForwardError::NoEndpoint))?;
@@ -330,7 +371,26 @@ impl Pipeline {
             uri: forwarded_uri(&path, parts.uri.query()).ok_or(Refusal::MalformedPath)?,
             principal,
             version: snapshot.version().value(),
+            body,
         })
+    }
+
+    /// The principal of the request and the body to forward: a GraphQL route that needs a token
+    /// buffers and authorizes its body, every other route leaves it untouched.
+    async fn principal_and_body(
+        &self,
+        matched: &Matched<'_>,
+        body: Body,
+        seen: &mut Observed,
+    ) -> Result<(Option<Principal>, Body), Refusal> {
+        let flags = matched.route.fields.flags();
+        if flags.graphql() && !flags.anonymous() {
+            return graphql::identify(self, matched, body, seen).await;
+        }
+        let principal = self
+            .identify(matched.parts, matched.route, matched.request, seen)
+            .await?;
+        Ok((principal, body))
     }
 
     /// Steps 5 to 7 of the pipeline for a matched route: authentication, the policies that count by
@@ -427,6 +487,21 @@ impl Pipeline {
     async fn forward(&self, target: UpstreamTarget, request: Request) -> Response {
         answer(self.forwarder.forward(target, request).await)
     }
+}
+
+/// A request that uses another method than `POST` on the path of a GraphQL route is refused 405,
+/// whatever other route the method and the path would match: an operation never travels in a URL.
+fn graphql_posts_only(
+    snapshot: &Arc<dyn PolicySnapshot>,
+    parts: &Parts,
+    method: HttpMethod,
+    path: &NormalizedPath,
+    seen: &mut Observed,
+) -> Result<(), Refusal> {
+    graphql::post_route(snapshot, parts, method, path).map_or(Ok(()), |route| {
+        seen.route(snapshot, route);
+        Err(Refusal::MethodNotAllowed)
+    })
 }
 
 /// The principal of a resolved token: a token that cannot be checked is a stale pod, any other

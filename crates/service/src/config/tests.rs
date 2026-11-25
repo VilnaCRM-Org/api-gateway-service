@@ -2519,6 +2519,54 @@ fn a_read_your_writes_wait_that_is_not_a_positive_duration_names_its_variable(#[
 }
 
 #[test]
+fn the_graphql_parse_budget_defaults_to_twenty_misses_and_one_mebibyte_per_second() {
+    let config = GatewayConfig::from_args(&valid_gateway()).unwrap();
+
+    assert_eq!(config.rate_limit.graphql_parse.misses_per_second, 20);
+    assert_eq!(config.rate_limit.graphql_parse.bytes_per_second, 1_048_576);
+}
+
+#[test]
+fn a_graphql_parse_budget_is_taken_as_given() {
+    let mut args = valid_gateway();
+    args.graphql_parse_misses_per_second = some("5");
+    args.graphql_parse_bytes_per_second = some("4096");
+
+    let config = GatewayConfig::from_args(&args).unwrap();
+
+    assert_eq!(config.rate_limit.graphql_parse.misses_per_second, 5);
+    assert_eq!(config.rate_limit.graphql_parse.bytes_per_second, 4_096);
+}
+
+#[rstest]
+#[case("0")]
+#[case("100001")]
+#[case("many")]
+fn a_graphql_parse_miss_limit_out_of_range_names_its_variable(#[case] raw: &str) {
+    let mut args = valid_gateway();
+    args.graphql_parse_misses_per_second = some(raw);
+
+    assert_eq!(
+        gateway_variables(&args),
+        vec!["GRAPHQL_PARSE_MISSES_PER_SECOND"]
+    );
+}
+
+#[rstest]
+#[case("1023")]
+#[case("1073741825")]
+#[case("lots")]
+fn a_graphql_parse_byte_limit_out_of_range_names_its_variable(#[case] raw: &str) {
+    let mut args = valid_gateway();
+    args.graphql_parse_bytes_per_second = some(raw);
+
+    assert_eq!(
+        gateway_variables(&args),
+        vec!["GRAPHQL_PARSE_BYTES_PER_SECOND"]
+    );
+}
+
+#[test]
 fn the_readiness_az_floor_defaults_to_one() {
     let config = GatewayConfig::from_args(&valid_gateway()).unwrap();
 

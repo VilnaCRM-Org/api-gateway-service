@@ -9,6 +9,7 @@ use iam_domain::{
 };
 use shared_domain::{Clock, CommandBus, UuidGenerator};
 
+use super::graphql_request::{GraphQlOperation, GraphQlRequestAnalyzer};
 use super::snapshot_reads::{CatalogueCache, LoadedSnapshotReads};
 use crate::access_decision_service::AccessDecisionService;
 use crate::access_log::{AuditGate, AuditSlot, DecisionTrace};
@@ -103,6 +104,7 @@ pub struct RequestAuthorizer {
     commands: Arc<dyn CommandBus>,
     cache: Arc<CatalogueCache>,
     audit_gate: OnceLock<Arc<AuditGate>>,
+    graphql: OnceLock<Arc<GraphQlRequestAnalyzer>>,
 }
 
 impl RequestAuthorizer {
@@ -122,6 +124,7 @@ impl RequestAuthorizer {
             commands,
             cache: Arc::new(CatalogueCache::new()),
             audit_gate: OnceLock::new(),
+            graphql: OnceLock::new(),
         }
     }
 
@@ -137,6 +140,35 @@ impl RequestAuthorizer {
     /// installed stays; a second one is ignored.
     pub fn install_audit_gate(&self, gate: Arc<AuditGate>) {
         drop(self.audit_gate.set(gate));
+    }
+
+    /// Puts the authorizer, which the pipeline already shares, in charge of the GraphQL routes
+    /// with `analyzer`. The first analyzer installed stays; a second one is ignored.
+    pub fn install_graphql(&self, analyzer: Arc<GraphQlRequestAnalyzer>) {
+        drop(self.graphql.set(analyzer));
+    }
+
+    /// The same authorizer deciding GraphQL requests with `analyzer`.
+    #[must_use]
+    pub fn with_graphql(self, analyzer: Arc<GraphQlRequestAnalyzer>) -> Self {
+        self.install_graphql(analyzer);
+        self
+    }
+
+    /// Decides whether `principal` may send the `operations` of one GraphQL request: it needs the
+    /// key of every coordinate that any of them selects, and `gql:{service}:__introspection` for
+    /// an introspection query. Without an analyzer the request fails closed.
+    pub async fn authorize_graphql(
+        &self,
+        request: &RouteRequest<'_>,
+        principal: &Principal,
+        operations: &[GraphQlOperation],
+    ) -> GraphQlAuthorization {
+        graphql::decided(self, request, principal, operations)
+            .await
+            .map_or(GraphQlAuthorization::RateLimited, |traced| {
+                GraphQlAuthorization::Decided(Self::enforced(request.enforcement, traced))
+            })
     }
 
     /// Audit-or-deny: an allow on a key whose record must be audited becomes
@@ -309,6 +341,10 @@ fn subject_of(principal: &Principal) -> SubjectRef {
         SubjectId::Service(name) => SubjectRef::service(name.clone()),
     }
 }
+
+mod graphql;
+
+pub use graphql::GraphQlAuthorization;
 
 #[cfg(test)]
 mod tests;

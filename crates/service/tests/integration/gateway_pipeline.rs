@@ -42,6 +42,7 @@ use test_support::upstream::upstream;
 use tower::ServiceExt as _;
 
 mod anonymous;
+mod graphql;
 mod headers;
 mod proxy;
 
@@ -84,11 +85,7 @@ fn verifier() -> FakeAccessTokenVerifier {
 }
 
 fn entry(key: &str) -> CatalogueEntryState {
-    CatalogueEntryState {
-        key: key.to_owned(),
-        sensitive: false,
-        audit_always: false,
-    }
+    CatalogueEntryState::untyped(key.to_owned(), [false, false])
 }
 
 /// What the forwarder saw of one request.

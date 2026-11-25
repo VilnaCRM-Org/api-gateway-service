@@ -35,11 +35,7 @@ fn service(name: &str) -> ServiceName {
 
 /// The entry of a key with its `[sensitive, audit_always]` flags.
 fn entry(key: &str, [sensitive, audit_always]: [bool; 2]) -> CatalogueEntryState {
-    CatalogueEntryState {
-        key: key.to_owned(),
-        sensitive,
-        audit_always,
-    }
+    CatalogueEntryState::untyped(key.to_owned(), [sensitive, audit_always])
 }
 
 fn fresh_state() -> (Arc<FreshnessState>, Arc<FakeBootClock>) {

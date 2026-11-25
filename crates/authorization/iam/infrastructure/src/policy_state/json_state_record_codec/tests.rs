@@ -80,16 +80,18 @@ fn chunk() -> PolicyState {
     PolicyState::Chunk(CatalogueChunk {
         service: service(),
         entries: vec![
+            CatalogueEntryState::untyped(
+                "gql:user-service:Mutation.createUser".to_owned(),
+                [true, false],
+            ),
             CatalogueEntryState {
-                key: "gql:user-service:Mutation.createUser".to_owned(),
-                sensitive: true,
-                audit_always: false,
-            },
-            CatalogueEntryState {
-                key: "gql:user-service:Query.users".to_owned(),
+                key: "gql:user-service:Query.user".to_owned(),
                 sensitive: false,
-                audit_always: true,
+                audit_always: false,
+                return_type: Some("User".to_owned()),
+                possible_types: vec!["Admin".to_owned(), "Member".to_owned()],
             },
+            CatalogueEntryState::untyped("gql:user-service:Query.users".to_owned(), [false, true]),
         ],
     })
 }
@@ -582,6 +584,37 @@ fn the_size_of_the_entries_bounds_the_size_of_the_chunk() {
     assert_eq!(full_length + 1, empty_length + entries_size);
 }
 
+#[test]
+fn an_entry_without_type_information_keeps_the_bytes_of_a_record_written_before_it() {
+    let state = PolicyState::Chunk(CatalogueChunk {
+        service: service(),
+        entries: vec![CatalogueEntryState::untyped(
+            "rest:user-service:GET /api/users".to_owned(),
+            [false, false],
+        )],
+    });
+
+    let encoded = JsonStateRecordCodec.encode(&state).unwrap();
+
+    assert_eq!(
+        encoded,
+        r#"{"entries":[{"auditAlways":false,"key":"rest:user-service:GET /api/users","sensitive":false}],"schemaVersion":1,"service":"user-service"}"#
+    );
+    assert_eq!(
+        JsonStateRecordCodec.decode(&key_of(&state), &encoded),
+        Ok(state)
+    );
+}
+
+#[test]
+fn the_type_members_of_an_entry_are_written_in_alphabetical_order() {
+    let encoded = JsonStateRecordCodec.encode(&chunk()).unwrap();
+
+    assert!(encoded.contains(
+        r#"{"auditAlways":false,"key":"gql:user-service:Query.user","possibleTypes":["Admin","Member"],"returnType":"User","sensitive":false}"#
+    ));
+}
+
 /// The encoding of `state` with one value changed by `edit`.
 fn edited(state: &PolicyState, edit: fn(&mut Json)) -> String {
     let mut value: Json =
@@ -602,6 +635,9 @@ fn edited(state: &PolicyState, edit: fn(&mut Json)) -> String {
 #[case::service_name_invalid(manifest(), |v: &mut Json| v["service"] = "".into(), "service")]
 #[case::chunks_not_a_list(manifest(), |v: &mut Json| v["chunks"] = "00ff".into(), "chunks")]
 #[case::chunk_id_not_text(manifest(), |v: &mut Json| v["chunks"][0] = 1.into(), "chunks")]
+#[case::entry_return_type_not_text(chunk(), |v: &mut Json| v["entries"][1]["returnType"] = 1.into(), "returnType")]
+#[case::entry_possible_types_not_a_list(chunk(), |v: &mut Json| v["entries"][1]["possibleTypes"] = "A".into(), "possibleTypes")]
+#[case::entry_possible_type_not_text(chunk(), |v: &mut Json| v["entries"][1]["possibleTypes"][0] = 1.into(), "possibleTypes")]
 #[case::upstream_protocol_unknown(upstream(), |v: &mut Json| v["protocol"] = "h3".into(), "protocol")]
 #[case::upstream_port_not_a_number(upstream(), |v: &mut Json| v["port"] = "80".into(), "port")]
 #[case::upstream_id_not_a_uuid(upstream(), |v: &mut Json| v["id"] = "nope".into(), "id")]

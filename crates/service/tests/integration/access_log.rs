@@ -73,12 +73,7 @@ fn token(user: &str, session: &str, now: u64) -> AccessToken {
 
 /// A catalogue entry; `flags` are `(sensitive, audit_always)`.
 fn entry(key: &str, flags: (bool, bool)) -> CatalogueEntryState {
-    let (sensitive, audit_always) = flags;
-    CatalogueEntryState {
-        key: key.to_owned(),
-        sensitive,
-        audit_always,
-    }
+    CatalogueEntryState::untyped(key.to_owned(), flags.into())
 }
 
 /// The snapshot: four services, each with one `GET` route. `users` is an ordinary operation,

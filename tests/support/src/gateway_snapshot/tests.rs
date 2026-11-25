@@ -117,11 +117,10 @@ fn a_snapshot_answers_with_what_it_was_given_and_nothing_else() {
         .with_role_set(role, CompiledRoleSet::default())
         .with_catalogue(
             service.clone(),
-            vec![CatalogueEntryState {
-                key: "rest:users:GET /api/users".to_owned(),
-                sensitive: false,
-                audit_always: false,
-            }],
+            vec![CatalogueEntryState::untyped(
+                "rest:users:GET /api/users".to_owned(),
+                [false, false],
+            )],
         )
         .with_revoked_session(session.clone())
         .with_user_cutoff(UserRevocationState {

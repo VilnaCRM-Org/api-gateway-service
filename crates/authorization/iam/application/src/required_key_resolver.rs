@@ -129,7 +129,7 @@ impl RequiredKeyResolver {
 /// Analyses the document against each active version on its own: the versions that resolve it
 /// and the refusals of the versions that do not. A field one version declares never lends its
 /// return type to another version.
-fn analyze_versions(
+pub(crate) fn analyze_versions(
     target: &GraphQlTarget,
     graphs: &[GraphQlTypeGraph],
 ) -> (Vec<AnalyzedDocument>, Vec<DocumentRefusal>) {
@@ -153,7 +153,7 @@ fn analyze_versions(
 /// The reason of the deny when no version resolves the document: a limit first, then a field no
 /// version has (`unknown_operation`, which also covers a service without a GraphQL version), and
 /// `malformed_operation` only when every version finds the document unreadable.
-fn refusal_reason(refusals: &[DocumentRefusal]) -> DecisionReason {
+pub(crate) fn refusal_reason(refusals: &[DocumentRefusal]) -> DecisionReason {
     let limits = refusals
         .iter()
         .find(|refusal| matches!(refusal, DocumentRefusal::LimitsExceeded(_)));

@@ -3,17 +3,18 @@
 
 use std::any::TypeId;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::Request;
 use axum::response::Response;
-use iam_application::{FreshnessState, RequestAuthorizer};
+use iam_application::{FreshnessState, GraphQlRequestAnalyzer, RequestAuthorizer};
 use iam_domain::{
-    AccessTokenVerifier, ForwardError, PolicyView, RevocationView, TokenMemo, TokenRepository,
-    UpstreamForwarder, UpstreamTarget,
+    AccessTokenVerifier, DocumentCache, ForwardError, PolicyView, RevocationView, TokenMemo,
+    TokenRepository, UpstreamForwarder, UpstreamTarget,
 };
 use iam_infrastructure::{
-    CachingTokenRepository, JwtAccessTokenVerifier, JwtKeyFileError, MokaTokenMemo,
-    SnapshotRevocationView,
+    CachingTokenRepository, DocumentCacheSettings, JwtAccessTokenVerifier, JwtKeyFileError,
+    MokaDocumentCache, MokaTokenMemo, SnapshotRevocationView,
 };
 use shared_domain::{Clock, CommandBus, ErasedBusError, ErasedMessage};
 use shared_infrastructure::id::UuidV7Generator;
@@ -21,6 +22,12 @@ use shared_infrastructure::id::UuidV7Generator;
 use super::{Forwarder, Pipeline};
 use crate::bootstrap::KEY_FILE_POLL_INTERVAL;
 use crate::config::GatewayConfig;
+
+/// The weight the cache of analysed GraphQL documents may hold: 64 MiB.
+const DOCUMENT_CACHE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// How long an analysed document that nobody sends again stays in the cache.
+const DOCUMENT_CACHE_IDLE: Duration = Duration::from_mins(10);
 
 /// The pipeline cannot be wired.
 #[derive(Debug, thiserror::Error)]
@@ -95,12 +102,19 @@ pub fn from_config(
     let verifier: Arc<dyn AccessTokenVerifier> = verifier;
     let repository = Arc::new(CachingTokenRepository::new(verifier, memo, revocations));
     let token_port: Arc<dyn TokenRepository> = Arc::<CachingTokenRepository>::clone(&repository);
+    let documents: Arc<dyn DocumentCache> =
+        Arc::new(MokaDocumentCache::new(DocumentCacheSettings {
+            capacity_bytes: DOCUMENT_CACHE_BYTES,
+            time_to_idle: DOCUMENT_CACHE_IDLE,
+        }));
+    let analyzer = GraphQlRequestAnalyzer::new(documents, config.rate_limit.graphql_parse);
     let authorizer = RequestAuthorizer::new(
         token_port,
         Arc::clone(clock),
         Arc::new(UuidV7Generator),
         Arc::new(UnauditedCommands),
-    );
+    )
+    .with_graphql(Arc::new(analyzer));
     Ok(Pipeline::new(
         view,
         freshness,

@@ -213,11 +213,7 @@ pub(super) fn catalogue(number: u32, chunk: &str, keys: &[&str]) -> (Edit, Edit)
         service: service(number),
         entries: keys
             .iter()
-            .map(|key| CatalogueEntryState {
-                key: (*key).to_owned(),
-                sensitive: false,
-                audit_always: false,
-            })
+            .map(|key| CatalogueEntryState::untyped((*key).to_owned(), [false, false]))
             .collect(),
     });
     (

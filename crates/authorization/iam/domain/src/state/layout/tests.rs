@@ -8,11 +8,10 @@ fn service() -> ServiceName {
 }
 
 fn entry(number: u32) -> CatalogueEntryState {
-    CatalogueEntryState {
-        key: format!("gql:user-service:Query.f{number:04}"),
-        sensitive: false,
-        audit_always: false,
-    }
+    CatalogueEntryState::untyped(
+        format!("gql:user-service:Query.f{number:04}"),
+        [false, false],
+    )
 }
 
 fn entries(count: u32) -> Vec<CatalogueEntryState> {

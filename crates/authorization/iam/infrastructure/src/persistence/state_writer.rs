@@ -455,27 +455,51 @@ async fn read_entries(
     connection: &mut PgConnection,
     service: &ServiceName,
 ) -> Result<Vec<CatalogueEntryState>, RepositoryError> {
-    sqlx::query(
-        "SELECT permission_key, sensitive, audit_always FROM iam_rest_permissions
-        WHERE service = $1 AND active
-        UNION ALL
-        SELECT permission_key, sensitive, audit_always FROM iam_graphql_permissions
-        WHERE service = $1 AND active",
-    )
-    .bind(service.as_str())
-    .fetch_all(&mut *connection)
-    .await
-    .map_err(translate)?
-    .iter()
-    .map(entry_of)
-    .collect()
+    sqlx::query(ENTRIES_QUERY)
+        .bind(service.as_str())
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(translate)?
+        .iter()
+        .map(entry_of)
+        .collect()
 }
+
+/// The active permissions of a service. A GraphQL key also carries the return type of its field and
+/// the possible types of that type, read from the active versions of the specification of the
+/// service (the greatest name when two active versions disagree), so the gateway can analyse a
+/// document against the catalogue it replicates (Story 10.8).
+const ENTRIES_QUERY: &str = "SELECT permission_key, sensitive, audit_always,
+        NULL::text AS return_type, ARRAY[]::text[] AS possible_types
+    FROM iam_rest_permissions
+    WHERE service = $1 AND active
+    UNION ALL
+    SELECT p.permission_key, p.sensitive, p.audit_always, r.return_type,
+        COALESCE(t.possible_types, ARRAY[]::text[]) AS possible_types
+    FROM iam_graphql_permissions p
+    LEFT JOIN LATERAL (
+        SELECT max(f.return_type) AS return_type
+        FROM iam_graphql_spec_fields f
+        JOIN iam_graphql_specs s ON s.id = f.spec_id
+        WHERE s.service = p.service AND s.status = 'active'
+            AND f.type_name = p.type_name AND f.field_name = p.field_name
+    ) r ON TRUE
+    LEFT JOIN LATERAL (
+        SELECT array_agg(DISTINCT pt.possible_type ORDER BY pt.possible_type) AS possible_types
+        FROM iam_graphql_spec_possible_types pt
+        JOIN iam_graphql_specs s ON s.id = pt.spec_id
+        WHERE s.service = p.service AND s.status = 'active'
+            AND pt.abstract_type = r.return_type
+    ) t ON TRUE
+    WHERE p.service = $1 AND p.active";
 
 fn entry_of(row: &PgRow) -> Result<CatalogueEntryState, RepositoryError> {
     Ok(CatalogueEntryState {
         key: row.try_get("permission_key").map_err(translate)?,
         sensitive: row.try_get("sensitive").map_err(translate)?,
         audit_always: row.try_get("audit_always").map_err(translate)?,
+        return_type: row.try_get("return_type").map_err(translate)?,
+        possible_types: row.try_get("possible_types").map_err(translate)?,
     })
 }
 

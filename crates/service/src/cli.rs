@@ -495,6 +495,22 @@ pub struct GatewayArgs {
     /// `X-IAM-Min-Policy-Version` or the `__Host-iam_pv` cookie (default `1s`, positive).
     #[arg(long = "ryw-max-wait", env = "RYW_MAX_WAIT", hide_env_values = true)]
     pub ryw_max_wait: Option<String>,
+    /// The cache misses of GraphQL documents one subject may cause per second (default `20`, from
+    /// `1` to `100000`).
+    #[arg(
+        long = "graphql-parse-misses-per-second",
+        env = "GRAPHQL_PARSE_MISSES_PER_SECOND",
+        hide_env_values = true
+    )]
+    pub graphql_parse_misses_per_second: Option<String>,
+    /// The bytes of GraphQL document text one subject may have parsed per second (default
+    /// `1048576`, from `1024` to `1073741824`).
+    #[arg(
+        long = "graphql-parse-bytes-per-second",
+        env = "GRAPHQL_PARSE_BYTES_PER_SECOND",
+        hide_env_values = true
+    )]
+    pub graphql_parse_bytes_per_second: Option<String>,
     /// How many ready pods of a zone never go unready for staleness (default `1`, from `1` to
     /// `8`).
     #[arg(

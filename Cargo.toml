@@ -84,7 +84,7 @@ jsonwebtoken = { version = "10.4.0", default-features = false, features = [
 # Pinned exactly: a krafka upgrade re-runs the phase-0 capabilities (ADR 0026).
 krafka = { version = "=0.32.0", default-features = false, features = ["rustls-aws-lc-rs"] }
 matchit = "0.8.4"
-moka = { version = "0.12.16", features = ["future"] }
+moka = { version = "0.12.16", features = ["future", "sync"] }
 rand = "0.10.3"
 # The shared rate counters of the gateway (Story 12.2): Valkey over plain TCP or Sentinel, scripts through EVALSHA.
 redis = { version = "0.32.0", default-features = false, features = ["tokio-comp", "script", "sentinel"] }

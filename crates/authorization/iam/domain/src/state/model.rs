@@ -102,6 +102,25 @@ pub struct CatalogueEntryState {
     pub sensitive: bool,
     /// Whether every check of the key is audited.
     pub audit_always: bool,
+    /// The named type a GraphQL field returns; `None` for a REST key and for a catalogue written
+    /// before the type graph travelled with it (Story 10.8).
+    pub return_type: Option<String>,
+    /// The possible types of `return_type` when it is an interface or a union; empty otherwise.
+    pub possible_types: Vec<String>,
+}
+
+impl CatalogueEntryState {
+    /// An entry without type information, as every REST key and every key of an older catalogue is.
+    #[must_use]
+    pub const fn untyped(key: String, [sensitive, audit_always]: [bool; 2]) -> Self {
+        Self {
+            key,
+            sensitive,
+            audit_always,
+            return_type: None,
+            possible_types: Vec::new(),
+        }
+    }
 }
 
 /// One content-addressed chunk of the entries of a service catalogue.
