@@ -121,6 +121,8 @@ pub use policy::catalogue_activation::{
 };
 pub use policy::change_guard::GuardCheck;
 pub use policy::compiled_role_set::{CompiledRoleSet, GrantStatus};
+pub use policy::cors_rule::{CorsGrant, CorsRule, PreflightGrant};
+pub use policy::csrf_rule::{CsrfRequest, CsrfRule};
 pub use policy::decision_policy::{
     DecisionPolicy, DecisionRequest, RequiredKey, RoleAssignment, RoleSets,
 };

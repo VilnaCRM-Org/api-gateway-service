@@ -515,6 +515,7 @@ async fn a_failed_accept_is_logged_and_hands_nothing_to_the_server() {
         Err(io::Error::other("too many open files")),
         &acceptor,
         &sender,
+        &plain_edge(),
     )
     .await;
     drop(guard);
@@ -532,7 +533,7 @@ async fn a_client_that_never_finishes_the_handshake_is_dropped_after_the_timeout
     let (sender, mut completed) = mpsc::channel(1);
 
     let (recorder, guard) = LogRecorder::install();
-    handshake(acceptor, server_side, peer, sender).await;
+    handshake(acceptor, server_side, peer, sender, plain_edge()).await;
     drop(guard);
 
     let lines = recorder.lines();
@@ -569,7 +570,7 @@ async fn a_client_that_speaks_no_tls_fails_the_handshake_and_is_logged() {
         .unwrap();
 
     let (recorder, guard) = LogRecorder::install();
-    handshake(acceptor, server_side, peer, sender).await;
+    handshake(acceptor, server_side, peer, sender, plain_edge()).await;
     drop(guard);
 
     let lines = recorder.lines();
@@ -586,9 +587,100 @@ async fn the_accept_loop_ends_once_nobody_takes_the_finished_handshakes() {
 
     let ended = tokio::time::timeout(
         Duration::from_secs(5),
-        accept_loop(bound().await, acceptor, sender),
+        accept_loop(bound().await, acceptor, sender, plain_edge()),
     )
     .await;
 
     assert!(ended.is_ok());
+}
+
+fn plain_edge() -> Edge {
+    Edge::new(EdgeLimits::default(), false, None)
+}
+
+fn proxy_edge() -> Edge {
+    Edge::new(EdgeLimits::default(), true, None)
+}
+
+fn proxy_v2_header(source: [u8; 4], port: u16) -> Vec<u8> {
+    let mut bytes = proxy::SIGNATURE.to_vec();
+    bytes.extend_from_slice(&[0x21, 0x11, 0x00, 0x0C]);
+    bytes.extend_from_slice(&source);
+    bytes.extend_from_slice(&[10, 0, 0, 1]);
+    bytes.extend_from_slice(&port.to_be_bytes());
+    bytes.extend_from_slice(&8443_u16.to_be_bytes());
+    bytes
+}
+
+#[tokio::test]
+async fn a_connection_with_a_proxy_header_takes_the_client_address_of_the_header() {
+    use tokio::io::AsyncWriteExt as _;
+
+    let (server_side, mut client, peer) = connected().await;
+
+    client
+        .write_all(&proxy_v2_header([203, 0, 113, 7], 51000))
+        .await
+        .unwrap();
+    let mut stream = server_side;
+    let client_address = client_of(&mut stream, peer, &proxy_edge()).await;
+
+    assert_eq!(client_address, Some("203.0.113.7:51000".parse().unwrap()));
+}
+
+#[tokio::test]
+async fn a_connection_without_a_proxy_header_is_closed_and_logged() {
+    use tokio::io::AsyncWriteExt as _;
+
+    let (mut server_side, mut client, peer) = connected().await;
+    client
+        .write_all(b"GET / HTTP/1.1\r\nhost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+
+    let (recorder, guard) = LogRecorder::install();
+    let client_address = client_of(&mut server_side, peer, &proxy_edge()).await;
+    drop(guard);
+
+    assert_eq!(client_address, None);
+    let lines = recorder.lines();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(
+        lines[0].message,
+        "connection without a valid Proxy Protocol header closed"
+    );
+}
+
+#[tokio::test]
+async fn an_edge_without_the_proxy_protocol_keeps_the_address_of_the_socket() {
+    let (mut server_side, _client, peer) = connected().await;
+
+    let client_address = client_of(&mut server_side, peer, &plain_edge()).await;
+
+    assert_eq!(client_address, Some(peer));
+}
+
+#[tokio::test]
+async fn a_connection_without_a_proxy_header_never_reaches_the_tls_handshake() {
+    use tokio::io::AsyncWriteExt as _;
+
+    let (acceptor, _directory) = acceptor();
+    let (server_side, mut client, peer) = connected().await;
+    let (sender, mut completed) = mpsc::channel(1);
+    client
+        .write_all(b"GET / HTTP/1.1\r\nhost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+
+    let (recorder, guard) = LogRecorder::install();
+    handshake(acceptor, server_side, peer, sender, proxy_edge()).await;
+    drop(guard);
+
+    let lines = recorder.lines();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(
+        lines[0].message,
+        "connection without a valid Proxy Protocol header closed"
+    );
+    assert!(completed.try_recv().is_err());
 }

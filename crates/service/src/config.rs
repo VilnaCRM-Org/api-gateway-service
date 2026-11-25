@@ -306,6 +306,9 @@ pub struct GatewayConfig {
     /// `GATEWAY_DECISION_LISTEN`: the decision listener, which serves the decision API from the
     /// snapshot and nothing else.
     pub decision_listen: SocketAddr,
+    /// `GATEWAY_MESH_LISTEN`: the east-west listener, which serves the calls between services
+    /// through the pipeline of the public listener (FR-90).
+    pub mesh_listen: SocketAddr,
     /// The certificate and key of the public listener; `None` serves plain HTTP, which only
     /// `APP_ENV` `dev` and `test` accept.
     pub tls: Option<TlsFiles>,
@@ -348,6 +351,9 @@ pub struct GatewayConfig {
     /// `RYW_MAX_WAIT`: the longest a request waits for a snapshot of the policy version it names
     /// (Story 10.10).
     pub ryw_max_wait: Duration,
+    /// `GATEWAY_PROXY_PROTOCOL`: every connection of the public listener starts with a Proxy
+    /// Protocol v2 header (Story 10.9).
+    pub proxy_protocol: bool,
 }
 
 /// How the gateway discovers the endpoints of its upstreams (`UPSTREAM_DISCOVERY`).
@@ -378,11 +384,7 @@ impl GatewayConfig {
     /// Returns every problem found, each naming its environment variable.
     pub fn from_args(args: &GatewayArgs) -> Result<Self, ConfigErrors> {
         let mut collector = Collector::default();
-        let service = &args.service;
-        let app_env = collector.collect("APP_ENV", app_env(service.app_env.as_deref()));
-        let log_level = collector.collect("LOG_LEVEL", log_level(service.log_level.as_deref()));
-        let grace = grace_period(&mut collector, service.shutdown_grace_period.as_deref());
-        let tokens = tokens(&mut collector, &service.tokens);
+        let (app_env, log_level, grace, tokens) = service_basics(&mut collector, &args.service);
         let listeners = listeners(&mut collector, args);
         let tls = tls_files(&mut collector, args, app_env);
         let (pod_name, pod_namespace) = pod_identity(&mut collector, args);
@@ -408,6 +410,7 @@ impl GatewayConfig {
                 internal_listen: listeners.internal,
                 probe_listen: listeners.probe,
                 decision_listen: listeners.decision,
+                mesh_listen: listeners.mesh,
                 tls: tls.into_files(),
                 kafka_tail: tail_connection(kafka.tail, pod_name.as_deref()),
                 kafka: kafka.bootstrap,
@@ -421,6 +424,7 @@ impl GatewayConfig {
                 audit_lane,
                 rate_limit,
                 ryw_max_wait: tail.ryw_max_wait,
+                proxy_protocol: listeners.proxy_protocol,
                 pod_name,
                 pod_namespace,
                 endpoints,
@@ -428,6 +432,26 @@ impl GatewayConfig {
             _ => Err(ConfigErrors(collector.problems)),
         }
     }
+}
+
+/// The environment, the log filter, the grace period and the token settings, each `None` when a
+/// problem was reported for it.
+type ServiceBasics = (
+    Option<AppEnv>,
+    Option<String>,
+    Option<Duration>,
+    Option<TokenSettings>,
+);
+
+/// `APP_ENV`, `LOG_LEVEL`, `SHUTDOWN_GRACE_PERIOD` and the token settings, which `service` and
+/// `gateway` read the same way.
+fn service_basics(collector: &mut Collector, service: &ServeArgs) -> ServiceBasics {
+    (
+        collector.collect("APP_ENV", app_env(service.app_env.as_deref())),
+        collector.collect("LOG_LEVEL", log_level(service.log_level.as_deref())),
+        grace_period(collector, service.shutdown_grace_period.as_deref()),
+        tokens(collector, &service.tokens),
+    )
 }
 
 /// The Kafka variables of the gateway: the control-plane connection variables, read twice. The
@@ -952,17 +976,19 @@ fn static_discovery(collector: &mut Collector, file: Option<String>) -> Option<U
     }
 }
 
-/// The four listener addresses of the gateway.
+/// The five listener addresses of the gateway.
 struct Listeners {
     public: SocketAddr,
     internal: SocketAddr,
     probe: SocketAddr,
     decision: SocketAddr,
+    mesh: SocketAddr,
+    proxy_protocol: bool,
 }
 
-/// `GATEWAY_LISTEN`, `GATEWAY_INTERNAL_LISTEN`, `GATEWAY_PROBE_LISTEN` and
-/// `GATEWAY_DECISION_LISTEN`: four addresses that differ from one another (port 0, which selects
-/// any free port, never clashes).
+/// `GATEWAY_LISTEN`, `GATEWAY_INTERNAL_LISTEN`, `GATEWAY_PROBE_LISTEN`, `GATEWAY_DECISION_LISTEN`
+/// and `GATEWAY_MESH_LISTEN`: five addresses that differ from one another (port 0, which selects
+/// any free port, never clashes), and `GATEWAY_PROXY_PROTOCOL`.
 fn listeners(collector: &mut Collector, args: &GatewayArgs) -> Option<Listeners> {
     let public = collector.collect(
         "GATEWAY_LISTEN",
@@ -1001,12 +1027,51 @@ fn listeners(collector: &mut Collector, args: &GatewayArgs) -> Option<Listeners>
         ("GATEWAY_DECISION_LISTEN", decision),
         ("GATEWAY_PROBE_LISTEN", probe),
     );
+    let mesh = mesh_listener(collector, args, [public, internal, probe, decision]);
+    let proxy_protocol = proxy_protocol(collector, args);
     Some(Listeners {
         public: public?,
         internal: internal?,
         probe: probe?,
         decision: decision?,
+        mesh: mesh?,
+        proxy_protocol: proxy_protocol?,
     })
+}
+
+/// `GATEWAY_PROXY_PROTOCOL`: whether the public listener expects a Proxy Protocol v2 header
+/// (default `false`).
+fn proxy_protocol(collector: &mut Collector, args: &GatewayArgs) -> Option<bool> {
+    collector.collect(
+        "GATEWAY_PROXY_PROTOCOL",
+        parsed(
+            args.gateway_proxy_protocol.as_deref(),
+            false,
+            "must be true or false",
+        ),
+    )
+}
+
+/// `GATEWAY_MESH_LISTEN`: an address that differs from the four others.
+fn mesh_listener(
+    collector: &mut Collector,
+    args: &GatewayArgs,
+    others: [Option<SocketAddr>; 4],
+) -> Option<SocketAddr> {
+    let mesh = collector.collect(
+        "GATEWAY_MESH_LISTEN",
+        listen_address(args.mesh_listen.as_deref(), 8444),
+    );
+    let names = [
+        "GATEWAY_LISTEN",
+        "GATEWAY_INTERNAL_LISTEN",
+        "GATEWAY_PROBE_LISTEN",
+        "GATEWAY_DECISION_LISTEN",
+    ];
+    for (name, other) in names.into_iter().zip(others) {
+        collector.distinct(("GATEWAY_MESH_LISTEN", mesh), (name, other));
+    }
+    mesh
 }
 
 fn listen_address(raw: Option<&str>, default_port: u16) -> Parsed<SocketAddr> {

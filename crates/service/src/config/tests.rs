@@ -10,6 +10,7 @@ mod access_log;
 mod access_log_query;
 mod audit_lane;
 mod endpoints;
+mod proxy_protocol;
 mod rate_limit;
 
 fn valid() -> ServeArgs {
@@ -1674,6 +1675,10 @@ fn the_gateway_defaults_are_the_documented_ones() {
         config.decision_listen,
         "0.0.0.0:9091".parse::<SocketAddr>().unwrap()
     );
+    assert_eq!(
+        config.mesh_listen,
+        "0.0.0.0:8444".parse::<SocketAddr>().unwrap()
+    );
     assert_eq!(config.tls, None);
     assert_eq!(config.pod_name, None);
     assert_eq!(config.pod_namespace, None);
@@ -1712,6 +1717,7 @@ fn the_gateway_takes_the_listeners_pod_and_grace_period_it_is_given() {
     args.internal_listen = some("[::1]:2");
     args.probe_listen = some("127.0.0.1:3");
     args.decision_listen = some("127.0.0.1:4");
+    args.mesh_listen = some("127.0.0.1:6");
     args.pod_name = some("gateway-0");
     args.pod_namespace = some("iam");
     args.service.shutdown_grace_period = some("3s");
@@ -1725,6 +1731,7 @@ fn the_gateway_takes_the_listeners_pod_and_grace_period_it_is_given() {
     );
     assert_eq!(config.probe_listen.port(), 3);
     assert_eq!(config.decision_listen.port(), 4);
+    assert_eq!(config.mesh_listen.port(), 6);
     assert_eq!(config.pod_name.as_deref(), Some("gateway-0"));
     assert_eq!(config.pod_namespace.as_deref(), Some("iam"));
     assert_eq!(config.shutdown_grace_period, Duration::from_secs(3));
@@ -1789,6 +1796,24 @@ fn equal_listener_addresses_are_refused_naming_the_variable(
     assert_eq!(gateway_variables(&args), vec![variable]);
 }
 
+#[rstest]
+#[case::public("127.0.0.1:5000")]
+#[case::internal("127.0.0.1:5001")]
+#[case::probe("127.0.0.1:5002")]
+#[case::decision("127.0.0.1:5003")]
+fn a_mesh_address_equal_to_another_listener_is_refused_naming_the_mesh_variable(
+    #[case] mesh: &str,
+) {
+    let mut args = valid_gateway();
+    args.listen = some("127.0.0.1:5000");
+    args.internal_listen = some("127.0.0.1:5001");
+    args.probe_listen = some("127.0.0.1:5002");
+    args.decision_listen = some("127.0.0.1:5003");
+    args.mesh_listen = some(mesh);
+
+    assert_eq!(gateway_variables(&args), vec!["GATEWAY_MESH_LISTEN"]);
+}
+
 #[test]
 fn port_0_never_clashes() {
     let mut args = valid_gateway();
@@ -1796,6 +1821,7 @@ fn port_0_never_clashes() {
     args.internal_listen = some("127.0.0.1:0");
     args.probe_listen = some("127.0.0.1:0");
     args.decision_listen = some("127.0.0.1:0");
+    args.mesh_listen = some("127.0.0.1:0");
 
     assert!(GatewayConfig::from_args(&args).is_ok());
 }
@@ -1805,12 +1831,14 @@ fn port_0_never_clashes() {
 #[case::internal("GATEWAY_INTERNAL_LISTEN")]
 #[case::probe("GATEWAY_PROBE_LISTEN")]
 #[case::decision("GATEWAY_DECISION_LISTEN")]
+#[case::mesh("GATEWAY_MESH_LISTEN")]
 fn an_address_without_a_port_is_refused(#[case] variable: &str) {
     let mut args = valid_gateway();
     match variable {
         "GATEWAY_LISTEN" => args.listen = some("0.0.0.0"),
         "GATEWAY_INTERNAL_LISTEN" => args.internal_listen = some("0.0.0.0"),
         "GATEWAY_DECISION_LISTEN" => args.decision_listen = some("0.0.0.0"),
+        "GATEWAY_MESH_LISTEN" => args.mesh_listen = some("0.0.0.0"),
         _ => args.probe_listen = some("0.0.0.0"),
     }
 

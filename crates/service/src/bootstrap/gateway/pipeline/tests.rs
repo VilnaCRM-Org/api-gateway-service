@@ -300,6 +300,17 @@ fn every_refusal_has_the_reason_that_the_access_record_names() {
             None,
             DecisionReason::Allowed,
         ),
+        (Refusal::Preflight, None, DecisionReason::Allowed),
+        (
+            Refusal::CorsRejected,
+            None,
+            DecisionReason::PermissionMissing,
+        ),
+        (
+            Refusal::CsrfRejected,
+            None,
+            DecisionReason::PermissionMissing,
+        ),
     ];
 
     for (refusal, token, expected) in cases {

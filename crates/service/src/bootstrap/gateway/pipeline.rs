@@ -9,6 +9,10 @@
 //! barrier, the CORS slot of Story 10.12 follows the route match, the header rewrite of Story 10.4
 //! comes before the forward and the access record of Story 14.1 after the response.
 //!
+//! The CORS slot of Story 10.12 answers a preflight after the route match and before the rate
+//! limits and authentication, and marks the responses to allowed origins; the CSRF rule runs right
+//! after authentication.
+//!
 //! The header rewrite of Story 10.4 runs just before the forward: the client's `X-IAM-*`,
 //! `Forwarded` and `X-Forwarded-*` headers are removed, the principal headers are set, and the
 //! credentials go only to upstreams with `forwardCredentials = true`. Every response, the answers
@@ -51,9 +55,9 @@ use iam_application::{
     RequestAuthorizer, RouteRequest, TracedAuthorization,
 };
 use iam_domain::{
-    Decision, DecisionReason, ForwardError, HttpMethod, NormalizedPath, PathNormalizer,
-    PolicySnapshot, PolicyView, RouteHost, RouteState, TokenIdentity, TokenRejection,
-    UpstreamForwarder, UpstreamTarget,
+    CallerTokenRule, Decision, DecisionReason, ForwardError, HttpMethod, NormalizedPath,
+    PathNormalizer, PolicySnapshot, PolicyView, RouteHost, RouteState, TokenIdentity,
+    TokenRejection, UpstreamForwarder, UpstreamTarget,
 };
 use iam_infrastructure::{CachingTokenRepository, SnapshotRevocationView};
 use shared_application::http::Problem;
@@ -64,11 +68,13 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 
 use self::access::Observed;
 use self::headers::Propagated;
+use super::edge::framing::reject_ambiguous;
 use super::listener::stale_response;
 use crate::http::authentication::credential;
 use crate::http::request_id::{REQUEST_ID_HEADER, sanitize_request_id};
 
 mod access;
+mod cors;
 mod graphql;
 mod headers;
 mod rate_limit;
@@ -76,6 +82,7 @@ mod read_your_writes;
 mod wiring;
 
 pub use access::PipelineAccessLog;
+pub use cors::{TYPE_CORS_REJECTED, TYPE_CSRF_REJECTED};
 pub use rate_limit::{ClientAddress, TYPE_RATE_LIMITED, gate_from_config};
 pub use wiring::{PipelineSetupError, UnauditedCommands, UnreachableUpstreams, from_config};
 
@@ -116,6 +123,7 @@ pub struct Pipeline {
     barrier: Option<Arc<ReadYourWritesBarrier>>,
     rate_limits: Option<Arc<RateLimitGate>>,
     access_log: Option<Arc<PipelineAccessLog>>,
+    service_callers: Option<CallerTokenRule>,
 }
 
 /// Why the pipeline answers a request itself, kept small until the answer is built.
@@ -139,6 +147,12 @@ enum Refusal {
     PayloadTooLarge,
     /// 404: no route matches.
     NoRoute,
+    /// 204: an allowed preflight, answered by the gateway (Story 10.12).
+    Preflight,
+    /// 403 `cors_rejected`: the preflight is not allowed by the route's CORS policy.
+    CorsRejected,
+    /// 403 `csrf_rejected`: a cross-site request that rides on the cookie.
+    CsrfRejected,
     /// 429: a rate limit of the route is exceeded; the seconds to wait.
     RateLimited(u64),
     /// 401: the token is missing or refused.
@@ -161,6 +175,9 @@ impl From<Refusal> for Response {
             Refusal::UnsupportedMediaType => graphql::unsupported_media_type(),
             Refusal::PayloadTooLarge => graphql::payload_too_large(),
             Refusal::NoRoute => no_route(),
+            Refusal::Preflight => cors::preflight_answer(),
+            Refusal::CorsRejected => cors::cors_rejected(),
+            Refusal::CsrfRejected => cors::csrf_rejected(),
             Refusal::RateLimited(seconds) => rate_limit::rate_limited(seconds),
             Refusal::Unauthorized => unauthorized(),
             Refusal::Forbidden(reason) => forbidden(reason),
@@ -185,10 +202,11 @@ impl Refusal {
                 _,
             ) => DecisionReason::MalformedOperation,
             (Self::NoRoute, _) => DecisionReason::UnknownOperation,
+            (Self::CorsRejected | Self::CsrfRejected, _) => DecisionReason::PermissionMissing,
             (Self::PayloadTooLarge | Self::RateLimited(_), _) => DecisionReason::LimitsExceeded,
             (Self::Unauthorized, Some(reason)) | (Self::Forbidden(reason), _) => reason,
             (Self::Unauthorized, None) => DecisionReason::TokenInvalid,
-            (Self::Failed(_), _) => DecisionReason::Allowed,
+            (Self::Preflight | Self::Failed(_), _) => DecisionReason::Allowed,
         }
     }
 }
@@ -249,6 +267,7 @@ impl Pipeline {
             barrier: None,
             rate_limits: None,
             access_log: None,
+            service_callers: None,
         }
     }
 
@@ -278,6 +297,15 @@ impl Pipeline {
         self
     }
 
+    /// The same pipeline for the east-west listener (Story 10.13, FR-90): a `ROLE_SERVICE` token
+    /// must also carry the caller audience of `rule` and live no longer than its service lifetime,
+    /// or the request is answered 401; a user's token passes unchanged.
+    #[must_use]
+    pub fn with_service_callers(mut self, rule: CallerTokenRule) -> Self {
+        self.service_callers = Some(rule);
+        self
+    }
+
     async fn handle(&self, request: Request) -> Response {
         let (mut parts, body) = request.into_parts();
         let started = self
@@ -285,7 +313,8 @@ impl Pipeline {
             .is_some()
             .then(|| PipelineAccessLog::begin(&parts));
         let mut seen = Observed::default();
-        let admitted = self.admit(&parts, body, &mut seen).await;
+        let mut cors = None;
+        let admitted = self.admit(&parts, body, &mut seen, &mut cors).await;
         let verdict = verdict_of(admitted.as_ref().err(), &seen);
         let mut response = match admitted {
             Ok(admitted) => {
@@ -307,6 +336,7 @@ impl Pipeline {
             }
             Err(refusal) => refusal.into(),
         };
+        cors::decorate(&mut response, cors.as_ref());
         read_your_writes::carry_version(&mut response);
         headers::stamp_version(&mut response, self.response_version(&seen));
         if let (Some(log), Some(started)) = (self.access_log.as_ref(), started) {
@@ -337,6 +367,7 @@ impl Pipeline {
         parts: &Parts,
         body: Body,
         seen: &mut Observed,
+        cors: &mut Option<cors::Applied>,
     ) -> Result<Admitted, Refusal> {
         self.await_version(&parts.headers).await?;
         let snapshot = self.snapshot(seen).ok_or(Refusal::Stale)?;
@@ -344,9 +375,11 @@ impl Pipeline {
         let method = HttpMethod::parse(parts.method.as_str()).ok_or(Refusal::NoRoute)?;
         let path =
             PathNormalizer::normalize(parts.uri.path()).map_err(|_rule| Refusal::MalformedPath)?;
+        cors::preflight(&snapshot, parts, &path, seen, cors)?;
         graphql_posts_only(&snapshot, parts, method, &path, seen)?;
         let route = route_of(&snapshot, parts, method, &path).ok_or(Refusal::NoRoute)?;
         seen.route(&snapshot, route);
+        cors::simple(parts, route, cors);
         rate_limit::before_authentication(self.rate_limits.as_ref(), parts, &snapshot, route)
             .await?;
         let request = RouteRequest {
@@ -419,6 +452,7 @@ impl Pipeline {
         let principal = self
             .authenticate(request.snapshot, &parts.headers, seen)
             .await?;
+        cors::csrf(parts, request.method, route)?;
         rate_limit::subject(
             self.rate_limits.as_ref(),
             parts,
@@ -460,9 +494,19 @@ impl Pipeline {
         let resolved = self
             .tokens
             .resolve_with(&revocations, &credential(headers))
-            .await;
+            .await
+            .and_then(|identity| self.check_caller(identity));
         seen.token(&resolved);
         principal_of(resolved)
+    }
+
+    /// The caller rule of the east-west listener over a resolved identity; the public listener has
+    /// none.
+    fn check_caller(&self, identity: TokenIdentity) -> Result<TokenIdentity, TokenRejection> {
+        match self.service_callers.as_ref() {
+            Some(rule) => rule.check(&identity).map(|()| identity),
+            None => Ok(identity),
+        }
     }
 
     async fn authorize(
@@ -530,11 +574,14 @@ fn answer(forwarded: Result<Response, ForwardError>) -> Response {
     forwarded.unwrap_or_else(failure)
 }
 
-/// The router of the public listener: every request goes through the [`Pipeline`], inside the
-/// request-id layers and the guard that answers a panic of a request task with 500.
+/// The router of the public listener: every request goes through the [`Pipeline`].
+///
+/// The pipeline sits inside the request-id layers and the guard that answers a panic of a request
+/// task with 500. A request whose length or path is ambiguous is answered 400 first (Story 10.9).
 pub fn router(pipeline: Pipeline) -> Router {
     Router::new().fallback(serve).with_state(pipeline).layer(
         ServiceBuilder::new()
+            .layer(from_fn(reject_ambiguous))
             .layer(from_fn(sanitize_request_id))
             .layer(SetRequestIdLayer::new(REQUEST_ID_HEADER, MakeRequestUuid))
             .layer(PropagateRequestIdLayer::new(REQUEST_ID_HEADER))

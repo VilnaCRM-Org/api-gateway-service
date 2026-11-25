@@ -42,8 +42,10 @@ use test_support::upstream::upstream;
 use tower::ServiceExt as _;
 
 mod anonymous;
+mod cors;
 mod graphql;
 mod headers;
+mod mesh;
 mod proxy;
 
 const HOST: &str = "api.example.test";

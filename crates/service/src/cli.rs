@@ -390,6 +390,14 @@ pub struct GatewayArgs {
         hide_env_values = true
     )]
     pub decision_listen: Option<String>,
+    /// Address of the east-west listener that serves the calls between services through the same
+    /// pipeline as the public listener (default `0.0.0.0:8444`).
+    #[arg(
+        long = "gateway-mesh-listen",
+        env = "GATEWAY_MESH_LISTEN",
+        hide_env_values = true
+    )]
+    pub mesh_listen: Option<String>,
     /// PEM file of the certificate chain of the public listener, hot-reloaded; required with
     /// `GATEWAY_TLS_KEY_FILE`, and outside `APP_ENV` `dev` and `test` always.
     #[arg(
@@ -426,6 +434,14 @@ pub struct GatewayArgs {
         hide_env_values = true
     )]
     pub upstream_static_endpoints_file: Option<String>,
+    /// Whether every connection of the public listener starts with a Proxy Protocol v2 header,
+    /// which names the client address (default `false`).
+    #[arg(
+        long = "gateway-proxy-protocol",
+        env = "GATEWAY_PROXY_PROTOCOL",
+        hide_env_values = true
+    )]
+    pub gateway_proxy_protocol: Option<String>,
     /// Whether requests prefer the endpoints of the gateway's own zone (default `true`).
     #[arg(
         long = "upstream-zone-aware",

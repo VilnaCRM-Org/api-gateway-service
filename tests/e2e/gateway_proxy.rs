@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime};
 use axum::Router;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
-use axum::http::header::AUTHORIZATION;
+use axum::http::header::{AUTHORIZATION, COOKIE, ORIGIN};
 use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse as _, Response};
 use http_body_util::BodyExt as _;
@@ -19,11 +19,11 @@ use iam_application::{EndpointDirectory, FreshnessState, RequestAuthorizer, Zone
 use iam_domain::freshness::proof::FreshnessProof;
 use iam_domain::{
     AccessToken, AccessTokenParts, AccessTokenVerifier, AssignmentScope, AssignmentState,
-    BootClock as _, BootInstant, CatalogueEntryState, CompiledRoleSet, EndpointConditions,
-    EndpointParts, EndpointSlice, FreshnessRule, GrantStatus, HttpMethod, PermissionGrant,
-    PolicyVersion, PolicyView, RevocationView, RoleId, RouteState, ServiceName, SessionId,
-    SubjectId, SubjectRef, TokenId, TokenMemo, TokenRepository, UpstreamEndpoint, UpstreamState,
-    WatchTarget,
+    BootClock as _, BootInstant, CatalogueEntryState, CompiledRoleSet, CorsDraft,
+    EndpointConditions, EndpointParts, EndpointSlice, FreshnessRule, GrantStatus, HttpMethod,
+    PermissionGrant, PolicyVersion, PolicyView, RevocationView, RoleId, RouteState, ServiceName,
+    SessionId, SubjectId, SubjectRef, TokenId, TokenMemo, TokenRepository, UpstreamEndpoint,
+    UpstreamState, WatchTarget,
 };
 use iam_infrastructure::{
     CachingTokenRepository, MokaTokenMemo, SnapshotRevocationView, TokenMemoSettings,
@@ -58,6 +58,7 @@ pub(crate) struct GatewayPlan {
     pattern: String,
     key: String,
     subjects: Vec<(String, Vec<String>)>,
+    cors_origin: Option<String>,
 }
 
 impl GatewayPlan {
@@ -71,7 +72,14 @@ impl GatewayPlan {
             pattern: pattern.to_owned(),
             key: key.to_owned(),
             subjects: Vec::new(),
+            cors_origin: None,
         }
+    }
+
+    /// Gives the route a CORS policy that allows `origin` with credentials for the method of the
+    /// route.
+    pub(crate) fn allow_origin(&mut self, origin: &str) {
+        self.cors_origin = Some(origin.to_owned());
     }
 
     /// Adds the grant `key` to the subject `name`, which exists after this call.
@@ -187,13 +195,20 @@ fn snapshot(plan: &GatewayPlan) -> GatewaySnapshot {
     let mut rng = TestRng::from_env();
     let upstream_state =
         UpstreamState::of(upstream(&mut rng, &plan.service, &plan.service).parts());
-    let draft = route_draft(
+    let mut draft = route_draft(
         &plan.host,
         &plan.pattern,
         &[parse_method(&plan.method)],
         &plan.service,
         upstream_state.id,
     );
+    draft.cors = plan.cors_origin.as_ref().map(|origin| CorsDraft {
+        origins: vec![origin.clone()],
+        methods: vec![parse_method(&plan.method)],
+        headers: vec!["Content-Type".to_owned()],
+        allow_credentials: true,
+        max_age_seconds: 600,
+    });
     let mut snapshot = GatewaySnapshot::at(PolicyVersion::new(7).expect("a version"))
         .with_upstream(upstream_state)
         .with_route(RouteState::of(route(&mut rng, &draft).parts()))
@@ -345,15 +360,57 @@ impl GatewayHarness {
     ///
     /// When the plan holds no subject of that name.
     pub(crate) async fn send(&self, name: &str, method: &str, path: &str) -> GatewayReply {
+        let bearer = format!("Bearer {}", credential(name));
+        self.deliver(name, method, path, &[(AUTHORIZATION.as_str(), bearer)])
+            .await
+    }
+
+    /// Sends the request of the subject `name` the way a browser of the page at `origin` does: the
+    /// session cookie instead of a bearer token, and the `Origin` header.
+    ///
+    /// # Panics
+    ///
+    /// When the plan holds no subject of that name.
+    pub(crate) async fn send_from_browser(
+        &self,
+        name: &str,
+        method: &str,
+        path: &str,
+        origin: &str,
+    ) -> GatewayReply {
+        let cookie = format!("__Host-auth_token={}", credential(name));
+        self.deliver(
+            name,
+            method,
+            path,
+            &[
+                (COOKIE.as_str(), cookie),
+                (ORIGIN.as_str(), origin.to_owned()),
+            ],
+        )
+        .await
+    }
+
+    async fn deliver(
+        &self,
+        name: &str,
+        method: &str,
+        path: &str,
+        headers: &[(&str, String)],
+    ) -> GatewayReply {
         assert!(
             self.tokens.iter().any(|known| known == name),
             "the scenario names no subject {name}"
         );
-        let request = Request::builder()
-            .method(method)
-            .uri(path)
-            .header("host", &self.host)
-            .header(AUTHORIZATION, format!("Bearer {}", credential(name)))
+        let request = headers
+            .iter()
+            .fold(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .header("host", &self.host),
+                |builder, (header, value)| builder.header(*header, value),
+            )
             .body(Body::empty())
             .expect("a valid request");
         let response = self
