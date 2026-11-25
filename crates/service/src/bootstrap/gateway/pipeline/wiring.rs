@@ -1,5 +1,5 @@
 //! The production wiring of the pipeline: the token repository over the snapshot, the authorizer
-//! and the placeholder forwarder.
+//! and the forwarder it is given.
 
 use std::any::TypeId;
 use std::sync::Arc;
@@ -30,8 +30,8 @@ pub enum PipelineSetupError {
     Keys(#[from] JwtKeyFileError),
 }
 
-/// The forwarder of Story 10.2: no upstream is reachable, so every request that was authorized is
-/// answered 502. Story 10.3 replaces it with `HyperUpstreamForwarder`.
+/// A forwarder for a gateway that has no upstream to reach, as in the tests of the wiring: every
+/// request that was authorized is answered 502. Production uses `HyperUpstreamForwarder`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UnreachableUpstreams;
 
@@ -70,7 +70,7 @@ impl CommandBus for UnauditedCommands {
 ///
 /// Tokens are verified by a JWT verifier over `JWT_PUBLIC_KEYS_FILE`, reloaded when the file
 /// changes, behind a memo sized by `TOKEN_MEMO_CAPACITY` and `TOKEN_MEMO_MAX_TTL`; the revocation
-/// sets come from the snapshot.
+/// sets come from the snapshot. Authorized requests go to `forwarder`.
 ///
 /// # Errors
 ///
@@ -80,6 +80,7 @@ pub fn from_config(
     view: Arc<dyn PolicyView>,
     freshness: Arc<FreshnessState>,
     clock: &Arc<dyn Clock>,
+    forwarder: Arc<Forwarder>,
 ) -> Result<Pipeline, PipelineSetupError> {
     let tokens = &config.tokens;
     let verifier = Arc::new(JwtAccessTokenVerifier::from_file(
@@ -100,7 +101,6 @@ pub fn from_config(
         Arc::new(UuidV7Generator),
         Arc::new(UnauditedCommands),
     );
-    let forwarder: Arc<Forwarder> = Arc::new(UnreachableUpstreams);
     Ok(Pipeline::new(
         view,
         freshness,

@@ -9,6 +9,7 @@ use iam_domain::{
 };
 use shared_domain::{Clock, UuidGenerator};
 
+use crate::access_log::DecisionTrace;
 use crate::required_key_resolver::RequiredKeyResolver;
 use crate::service_catalog_loader::ServiceCatalogLoader;
 
@@ -17,6 +18,7 @@ struct Decided {
     verdict: DecisionVerdict,
     subject: Option<SubjectRef>,
     policy_version: Option<PolicyVersion>,
+    trace: DecisionTrace,
 }
 
 impl Decided {
@@ -29,7 +31,24 @@ impl Decided {
             verdict,
             subject,
             policy_version,
+            trace: DecisionTrace {
+                permission_key: None,
+                flags: PermissionFlags::NONE,
+                wildcard: false,
+            },
         }
+    }
+
+    /// The same decision with what it knows about the key it was made on.
+    fn traced(self, trace: DecisionTrace) -> Self {
+        Self { trace, ..self }
+    }
+
+    /// The outcome with a new decision id, and the trace.
+    fn into_traced(self, decision_id: DecisionId) -> (DecisionOutcome, DecisionTrace) {
+        let outcome =
+            DecisionOutcome::new(self.verdict, decision_id, self.subject, self.policy_version);
+        (outcome, self.trace)
     }
 
     const fn unavailable(subject: Option<SubjectRef>) -> Self {
@@ -84,6 +103,17 @@ impl AccessDecisionService {
             .await
     }
 
+    /// Decides like [`Self::decide`] and also returns what the decision knows about the key it
+    /// was made on, for the access log.
+    pub async fn decide_traced(
+        &self,
+        credential: &Credential,
+        check: &AccessCheck,
+    ) -> (DecisionOutcome, DecisionTrace) {
+        self.decide_traced_with(self.tokens.as_ref(), credential, check)
+            .await
+    }
+
     /// Decides like [`Self::decide`], resolving the credential through `tokens` instead of the
     /// service's own repository; a batch passes a repository that remembers what it resolved.
     pub async fn decide_with(
@@ -92,14 +122,21 @@ impl AccessDecisionService {
         credential: &Credential,
         check: &AccessCheck,
     ) -> DecisionOutcome {
+        self.decide_traced_with(tokens, credential, check).await.0
+    }
+
+    /// Decides like [`Self::decide_with`] and also returns what the decision knows about the key
+    /// it was made on, for the access log.
+    pub async fn decide_traced_with(
+        &self,
+        tokens: &dyn TokenRepository,
+        credential: &Credential,
+        check: &AccessCheck,
+    ) -> (DecisionOutcome, DecisionTrace) {
         let decision_id = DecisionId::from_uuid(self.ids.generate());
-        let decided = self.decide_check(tokens, credential, check).await;
-        DecisionOutcome::new(
-            decided.verdict,
-            decision_id,
-            decided.subject,
-            decided.policy_version,
-        )
+        self.decide_check(tokens, credential, check)
+            .await
+            .into_traced(decision_id)
     }
 
     /// Decides `check` for a subject that a verified token already proved, without resolving a
@@ -110,14 +147,20 @@ impl AccessDecisionService {
         subject: SubjectRef,
         check: &AccessCheck,
     ) -> DecisionOutcome {
+        self.decide_traced_for_subject(subject, check).await.0
+    }
+
+    /// Decides like [`Self::decide_for_subject`] and also returns what the decision knows about
+    /// the key it was made on, for the access log.
+    pub async fn decide_traced_for_subject(
+        &self,
+        subject: SubjectRef,
+        check: &AccessCheck,
+    ) -> (DecisionOutcome, DecisionTrace) {
         let decision_id = DecisionId::from_uuid(self.ids.generate());
-        let decided = self.decide_subject(subject, check).await;
-        DecisionOutcome::new(
-            decided.verdict,
-            decision_id,
-            decided.subject,
-            decided.policy_version,
-        )
+        self.decide_subject(subject, check)
+            .await
+            .into_traced(decision_id)
     }
 
     /// Decides whether `subject` holds every key of `keys` at global scope, from its policy alone:
@@ -217,14 +260,18 @@ impl AccessDecisionService {
     ) -> Decided {
         match self.policy.read_subject_policy(&subject).await {
             Ok(policy) => {
-                let verdict = DecisionPolicy::decide(&DecisionRequest {
+                let request = DecisionRequest {
                     assignments: policy.assignments(),
                     role_sets: policy.role_sets(),
                     required,
                     project,
                     now: self.clock.now(),
-                });
-                Decided::of(verdict, Some(subject), Some(policy.policy_version()))
+                };
+                let verdict = DecisionPolicy::decide(&request);
+                let wildcard = verdict.decision().is_allow()
+                    && DecisionPolicy::holds_through_wildcard(&request);
+                let trace = DecisionTrace::of_required(required).with_wildcard(wildcard);
+                Decided::of(verdict, Some(subject), Some(policy.policy_version())).traced(trace)
             }
             Err(_unavailable) => Decided::unavailable(Some(subject)),
         }

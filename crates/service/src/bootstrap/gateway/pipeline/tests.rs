@@ -103,6 +103,11 @@ async fn a_forwarder_that_returns_no_response_is_answered_with_502_503_or_504() 
             StatusCode::SERVICE_UNAVAILABLE,
             TYPE_UPSTREAM_OVERLOADED,
         ),
+        (
+            ForwardError::BodyTooLarge,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "about:blank",
+        ),
     ];
 
     for (error, status, kind) in answers {
@@ -217,4 +222,83 @@ async fn the_response_of_the_upstream_is_the_answer_and_a_failure_is_its_problem
 
     assert_eq!(relayed.status(), StatusCode::CREATED);
     assert_eq!(failed.status(), StatusCode::GATEWAY_TIMEOUT);
+}
+
+#[test]
+fn the_target_of_a_request_carries_the_delivery_of_its_upstream_and_the_limit_of_its_route() {
+    let mut rng = test_support::seed::TestRng::from_env();
+    let upstream = iam_domain::UpstreamState::of(
+        test_support::upstream::upstream(&mut rng, "users", "users").parts(),
+    );
+    let draft = test_support::route::route_draft(
+        "api.example.test",
+        "/api/users",
+        &[HttpMethod::Get],
+        "users",
+        upstream.id,
+    );
+    let route = RouteState::of(test_support::route::route(&mut rng, &draft).parts());
+
+    let target = target_of(&upstream, &route);
+
+    assert_eq!(target.upstream(), &upstream.name);
+    assert_eq!(target.route(), route.id);
+    assert_eq!(target.service().namespace, upstream.settings.namespace());
+    assert_eq!(target.service().service, upstream.settings.service_name());
+    assert_eq!(target.protocol(), upstream.settings.protocol());
+    assert_eq!(
+        target.connect_timeout_ms(),
+        upstream.settings.connect_timeout_ms()
+    );
+    assert_eq!(target.body_limit(), route.fields.body_limit().bytes());
+}
+
+#[test]
+fn every_refusal_has_the_reason_that_the_access_record_names() {
+    let expired = Some(DecisionReason::TokenExpired);
+    let cases = [
+        (Refusal::Stale, None, DecisionReason::Unavailable),
+        (Refusal::Propagating, None, DecisionReason::Unavailable),
+        (
+            Refusal::MalformedPath,
+            None,
+            DecisionReason::MalformedOperation,
+        ),
+        (Refusal::NoRoute, None, DecisionReason::UnknownOperation),
+        (
+            Refusal::RateLimited(3),
+            None,
+            DecisionReason::LimitsExceeded,
+        ),
+        (Refusal::Unauthorized, expired, DecisionReason::TokenExpired),
+        (Refusal::Unauthorized, None, DecisionReason::TokenInvalid),
+        (
+            Refusal::Forbidden(DecisionReason::ScopeMissing),
+            expired,
+            DecisionReason::ScopeMissing,
+        ),
+        (
+            Refusal::Failed(ForwardError::NoEndpoint),
+            None,
+            DecisionReason::Allowed,
+        ),
+    ];
+
+    for (refusal, token, expected) in cases {
+        assert_eq!(refusal.reason(token), expected, "{refusal:?}");
+    }
+}
+
+#[test]
+fn an_admitted_request_is_an_allow_and_a_refusal_is_a_deny_with_its_reason() {
+    let seen = Observed::default();
+
+    assert_eq!(
+        verdict_of(None, &seen),
+        (Decision::Allow, DecisionReason::Allowed)
+    );
+    assert_eq!(
+        verdict_of(Some(&Refusal::NoRoute), &seen),
+        (Decision::Deny, DecisionReason::UnknownOperation)
+    );
 }

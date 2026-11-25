@@ -123,3 +123,15 @@ fn a_reserved_key_never_holds_a_rest_or_graphql_key() {
     assert!(!set.holds(&key("rest:iam:POST /api/roles"), PermissionFlags::NONE));
     assert!(!set.holds(&key("gql:iam:Mutation.createRole"), PermissionFlags::NONE));
 }
+
+#[test]
+fn a_key_is_held_only_through_a_wildcard_when_no_exact_grant_covers_it() {
+    let flags = PermissionFlags::NONE;
+    let wildcard = active(&["rest:orders:*"]);
+    let exact = active(&["rest:orders:GET /api/orders", "rest:orders:*"]);
+    let target = key("rest:orders:GET /api/orders");
+
+    assert!(wildcard.holds_only_through_wildcard(&target, flags));
+    assert!(!exact.holds_only_through_wildcard(&target, flags));
+    assert!(!active(&[]).holds_only_through_wildcard(&target, flags));
+}

@@ -16,10 +16,13 @@ use test_support::policy_view::FakePolicyView;
 use test_support::token::FakeTokenRepository;
 
 use super::{GatewayValidateAccessBatchQueryHandler, GatewayValidateAccessQueryHandler};
+
+mod access_log;
 use crate::access_decision_service::AccessDecisionService;
 use crate::freshness::FreshnessState;
 use crate::query::validate_access::ValidateAccessQuery;
 use crate::query::validate_access_batch::{BatchCheck, ValidateAccessBatchQuery};
+use crate::read_your_writes::{PolicyVersionBoard, ReadYourWritesBarrier};
 use crate::service_catalog_loader::ServiceCatalogLoader;
 use crate::snapshot_policy_reads::SnapshotPolicyReads;
 
@@ -38,6 +41,15 @@ struct Scenario {
 
 /// A gateway at policy version 5 with a fresh proof; the credential `expired` is refused.
 fn scenario() -> Scenario {
+    scenario_with(None)
+}
+
+/// The same gateway behind the read-your-writes barrier over `board`, which waits one second.
+fn barred_scenario(board: &Arc<PolicyVersionBoard>) -> Scenario {
+    scenario_with(Some(Arc::clone(board)))
+}
+
+fn scenario_with(board: Option<Arc<PolicyVersionBoard>>) -> Scenario {
     let clock = Arc::new(FakeBootClock::starting_at(BootInstant::from_elapsed(
         Duration::from_secs(100),
     )));
@@ -52,8 +64,17 @@ fn scenario() -> Scenario {
         },
         version(5),
     );
-    let view = FakePolicyView::with_snapshot(Arc::new(DecisionSnapshot::at(version(5))));
-    let reads = Arc::new(SnapshotPolicyReads::new(Arc::new(view), state));
+    let view = Arc::new(FakePolicyView::with_snapshot(Arc::new(
+        DecisionSnapshot::at(version(5)),
+    )));
+    let barrier = board.map(|board| {
+        Arc::new(ReadYourWritesBarrier::new(
+            Arc::<FakePolicyView>::clone(&view),
+            board,
+            Duration::from_secs(1),
+        ))
+    });
+    let reads = Arc::new(SnapshotPolicyReads::new(view, state));
     let policy: Arc<dyn PolicyReadRepository> = Arc::<SnapshotPolicyReads>::clone(&reads);
     let tokens = Arc::new(FakeTokenRepository::new().rejecting("expired", TokenRejection::Expired));
     let decisions = Arc::new(AccessDecisionService::new(
@@ -63,13 +84,20 @@ fn scenario() -> Scenario {
         Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH)),
         Arc::new(SequenceUuidGenerator::starting_at(1)),
     ));
+    let mut single =
+        GatewayValidateAccessQueryHandler::new(Arc::clone(&decisions), Arc::clone(&reads));
+    let mut batch = GatewayValidateAccessBatchQueryHandler::new(
+        decisions,
+        reads,
+        Arc::<FakeTokenRepository>::clone(&tokens),
+    );
+    if let Some(barrier) = barrier {
+        single = single.with_barrier(Arc::clone(&barrier));
+        batch = batch.with_barrier(barrier);
+    }
     Scenario {
-        single: GatewayValidateAccessQueryHandler::new(Arc::clone(&decisions), Arc::clone(&reads)),
-        batch: GatewayValidateAccessBatchQueryHandler::new(
-            decisions,
-            reads,
-            Arc::<FakeTokenRepository>::clone(&tokens),
-        ),
+        single,
+        batch,
         tokens,
         clock,
     }
@@ -223,5 +251,57 @@ async fn a_stale_snapshot_denies_every_item_of_a_batch() {
         outcomes
             .iter()
             .all(|outcome| outcome.reason() == DecisionReason::Unavailable)
+    );
+}
+
+fn seen_up_to(highest: i64) -> Arc<PolicyVersionBoard> {
+    let board = Arc::new(PolicyVersionBoard::new());
+    board.note_published(Some(version(5)));
+    board.note_seen(version(highest));
+    board
+}
+
+#[tokio::test]
+async fn a_minimum_version_above_the_highest_seen_is_the_deny_unavailable_at_once() {
+    let scenario = barred_scenario(&seen_up_to(5));
+
+    let outcome = single(&scenario, query("expired", permissions(), Some(6))).await;
+
+    assert_eq!(outcome.reason(), DecisionReason::Unavailable);
+    assert_eq!(scenario.tokens.calls(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_seen_minimum_version_that_is_not_published_in_time_is_the_deny_unavailable() {
+    let scenario = barred_scenario(&seen_up_to(6));
+
+    let outcome = single(&scenario, query("expired", permissions(), Some(6))).await;
+
+    assert_eq!(outcome.reason(), DecisionReason::Unavailable);
+    assert_eq!(scenario.tokens.calls(), 0);
+}
+
+#[tokio::test]
+async fn a_minimum_version_the_snapshot_holds_is_decided_behind_the_barrier() {
+    let scenario = barred_scenario(&seen_up_to(5));
+
+    let outcomes = batch(
+        &scenario,
+        vec![
+            BatchCheck::Valid(query("expired", permissions(), Some(5))),
+            BatchCheck::Valid(query("expired", permissions(), Some(9))),
+            BatchCheck::Valid(query("expired", permissions(), None)),
+        ],
+    )
+    .await;
+
+    let reasons: Vec<_> = outcomes.iter().map(DecisionOutcome::reason).collect();
+    assert_eq!(
+        reasons,
+        vec![
+            DecisionReason::TokenExpired,
+            DecisionReason::Unavailable,
+            DecisionReason::TokenExpired,
+        ]
     );
 }

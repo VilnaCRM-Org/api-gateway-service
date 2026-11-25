@@ -4,6 +4,7 @@
 //! This crate is framework-free. It depends on domain crates only: its own context and the shared
 //! kernel, never another bounded context.
 
+pub mod access_log;
 pub mod audit_anchor;
 pub mod bulk_operation;
 pub mod catalogue_event;
@@ -38,6 +39,11 @@ pub mod upstream;
 pub mod user_role;
 pub mod value_object;
 
+pub use access_log::{
+    AccessAggregate, AccessClass, AccessDecision, AccessEntry, AccessLane, AccessRecord,
+    ClassBudgets, DEFAULT_CHANNEL_CAPACITY, InvalidAccessLogSetting, SampleRate,
+    parse_channel_capacity,
+};
 pub use audit_anchor::{AnchorStamp, SecurityAuditAnchored};
 pub use bulk_operation::chunker::{
     BulkChange, BulkChunk, BulkChunker, BulkPacing, ChangeDirection, InvalidBulkChunking,
@@ -134,6 +140,7 @@ pub use policy::subject_policy::SubjectPolicy;
 pub use policy::token_lifetime_rule::{TokenLifetimeRule, TokenTimes};
 pub use policy::wildcard_matcher::WildcardMatcher;
 pub use port::RepositoryError;
+pub use port::access_log_sink::AccessLogSink;
 pub use port::access_token_verifier::AccessTokenVerifier;
 pub use port::anti_entropy_store::{AntiEntropyStore, PublishedRecord, StoredHead, WrittenKey};
 pub use port::boot_clock::BootClock;

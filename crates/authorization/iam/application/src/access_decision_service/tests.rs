@@ -498,3 +498,88 @@ async fn an_unreadable_policy_is_unavailable_for_a_reserved_key() {
     assert_eq!(outcome.reason(), DecisionReason::Unavailable);
     assert_eq!(outcome.policy_version(), None);
 }
+
+fn flagged_catalog(flags: PermissionFlags) -> ServiceCatalog {
+    let mut operations = RestOperationSet::new();
+    operations
+        .insert(RestOperation {
+            method: HttpMethod::Get,
+            template: PathTemplate::from_openapi_path("/api/orders/{id}").unwrap(),
+            label: None,
+            flags,
+        })
+        .unwrap();
+    ServiceCatalog::new(
+        service(),
+        seeded_policy_epoch(),
+        vec![operations],
+        Vec::new(),
+    )
+}
+
+fn granted(grant: &str) -> SubjectPolicy {
+    let grants = [(PermissionGrant::parse(grant).unwrap(), GrantStatus::Active)];
+    SubjectPolicy::new(
+        seeded_policy_epoch(),
+        vec![RoleAssignment::new(role(), AssignmentScope::Global, None)],
+        BTreeMap::from([(role(), CompiledRoleSet::compile(grants))]),
+    )
+}
+
+#[tokio::test]
+async fn a_traced_decision_names_the_key_and_notes_an_exact_grant() {
+    let service = service_over(tokens(), repository(None));
+
+    let (outcome, trace) = service
+        .decide_traced_for_subject(user(), &rest_check("/api/orders/7"))
+        .await;
+
+    assert_eq!(outcome.decision(), Decision::Allow);
+    assert_eq!(
+        trace.permission_key.as_deref(),
+        Some("rest:orders:GET /api/orders/{}")
+    );
+    assert!(!trace.wildcard);
+    assert!(!trace.flags.is_sensitive());
+    assert!(!trace.flags.is_audit_always());
+}
+
+#[tokio::test]
+async fn a_traced_decision_notes_the_flags_of_the_key_and_a_wildcard_grant() {
+    let policy = FakePolicyReadRepository::new()
+        .with_catalog(flagged_catalog(PermissionFlags::NONE.with_audit_always()))
+        .with_subject(user(), granted("rest:orders:*"));
+    let service = service_over(tokens(), policy);
+
+    let (outcome, trace) = service
+        .decide_traced_for_subject(user(), &rest_check("/api/orders/7"))
+        .await;
+
+    assert_eq!(outcome.decision(), Decision::Allow);
+    assert!(trace.flags.is_audit_always());
+    assert!(trace.wildcard);
+}
+
+#[tokio::test]
+async fn a_denial_is_never_a_wildcard_allow_and_a_traced_decision_through_a_credential_matches() {
+    let service = service_over(tokens(), repository(None));
+    let denied_policy = FakePolicyReadRepository::new()
+        .with_catalog(catalog())
+        .with_subject(user(), granted("rest:orders:POST *"));
+    let denying = service_over(tokens(), denied_policy);
+
+    let (denied, denied_trace) = denying
+        .decide_traced_for_subject(user(), &rest_check("/api/orders/7"))
+        .await;
+    let (allowed, _trace) = service
+        .decide_traced_with(
+            &FakeTokenRepository::new().accepting("valid", identity()),
+            &Credential::new("valid".to_owned()),
+            &rest_check("/api/orders/7"),
+        )
+        .await;
+
+    assert_eq!(denied.decision(), Decision::Deny);
+    assert!(!denied_trace.wildcard);
+    assert_eq!(allowed.decision(), Decision::Allow);
+}

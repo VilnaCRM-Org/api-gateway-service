@@ -1,5 +1,6 @@
 //! Ports of the IAM context and the error they share.
 
+pub mod access_log_sink;
 pub mod access_token_verifier;
 pub mod anti_entropy_store;
 pub mod boot_clock;

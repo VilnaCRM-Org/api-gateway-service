@@ -20,8 +20,9 @@ use std::time::Duration;
 
 use iam_application::{
     BootstrapMachine, BootstrapOutcome, BootstrapPorts, BootstrapSnapshot, DerivedStateChecker,
-    FenceCause, FreshnessProber, PeerReadinessChecker, PeerSet, PodStatus, ProofSink, TailApplier,
-    TailEnd, TailMachine, TailPorts, TailProgress, rebootstrap_delay, run_bootstrap, run_tail,
+    FenceCause, FreshnessProber, PeerReadinessChecker, PeerSet, PodStatus, PolicyVersionBoard,
+    ProofSink, TailApplier, TailEnd, TailMachine, TailPorts, TailProgress, rebootstrap_delay,
+    run_bootstrap, run_tail,
 };
 use iam_domain::{
     BootClock, KafkaTopicInspector, PeerFreshnessClient, PolicyBootstrapLog, PolicyDigest,
@@ -99,6 +100,9 @@ pub struct PolicyAdapters {
     /// The peer-relative readiness; `None` leaves the readiness probe on the proof age of the pod
     /// (Story 15.1).
     pub readiness: Option<ReadinessAdapters>,
+    /// The versions the log held and the version published, which the read-your-writes barrier
+    /// waits on (Story 10.10).
+    pub versions: Arc<PolicyVersionBoard>,
 }
 
 impl PolicyAdapters {
@@ -182,6 +186,7 @@ impl PolicyAdapters {
             freshness: None,
             status: Arc::new(PodStatus::new()),
             readiness: None,
+            versions: Arc::new(PolicyVersionBoard::new()),
         }
     }
 }
@@ -221,7 +226,9 @@ pub fn start_policy_with_thread(
     let freshness = policy.freshness.as_ref();
     let state = freshness.map(|adapters| Arc::clone(&adapters.state));
     let cell = Arc::clone(&policy.cell);
-    let (thread, apply_death) = ApplyThread::spawn_proving(builder, cell, checker, state)?;
+    let versions = Some(Arc::clone(&policy.versions));
+    let (thread, apply_death) =
+        ApplyThread::spawn_tracking(builder, cell, checker, (state, versions))?;
     let (tail_dead, tail_death) = oneshot::channel();
     let (dead, death) = oneshot::channel();
     tokio::spawn(merge_deaths(apply_death, tail_death, dead));

@@ -28,9 +28,9 @@ use std::time::Duration;
 use iam_application::{
     ApplyResult, BootstrapSnapshot, CheckOutcome, DerivedStateChecker, FenceCause, TailApplier,
 };
-use iam_application::{FreshnessState, ProofSink, TailProgress};
+use iam_application::{FreshnessState, PolicyVersionBoard, ProofSink, TailProgress};
 use iam_domain::freshness::proof::FreshnessProof;
-use iam_domain::{DerivedMismatch, FenceVerdict, FramedRecord, PolicyVersion};
+use iam_domain::{DerivedMismatch, FenceVerdict, FramedRecord, PolicyVersion, PolicyView as _};
 use iam_infrastructure::{
     ApplyOutcome, ArcSwapPolicySnapshot, PolicySnapshotBuilder, RawEntry, SnapshotBuildError,
 };
@@ -141,6 +141,22 @@ impl ApplyThread {
         checker: Option<DerivedStateChecker>,
         freshness: Option<Arc<FreshnessState>>,
     ) -> std::io::Result<(Self, oneshot::Receiver<()>)> {
+        Self::spawn_tracking(builder, cell, checker, (freshness, None))
+    }
+
+    /// Like [`spawn_proving`](Self::spawn_proving), and the thread tells `versions` which policy
+    /// versions the log held and which one is published, which the read-your-writes barrier waits
+    /// on (Story 10.10).
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of starting the thread.
+    pub fn spawn_tracking(
+        builder: PolicySnapshotBuilder,
+        cell: Arc<ArcSwapPolicySnapshot>,
+        checker: Option<DerivedStateChecker>,
+        (freshness, versions): (Option<Arc<FreshnessState>>, Option<Arc<PolicyVersionBoard>>),
+    ) -> std::io::Result<(Self, oneshot::Receiver<()>)> {
         let (commands, received) = mpsc::channel();
         let (dead, death) = oneshot::channel();
         let fault = Fault::default();
@@ -149,6 +165,7 @@ impl ApplyThread {
             fault: Arc::clone(&fault),
             fenced: None,
             proofs: Proofs::new(freshness),
+            versions,
         };
         let handle = std::thread::Builder::new()
             .name("policy-apply".to_owned())
@@ -246,6 +263,7 @@ fn serve(
         }
         guard.check(&mut builder, cell);
         guard.proofs.attach(&builder, cell);
+        guard.announce(cell);
         reclaim(cell);
     }
 }
@@ -258,6 +276,8 @@ struct Guard {
     fenced: Option<FenceCause>,
     /// The proofs of freshness that wait for a snapshot that covers them (Story 9.5).
     proofs: Proofs,
+    /// Where the versions seen in the log and the version published are announced (Story 10.10).
+    versions: Option<Arc<PolicyVersionBoard>>,
 }
 
 impl Guard {
@@ -290,6 +310,20 @@ impl Guard {
         *self.fault.lock().unwrap_or_else(PoisonError::into_inner) = Some(cause.clone());
         self.fenced = Some(cause);
         cell.clear();
+    }
+
+    /// Records that the log held `version`.
+    fn saw(&self, version: PolicyVersion) {
+        if let Some(versions) = self.versions.as_ref() {
+            versions.note_seen(version);
+        }
+    }
+
+    /// Announces the version now published, which wakes the requests that wait for it.
+    fn announce(&self, cell: &ArcSwapPolicySnapshot) {
+        if let Some(versions) = self.versions.as_ref() {
+            versions.note_published(cell.current().map(|snapshot| snapshot.version()));
+        }
     }
 
     /// The state was replaced by a verified one: the checks and the publications resume.
@@ -334,6 +368,10 @@ fn log_reclaimed(freed: usize) {
 
 fn answer(builder: &mut PolicySnapshotBuilder, guard: &mut Guard, install: Install) {
     let tail_from = install.snapshot.tail_from;
+    guard.saw(install.snapshot.version);
+    if let Some(trailing) = install.snapshot.incomplete {
+        guard.saw(trailing);
+    }
     let applied = apply(builder, install.snapshot);
     if applied.is_ok() {
         guard.lift();
@@ -346,7 +384,7 @@ fn answer(builder: &mut PolicySnapshotBuilder, guard: &mut Guard, install: Insta
 fn answer_batch(builder: &mut PolicySnapshotBuilder, guard: &mut Guard, batch: Batch) {
     let result = match &guard.fenced {
         Some(cause) => ApplyResult::Fenced(cause.clone()),
-        None => apply_batch(builder, &mut guard.proofs, batch.records),
+        None => apply_batch(builder, guard, batch.records),
     };
     batch.reply.send(result).unwrap_or_default();
 }
@@ -356,14 +394,15 @@ fn answer_batch(builder: &mut PolicySnapshotBuilder, guard: &mut Guard, batch: B
 /// its head was never published. Whatever was applied before the fault is published.
 fn apply_batch(
     builder: &mut PolicySnapshotBuilder,
-    proofs: &mut Proofs,
+    guard: &mut Guard,
     records: Vec<FramedRecord>,
 ) -> ApplyResult {
     let mut result = ApplyResult::Applied;
     for framed in records {
         let offset = framed.offset;
+        guard.saw(framed.record.version);
         let outcome = builder.offer(framed.record);
-        proofs.record(offset, &outcome);
+        guard.proofs.record(offset, &outcome);
         if let Some(cause) = fence_cause(&outcome, offset) {
             result = ApplyResult::Fenced(cause);
             break;

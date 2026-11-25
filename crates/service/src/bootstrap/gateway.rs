@@ -13,12 +13,14 @@ use shared_domain::Clock;
 use shared_infrastructure::clock::SystemClock;
 use tokio::sync::watch;
 
+use self::access_log::AccessLogAdapters;
 use self::endpoints::{EndpointAdapters, EndpointSetupError};
 use self::policy::PolicyAdapters;
 use self::readiness::ReadinessAdapters;
 use super::{TaskMode, TaskSupervisor};
 use crate::config::GatewayConfig;
 
+pub mod access_log;
 pub mod apply_thread;
 pub mod decision;
 pub mod endpoints;
@@ -30,6 +32,7 @@ pub mod policy;
 pub mod probe;
 pub mod readiness;
 pub mod shedding;
+pub mod upstream;
 
 /// Every driven port of the gateway.
 pub struct GatewayAdapters {
@@ -43,6 +46,8 @@ pub struct GatewayAdapters {
     pub endpoints: EndpointAdapters,
     /// The reads of the state topic and the published snapshot.
     pub policy: PolicyAdapters,
+    /// The recorder of the access log and the thread that writes it.
+    pub access_log: AccessLogAdapters,
 }
 
 /// The adapters of the gateway cannot be wired.
@@ -54,6 +59,9 @@ pub enum GatewayAdapterError {
     /// The endpoint discovery cannot be set up.
     #[error(transparent)]
     Endpoints(#[from] EndpointSetupError),
+    /// The thread of the access log writer cannot be started.
+    #[error("the access log writer cannot be started")]
+    AccessLog(#[source] std::io::Error),
 }
 
 impl GatewayAdapters {
@@ -77,12 +85,17 @@ impl GatewayAdapters {
         );
         let policy = PolicyAdapters::from_config(config).comparing(readiness);
         policy.status.mark_keys_parsed();
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+        let access_log =
+            AccessLogAdapters::to_stdout(&config.access_log, Arc::clone(&rng), Arc::clone(&clock))
+                .map_err(GatewayAdapterError::AccessLog)?;
         Ok(Self {
             rng,
-            clock: Arc::new(SystemClock),
+            clock,
             keys,
             endpoints,
             policy,
+            access_log,
         })
     }
 }
@@ -95,6 +108,7 @@ impl std::fmt::Debug for GatewayAdapters {
             .field("clock", &self.clock)
             .field("endpoints", &self.endpoints)
             .field("policy", &self.policy)
+            .field("access_log", &self.access_log)
             .finish_non_exhaustive()
     }
 }

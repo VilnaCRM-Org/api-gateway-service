@@ -155,6 +155,43 @@ impl DecisionPolicy {
         Self::decide_scope(&held, request.project)
     }
 
+    /// Whether an allow rests on a wildcard grant: some required key is held by an active
+    /// assignment through a covering wildcard, and by no active assignment through an exact grant
+    /// or a reserved key. The access log writes such an allow to the audit lane (FR-50).
+    #[must_use]
+    pub fn holds_through_wildcard<R: RoleSets + ?Sized>(request: &DecisionRequest<'_, R>) -> bool {
+        request
+            .required
+            .iter()
+            .any(|required| Self::wildcard_only(request, required))
+    }
+
+    /// Whether `required` is held through a wildcard and not exactly by any active assignment.
+    fn wildcard_only<R: RoleSets + ?Sized>(
+        request: &DecisionRequest<'_, R>,
+        required: &RequiredKey,
+    ) -> bool {
+        let (key, flags) = (required.key(), required.flags());
+        let sets = Self::active_sets(request, required);
+        let wildcard = |set: &&CompiledRoleSet| set.holds_only_through_wildcard(key, flags);
+        let exact = |set: &&CompiledRoleSet| set.holds(key, flags) && !wildcard(set);
+        sets.iter().any(wildcard) && !sets.iter().any(exact)
+    }
+
+    /// The compiled role sets of the active assignments that can hold `required`.
+    fn active_sets<'request, R: RoleSets + ?Sized>(
+        request: &'request DecisionRequest<'_, R>,
+        required: &RequiredKey,
+    ) -> Vec<&'request CompiledRoleSet> {
+        request
+            .assignments
+            .iter()
+            .filter(|assignment| assignment.is_active_at(request.now))
+            .filter(|assignment| counts_for(required.key(), assignment.scope()))
+            .filter_map(|assignment| request.role_sets.role_set(assignment.role_id()))
+            .collect()
+    }
+
     /// The projects in which the subject's active assignments hold the key; a reserved key is
     /// held only through global assignments.
     fn scope_of<R: RoleSets + ?Sized>(

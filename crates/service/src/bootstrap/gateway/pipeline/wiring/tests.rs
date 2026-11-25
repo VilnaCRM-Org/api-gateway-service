@@ -52,6 +52,7 @@ async fn the_production_pipeline_answers_a_request_without_a_route_with_404() {
         Arc::new(FakePolicyView::new()),
         freshness(),
         &clock,
+        Arc::new(UnreachableUpstreams),
     )
     .unwrap();
 
@@ -79,6 +80,7 @@ fn a_key_file_that_cannot_be_read_stops_the_wiring() {
         Arc::new(FakePolicyView::new()),
         freshness(),
         &clock,
+        Arc::new(UnreachableUpstreams),
     );
 
     let error = outcome.unwrap_err();

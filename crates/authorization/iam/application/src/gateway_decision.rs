@@ -13,27 +13,49 @@
 
 use std::sync::Arc;
 
-use iam_domain::{AccessCheck, AccessTarget, DecisionOutcome, TokenRepository};
+use iam_domain::{AccessCheck, AccessTarget, Credential, DecisionOutcome, TokenRepository};
 use shared_domain::QueryHandler;
+use tokio::time::Instant;
 
 use crate::access_decision_service::AccessDecisionService;
+use crate::access_log::{
+    BATCH_VALIDATION_TEMPLATE, DecisionAccessLog, DecisionCall, DecisionTrace, VALIDATION_TEMPLATE,
+};
 use crate::error::IamError;
 use crate::query::validate_access::ValidateAccessQuery;
 use crate::query::validate_access_batch::token_memo::BatchTokenMemo;
 use crate::query::validate_access_batch::{BatchCheck, ValidateAccessBatchQuery};
+use crate::read_your_writes::{BarrierVerdict, ReadYourWritesBarrier};
 use crate::snapshot_policy_reads::SnapshotPolicyReads;
 
 /// Whether the snapshot can decide a check.
-fn decidable(reads: &SnapshotPolicyReads, check: &AccessCheck) -> bool {
+///
+/// With a `barrier`, a `minPolicyVersion` above the highest version the pod has seen is refused
+/// at once and one the pod has seen but not published waits for its snapshot, up to the wait of
+/// the barrier; a timeout is a refusal too, because the decision API always answers with a
+/// decision body. Without one, the version must be held by the snapshot now.
+async fn decidable(
+    reads: &SnapshotPolicyReads,
+    barrier: Option<&ReadYourWritesBarrier>,
+    check: &AccessCheck,
+) -> bool {
     if matches!(check.target(), AccessTarget::GraphQl(_)) {
         return false;
     }
-    let Ok(snapshot) = reads.serving() else {
+    if reads.serving().is_err() {
         return false;
+    }
+    let Some(minimum) = check.min_policy_version() else {
+        return true;
     };
-    check
-        .min_policy_version()
-        .is_none_or(|minimum| minimum <= snapshot.version())
+    let admitted = match barrier {
+        Some(barrier) => barrier.admit(minimum).await == BarrierVerdict::Proceed,
+        None => true,
+    };
+    admitted
+        && reads
+            .serving()
+            .is_ok_and(|snapshot| minimum <= snapshot.version())
 }
 
 /// Handles [`ValidateAccessQuery`] on the gateway.
@@ -41,6 +63,8 @@ fn decidable(reads: &SnapshotPolicyReads, check: &AccessCheck) -> bool {
 pub struct GatewayValidateAccessQueryHandler {
     decisions: Arc<AccessDecisionService>,
     reads: Arc<SnapshotPolicyReads>,
+    barrier: Option<Arc<ReadYourWritesBarrier>>,
+    access_log: Option<Arc<DecisionAccessLog>>,
 }
 
 impl GatewayValidateAccessQueryHandler {
@@ -50,15 +74,50 @@ impl GatewayValidateAccessQueryHandler {
         decisions: Arc<AccessDecisionService>,
         reads: Arc<SnapshotPolicyReads>,
     ) -> Self {
-        Self { decisions, reads }
+        Self {
+            decisions,
+            reads,
+            barrier: None,
+            access_log: None,
+        }
+    }
+
+    /// The same handler recording every check in the access log (FR-50).
+    #[must_use]
+    pub fn with_access_log(mut self, access_log: Arc<DecisionAccessLog>) -> Self {
+        self.access_log = Some(access_log);
+        self
+    }
+
+    /// The same handler with the read-your-writes barrier of `minPolicyVersion` (FR-14).
+    #[must_use]
+    pub fn with_barrier(mut self, barrier: Arc<ReadYourWritesBarrier>) -> Self {
+        self.barrier = Some(barrier);
+        self
     }
 
     async fn validate(&self, query: &ValidateAccessQuery) -> DecisionOutcome {
-        if decidable(&self.reads, &query.check) {
-            self.decisions.decide(&query.credential, &query.check).await
-        } else {
-            self.decisions.unavailable()
-        }
+        let started = Instant::now();
+        let (outcome, trace) =
+            if decidable(&self.reads, self.barrier.as_deref(), &query.check).await {
+                self.decisions
+                    .decide_traced(&query.credential, &query.check)
+                    .await
+            } else {
+                (self.decisions.unavailable(), DecisionTrace::default())
+            };
+        record(
+            self.access_log.as_deref(),
+            &Recorded {
+                template: VALIDATION_TEMPLATE,
+                credential: &query.credential,
+                check: Some(&query.check),
+                outcome: &outcome,
+                trace: &trace,
+            },
+            started,
+        );
+        outcome
     }
 }
 
@@ -78,6 +137,8 @@ pub struct GatewayValidateAccessBatchQueryHandler {
     decisions: Arc<AccessDecisionService>,
     reads: Arc<SnapshotPolicyReads>,
     tokens: Arc<dyn TokenRepository>,
+    barrier: Option<Arc<ReadYourWritesBarrier>>,
+    access_log: Option<Arc<DecisionAccessLog>>,
 }
 
 impl GatewayValidateAccessBatchQueryHandler {
@@ -93,7 +154,23 @@ impl GatewayValidateAccessBatchQueryHandler {
             decisions,
             reads,
             tokens,
+            barrier: None,
+            access_log: None,
         }
+    }
+
+    /// The same handler recording every check in the access log (FR-50).
+    #[must_use]
+    pub fn with_access_log(mut self, access_log: Arc<DecisionAccessLog>) -> Self {
+        self.access_log = Some(access_log);
+        self
+    }
+
+    /// The same handler with the read-your-writes barrier of `minPolicyVersion` (FR-14).
+    #[must_use]
+    pub fn with_barrier(mut self, barrier: Arc<ReadYourWritesBarrier>) -> Self {
+        self.barrier = Some(barrier);
+        self
     }
 
     async fn validate(&self, query: &ValidateAccessBatchQuery) -> Vec<DecisionOutcome> {
@@ -106,16 +183,43 @@ impl GatewayValidateAccessBatchQueryHandler {
     }
 
     async fn decide_item(&self, memo: &BatchTokenMemo, item: &BatchCheck) -> DecisionOutcome {
+        let started = Instant::now();
         let BatchCheck::Valid(query) = item else {
-            return self.decisions.malformed();
+            let outcome = self.decisions.malformed();
+            let blank = Credential::new(String::new());
+            record(
+                self.access_log.as_deref(),
+                &Recorded {
+                    template: BATCH_VALIDATION_TEMPLATE,
+                    credential: &blank,
+                    check: None,
+                    outcome: &outcome,
+                    trace: &DecisionTrace::default(),
+                },
+                started,
+            );
+            return outcome;
         };
-        if decidable(&self.reads, &query.check) {
-            self.decisions
-                .decide_with(memo, &query.credential, &query.check)
-                .await
-        } else {
-            self.decisions.unavailable()
-        }
+        let (outcome, trace) =
+            if decidable(&self.reads, self.barrier.as_deref(), &query.check).await {
+                self.decisions
+                    .decide_traced_with(memo, &query.credential, &query.check)
+                    .await
+            } else {
+                (self.decisions.unavailable(), DecisionTrace::default())
+            };
+        record(
+            self.access_log.as_deref(),
+            &Recorded {
+                template: BATCH_VALIDATION_TEMPLATE,
+                credential: &query.credential,
+                check: Some(&query.check),
+                outcome: &outcome,
+                trace: &trace,
+            },
+            started,
+        );
+        outcome
     }
 }
 
@@ -126,6 +230,29 @@ impl QueryHandler<ValidateAccessBatchQuery> for GatewayValidateAccessBatchQueryH
         query: ValidateAccessBatchQuery,
     ) -> Result<Vec<DecisionOutcome>, IamError> {
         Ok(self.validate(&query).await)
+    }
+}
+
+/// What one check of the decision API leaves for the access log.
+struct Recorded<'check> {
+    template: &'static str,
+    credential: &'check Credential,
+    check: Option<&'check AccessCheck>,
+    outcome: &'check DecisionOutcome,
+    trace: &'check DecisionTrace,
+}
+
+/// Records a check when the handler has an access log; the time since `started` is its latency.
+fn record(log: Option<&DecisionAccessLog>, recorded: &Recorded<'_>, started: Instant) {
+    if let Some(log) = log {
+        log.record(&DecisionCall {
+            template: recorded.template,
+            credential: recorded.credential,
+            check: recorded.check,
+            outcome: recorded.outcome,
+            trace: recorded.trace,
+            latency: started.elapsed(),
+        });
     }
 }
 

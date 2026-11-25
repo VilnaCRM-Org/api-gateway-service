@@ -513,3 +513,65 @@ fn a_required_key_exposes_its_key_and_flags() {
     );
     assert!(key.flags().is_sensitive());
 }
+
+fn through_wildcard(
+    assignments: &[RoleAssignment],
+    roles: &BTreeMap<RoleId, CompiledRoleSet>,
+    keys: &[RequiredKey],
+) -> bool {
+    DecisionPolicy::holds_through_wildcard(&DecisionRequest {
+        assignments,
+        role_sets: roles,
+        required: keys,
+        project: None,
+        now: at(NOW),
+    })
+}
+
+#[rstest]
+#[case::method_wildcard("rest:orders:GET *", true)]
+#[case::service_wildcard("rest:orders:*", true)]
+#[case::exact("rest:orders:GET /api/orders/{}", false)]
+fn a_key_held_through_a_wildcard_is_a_wildcard_allow_and_one_held_exactly_is_not(
+    #[case] grant: &str,
+    #[case] expected: bool,
+) {
+    let roles = role_sets(&[(1, &[grant], &[])]);
+    let keys = [required("rest:orders:GET /api/orders/{}")];
+
+    assert_eq!(through_wildcard(&[global(1)], &roles, &keys), expected);
+}
+
+#[test]
+fn a_key_that_another_role_holds_exactly_is_not_a_wildcard_allow() {
+    let roles = role_sets(&[
+        (1, &["rest:orders:*"], &[]),
+        (2, &["rest:orders:GET /api/orders/{}"], &[]),
+    ]);
+    let keys = [required("rest:orders:GET /api/orders/{}")];
+
+    assert!(!through_wildcard(&[global(1), global(2)], &roles, &keys));
+    assert!(through_wildcard(&[global(1)], &roles, &keys));
+}
+
+#[test]
+fn an_expired_or_unknown_assignment_makes_no_wildcard_allow() {
+    let roles = role_sets(&[(1, &["rest:orders:*"], &[])]);
+    let keys = [required("rest:orders:GET /api/orders/{}")];
+    let expired = RoleAssignment::new(role(1), AssignmentScope::Global, Some(at(NOW)));
+
+    assert!(!through_wildcard(&[expired], &roles, &keys));
+    assert!(!through_wildcard(&[global(9)], &roles, &keys));
+    assert!(!through_wildcard(&[], &roles, &keys));
+}
+
+#[test]
+fn a_sensitive_key_is_never_held_through_a_wildcard() {
+    let roles = role_sets(&[(1, &["rest:orders:*"], &[])]);
+
+    assert!(!through_wildcard(
+        &[global(1)],
+        &roles,
+        &[sensitive("rest:orders:POST /api/orders")]
+    ));
+}

@@ -360,3 +360,61 @@ fn the_subject_of_a_service_token_is_the_service_and_that_of_a_user_token_is_the
         SubjectRef::user(Uuid::parse(USER).unwrap())
     );
 }
+
+async fn authorize_traced(
+    authorizer: &RequestAuthorizer,
+    snapshot: &Arc<dyn PolicySnapshot>,
+    service: &str,
+    raw_path: &str,
+) -> super::TracedAuthorization {
+    let service = ServiceName::new(service).unwrap();
+    let path = path(raw_path);
+    let request = RouteRequest {
+        snapshot,
+        service: &service,
+        method: HttpMethod::Get,
+        path: &path,
+        request_id: Some("req-1"),
+    };
+    authorizer.authorize_traced(&request, &principal()).await
+}
+
+#[tokio::test]
+async fn a_traced_allow_names_the_key_and_a_traced_denial_lists_the_denied_key() {
+    let (authorizer, _recorded) = authorizer();
+    let held = snapshot_with(
+        &["rest:users:GET /api/users/{}"],
+        &[("users", &["rest:users:GET /api/users/{}"])],
+    );
+    let missing = snapshot_with(&[], &[("users", &["rest:users:GET /api/users/{}"])]);
+
+    let allowed = authorize_traced(&authorizer, &held, "users", "/api/users/42").await;
+    let denied = authorize_traced(&authorizer, &missing, "users", "/api/users/42").await;
+
+    assert_eq!(allowed.authorization, Authorization::Allowed(version()));
+    assert_eq!(
+        allowed.trace.permission_key.as_deref(),
+        Some("rest:users:GET /api/users/{}")
+    );
+    assert!(!allowed.trace.wildcard);
+    assert_eq!(allowed.denied.len(), 0);
+    assert_eq!(
+        denied.authorization,
+        Authorization::Denied(DecisionReason::PermissionMissing)
+    );
+    assert_eq!(denied.denied, ["rest:users:GET /api/users/{}"]);
+}
+
+#[tokio::test]
+async fn a_traced_allow_through_a_wildcard_grant_is_noted() {
+    let (authorizer, _recorded) = authorizer();
+    let snapshot = snapshot_with(
+        &["rest:users:*"],
+        &[("users", &["rest:users:GET /api/users/{}"])],
+    );
+
+    let traced = authorize_traced(&authorizer, &snapshot, "users", "/api/users/42").await;
+
+    assert_eq!(traced.authorization, Authorization::Allowed(version()));
+    assert!(traced.trace.wildcard);
+}

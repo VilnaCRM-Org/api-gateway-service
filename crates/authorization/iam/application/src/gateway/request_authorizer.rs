@@ -10,6 +10,7 @@ use shared_domain::{Clock, CommandBus, UuidGenerator};
 
 use super::snapshot_reads::{CatalogueCache, LoadedSnapshotReads};
 use crate::access_decision_service::AccessDecisionService;
+use crate::access_log::DecisionTrace;
 use crate::error::IamError;
 use crate::iam_access_guard::{IamAccessGuard, OperationRequest};
 use crate::operation_rules::OperationRules;
@@ -40,6 +41,28 @@ pub enum Authorization {
     Denied(DecisionReason),
     /// The decision could not be made on the policy that was read: the request fails closed.
     Unavailable,
+}
+
+/// What authorizing a request found, with the facts of the decision that the access log records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TracedAuthorization {
+    /// The answer.
+    pub authorization: Authorization,
+    /// What the decision knows about the key it was made on; empty for a request of IAM's own
+    /// routes, which the rule table decides without a catalogue key.
+    pub trace: DecisionTrace,
+    /// The keys that were denied.
+    pub denied: Vec<String>,
+}
+
+impl From<Authorization> for TracedAuthorization {
+    fn from(authorization: Authorization) -> Self {
+        Self {
+            authorization,
+            trace: DecisionTrace::default(),
+            denied: Vec::new(),
+        }
+    }
 }
 
 /// Decides the REST requests of the gateway from one loaded snapshot.
@@ -87,16 +110,34 @@ impl RequestAuthorizer {
         request: &RouteRequest<'_>,
         principal: &Principal,
     ) -> Authorization {
+        self.authorize_traced(request, principal)
+            .await
+            .authorization
+    }
+
+    /// Decides like [`Self::authorize`] and also returns what the decision knows about the key it
+    /// was made on, for the access log.
+    pub async fn authorize_traced(
+        &self,
+        request: &RouteRequest<'_>,
+        principal: &Principal,
+    ) -> TracedAuthorization {
         let decisions = self.decisions(request.snapshot);
         let version = request.snapshot.version();
         if request.service.is_iam() {
-            Self::authorize_iam(decisions, request, principal, &self.commands, version).await
+            Self::authorize_iam(decisions, request, principal, &self.commands, version)
+                .await
+                .into()
         } else {
             let check = check(request);
-            let outcome = decisions
-                .decide_for_subject(subject_of(principal), &check)
+            let (outcome, trace) = decisions
+                .decide_traced_for_subject(subject_of(principal), &check)
                 .await;
-            Self::authorization_of(&outcome, version)
+            TracedAuthorization {
+                authorization: Self::authorization_of(&outcome, version),
+                trace,
+                denied: outcome.denied().to_vec(),
+            }
         }
     }
 

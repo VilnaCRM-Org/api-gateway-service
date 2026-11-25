@@ -60,6 +60,17 @@ impl CompiledRoleSet {
                 .any(|pattern| self.wildcards.contains(pattern))
     }
 
+    /// Whether the role holds `key` through a covering wildcard and through nothing else: no
+    /// exact grant and no reserved key covers it.
+    #[must_use]
+    pub fn holds_only_through_wildcard(&self, key: &PermissionKey, flags: PermissionFlags) -> bool {
+        !self.keys.contains(key)
+            && !self.holds_reserved(key)
+            && WildcardMatcher::probes(key, flags)
+                .iter()
+                .any(|pattern| self.wildcards.contains(pattern))
+    }
+
     /// Every active grant: the exact keys (reserved keys included) in key order, then the
     /// wildcard patterns in pattern order.
     pub fn grants(&self) -> impl Iterator<Item = PermissionGrant> + '_ {
