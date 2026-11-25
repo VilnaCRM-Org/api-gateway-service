@@ -29,6 +29,8 @@ mod gateway_rate_limit;
 #[cfg(test)]
 mod gateway_resilience;
 #[cfg(test)]
+mod gateway_streams;
+#[cfg(test)]
 mod gateway_upstream;
 #[cfg(test)]
 mod healthcheck;

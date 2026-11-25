@@ -7,6 +7,8 @@ mod events_topic;
 #[cfg(test)]
 mod gateway_proxy;
 #[cfg(test)]
+mod gateway_streams;
+#[cfg(test)]
 mod steps;
 #[cfg(test)]
 mod tokens;

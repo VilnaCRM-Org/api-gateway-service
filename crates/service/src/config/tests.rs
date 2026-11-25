@@ -2547,6 +2547,33 @@ fn a_read_your_writes_wait_that_is_not_a_positive_duration_names_its_variable(#[
 }
 
 #[test]
+fn the_stream_idle_timeout_defaults_to_five_minutes() {
+    let config = GatewayConfig::from_args(&valid_gateway()).unwrap();
+
+    assert_eq!(config.stream_idle_timeout, Duration::from_mins(5));
+}
+
+#[test]
+fn a_stream_idle_timeout_is_taken_as_given() {
+    let mut args = valid_gateway();
+    args.stream_idle_timeout = some("90s");
+
+    let config = GatewayConfig::from_args(&args).unwrap();
+
+    assert_eq!(config.stream_idle_timeout, Duration::from_secs(90));
+}
+
+#[rstest]
+#[case("0s")]
+#[case("never")]
+fn a_stream_idle_timeout_that_is_not_a_positive_duration_names_its_variable(#[case] raw: &str) {
+    let mut args = valid_gateway();
+    args.stream_idle_timeout = some(raw);
+
+    assert_eq!(gateway_variables(&args), vec!["STREAM_IDLE_TIMEOUT"]);
+}
+
+#[test]
 fn the_graphql_parse_budget_defaults_to_twenty_misses_and_one_mebibyte_per_second() {
     let config = GatewayConfig::from_args(&valid_gateway()).unwrap();
 

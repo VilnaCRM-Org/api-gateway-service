@@ -24,10 +24,11 @@ use super::serve::{
     FORCED_EXIT_LIMIT, Shutdown, Signals, log_forced, log_signal, log_stopped, mode, stopped,
 };
 use crate::bootstrap::gateway::decision::{self, DecisionPorts};
-use crate::bootstrap::gateway::edge::Edge;
+use crate::bootstrap::gateway::edge::{Edge, EdgeLimits};
 use crate::bootstrap::gateway::endpoints;
 use crate::bootstrap::gateway::listener::{self, ReloadableCertificate, TlsListener};
 use crate::bootstrap::gateway::shedding::{self, ConnectionSignals};
+use crate::bootstrap::gateway::streams::{PodFence, StreamFence, StreamSettings, Streams};
 use crate::bootstrap::gateway::upstream::HyperUpstreamForwarder;
 use crate::bootstrap::gateway::{self, GatewayAdapters, internal, pipeline, policy, probe};
 use crate::bootstrap::{TaskStop, TaskSupervisor};
@@ -180,6 +181,7 @@ struct PublicPorts {
     forwarder: Arc<pipeline::Forwarder>,
     access_log: Arc<pipeline::PipelineAccessLog>,
     peers: Arc<dyn ReadyPeers>,
+    streams: Arc<Streams>,
 }
 
 /// The routers of the two proxy listeners: with a freshness state they are the request pipeline
@@ -209,7 +211,8 @@ fn proxy_routers(
     let pipeline = pipeline
         .with_read_your_writes(read_your_writes_barrier(config, policy))
         .with_rate_limits(pipeline::gate_from_config(config, ports.peers))
-        .with_access_log(ports.access_log);
+        .with_access_log(ports.access_log)
+        .with_streams(ports.streams);
     let mesh = pipeline
         .clone()
         .with_service_callers(config.tokens.callers.clone());
@@ -299,6 +302,26 @@ fn probe_router(policy: &policy::PolicyAdapters) -> Router {
         })
 }
 
+/// Starts the scan of the stream registry (Story 11.1): it closes the streams of a pod that
+/// fenced or whose proof is not fresh, and those whose token, idle time or assignments ran out.
+/// Without a freshness state the pod serves no request, so it holds no stream either.
+fn spawn_stream_watch(
+    tasks: &mut TaskSupervisor,
+    streams: &Arc<Streams>,
+    policy: &policy::PolicyAdapters,
+) {
+    let Some(freshness) = policy.freshness.as_ref() else {
+        return;
+    };
+    let view: Arc<dyn PolicyView> =
+        Arc::<iam_infrastructure::ArcSwapPolicySnapshot>::clone(&policy.cell);
+    let fence: Arc<dyn StreamFence> = Arc::new(PodFence::new(view, Arc::clone(&freshness.state)));
+    let streams = Arc::clone(streams);
+    tasks.spawn("gateway-streams", move |shutdown| {
+        streams.watch(fence, shutdown)
+    });
+}
+
 fn start_servers(
     config: &GatewayConfig,
     sockets: Sockets,
@@ -318,10 +341,19 @@ fn start_servers(
         adapters.endpoints.directory.view(),
         endpoints::peers_target(config),
     ));
+    let streams = Streams::new(
+        StreamSettings {
+            idle_timeout: config.stream_idle_timeout,
+            per_subject: EdgeLimits::default().connections_per_subject,
+        },
+        Arc::clone(&adapters.clock),
+    );
+    spawn_stream_watch(tasks, &streams, policy);
     let ports = PublicPorts {
         forwarder,
         access_log,
         peers,
+        streams,
     };
     let ProxyRouters {
         public: public_router,

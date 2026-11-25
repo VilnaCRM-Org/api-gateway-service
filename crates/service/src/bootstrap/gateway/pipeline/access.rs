@@ -109,6 +109,11 @@ impl Observed {
         }
     }
 
+    /// The permission key that the decision required, when it knows one.
+    pub(super) fn required_key(&self) -> Option<&str> {
+        self.trace.permission_key.as_deref()
+    }
+
     /// Why the token was refused, when it was.
     pub(super) const fn token_refusal(&self) -> Option<DecisionReason> {
         self.token_refusal

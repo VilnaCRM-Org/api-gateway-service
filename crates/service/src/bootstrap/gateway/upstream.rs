@@ -27,6 +27,14 @@
 //!   (`OutlierRule`), which the choice of the endpoint honours;
 //! - the `concurrencyLimit` of the upstream, which fails fast with 503 `upstream_overloaded` and is
 //!   held until the response body ends.
+//!
+//! What it adds in Story 11.1 (FR-61):
+//!
+//! - [`HyperUpstreamForwarder::forward_upgrade`] sends the WebSocket upgrade of a request that
+//!   carries the registration of its stream to an endpoint chosen like any other, answers the
+//!   client `101` and splices both upgraded connections;
+//! - an SSE response of a registered stream is relayed unbuffered under the registration of its
+//!   stream, which ends the body when the stream is closed.
 
 use std::collections::HashMap;
 use std::error::Error as StdError;
@@ -60,11 +68,14 @@ use self::failure::{Classified, classify};
 use self::payload::{Payload, ReplayBody};
 use self::registry::{Permit, Registry};
 use self::relay::RelayBody;
+use self::stream::{guarded, opens_websocket};
+use crate::bootstrap::gateway::streams::StreamHandle;
 
 mod failure;
 mod payload;
 mod registry;
 mod relay;
+mod stream;
 
 /// The headers that describe one connection and are never forwarded (RFC 9110, section 7.6.1).
 const HOP_BY_HOP: [&str; 8] = [
@@ -214,6 +225,27 @@ impl HyperUpstreamForwarder {
         }
     }
 
+    /// Forwards the WebSocket upgrade of `request` to an endpoint of the upstream of `target`.
+    ///
+    /// The endpoint is chosen like the endpoint of any other request. When it answers `101`, the
+    /// client is answered `101` with the headers of the endpoint, and a task splices the two
+    /// upgraded connections until one ends or the registry closes the stream; the concurrency
+    /// permit of the upstream and the in-flight count of the endpoint are held until then. Any
+    /// other answer of the endpoint is relayed as it is.
+    ///
+    /// # Errors
+    ///
+    /// The [`ForwardError`] that says why no answer came back: the request carries no
+    /// registration of its stream, the upstream is overloaded or has no endpoint, or the
+    /// endpoint could not be reached in time.
+    pub async fn forward_upgrade(
+        &self,
+        target: UpstreamTarget,
+        request: Request,
+    ) -> Result<Response, ForwardError> {
+        stream::forward_upgrade(self, target, request).await
+    }
+
     async fn deliver(
         &self,
         target: UpstreamTarget,
@@ -223,6 +255,7 @@ impl HyperUpstreamForwarder {
             return Err(ForwardError::BodyTooLarge);
         }
         let deadline = deadline_of(&target);
+        let stream = request.extensions().get::<Arc<StreamHandle>>().cloned();
         let (parts, body) = request.into_parts();
         // The body is read under the deadline and before the permit is taken: a client that
         // trickles it neither holds a slot of the upstream nor outlasts the request timeout.
@@ -237,7 +270,7 @@ impl HyperUpstreamForwarder {
         };
         let attempts = self.attempts(shared);
         let answered = within(deadline, attempts).await??;
-        Ok(relayed(answered, deadline, permit))
+        Ok(guarded(relayed(answered, deadline, permit), stream))
     }
 
     /// The first attempt and, when the rules allow it, one retry on another endpoint.
@@ -396,10 +429,14 @@ impl HyperUpstreamForwarder {
 
     /// The pooled client for the protocol and the connect timeout of `target`, built on first use.
     fn client(&self, target: &UpstreamTarget) -> UpstreamClient {
-        let key = ClientKey {
+        self.pooled(ClientKey {
             http2: target.protocol() == UpstreamProtocol::H2c,
             connect_ms: target.connect_timeout_ms(),
-        };
+        })
+    }
+
+    /// The pooled client of `key`, built on first use.
+    fn pooled(&self, key: ClientKey) -> UpstreamClient {
         self.clients
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -419,7 +456,11 @@ impl UpstreamForwarder for HyperUpstreamForwarder {
         target: UpstreamTarget,
         request: Request,
     ) -> Result<Response, ForwardError> {
-        self.deliver(target, request).await
+        if opens_websocket(&request) {
+            self.forward_upgrade(target, request).await
+        } else {
+            self.deliver(target, request).await
+        }
     }
 }
 

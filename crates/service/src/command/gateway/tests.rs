@@ -14,6 +14,16 @@ fn loopback() -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], 0))
 }
 
+fn streams_over(clock: &Arc<dyn Clock>) -> Arc<Streams> {
+    Streams::new(
+        StreamSettings {
+            idle_timeout: Duration::from_mins(5),
+            per_subject: 32,
+        },
+        Arc::clone(clock),
+    )
+}
+
 fn stopped_supervisor() -> (watch::Sender<bool>, TaskSupervisor) {
     let (stop, stopping) = watch::channel(false);
     (stop, TaskSupervisor::new(TaskMode::Test, stopping))
@@ -171,6 +181,7 @@ async fn a_gateway_without_a_freshness_state_wires_the_stale_router_and_the_bare
             forwarder: Arc::new(pipeline::UnreachableUpstreams),
             access_log: access_log_step(&clock),
             peers: Arc::new(test_support::ready_peers::FakeReadyPeers::new(1)),
+            streams: streams_over(&clock),
         },
     )
     .unwrap();
@@ -230,6 +241,7 @@ async fn a_gateway_with_a_freshness_state_serves_the_freshness_endpoint_and_the_
             forwarder: Arc::new(pipeline::UnreachableUpstreams),
             access_log: access_log_step(&clock),
             peers: Arc::new(test_support::ready_peers::FakeReadyPeers::new(1)),
+            streams: streams_over(&clock),
         },
     )
     .unwrap();
@@ -515,4 +527,47 @@ async fn a_gateway_with_peer_readiness_serves_the_probes_over_the_gate_of_the_co
         .unwrap();
 
     assert_eq!(ready.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn the_stream_scan_starts_only_on_a_pod_with_a_freshness_state() {
+    use iam_application::FreshnessState;
+    use iam_domain::FreshnessRule;
+    use test_support::boot_clock::FakeBootClock;
+    use test_support::peer_freshness_client::FakePeerFreshnessClient;
+    use test_support::policy_bootstrap_log::FakePolicyBootstrapLog;
+    use test_support::policy_log_probe::FakePolicyLogProbe;
+
+    use crate::bootstrap::gateway::freshness::FreshnessAdapters;
+
+    let clock: Arc<dyn Clock> = Arc::new(shared_infrastructure::clock::SystemClock);
+    let streams = streams_over(&clock);
+    let boot = Arc::new(FakeBootClock::new());
+    let bare = policy::PolicyAdapters::with(
+        Arc::new(FakePolicyBootstrapLog::with(Vec::new())),
+        Arc::<FakeBootClock>::clone(&boot),
+    );
+    let proving = policy::PolicyAdapters::with(
+        Arc::new(FakePolicyBootstrapLog::with(Vec::new())),
+        Arc::<FakeBootClock>::clone(&boot),
+    )
+    .proving(FreshnessAdapters {
+        state: Arc::new(FreshnessState::new(
+            FreshnessRule::new(Duration::from_secs(15), Duration::from_secs(2)),
+            Arc::<FakeBootClock>::clone(&boot),
+        )),
+        probe: Arc::new(FakePolicyLogProbe::scripted(Vec::new())),
+        peers: Arc::new(FakePeerFreshnessClient::new()),
+        clock: boot,
+        probe_interval: Duration::from_secs(1),
+    });
+    let (stop, mut tasks) = stopped_supervisor();
+
+    spawn_stream_watch(&mut tasks, &streams, &bare);
+    assert!(tasks.is_empty());
+    spawn_stream_watch(&mut tasks, &streams, &proving);
+
+    assert_eq!(tasks.len(), 1);
+    stop.send_replace(true);
+    assert_eq!(tasks.stop(GRACE).await, TaskStop::Drained);
 }

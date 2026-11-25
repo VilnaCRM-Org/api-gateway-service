@@ -10,6 +10,7 @@ mod iam_authorization;
 mod iam_bootstrap;
 mod iam_bulk_operations;
 mod iam_gateway_proxy;
+mod iam_gateway_streams;
 mod iam_graphql_activation;
 mod iam_graphql_specs;
 mod iam_logs;

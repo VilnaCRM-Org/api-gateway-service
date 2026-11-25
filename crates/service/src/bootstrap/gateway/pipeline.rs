@@ -33,6 +33,12 @@
 //! the token is never read, and the upstream receives no principal header. The freshness check, the
 //! body limit and the rate limits before authentication apply to it as to every route.
 //!
+//! A route flagged `streaming` (Story 11.1) registers the stream it opens in the stream registry
+//! once the decision allowed it, and a subject at its stream cap is refused 429
+//! `connection_limit_exceeded` before any upgrade. The forwarder relays the WebSocket upgrade or
+//! the event stream under that registration, and the registry closes the stream when the policy
+//! no longer allows it.
+//!
 //! One snapshot answers the whole request: the freshness check, the route, the revocation check and
 //! the decision read the same version, and the request drops its `Arc` before it awaits the
 //! forwarder (FR-13). The forwarder of production is the `HyperUpstreamForwarder` of Story 10.3:
@@ -70,6 +76,7 @@ use self::access::Observed;
 use self::headers::Propagated;
 use super::edge::framing::reject_ambiguous;
 use super::listener::stale_response;
+use super::streams::{StreamHandle, Streams};
 use crate::http::authentication::credential;
 use crate::http::request_id::{REQUEST_ID_HEADER, sanitize_request_id};
 
@@ -80,6 +87,7 @@ mod graphql;
 mod headers;
 mod rate_limit;
 mod read_your_writes;
+mod stream;
 mod wiring;
 
 pub use access::PipelineAccessLog;
@@ -126,6 +134,7 @@ pub struct Pipeline {
     rate_limits: Option<Arc<RateLimitGate>>,
     access_log: Option<Arc<PipelineAccessLog>>,
     service_callers: Option<CallerTokenRule>,
+    streams: Option<Arc<Streams>>,
 }
 
 /// Why the pipeline answers a request itself, kept small until the answer is built.
@@ -243,6 +252,8 @@ struct Admitted {
     version: i64,
     /// The body to forward: the one the client sent, buffered on a GraphQL route.
     body: Body,
+    /// The registration of the stream the request opens, on a route flagged `streaming`.
+    stream: Option<Arc<StreamHandle>>,
 }
 
 /// What a request matched: its parts, its route and the request the decision reads.
@@ -275,6 +286,7 @@ impl Pipeline {
             rate_limits: None,
             access_log: None,
             service_callers: None,
+            streams: None,
         }
     }
 
@@ -313,6 +325,19 @@ impl Pipeline {
         self
     }
 
+    /// The same pipeline with the streams of Story 11.1: a route flagged `streaming` registers the
+    /// stream it opens, and the registry decides it again with the rule of this pipeline.
+    #[must_use]
+    pub fn with_streams(mut self, streams: Arc<Streams>) -> Self {
+        streams.install(Arc::new(stream::PipelineRedecision::new(
+            Arc::clone(&self.view),
+            Arc::clone(&self.authorizer),
+            streams.clock(),
+        )));
+        self.streams = Some(streams);
+        self
+    }
+
     async fn handle(&self, request: Request) -> Response {
         let (mut parts, body) = request.into_parts();
         let started = self
@@ -338,6 +363,7 @@ impl Pipeline {
                     ),
                     None => headers::rewrite_anonymous(&mut parts, forward_credentials),
                 }
+                stream::attach(&mut parts, admitted.stream);
                 self.forward(admitted.target, Request::from_parts(parts, admitted.body))
                     .await
             }
@@ -403,16 +429,45 @@ impl Pipeline {
             request: &request,
         };
         let (principal, body) = self.principal_and_body(&matched, body, seen).await?;
+        self.assemble(&matched, &path, (principal, body), seen)
+    }
+
+    /// What the forwarder needs: the target of the route, the URI that was authorized and, on a
+    /// route flagged `streaming`, the registration of the stream (Story 11.1).
+    fn assemble(
+        &self,
+        matched: &Matched<'_>,
+        path: &NormalizedPath,
+        (principal, body): (Option<Principal>, Body),
+        seen: &Observed,
+    ) -> Result<Admitted, Refusal> {
+        let Matched {
+            parts,
+            route,
+            request,
+        } = *matched;
+        let snapshot = request.snapshot;
         let upstream = snapshot
             .upstream_by_id(route.fields.upstream_id())
             .ok_or(Refusal::Failed(ForwardError::NoEndpoint))?;
+        let stream = stream::register(
+            self.streams.as_ref(),
+            &stream::Opening {
+                parts,
+                route,
+                snapshot,
+                principal: principal.as_ref(),
+                key: seen.required_key(),
+            },
+        )?;
         Ok(Admitted {
             target: target_of(upstream, route),
-            uri: forwarded_uri(&path, upstream_query(route.fields.flags().graphql(), parts))
+            uri: forwarded_uri(path, upstream_query(route.fields.flags().graphql(), parts))
                 .ok_or(Refusal::MalformedPath)?,
             principal,
             version: snapshot.version().value(),
             body,
+            stream,
         })
     }
 
@@ -612,7 +667,18 @@ fn route_of<'snapshot>(
     method: HttpMethod,
     path: &NormalizedPath,
 ) -> Option<&'snapshot RouteState> {
-    let host = RouteHost::new(&host_of(parts)?).ok()?;
+    route_for_host(snapshot, &host_of(parts)?, method, path)
+}
+
+/// The route of a host that is already in lower case and has no port, a method and a canonical
+/// path.
+fn route_for_host<'snapshot>(
+    snapshot: &'snapshot Arc<dyn PolicySnapshot>,
+    host: &str,
+    method: HttpMethod,
+    path: &NormalizedPath,
+) -> Option<&'snapshot RouteState> {
+    let host = RouteHost::new(host).ok()?;
     snapshot.route(&host, method, path.canonical().as_str())
 }
 

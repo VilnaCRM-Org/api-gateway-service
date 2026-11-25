@@ -111,6 +111,7 @@ tokio = { version = "1.54.1", features = [
     "signal",
     "time",
     "sync",
+    "io-util",
 ] }
 tokio-rustls = { version = "0.26.6", default-features = false, features = ["tls12"] }
 tower = { version = "0.5.3", features = ["util"] }

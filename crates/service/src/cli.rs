@@ -511,6 +511,14 @@ pub struct GatewayArgs {
     /// `X-IAM-Min-Policy-Version` or the `__Host-iam_pv` cookie (default `1s`, positive).
     #[arg(long = "ryw-max-wait", env = "RYW_MAX_WAIT", hide_env_values = true)]
     pub ryw_max_wait: Option<String>,
+    /// How long a WebSocket or SSE stream may carry no traffic before the gateway closes it
+    /// (default `5m`, positive).
+    #[arg(
+        long = "stream-idle-timeout",
+        env = "STREAM_IDLE_TIMEOUT",
+        hide_env_values = true
+    )]
+    pub stream_idle_timeout: Option<String>,
     /// The cache misses of GraphQL documents one subject may cause per second (default `20`, from
     /// `1` to `100000`).
     #[arg(

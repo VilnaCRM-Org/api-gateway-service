@@ -33,6 +33,7 @@ pub mod policy;
 pub mod probe;
 pub mod readiness;
 pub mod shedding;
+pub mod streams;
 pub mod upstream;
 
 /// Every driven port of the gateway.

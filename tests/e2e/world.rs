@@ -36,6 +36,7 @@ use tower::ServiceExt as _;
 use crate::administrator_policy::AdministratorCallerPolicy;
 use crate::events_topic::{self, EventRecord};
 use crate::gateway_proxy::{GatewayHarness, GatewayPlan};
+use crate::gateway_streams::{StreamsHarness, StreamsPlan};
 use crate::tokens::{ADMINISTRATOR_ID, SigningKey, USER_ID, instant_after};
 
 /// Counter that makes the database names of the scenarios of one process unique.
@@ -128,6 +129,10 @@ pub(crate) struct AppWorld {
     pub(crate) gateway_plan: Option<GatewayPlan>,
     /// The in-process gateway with its fake upstream, built at the first request.
     pub(crate) gateway: Option<GatewayHarness>,
+    /// The plan of the in-process streaming gateway of a stream scenario, until its first stream.
+    pub(crate) streams_plan: Option<StreamsPlan>,
+    /// The in-process streaming gateway with its fake upstream, built at the first stream.
+    pub(crate) streams: Option<StreamsHarness>,
 }
 
 /// The configuration as the binary reads it from the environment.
@@ -1284,6 +1289,24 @@ impl AppWorld {
             self.gateway = Some(GatewayHarness::start(plan).await);
         }
         self.gateway.as_ref().expect("the gateway is built")
+    }
+
+    /// The in-process streaming gateway of the scenario, started on first use.
+    ///
+    /// # Panics
+    ///
+    /// When the scenario described no streaming gateway.
+    pub(crate) async fn started_streams(&mut self) -> &mut StreamsHarness {
+        if self.streams.is_none() {
+            let plan = self
+                .streams_plan
+                .as_ref()
+                .expect("a streaming gateway was described");
+            self.streams = Some(StreamsHarness::start(plan).await);
+        }
+        self.streams
+            .as_mut()
+            .expect("the streaming gateway is built")
     }
 
     fn remember_gateway_reply(&mut self, answer: crate::gateway_proxy::GatewayReply) {

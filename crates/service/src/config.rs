@@ -351,6 +351,9 @@ pub struct GatewayConfig {
     /// `RYW_MAX_WAIT`: the longest a request waits for a snapshot of the policy version it names
     /// (Story 10.10).
     pub ryw_max_wait: Duration,
+    /// `STREAM_IDLE_TIMEOUT`: how long a WebSocket or SSE stream may carry no traffic before the
+    /// gateway closes it (Story 11.1).
+    pub stream_idle_timeout: Duration,
     /// `GATEWAY_PROXY_PROTOCOL`: every connection of the public listener starts with a Proxy
     /// Protocol v2 header (Story 10.9).
     pub proxy_protocol: bool,
@@ -423,7 +426,8 @@ impl GatewayConfig {
                 access_log: access_log.unwrap_or_default(),
                 audit_lane,
                 rate_limit,
-                ryw_max_wait: tail.ryw_max_wait,
+                ryw_max_wait: tail.waits.ryw_max_wait,
+                stream_idle_timeout: tail.waits.stream_idle_timeout,
                 proxy_protocol: listeners.proxy_protocol,
                 pod_name,
                 pod_namespace,
@@ -517,7 +521,29 @@ struct TailSettings {
     probe_interval: Duration,
     derived_check_interval: Duration,
     az_floor: usize,
+    waits: Waits,
+}
+
+/// The waits of a request and of a stream.
+struct Waits {
     ryw_max_wait: Duration,
+    stream_idle_timeout: Duration,
+}
+
+/// `RYW_MAX_WAIT` (1s) and `STREAM_IDLE_TIMEOUT` (5m), both positive.
+fn waits(collector: &mut Collector, args: &GatewayArgs) -> Option<Waits> {
+    let ryw_max_wait = collector.collect(
+        "RYW_MAX_WAIT",
+        positive_duration(args.ryw_max_wait.as_deref(), Duration::from_secs(1)),
+    );
+    let stream_idle_timeout = collector.collect(
+        "STREAM_IDLE_TIMEOUT",
+        positive_duration(args.stream_idle_timeout.as_deref(), Duration::from_mins(5)),
+    );
+    Some(Waits {
+        ryw_max_wait: ryw_max_wait?,
+        stream_idle_timeout: stream_idle_timeout?,
+    })
 }
 
 /// `KAFKA_FETCH_MAX_WAIT` (100ms), `FRESHNESS_READY_BOUND` (2s), `FRESHNESS_HARD_BOUND` (15s) and
@@ -561,12 +587,9 @@ fn tail_settings(collector: &mut Collector, args: &GatewayArgs) -> Option<TailSe
             1..=MAX_AZ_FLOOR,
         ),
     );
-    let ryw_max_wait = collector.collect(
-        "RYW_MAX_WAIT",
-        positive_duration(args.ryw_max_wait.as_deref(), Duration::from_secs(1)),
-    );
+    let waits = waits(collector, args);
     Some(TailSettings {
-        ryw_max_wait: ryw_max_wait?,
+        waits: waits?,
         fetch_max_wait: fetch_max_wait?,
         ready_bound: ready_bound?,
         hard_bound: hard_bound?,

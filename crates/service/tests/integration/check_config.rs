@@ -870,6 +870,14 @@ fn the_same_configuration_in_control_mode_names_the_database() {
     ("RYW_MAX_WAIT", "soon"),
     "RYW_MAX_WAIT: must be a duration such as 500ms, 2s or 1m\n"
 )]
+#[case::zero_stream_idle_timeout(
+    ("STREAM_IDLE_TIMEOUT", "0s"),
+    "STREAM_IDLE_TIMEOUT: must be a positive duration such as 10m or 90d\n"
+)]
+#[case::unparsable_stream_idle_timeout(
+    ("STREAM_IDLE_TIMEOUT", "never"),
+    "STREAM_IDLE_TIMEOUT: must be a duration such as 500ms, 2s or 1m\n"
+)]
 fn a_freshness_or_fetch_setting_out_of_range_exits_2_naming_the_variable(
     #[case] setting: (&str, &str),
     #[case] expected: &str,
