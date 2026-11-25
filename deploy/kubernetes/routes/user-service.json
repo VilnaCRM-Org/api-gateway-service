@@ -12,7 +12,21 @@
       "bodyLimitBytes": 65536,
       "requestTimeoutMs": 30000,
       "idleTimeoutMs": 60000,
-      "retryPolicy": "none"
+      "retryPolicy": "none",
+      "cors": {
+        "origins": [
+          "https://crm.example.test"
+        ],
+        "methods": [
+          "POST"
+        ],
+        "headers": [
+          "Accept",
+          "Content-Type"
+        ],
+        "allowCredentials": true,
+        "maxAgeSeconds": 600
+      }
     },
     {
       "methods": [
@@ -26,7 +40,21 @@
       "bodyLimitBytes": 65536,
       "requestTimeoutMs": 30000,
       "idleTimeoutMs": 60000,
-      "retryPolicy": "none"
+      "retryPolicy": "none",
+      "cors": {
+        "origins": [
+          "https://crm.example.test"
+        ],
+        "methods": [
+          "POST"
+        ],
+        "headers": [
+          "Accept",
+          "Content-Type"
+        ],
+        "allowCredentials": true,
+        "maxAgeSeconds": 600
+      }
     },
     {
       "methods": [
@@ -40,7 +68,21 @@
       "bodyLimitBytes": 65536,
       "requestTimeoutMs": 30000,
       "idleTimeoutMs": 60000,
-      "retryPolicy": "none"
+      "retryPolicy": "none",
+      "cors": {
+        "origins": [
+          "https://crm.example.test"
+        ],
+        "methods": [
+          "POST"
+        ],
+        "headers": [
+          "Accept",
+          "Content-Type"
+        ],
+        "allowCredentials": true,
+        "maxAgeSeconds": 600
+      }
     },
     {
       "methods": [
@@ -55,7 +97,22 @@
       "bodyLimitBytes": 65536,
       "requestTimeoutMs": 30000,
       "idleTimeoutMs": 60000,
-      "retryPolicy": "none"
+      "retryPolicy": "none",
+      "cors": {
+        "origins": [
+          "https://crm.example.test"
+        ],
+        "methods": [
+          "GET",
+          "POST"
+        ],
+        "headers": [
+          "Accept",
+          "Content-Type"
+        ],
+        "allowCredentials": true,
+        "maxAgeSeconds": 600
+      }
     },
     {
       "methods": [
@@ -69,7 +126,21 @@
       "bodyLimitBytes": 65536,
       "requestTimeoutMs": 30000,
       "idleTimeoutMs": 60000,
-      "retryPolicy": "none"
+      "retryPolicy": "none",
+      "cors": {
+        "origins": [
+          "https://crm.example.test"
+        ],
+        "methods": [
+          "POST"
+        ],
+        "headers": [
+          "Accept",
+          "Content-Type"
+        ],
+        "allowCredentials": true,
+        "maxAgeSeconds": 600
+      }
     },
     {
       "methods": [
@@ -83,7 +154,21 @@
       "bodyLimitBytes": 65536,
       "requestTimeoutMs": 30000,
       "idleTimeoutMs": 60000,
-      "retryPolicy": "none"
+      "retryPolicy": "none",
+      "cors": {
+        "origins": [
+          "https://crm.example.test"
+        ],
+        "methods": [
+          "POST"
+        ],
+        "headers": [
+          "Accept",
+          "Content-Type"
+        ],
+        "allowCredentials": true,
+        "maxAgeSeconds": 600
+      }
     },
     {
       "methods": [
@@ -97,7 +182,21 @@
       "bodyLimitBytes": 65536,
       "requestTimeoutMs": 30000,
       "idleTimeoutMs": 60000,
-      "retryPolicy": "none"
+      "retryPolicy": "none",
+      "cors": {
+        "origins": [
+          "https://crm.example.test"
+        ],
+        "methods": [
+          "POST"
+        ],
+        "headers": [
+          "Accept",
+          "Content-Type"
+        ],
+        "allowCredentials": true,
+        "maxAgeSeconds": 600
+      }
     },
     {
       "methods": [
@@ -111,7 +210,21 @@
       "bodyLimitBytes": 65536,
       "requestTimeoutMs": 30000,
       "idleTimeoutMs": 60000,
-      "retryPolicy": "none"
+      "retryPolicy": "none",
+      "cors": {
+        "origins": [
+          "https://crm.example.test"
+        ],
+        "methods": [
+          "POST"
+        ],
+        "headers": [
+          "Accept",
+          "Content-Type"
+        ],
+        "allowCredentials": true,
+        "maxAgeSeconds": 600
+      }
     },
     {
       "methods": [

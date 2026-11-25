@@ -22,3 +22,15 @@ Feature: Gateway request forwarding
     When the gateway subject "administrator" sends GET request to "/api/roles" through the gateway
     Then the response status code should be 201
     And the fake upstream should have received 1 request
+
+  Scenario: A browser of the CRM origin writes to a route of IAM's management API with the session cookie
+    Given a gateway route "POST /api/roles" of the host "iam.example.test" for the service "iam" guarded by the key "rest:iam:POST /api/roles"
+    And the gateway route allows the origin "https://crm.example.test" with credentials
+    And the gateway subject "administrator" holds the key "rest:iam:POST /api/roles"
+    When the gateway subject "administrator" sends POST request to "/api/roles" through the gateway from the origin "https://crm.example.test" with the session cookie
+    Then the response status code should be 201
+    And the response header "access-control-allow-origin" should contain "https://crm.example.test"
+    And the fake upstream should have received 1 request
+    When the gateway subject "administrator" sends POST request to "/api/roles" through the gateway from the origin "https://evil.example.test" with the session cookie
+    Then the response status code should be 403
+    And the fake upstream should have received 1 request

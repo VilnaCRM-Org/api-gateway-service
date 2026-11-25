@@ -5,6 +5,8 @@ pub mod caller_token_rule;
 pub mod catalogue_activation;
 pub mod change_guard;
 pub mod compiled_role_set;
+pub mod cors_rule;
+pub mod csrf_rule;
 pub mod decision_policy;
 pub mod effective_permission_composer;
 pub mod escalation_guard;

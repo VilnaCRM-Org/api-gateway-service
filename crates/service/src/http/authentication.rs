@@ -118,7 +118,7 @@ fn bearer(value: &HeaderValue) -> Option<&str> {
 }
 
 /// The value of the [`AUTH_COOKIE`] cookie in any `Cookie` header.
-fn cookie(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn cookie(headers: &HeaderMap) -> Option<&str> {
     headers
         .get_all(COOKIE)
         .iter()

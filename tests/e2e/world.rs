@@ -1252,12 +1252,41 @@ impl AppWorld {
     ///
     /// When the scenario described no gateway.
     pub(crate) async fn send_through_gateway(&mut self, name: &str, method: &str, path: &str) {
+        let answer = self.started_gateway().await.send(name, method, path).await;
+        self.remember_gateway_reply(answer);
+    }
+
+    /// Sends the request of the gateway subject `name` the way a browser of the page at `origin`
+    /// does: with the session cookie and the `Origin` header (Story 10.12).
+    ///
+    /// # Panics
+    ///
+    /// When the scenario described no gateway.
+    pub(crate) async fn send_through_gateway_from_browser(
+        &mut self,
+        name: &str,
+        method: &str,
+        path: &str,
+        origin: &str,
+    ) {
+        let answer = self
+            .started_gateway()
+            .await
+            .send_from_browser(name, method, path, origin)
+            .await;
+        self.remember_gateway_reply(answer);
+    }
+
+    /// The in-process gateway of the scenario, started on first use.
+    async fn started_gateway(&mut self) -> &GatewayHarness {
         if self.gateway.is_none() {
             let plan = self.gateway_plan.as_ref().expect("a gateway was described");
             self.gateway = Some(GatewayHarness::start(plan).await);
         }
-        let gateway = self.gateway.as_ref().expect("the gateway is built");
-        let answer = gateway.send(name, method, path).await;
+        self.gateway.as_ref().expect("the gateway is built")
+    }
+
+    fn remember_gateway_reply(&mut self, answer: crate::gateway_proxy::GatewayReply) {
         let reply = Reply {
             status: answer.status,
             headers: answer.headers,
