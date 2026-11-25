@@ -797,6 +797,14 @@ fn the_same_configuration_in_control_mode_names_the_database() {
     ("READINESS_AZ_FLOOR", "some"),
     "READINESS_AZ_FLOOR: must be an integer from 1 to 8\n"
 )]
+#[case::zero_ryw_max_wait(
+    ("RYW_MAX_WAIT", "0s"),
+    "RYW_MAX_WAIT: must be a positive duration such as 10m or 90d\n"
+)]
+#[case::unparsable_ryw_max_wait(
+    ("RYW_MAX_WAIT", "soon"),
+    "RYW_MAX_WAIT: must be a duration such as 500ms, 2s or 1m\n"
+)]
 fn a_freshness_or_fetch_setting_out_of_range_exits_2_naming_the_variable(
     #[case] setting: (&str, &str),
     #[case] expected: &str,
@@ -1032,4 +1040,105 @@ fn anti_entropy_intervals_within_their_rules_are_accepted() {
 
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(stdout(&output), "configuration OK\n");
+}
+
+#[rstest]
+#[case::too_short(("RATE_LIMIT_STORE_TIMEOUT", "0s"))]
+#[case::below_a_millisecond(("RATE_LIMIT_STORE_TIMEOUT", "500us"))]
+#[case::above_fifty_milliseconds(("RATE_LIMIT_STORE_TIMEOUT", "51ms"))]
+#[case::a_second(("RATE_LIMIT_STORE_TIMEOUT", "1s"))]
+fn a_rate_limit_store_timeout_outside_one_to_fifty_milliseconds_exits_2_naming_it(
+    #[case] setting: (&str, &str),
+) {
+    let scratch = Scratch::new();
+
+    let output = scratch.run(
+        &["check-config", "--mode", "gateway"],
+        &[GATEWAY_ENVIRONMENT[0], setting],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(
+        stderr(&output),
+        "RATE_LIMIT_STORE_TIMEOUT: must be a duration from 1ms to 50ms\n"
+    );
+}
+
+#[test]
+fn a_rate_limit_store_url_that_names_no_valkey_exits_2_without_echoing_it() {
+    let scratch = Scratch::new();
+
+    let output = scratch.run(
+        &["check-config", "--mode", "gateway"],
+        &[
+            GATEWAY_ENVIRONMENT[0],
+            ("RATE_LIMIT_STORE_URL", "memcached://hunter2-cache:11211"),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).starts_with("RATE_LIMIT_STORE_URL: must be a redis:// or "));
+    assert!(!stderr(&output).contains("hunter2-cache"));
+}
+
+#[rstest]
+#[case("1ms")]
+#[case("10ms")]
+#[case("50ms")]
+fn a_rate_limit_store_timeout_inside_the_range_is_accepted(#[case] timeout: &str) {
+    let scratch = Scratch::new();
+
+    let output = scratch.run(
+        &["check-config", "--mode", "gateway"],
+        &[
+            GATEWAY_ENVIRONMENT[0],
+            ("RATE_LIMIT_STORE_TIMEOUT", timeout),
+            ("RATE_LIMIT_STORE_URL", "redis://valkey:6379"),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout(&output), "configuration OK\n");
+}
+
+#[rstest]
+#[case::sample_rate_above_one(
+    ("LOG_ALLOW_SAMPLE_RATE", "1.5"),
+    "LOG_ALLOW_SAMPLE_RATE: must be a decimal number from 0 to 1 with at most 9 decimals\n"
+)]
+#[case::negative_sample_rate(
+    ("LOG_ALLOW_SAMPLE_RATE", "-0.1"),
+    "LOG_ALLOW_SAMPLE_RATE: must be a decimal number from 0 to 1 with at most 9 decimals\n"
+)]
+#[case::unparsable_sample_rate(
+    ("LOG_ALLOW_SAMPLE_RATE", "often"),
+    "LOG_ALLOW_SAMPLE_RATE: must be a decimal number from 0 to 1 with at most 9 decimals\n"
+)]
+#[case::unparsable_budget(
+    ("LOG_CLASS_BUDGETS", "error=many"),
+    "LOG_CLASS_BUDGETS: must be a comma-separated list of error=<n> and audit=<n>, each n at least 1\n"
+)]
+#[case::unknown_budget_class(
+    ("LOG_CLASS_BUDGETS", "info=5"),
+    "LOG_CLASS_BUDGETS: must be a comma-separated list of error=<n> and audit=<n>, each n at least 1\n"
+)]
+#[case::zero_channel_capacity(
+    ("LOG_CHANNEL_CAPACITY", "0"),
+    "LOG_CHANNEL_CAPACITY: must be an integer from 1 to 16777216\n"
+)]
+fn an_access_log_setting_out_of_range_exits_2_naming_the_variable(
+    #[case] setting: (&str, &str),
+    #[case] expected: &str,
+) {
+    let scratch = Scratch::new();
+
+    let output = scratch.run(
+        &["check-config", "--mode", "gateway"],
+        &[GATEWAY_ENVIRONMENT[0], setting],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), expected);
 }

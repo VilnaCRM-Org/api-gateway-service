@@ -73,3 +73,5 @@ mod unit_of_work;
 mod unit_of_work_migration;
 #[cfg(test)]
 mod user_role_repository;
+#[cfg(test)]
+mod valkey_rate_limit_store;

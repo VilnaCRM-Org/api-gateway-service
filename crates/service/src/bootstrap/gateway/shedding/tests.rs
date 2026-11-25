@@ -2,9 +2,9 @@ use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use axum::Router;
 use axum::body::Bytes;
 use axum::routing::get;
+use axum::{Extension, Router};
 use http_body_util::{BodyExt as _, Empty};
 use hyper::client::conn::{http1, http2};
 use hyper::{Request, StatusCode, Version};
@@ -16,7 +16,7 @@ use tokio::time::timeout;
 
 use test_support::log::LogRecorder;
 
-use super::{BoxError, ConnectionSignals, log_ended, serve};
+use super::{BoxError, ClientAddress, ConnectionSignals, log_ended, serve};
 
 const LIMIT: Duration = Duration::from_secs(5);
 
@@ -251,4 +251,34 @@ async fn a_server_without_a_shedding_flag_serves_until_it_stops() {
 
     timeout(LIMIT, server).await.unwrap().unwrap().unwrap();
     timeout(LIMIT, ended).await.unwrap().unwrap();
+}
+
+async fn client_of(Extension(client): Extension<ClientAddress>) -> String {
+    client.ip().to_string()
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "a test serves the gateway on a free loopback port"
+)]
+#[tokio::test]
+async fn every_request_carries_the_address_of_its_peer() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (stop, stopping) = watch::channel(false);
+    let router = Router::new().route("/", get(client_of));
+    let server = tokio::spawn(serve(
+        listener,
+        router,
+        ConnectionSignals::new(stopping, None),
+    ));
+    let (mut sender, _ended) = h1(address).await;
+
+    sender.ready().await.unwrap();
+    let response = sender.send_request(request()).await.unwrap();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+
+    assert_eq!(body, "127.0.0.1");
+    stop.send_replace(true);
+    timeout(LIMIT, server).await.unwrap().unwrap().unwrap();
 }

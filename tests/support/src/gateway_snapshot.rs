@@ -24,6 +24,7 @@ pub struct GatewaySnapshot {
     version: PolicyVersion,
     routes: Vec<RouteState>,
     upstreams: Vec<UpstreamState>,
+    rate_policies: Vec<RatePolicyState>,
     assignments: BTreeMap<SubjectRef, Vec<AssignmentState>>,
     role_sets: BTreeMap<RoleId, CompiledRoleSet>,
     catalogues: BTreeMap<ServiceName, Vec<CatalogueEntryState>>,
@@ -40,6 +41,7 @@ impl GatewaySnapshot {
             version,
             routes: Vec::new(),
             upstreams: Vec::new(),
+            rate_policies: Vec::new(),
             assignments: BTreeMap::new(),
             role_sets: BTreeMap::new(),
             catalogues: BTreeMap::new(),
@@ -60,6 +62,13 @@ impl GatewaySnapshot {
     #[must_use]
     pub fn with_upstream(mut self, upstream: UpstreamState) -> Self {
         self.upstreams.push(upstream);
+        self
+    }
+
+    /// The same snapshot that also holds `policy`.
+    #[must_use]
+    pub fn with_rate_policy(mut self, policy: RatePolicyState) -> Self {
+        self.rate_policies.push(policy);
         self
     }
 
@@ -182,8 +191,8 @@ impl PolicySnapshot for GatewaySnapshot {
         Vec::new()
     }
 
-    fn rate_policy(&self, _id: RatePolicyId) -> Option<&RatePolicyState> {
-        None
+    fn rate_policy(&self, id: RatePolicyId) -> Option<&RatePolicyState> {
+        self.rate_policies.iter().find(|policy| policy.id == id)
     }
 
     fn catalogue(&self, service: &ServiceName) -> Option<&[CatalogueEntryState]> {

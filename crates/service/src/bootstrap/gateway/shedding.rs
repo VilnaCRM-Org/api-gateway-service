@@ -9,10 +9,12 @@
 //! stops, every connection is shut down gracefully and the loop returns once they ended.
 
 use std::io;
+use std::net::SocketAddr;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use axum::Extension;
 use axum::Router;
 use axum::extract::{Request, State};
 use axum::http::header::CONNECTION;
@@ -26,6 +28,8 @@ use hyper_util::service::TowerToHyperService;
 use shared_domain::BoxError;
 use tokio::sync::{Notify, watch};
 use tokio::task::JoinSet;
+
+use super::pipeline::ClientAddress;
 
 /// The two flags that steer the connections of a server.
 #[derive(Debug, Clone)]
@@ -151,7 +155,8 @@ where
 }
 
 /// Accepts connections on `listener` and serves `router` on them until the stop flag is set, then
-/// waits for the connections to end.
+/// waits for the connections to end. Every request carries the address of its peer as a
+/// [`ClientAddress`] extension.
 ///
 /// # Errors
 ///
@@ -159,13 +164,17 @@ where
 pub async fn serve<L>(mut listener: L, router: Router, signals: ConnectionSignals) -> io::Result<()>
 where
     L: Listener,
+    L::Addr: Into<SocketAddr>,
 {
     let mut connections = JoinSet::new();
     loop {
         tokio::select! {
             () = stopped(signals.stopping.clone()) => break,
-            (io, _address) = listener.accept() => {
-                connections.spawn(connection(io, router.clone(), signals.clone()));
+            (io, address) = listener.accept() => {
+                let peer: SocketAddr = address.into();
+                let client = ClientAddress::from(peer);
+                let router = router.clone().layer(Extension(client));
+                connections.spawn(connection(io, router, signals.clone()));
             }
         }
         while connections.try_join_next().is_some() {}

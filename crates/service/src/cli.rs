@@ -442,6 +442,10 @@ pub struct GatewayArgs {
         hide_env_values = true
     )]
     pub derived_state_check_interval: Option<String>,
+    /// The longest a request waits for a snapshot of the policy version it names, with
+    /// `X-IAM-Min-Policy-Version` or the `__Host-iam_pv` cookie (default `1s`, positive).
+    #[arg(long = "ryw-max-wait", env = "RYW_MAX_WAIT", hide_env_values = true)]
+    pub ryw_max_wait: Option<String>,
     /// How many ready pods of a zone never go unready for staleness (default `1`, from `1` to
     /// `8`).
     #[arg(
@@ -450,6 +454,46 @@ pub struct GatewayArgs {
         hide_env_values = true
     )]
     pub readiness_az_floor: Option<String>,
+    /// `redis://` URL of the Valkey that holds the shared rate counters, or
+    /// `redis+sentinel://host[:port],host[:port]/service` for a Sentinel group (default
+    /// `redis://localhost:6379`).
+    #[arg(
+        long = "rate-limit-store-url",
+        env = "RATE_LIMIT_STORE_URL",
+        hide_env_values = true
+    )]
+    pub rate_limit_store_url: Option<String>,
+    /// The longest one call of the shared rate counters may take, 1ms to 50ms (default `10ms`).
+    #[arg(
+        long = "rate-limit-store-timeout",
+        env = "RATE_LIMIT_STORE_TIMEOUT",
+        hide_env_values = true
+    )]
+    pub rate_limit_store_timeout: Option<String>,
+    /// The share of allowed requests that is written to the access log, a decimal number from 0
+    /// to 1 (default `0.01`).
+    #[arg(
+        long = "log-allow-sample-rate",
+        env = "LOG_ALLOW_SAMPLE_RATE",
+        hide_env_values = true
+    )]
+    pub log_allow_sample_rate: Option<String>,
+    /// The records per second and pod that the `error` and `audit` classes of the access log may
+    /// write, as `error=<n>,audit=<n>` (default `error=1000,audit=2000`).
+    #[arg(
+        long = "log-class-budgets",
+        env = "LOG_CLASS_BUDGETS",
+        hide_env_values = true
+    )]
+    pub log_class_budgets: Option<String>,
+    /// The capacity of the channel from the request path to the access log writer, from 1 to
+    /// 16777216 (default `65536`).
+    #[arg(
+        long = "log-channel-capacity",
+        env = "LOG_CHANNEL_CAPACITY",
+        hide_env_values = true
+    )]
+    pub log_channel_capacity: Option<String>,
 }
 
 /// Arguments of `check-config`: the run mode and the settings of both modes.

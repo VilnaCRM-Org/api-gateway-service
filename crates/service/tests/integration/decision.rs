@@ -9,7 +9,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt as _;
-use iam_application::FreshnessState;
+use iam_application::{FreshnessState, PolicyVersionBoard, ReadYourWritesBarrier};
 use iam_domain::freshness::proof::FreshnessProof;
 use iam_domain::{
     AssignmentScope, AssignmentState, BootClock as _, BootInstant, CallerTokenRule,
@@ -18,7 +18,7 @@ use iam_domain::{
 };
 use iam_infrastructure::JwtSettings;
 use serde_json::{Value, json};
-use service::bootstrap::gateway::decision::{DecisionPorts, router};
+use service::bootstrap::gateway::decision::{DecisionPorts, router, router_with_barrier};
 use service::cli::GatewayArgs;
 use service::config::GatewayConfig;
 use test_support::access_token::DEVELOPMENT_PUBLIC_KEYS_FILE;
@@ -91,6 +91,17 @@ struct Gateway {
 
 /// The decision router over `snapshot`, fresh until the boot clock advances past the hard bound.
 fn gateway(name: &str, key: &TestKey, snapshot: DecisionSnapshot) -> Gateway {
+    gateway_barring(name, key, snapshot, None)
+}
+
+/// The same router behind the read-your-writes barrier over `board`, when there is one: the pod
+/// has published version 4 and waits one second for a version it has seen.
+fn gateway_barring(
+    name: &str,
+    key: &TestKey,
+    snapshot: DecisionSnapshot,
+    board: Option<Arc<PolicyVersionBoard>>,
+) -> Gateway {
     let boot = Arc::new(FakeBootClock::starting_at(BootInstant::from_elapsed(
         Duration::from_secs(100),
     )));
@@ -105,8 +116,16 @@ fn gateway(name: &str, key: &TestKey, snapshot: DecisionSnapshot) -> Gateway {
         },
         version(4),
     );
+    let view = Arc::new(FakePolicyView::with_snapshot(Arc::new(snapshot)));
+    let barrier = board.map(|board| {
+        Arc::new(ReadYourWritesBarrier::new(
+            Arc::<FakePolicyView>::clone(&view),
+            board,
+            Duration::from_secs(1),
+        ))
+    });
     let ports = DecisionPorts {
-        view: Arc::new(FakePolicyView::with_snapshot(Arc::new(snapshot))),
+        view,
         freshness,
         clock: Arc::new(FixedClock::at(
             SystemTime::UNIX_EPOCH
@@ -114,8 +133,13 @@ fn gateway(name: &str, key: &TestKey, snapshot: DecisionSnapshot) -> Gateway {
                 .unwrap(),
         )),
     };
+    let config = config(name, key);
+    let app = match barrier {
+        Some(barrier) => router_with_barrier(&config, ports, &barrier),
+        None => router(&config, ports),
+    };
     Gateway {
-        app: router(&config(name, key), ports).unwrap(),
+        app: app.unwrap(),
         boot,
     }
 }
@@ -273,6 +297,50 @@ async fn a_minimum_policy_version_the_pod_has_not_applied_is_deny_and_unavailabl
 
     assert_eq!(answer.status, StatusCode::OK);
     assert_eq!(answer.body["decision"], "deny");
+    assert_eq!(answer.body["reason"], "unavailable");
+}
+
+#[tokio::test]
+async fn behind_the_barrier_a_version_above_the_highest_seen_is_deny_and_unavailable_at_once() {
+    let key = TestKey::generate();
+    let board = Arc::new(PolicyVersionBoard::new());
+    board.note_published(Some(version(4)));
+    let gateway = gateway_barring(
+        "decision-barrier-unseen",
+        &key,
+        snapshot_granting(&["iam:validate:*"]),
+        Some(board),
+    );
+    let token = key.sign(&service_claims());
+    let mut ahead = check("r1");
+    ahead["minPolicyVersion"] = json!(5);
+
+    let answer = post(&gateway, "/api/access-validations", &token, &ahead).await;
+
+    assert_eq!(answer.status, StatusCode::OK);
+    assert_eq!(answer.body["decision"], "deny");
+    assert_eq!(answer.body["reason"], "unavailable");
+}
+
+#[tokio::test(start_paused = true)]
+async fn behind_the_barrier_a_seen_version_that_is_not_published_in_time_is_deny_and_unavailable() {
+    let key = TestKey::generate();
+    let board = Arc::new(PolicyVersionBoard::new());
+    board.note_published(Some(version(4)));
+    board.note_seen(version(5));
+    let gateway = gateway_barring(
+        "decision-barrier-seen",
+        &key,
+        snapshot_granting(&["iam:validate:*"]),
+        Some(board),
+    );
+    let token = key.sign(&service_claims());
+    let mut ahead = check("r1");
+    ahead["minPolicyVersion"] = json!(5);
+
+    let answer = post(&gateway, "/api/access-validations", &token, &ahead).await;
+
+    assert_eq!(answer.status, StatusCode::OK);
     assert_eq!(answer.body["reason"], "unavailable");
 }
 

@@ -29,6 +29,9 @@ services:
       KAFKA_HOST: kafka
       KAFKA_PORT: '19092'
       KAFKA_SASL_SSL_PORT: '19094' # its in-network SASL_SSL listener (Story 1.5)
+      # The compose Valkey at its in-network port (VALKEY_PORT of .env is the host port).
+      VALKEY_HOST: valkey
+      VALKEY_PORT: '6379'
       # Removed so that the binary reads .env and the test targets read .env.test.
       APP_ENV: !reset null
       LOG_LEVEL: !reset null

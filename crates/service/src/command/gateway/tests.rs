@@ -6,6 +6,7 @@ use tokio::sync::watch;
 
 use super::*;
 use crate::bootstrap::TaskMode;
+use crate::bootstrap::gateway::access_log::AccessLogAdapters;
 
 const GRACE: Duration = Duration::from_secs(1);
 
@@ -129,6 +130,20 @@ async fn the_plain_public_server_answers_503_and_ends_on_the_stop_flag() {
     assert!(tasks.is_empty());
 }
 
+/// An access log step over a writer that is stopped at once: the tests below read no record.
+fn access_log_step(clock: &Arc<dyn Clock>) -> Arc<pipeline::PipelineAccessLog> {
+    let adapters = AccessLogAdapters::start(
+        &crate::config::AccessLogSettings::default(),
+        Arc::new(test_support::rng::FakeRng::seeded(1)),
+        Arc::clone(clock),
+        Arc::new(test_support::access_log_sink::RecordingAccessLogSink::new()),
+    )
+    .unwrap();
+    let step = adapters.pipeline_step(clock);
+    adapters.finish();
+    step
+}
+
 #[tokio::test]
 async fn a_gateway_without_a_freshness_state_wires_the_stale_router_and_the_bare_internal_router() {
     use axum::body::Body;
@@ -143,7 +158,14 @@ async fn a_gateway_without_a_freshness_state_wires_the_stale_router_and_the_bare
     );
     let clock: Arc<dyn Clock> = Arc::new(shared_infrastructure::clock::SystemClock);
 
-    let public = public_router(&config_on(loopback()), &policy, &clock).unwrap();
+    let public = public_router(
+        &config_on(loopback()),
+        &policy,
+        &clock,
+        Arc::new(pipeline::UnreachableUpstreams),
+        access_log_step(&clock),
+    )
+    .unwrap();
     let _internal = internal_router(&policy);
     let answer = public
         .oneshot(Request::get("/anything").body(Body::empty()).unwrap())
@@ -185,7 +207,14 @@ async fn a_gateway_with_a_freshness_state_serves_the_freshness_endpoint_and_the_
             .proving(freshness);
 
     let clock: Arc<dyn Clock> = Arc::new(shared_infrastructure::clock::SystemClock);
-    let public = public_router(&config_on(loopback()), &policy, &clock).unwrap();
+    let public = public_router(
+        &config_on(loopback()),
+        &policy,
+        &clock,
+        Arc::new(pipeline::UnreachableUpstreams),
+        access_log_step(&clock),
+    )
+    .unwrap();
     let internal = internal_router(&policy);
     let gated = public
         .oneshot(Request::get("/anything").body(Body::empty()).unwrap())

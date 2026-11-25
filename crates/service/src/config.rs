@@ -15,10 +15,13 @@ use axum::http::Uri;
 use axum::http::uri::Authority;
 use iam_application::{AntiEntropySettings, MaintenanceSettings};
 use iam_domain::{BulkChunker, BulkPacing};
-use iam_domain::{CallerTokenRule, ConfigGates, TokenLifetimeRule, Zone};
+use iam_domain::{
+    CallerTokenRule, ClassBudgets, ConfigGates, DEFAULT_CHANNEL_CAPACITY, InvalidAccessLogSetting,
+    SampleRate, TokenLifetimeRule, Zone, parse_channel_capacity,
+};
 use iam_infrastructure::{
     JwtKeySet, JwtSettings, KafkaSecret, KafkaSecurity, KafkaSettings, ProbeCredentials,
-    SaslMechanism, StaticEndpointWatch, TokenMemoSettings,
+    SaslMechanism, StaticEndpointWatch, TokenMemoSettings, ValkeyEndpoint,
 };
 use shared_infrastructure::messaging::SqsSettings;
 use shared_infrastructure::persistence::{
@@ -316,6 +319,14 @@ pub struct GatewayConfig {
     pub derived_state_check_interval: Duration,
     /// `READINESS_AZ_FLOOR`: how many ready pods of a zone never go unready for staleness.
     pub readiness_az_floor: usize,
+    /// `LOG_ALLOW_SAMPLE_RATE`, `LOG_CLASS_BUDGETS` and `LOG_CHANNEL_CAPACITY`: what bounds the
+    /// access log.
+    pub access_log: AccessLogSettings,
+    /// The shared rate counters: `RATE_LIMIT_STORE_URL` and `RATE_LIMIT_STORE_TIMEOUT`.
+    pub rate_limit: RateLimitSettings,
+    /// `RYW_MAX_WAIT`: the longest a request waits for a snapshot of the policy version it names
+    /// (Story 10.10).
+    pub ryw_max_wait: Duration,
 }
 
 /// How the gateway discovers the endpoints of its upstreams (`UPSTREAM_DISCOVERY`).
@@ -357,15 +368,17 @@ impl GatewayConfig {
         let endpoints = endpoint_settings(&mut collector, args);
         let kafka = gateway_kafka(&mut collector, args, app_env);
         let tail = tail_settings(&mut collector, args);
+        let access_log = access_log_settings(&mut collector, args);
+        let rate_limit = rate_limit_settings(&mut collector, args);
         match (
             (app_env, log_level, grace, tokens),
             (listeners, tls, endpoints, kafka),
-            tail,
+            (tail, rate_limit),
         ) {
             (
                 (Some(app_env), Some(log_level), Some(shutdown_grace_period), Some(tokens)),
                 (Some(listeners), Some(tls), Some(endpoints), Some(kafka)),
-                Some(tail),
+                (Some(tail), Some(rate_limit)),
             ) if collector.problems.is_empty() => Ok(Self {
                 app_env,
                 log_level,
@@ -384,6 +397,9 @@ impl GatewayConfig {
                 freshness_probe_interval: tail.probe_interval,
                 derived_state_check_interval: tail.derived_check_interval,
                 readiness_az_floor: tail.az_floor,
+                access_log: access_log.unwrap_or_default(),
+                rate_limit,
+                ryw_max_wait: tail.ryw_max_wait,
                 pod_name,
                 pod_namespace,
                 endpoints,
@@ -456,6 +472,7 @@ struct TailSettings {
     probe_interval: Duration,
     derived_check_interval: Duration,
     az_floor: usize,
+    ryw_max_wait: Duration,
 }
 
 /// `KAFKA_FETCH_MAX_WAIT` (100ms), `FRESHNESS_READY_BOUND` (2s), `FRESHNESS_HARD_BOUND` (15s) and
@@ -499,7 +516,12 @@ fn tail_settings(collector: &mut Collector, args: &GatewayArgs) -> Option<TailSe
             1..=MAX_AZ_FLOOR,
         ),
     );
+    let ryw_max_wait = collector.collect(
+        "RYW_MAX_WAIT",
+        positive_duration(args.ryw_max_wait.as_deref(), Duration::from_secs(1)),
+    );
     Some(TailSettings {
+        ryw_max_wait: ryw_max_wait?,
         fetch_max_wait: fetch_max_wait?,
         ready_bound: ready_bound?,
         hard_bound: hard_bound?,
@@ -509,8 +531,133 @@ fn tail_settings(collector: &mut Collector, args: &GatewayArgs) -> Option<TailSe
     })
 }
 
+/// What bounds the access log of the gateway (FR-50, FR-55).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccessLogSettings {
+    /// `LOG_ALLOW_SAMPLE_RATE`: the share of ordinary allows that is written.
+    pub allow_sample_rate: SampleRate,
+    /// `LOG_CLASS_BUDGETS`: the records per second of the `error` and `audit` classes.
+    pub class_budgets: ClassBudgets,
+    /// `LOG_CHANNEL_CAPACITY`: the capacity of the channel to the writer.
+    pub channel_capacity: usize,
+}
+
+impl Default for AccessLogSettings {
+    fn default() -> Self {
+        Self {
+            allow_sample_rate: default_sample_rate(),
+            class_budgets: ClassBudgets::default(),
+            channel_capacity: DEFAULT_CHANNEL_CAPACITY,
+        }
+    }
+}
+
+/// The sample rate of a configuration that does not set `LOG_ALLOW_SAMPLE_RATE`: 0.01.
+fn default_sample_rate() -> SampleRate {
+    SampleRate::parse("0.01").unwrap_or(SampleRate::NONE)
+}
+
+/// `LOG_ALLOW_SAMPLE_RATE` (0 to 1, default 0.01), `LOG_CLASS_BUDGETS` (default
+/// `error=1000,audit=2000`) and `LOG_CHANNEL_CAPACITY` (1 to 16777216, default 65536).
+///
+/// `None` when a problem was reported.
+fn access_log_settings(collector: &mut Collector, args: &GatewayArgs) -> Option<AccessLogSettings> {
+    let rate = collector.collect(
+        "LOG_ALLOW_SAMPLE_RATE",
+        access_log_value(
+            args.log_allow_sample_rate.as_deref(),
+            default_sample_rate(),
+            SampleRate::parse,
+        ),
+    );
+    let budgets = collector.collect(
+        "LOG_CLASS_BUDGETS",
+        access_log_value(
+            args.log_class_budgets.as_deref(),
+            ClassBudgets::default(),
+            ClassBudgets::parse,
+        ),
+    );
+    let capacity = collector.collect(
+        "LOG_CHANNEL_CAPACITY",
+        access_log_value(
+            args.log_channel_capacity.as_deref(),
+            DEFAULT_CHANNEL_CAPACITY,
+            parse_channel_capacity,
+        ),
+    );
+    Some(AccessLogSettings {
+        allow_sample_rate: rate?,
+        class_budgets: budgets?,
+        channel_capacity: capacity?,
+    })
+}
+
+/// An access log value: `default` when the variable is not set, otherwise what `parse` reads,
+/// with the reason of its refusal.
+fn access_log_value<T>(
+    raw: Option<&str>,
+    default: T,
+    parse: fn(&str) -> Result<T, InvalidAccessLogSetting>,
+) -> Parsed<T> {
+    raw.map_or(Ok(default), |value| {
+        parse(value).map_err(|error| error.to_string())
+    })
+}
+
 /// The largest accepted `READINESS_AZ_FLOOR`.
 const MAX_AZ_FLOOR: usize = 8;
+
+/// The shared rate counters of the gateway (Story 12.2, FR-65).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RateLimitSettings {
+    /// `RATE_LIMIT_STORE_URL`: the Valkey server, or the Sentinel group that names its master.
+    pub store: ValkeyEndpoint,
+    /// `RATE_LIMIT_STORE_TIMEOUT`: the longest one call of the shared store may take.
+    pub store_timeout: Duration,
+}
+
+/// The URL of the local Valkey when `RATE_LIMIT_STORE_URL` is unset.
+pub const DEFAULT_RATE_LIMIT_STORE_URL: &str = "redis://localhost:6379";
+
+/// The shortest accepted `RATE_LIMIT_STORE_TIMEOUT`.
+const MIN_RATE_LIMIT_STORE_TIMEOUT: Duration = Duration::from_millis(1);
+
+/// The longest accepted `RATE_LIMIT_STORE_TIMEOUT`.
+const MAX_RATE_LIMIT_STORE_TIMEOUT: Duration = Duration::from_millis(50);
+
+/// `RATE_LIMIT_STORE_URL` (`redis://` or `redis+sentinel://`, default the local Valkey) and
+/// `RATE_LIMIT_STORE_TIMEOUT` (1ms to 50ms, default 10ms).
+///
+/// `None` when a problem was reported.
+fn rate_limit_settings(collector: &mut Collector, args: &GatewayArgs) -> Option<RateLimitSettings> {
+    let store = collector.collect(
+        "RATE_LIMIT_STORE_URL",
+        rate_limit_store(args.rate_limit_store_url.as_deref()),
+    );
+    let timeout = collector.collect(
+        "RATE_LIMIT_STORE_TIMEOUT",
+        rate_limit_store_timeout(args.rate_limit_store_timeout.as_deref()),
+    );
+    Some(RateLimitSettings {
+        store: store?,
+        store_timeout: timeout?,
+    })
+}
+
+fn rate_limit_store(raw: Option<&str>) -> Parsed<ValkeyEndpoint> {
+    ValkeyEndpoint::parse(raw.unwrap_or(DEFAULT_RATE_LIMIT_STORE_URL))
+        .map_err(|error| format!("must be a redis:// or redis+sentinel:// URL: {error}"))
+}
+
+fn rate_limit_store_timeout(raw: Option<&str>) -> Parsed<Duration> {
+    let value = duration(raw, Duration::from_millis(10))?;
+    if (MIN_RATE_LIMIT_STORE_TIMEOUT..=MAX_RATE_LIMIT_STORE_TIMEOUT).contains(&value) {
+        Ok(value)
+    } else {
+        Err("must be a duration from 1ms to 50ms".to_owned())
+    }
+}
 
 /// `SHUTDOWN_GRACE_PERIOD`: how long in-flight requests get to finish (default `10s`).
 fn grace_period(collector: &mut Collector, raw: Option<&str>) -> Option<Duration> {

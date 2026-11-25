@@ -4,6 +4,7 @@
 //! This crate depends on the domain layer of its own context and of the shared kernel, never on the
 //! application layer. SQL lives here and nowhere else.
 
+pub mod access_log;
 pub mod bucket_local_rate_limiter;
 pub mod buffered_rejected_attempt_log;
 pub mod clock;
@@ -16,7 +17,9 @@ pub mod policy_state;
 pub mod request_digest;
 pub mod rng;
 pub mod token;
+pub mod valkey_rate_limit_store;
 
+pub use access_log::{StdoutAccessLogSink, credential_digest_prefix, render_entry};
 pub use bucket_local_rate_limiter::BucketLocalRateLimiter;
 pub use buffered_rejected_attempt_log::BufferedRejectedAttemptLog;
 pub use clock::LinuxBootClock;
@@ -72,3 +75,4 @@ pub use token::caching_token_repository::CachingTokenRepository;
 pub use token::jwt_access_token_verifier::{JwtAccessTokenVerifier, JwtSettings};
 pub use token::jwt_key_set::{JwtKeyFileError, JwtKeySet};
 pub use token::moka_token_memo::{MokaTokenMemo, TokenMemoSettings};
+pub use valkey_rate_limit_store::{InvalidValkeyUrl, ValkeyEndpoint, ValkeyRateLimitStore};

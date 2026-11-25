@@ -1,6 +1,8 @@
 //! Integration tests of the service binary: it is spawned as a process, with a cleared environment.
 
 #[cfg(test)]
+mod access_log;
+#[cfg(test)]
 mod authentication;
 #[cfg(test)]
 mod bootstrap;
@@ -18,6 +20,10 @@ mod gateway;
 mod gateway_bootstrap;
 #[cfg(test)]
 mod gateway_pipeline;
+#[cfg(test)]
+mod gateway_rate_limit;
+#[cfg(test)]
+mod gateway_upstream;
 #[cfg(test)]
 mod healthcheck;
 #[cfg(test)]

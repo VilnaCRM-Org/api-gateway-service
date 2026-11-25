@@ -245,11 +245,11 @@ pub(crate) struct Finished {
 }
 
 impl Finished {
-    /// The messages of the log lines.
+    /// The messages of the log lines; an access record or aggregate (Story 14.1) has no message.
     pub(crate) fn messages(&self) -> Vec<&str> {
         self.lines
             .iter()
-            .map(|line| line["message"].as_str().unwrap())
+            .filter_map(|line| line["message"].as_str())
             .collect()
     }
 

@@ -29,7 +29,7 @@ use iam_application::graphql::{DecisionQuery, IamAuthorizationExtension};
 use iam_application::http::{IamState, STALE_BATCH_VALIDATION_PATH, STALE_VALIDATION_PATH};
 use iam_application::{
     AccessDecisionService, FreshPolicyView, FreshnessState, GatewayValidateAccessBatchQueryHandler,
-    GatewayValidateAccessQueryHandler, IamAccessGuard, Principal,
+    GatewayValidateAccessQueryHandler, IamAccessGuard, Principal, ReadYourWritesBarrier,
     RecordRejectedAttemptCommandHandler, ResolveSubjectTokenQueryHandler, ResolveTokenQueryHandler,
     ServiceCatalogLoader, SnapshotPolicyReads,
 };
@@ -125,7 +125,32 @@ impl RejectedAttemptLog for DiscardedRejections {
 /// [`DecisionSetupError::Keys`] when `JWT_PUBLIC_KEYS_FILE` holds no valid key set, and
 /// [`DecisionSetupError::Handlers`] when a message has two handlers.
 pub fn router(config: &GatewayConfig, ports: DecisionPorts) -> Result<Router, DecisionSetupError> {
-    let wiring = wire(config, ports)?;
+    build(config, ports, None)
+}
+
+/// The router of the decision listener with the read-your-writes barrier of FR-14.
+///
+/// The barrier acts on `minPolicyVersion`: a version above the highest the pod has seen, or one
+/// that is not published within the wait of `barrier`, is the deny `unavailable`.
+///
+/// # Errors
+///
+/// [`DecisionSetupError::Keys`] when `JWT_PUBLIC_KEYS_FILE` holds no valid key set, and
+/// [`DecisionSetupError::Handlers`] when a message has two handlers.
+pub fn router_with_barrier(
+    config: &GatewayConfig,
+    ports: DecisionPorts,
+    barrier: &Arc<ReadYourWritesBarrier>,
+) -> Result<Router, DecisionSetupError> {
+    build(config, ports, Some(barrier))
+}
+
+fn build(
+    config: &GatewayConfig,
+    ports: DecisionPorts,
+    barrier: Option<&Arc<ReadYourWritesBarrier>>,
+) -> Result<Router, DecisionSetupError> {
+    let wiring = wire(config, ports, barrier)?;
     let rest = OpenApiRouter::<IamState>::new()
         .nest("/api", iam_application::http::decision_router())
         .split_for_parts()
@@ -184,7 +209,11 @@ async fn answer_stale(State(gate): State<StaleGate>, request: Request, next: Nex
 }
 
 /// The buses, the guard and the authenticator over the snapshot of `ports`.
-fn wire(config: &GatewayConfig, ports: DecisionPorts) -> Result<Wiring, DecisionSetupError> {
+fn wire(
+    config: &GatewayConfig,
+    ports: DecisionPorts,
+    barrier: Option<&Arc<ReadYourWritesBarrier>>,
+) -> Result<Wiring, DecisionSetupError> {
     let DecisionPorts {
         view,
         freshness,
@@ -201,7 +230,8 @@ fn wire(config: &GatewayConfig, ports: DecisionPorts) -> Result<Wiring, Decision
         Arc::new(UuidV7Generator),
     ));
     let commands: Arc<dyn CommandBus> = Arc::new(rejection_commands(&clock)?);
-    let queries: Arc<dyn QueryBus> = Arc::new(query_bus(config, &decisions, &reads, &tokens)?);
+    let queries: Arc<dyn QueryBus> =
+        Arc::new(query_bus(config, &decisions, (&reads, &tokens), barrier)?);
     let guard = Arc::new(IamAccessGuard::new(
         Arc::clone(&decisions),
         Arc::clone(&commands),
@@ -269,18 +299,23 @@ fn register_rejections(
 fn query_bus(
     config: &GatewayConfig,
     decisions: &Arc<AccessDecisionService>,
-    reads: &Arc<SnapshotPolicyReads>,
-    tokens: &Arc<dyn TokenRepository>,
+    (reads, tokens): (&Arc<SnapshotPolicyReads>, &Arc<dyn TokenRepository>),
+    barrier: Option<&Arc<ReadYourWritesBarrier>>,
 ) -> Result<InMemoryQueryBus, DecisionSetupError> {
     let authenticate =
         ResolveTokenQueryHandler::new(Arc::clone(tokens), config.tokens.callers.clone());
     let resolve = ResolveSubjectTokenQueryHandler::new(Arc::clone(tokens));
-    let validate = GatewayValidateAccessQueryHandler::new(Arc::clone(decisions), Arc::clone(reads));
-    let batch = GatewayValidateAccessBatchQueryHandler::new(
+    let mut validate =
+        GatewayValidateAccessQueryHandler::new(Arc::clone(decisions), Arc::clone(reads));
+    let mut batch = GatewayValidateAccessBatchQueryHandler::new(
         Arc::clone(decisions),
         Arc::clone(reads),
         Arc::clone(tokens),
     );
+    if let Some(barrier) = barrier {
+        validate = validate.with_barrier(Arc::clone(barrier));
+        batch = batch.with_barrier(Arc::clone(barrier));
+    }
     Ok(InMemoryQueryBus::new()
         .register(authenticate)?
         .register(resolve)?

@@ -237,9 +237,10 @@ jobs:
           tool: sqlx-cli@0.9.0
           fallback: cargo-binstall
 
-      # The compose broker for the integration suite: no test reads it since Story 1.7; kept for Epic 7.
-      - name: Start the compose Kafka broker
-        run: make start-deps DEPS=kafka
+      # The compose broker for the integration suite: no test reads it since Story 1.7; kept for Epic 7. The compose
+      # Valkey holds the shared rate counters of the rate limit tests (Story 12.2).
+      - name: Start the compose Kafka broker and Valkey
+        run: make start-deps DEPS="kafka valkey"
 
       - name: Run the mutation shard
         id: mutation

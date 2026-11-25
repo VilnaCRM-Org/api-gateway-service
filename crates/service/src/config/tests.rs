@@ -6,7 +6,9 @@ use test_support::access_token::DEVELOPMENT_PUBLIC_KEYS_FILE;
 use super::*;
 use crate::cli::RouteConfigurationArgs;
 
+mod access_log;
 mod endpoints;
+mod rate_limit;
 
 fn valid() -> ServeArgs {
     ServeArgs {
@@ -2447,6 +2449,33 @@ fn a_fetch_wait_that_is_not_a_positive_duration_names_its_variable(#[case] raw: 
     args.kafka_fetch_max_wait = some(raw);
 
     assert_eq!(gateway_variables(&args), vec!["KAFKA_FETCH_MAX_WAIT"]);
+}
+
+#[test]
+fn the_read_your_writes_wait_defaults_to_one_second() {
+    let config = GatewayConfig::from_args(&valid_gateway()).unwrap();
+
+    assert_eq!(config.ryw_max_wait, Duration::from_secs(1));
+}
+
+#[test]
+fn a_read_your_writes_wait_is_taken_as_given() {
+    let mut args = valid_gateway();
+    args.ryw_max_wait = some("250ms");
+
+    let config = GatewayConfig::from_args(&args).unwrap();
+
+    assert_eq!(config.ryw_max_wait, Duration::from_millis(250));
+}
+
+#[rstest]
+#[case("0s")]
+#[case("soon")]
+fn a_read_your_writes_wait_that_is_not_a_positive_duration_names_its_variable(#[case] raw: &str) {
+    let mut args = valid_gateway();
+    args.ryw_max_wait = some(raw);
+
+    assert_eq!(gateway_variables(&args), vec!["RYW_MAX_WAIT"]);
 }
 
 #[test]

@@ -58,6 +58,9 @@ services:
     build: *build
     command: ['gateway']
     profiles: [gateway]
+    depends_on:
+      valkey:
+        condition: service_healthy
     environment:
       APP_ENV: dev
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -71,6 +74,8 @@ services:
       JWT_PUBLIC_KEYS_FILE: /etc/service/jwt-public-keys.pem
       UPSTREAM_DISCOVERY: static
       UPSTREAM_STATIC_ENDPOINTS_FILE: /etc/service/upstream-endpoints.json
+      # The compose Valkey at its in-network port: the exact global quotas of the rate policies (Story 12.2).
+      RATE_LIMIT_STORE_URL: redis://valkey:6379
     volumes:
       - ${JWT_PUBLIC_KEYS_HOST_FILE:-./config/jwt/dev-public-keys.pem}:/etc/service/jwt-public-keys.pem:ro
       - ${UPSTREAM_ENDPOINTS_HOST_FILE:-./config/upstream/dev-static-endpoints.json}:/etc/service/upstream-endpoints.json:ro
@@ -138,6 +143,23 @@ services:
       timeout: 5s
       retries: 20
       start_period: 10s
+    restart: unless-stopped
+
+  valkey:
+    # The shared rate counters of the gateway (Story 12.2, FR-65): the GCRA script of `ValkeyRateLimitStore` runs here.
+    # No persistence: a counter is only a theoretical arrival time that lives one period. Development and test; a
+    # deployment brings its own Valkey (or Sentinel group) and names it in RATE_LIMIT_STORE_URL.
+    image: valkey/valkey:8.1.3-alpine
+    command: ['valkey-server', '--save', '', '--appendonly', 'no']
+    ports:
+      - '127.0.0.1:${VALKEY_PORT:-6379}:6379'
+    healthcheck:
+      test: ['CMD', 'valkey-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+      start_interval: 1s
     restart: unless-stopped
 
   kafka:

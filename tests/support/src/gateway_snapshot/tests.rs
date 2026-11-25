@@ -182,3 +182,19 @@ fn a_counting_view_counts_every_load_and_can_be_empty() {
     assert!(empty.current().is_none());
     assert_eq!(empty.loads(), 1);
 }
+
+#[test]
+fn a_snapshot_holds_the_rate_policies_it_was_given() {
+    let id = iam_domain::RatePolicyId::from_uuid(nil());
+    let policy = crate::rate_policy::rate_policy_state(id, iam_domain::RateKeyKind::Ip, 10, 1, 0);
+    let snapshot = GatewaySnapshot::at(version(1)).with_rate_policy(policy.clone());
+
+    assert_eq!(snapshot.rate_policy(id), Some(&policy));
+    assert!(
+        snapshot
+            .rate_policy(iam_domain::RatePolicyId::from_uuid(
+                Uuid::parse("00000000-0000-0000-0000-000000000009").unwrap()
+            ))
+            .is_none()
+    );
+}

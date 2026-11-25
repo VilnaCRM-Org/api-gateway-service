@@ -68,7 +68,8 @@ jobs:
           tool: sqlx-cli@0.9.0
           fallback: cargo-binstall
       # The compose broker and its topics: the Kafka adapter tests and the health scenarios read them (Story 7.3).
-      - run: make start-deps DEPS="kafka kafka-topics"
+      # The compose Valkey holds the shared rate counters that the gateway tests read (Story 12.2).
+      - run: make start-deps DEPS="kafka kafka-topics valkey"
       - id: run
         run: make tests-with-coverage doc-tests
       - if: ${{ !cancelled() }}
@@ -179,7 +180,8 @@ jobs:
           tool: sqlx-cli@0.9.0
           fallback: cargo-binstall
       # The compose broker and its topics for the integration suite (Story 7.3).
-      - run: make start-deps DEPS="kafka kafka-topics"
+      # The compose Valkey of the rate limit tests, started on every shard (Story 12.2).
+      - run: make start-deps DEPS="kafka kafka-topics valkey"
       - if: ${{ env.EVENT_NAME == 'pull_request' }}
         run: make mutation-tests-diff base_ref="origin/$BASE_REF" MUTANTS_SHARD="$SHARD"
       # A push judges the code its last commit changed (Story 1.8, NFR-2): every mutant reruns its crate's whole test

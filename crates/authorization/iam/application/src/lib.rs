@@ -9,6 +9,7 @@
 pub mod access_decision_service;
 #[cfg(test)]
 mod access_guard_fixtures;
+pub mod access_log;
 #[cfg(test)]
 mod access_validation_fixtures;
 pub mod administrator_safeguard;
@@ -55,6 +56,7 @@ pub mod query;
 #[cfg(test)]
 mod rate_policy_fixtures;
 pub mod rate_policy_values;
+pub mod read_your_writes;
 pub mod readiness;
 #[cfg(test)]
 mod rejected_attempt_fixtures;
@@ -93,6 +95,12 @@ mod user_role_fixtures;
 mod user_role_permission_fixtures;
 
 pub use access_decision_service::AccessDecisionService;
+pub use access_log::{
+    AccessFacts, AccessItem, AccessLogChannel, AccessLogCounters, AccessLogReceiver,
+    AccessLogWriter, AccessRecordBuilder, AccessRecorder, BATCH_VALIDATION_TEMPLATE,
+    DECISION_API_HOST, DecisionAccessLog, DecisionCall, DecisionTrace, RequestFacts, ResponseFacts,
+    RouteFacts, VALIDATION_TEMPLATE, VerdictFacts, WRITER_TICK, access_log_channel,
+};
 pub use administrator_safeguard::{AdministratorSafeguard, Admission, SafeguardPorts};
 pub use anti_entropy::{
     AntiEntropyAlert, AntiEntropyChecker, AntiEntropyCounters, AntiEntropyPorts,
@@ -167,7 +175,10 @@ pub use freshness::{
     FreshnessProber, FreshnessReading, FreshnessState, PEER_LAG_TOLERANCE, PeerLag, PeerLagTracker,
     ProberPorts, ProberSettings, ProofAttachment, ProofSink, WATCHDOG_INTERVAL,
 };
-pub use gateway::request_authorizer::{Authorization, RequestAuthorizer, RouteRequest};
+pub use gateway::rate_limit::{RateLimitGate, RateRequest, RateStage};
+pub use gateway::request_authorizer::{
+    Authorization, RequestAuthorizer, RouteRequest, TracedAuthorization,
+};
 pub use gateway::snapshot_reads::{CatalogueCache, LoadedSnapshotReads};
 pub use gateway_decision::{
     GatewayValidateAccessBatchQueryHandler, GatewayValidateAccessQueryHandler,
@@ -287,6 +298,7 @@ pub use query::validate_access_batch::{
     BatchCheck, ValidateAccessBatchQuery, ValidateAccessBatchQueryHandler,
 };
 pub use rate_policy_values::{RatePolicyPatch, RatePolicyValues};
+pub use read_your_writes::{BarrierVerdict, PolicyVersionBoard, ReadYourWritesBarrier};
 pub use readiness::{LIVENESS_LIMIT, NotReady, NotStarted, PodProbes, PodStatus};
 pub use rejected_attempt_writer::{FLUSH_INTERVAL, FlushOutcome, RejectedAttemptWriter};
 pub use required_key_resolver::RequiredKeyResolver;

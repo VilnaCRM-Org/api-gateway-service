@@ -36,8 +36,12 @@ services:
         max-file: '3'
 
   iam-gateway:
+    depends_on: !reset null
     environment:
       APP_ENV: prod
+      # The exact global quotas of the rate policies (Story 12.2): the Valkey of the deployment, or a Sentinel group as
+      # redis+sentinel://<host>:<port>,<host>:<port>/<service>.
+      RATE_LIMIT_STORE_URL: ${RATE_LIMIT_STORE_URL:?RATE_LIMIT_STORE_URL is required}
       # The pair is mounted from a directory of the host; the gateway reloads it when the files change.
       GATEWAY_TLS_CERT_FILE: ${GATEWAY_TLS_CERT_FILE:-/etc/service/tls/tls.crt}
       GATEWAY_TLS_KEY_FILE: ${GATEWAY_TLS_KEY_FILE:-/etc/service/tls/tls.key}
@@ -82,4 +86,7 @@ services:
     profiles: [local]
 
   kafka-topics:
+    profiles: [local]
+
+  valkey:
     profiles: [local]

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use iam_domain::{
     ChangeStatement, EntityVersion, IamChange, RateFallback, RateKeyKind, RatePolicy,
     RatePolicyDraft, RatePolicyFields, RatePolicyId, RatePolicyPageQuery, RatePolicyParts,
-    RatePolicyRepository, RatePolicyStatement, RepositoryError,
+    RatePolicyRepository, RatePolicyState, RatePolicyStatement, RepositoryError,
 };
 
 use crate::gateway_configuration::{gateway_change, random_time};
@@ -39,6 +39,39 @@ pub fn rate_policy(rng: &mut TestRng, name: &str) -> RatePolicy {
         updated_at: at,
         deleted_at: None,
     })
+}
+
+/// The state of a rate policy `id` that counts by `key_kind`, with the given `limit` per
+/// `period_seconds` and `burst`, falling back to the limit divided among the pods.
+///
+/// # Panics
+///
+/// Panics when the numbers are not a valid rate policy.
+#[expect(
+    clippy::expect_used,
+    reason = "a fixture with invalid numbers is a defect of the test"
+)]
+#[must_use]
+pub fn rate_policy_state(
+    id: RatePolicyId,
+    key_kind: RateKeyKind,
+    limit: i64,
+    period_seconds: i64,
+    burst: i64,
+) -> RatePolicyState {
+    RatePolicyState {
+        id,
+        fields: RatePolicyFields::new(RatePolicyDraft {
+            name: "limit".to_owned(),
+            key_kind,
+            limit,
+            period_seconds,
+            burst,
+            fallback: RateFallback::Divided,
+        })
+        .expect("a valid rate policy"),
+        version: EntityVersion::INITIAL,
+    }
 }
 
 /// A random committed change that runs `statements`.

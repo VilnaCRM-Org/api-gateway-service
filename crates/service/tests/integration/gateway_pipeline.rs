@@ -11,7 +11,9 @@ use axum::http::header::{AUTHORIZATION, COOKIE, WWW_AUTHENTICATE};
 use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse as _, Response};
 use http_body_util::BodyExt as _;
-use iam_application::{FreshnessState, RequestAuthorizer};
+use iam_application::{
+    FreshnessState, PolicyVersionBoard, ReadYourWritesBarrier, RequestAuthorizer,
+};
 use iam_domain::freshness::proof::FreshnessProof;
 use iam_domain::{
     AccessToken, AccessTokenParts, AccessTokenVerifier, AssignmentScope, AssignmentState,
@@ -129,7 +131,13 @@ impl UpstreamForwarder for RecordingForwarder {
                 snapshot_handles: self.view.snapshot_handles(),
             });
         assert!(!self.panics, "a panic injected into the request task");
-        Ok(StatusCode::OK.into_response())
+        let mut response = StatusCode::OK.into_response();
+        if let Some(version) = request.headers().get("x-test-write-version") {
+            response
+                .headers_mut()
+                .insert("iam-policy-version", version.clone());
+        }
+        Ok(response)
     }
 }
 
@@ -146,6 +154,23 @@ struct Gateway {
 /// `orders` that has the second. The user `USER` holds the key of `GET /api/users/{}`; the session
 /// `session-revoked` is revoked.
 fn snapshot(rng: &mut TestRng, orders_elsewhere: bool) -> GatewaySnapshot {
+    snapshot_registering(rng, orders_elsewhere, UpstreamHeld::Yes)
+}
+
+/// Whether a snapshot holds the upstream that its routes point at.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UpstreamHeld {
+    Yes,
+    No,
+}
+
+/// [`snapshot`], with the upstream `users` registered only when it is `held`: its routes point at
+/// an upstream that the snapshot does not hold otherwise.
+fn snapshot_registering(
+    rng: &mut TestRng,
+    orders_elsewhere: bool,
+    held: UpstreamHeld,
+) -> GatewaySnapshot {
     let users = UpstreamState::of(upstream(rng, "users", "users").parts());
     let roles = RoleId::parse(ROLE).unwrap();
     let granted = CompiledRoleSet::compile([(
@@ -160,8 +185,13 @@ fn snapshot(rng: &mut TestRng, orders_elsewhere: bool) -> GatewaySnapshot {
         users.id,
     );
     let orders_route = route_draft(HOST, "/api/orders", &[HttpMethod::Get], "users", users.id);
-    let mut snapshot = GatewaySnapshot::at(PolicyVersion::new(7).unwrap())
-        .with_upstream(users)
+    let base = GatewaySnapshot::at(PolicyVersion::new(7).unwrap());
+    let base = if held == UpstreamHeld::Yes {
+        base.with_upstream(users)
+    } else {
+        base
+    };
+    let mut snapshot = base
         .with_route(RouteState::of(route(rng, &users_route).parts()))
         .with_route(RouteState::of(route(rng, &orders_route).parts()))
         .with_catalogue(
@@ -188,6 +218,15 @@ fn snapshot(rng: &mut TestRng, orders_elsewhere: bool) -> GatewaySnapshot {
 }
 
 fn gateway_over(view: CountingPolicyView, panics: bool) -> Gateway {
+    gateway_barred(view, panics, None)
+}
+
+/// The gateway behind the read-your-writes barrier `barrier`, when there is one.
+fn gateway_barred(
+    view: CountingPolicyView,
+    panics: bool,
+    barrier: Option<Arc<ReadYourWritesBarrier>>,
+) -> Gateway {
     let view = Arc::new(view);
     let boot = Arc::new(FakeBootClock::starting_at(BootInstant::from_elapsed(
         Duration::from_secs(100),
@@ -236,6 +275,10 @@ fn gateway_over(view: CountingPolicyView, panics: bool) -> Gateway {
         Arc::new(authorizer),
         Arc::<RecordingForwarder>::clone(&forwarder),
     );
+    let pipeline = match barrier {
+        Some(barrier) => pipeline.with_read_your_writes(barrier),
+        None => pipeline,
+    };
     Gateway {
         router: router(pipeline),
         view,
@@ -319,6 +362,42 @@ async fn a_request_matching_no_route_is_a_404_and_reaches_no_forwarder(#[case] p
     let response = send(&gateway, request(path, Some(GOOD))).await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(gateway.forwarder.seen(), []);
+}
+
+#[tokio::test]
+async fn a_request_without_a_usable_host_matches_no_route() {
+    let gateway = gateway();
+    let without_host = Request::get("/api/users/1")
+        .header(AUTHORIZATION, format!("Bearer {GOOD}"))
+        .body(Body::empty())
+        .unwrap();
+    let unusable_host = Request::get("/api/users/1")
+        .header("host", "not a host")
+        .header(AUTHORIZATION, format!("Bearer {GOOD}"))
+        .body(Body::empty())
+        .unwrap();
+
+    for request in [without_host, unusable_host] {
+        assert_eq!(
+            send(&gateway, request).await.status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    assert_eq!(gateway.forwarder.seen(), []);
+}
+
+#[tokio::test]
+async fn a_route_whose_upstream_the_snapshot_lacks_is_a_502_and_reaches_no_forwarder() {
+    let mut rng = TestRng::from_env();
+    let gateway = gateway_over(
+        CountingPolicyView::serving(snapshot_registering(&mut rng, true, UpstreamHeld::No)),
+        false,
+    );
+
+    let response = send(&gateway, request("/api/users/1", Some(GOOD))).await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     assert_eq!(gateway.forwarder.seen(), []);
 }
 
@@ -506,4 +585,166 @@ async fn the_response_carries_the_request_id_of_the_request() {
     let response = send(&gateway, request).await;
 
     assert_eq!(response.headers().get("x-request-id").unwrap(), "req-42");
+}
+
+/// A policy view whose published version a test moves, as the barrier reads it.
+#[derive(Debug, Default)]
+struct MovingView {
+    held: Mutex<Option<PolicyVersion>>,
+}
+
+impl MovingView {
+    fn at(version: i64) -> Arc<Self> {
+        let view = Arc::new(Self::default());
+        view.publish(version);
+        view
+    }
+
+    fn publish(&self, version: i64) {
+        *self.held.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(PolicyVersion::new(version).unwrap());
+    }
+}
+
+impl PolicyView for MovingView {
+    fn current(&self) -> Option<Arc<dyn iam_domain::PolicySnapshot>> {
+        let held = (*self.held.lock().unwrap_or_else(PoisonError::into_inner))?;
+        Some(Arc::new(test_support::policy_view::EmptySnapshot::at(held)))
+    }
+}
+
+const WAIT: Duration = Duration::from_secs(1);
+
+/// A gateway whose pod has published version 7 and seen up to `seen`.
+fn barred(seen: i64) -> (Gateway, Arc<MovingView>, Arc<PolicyVersionBoard>) {
+    let mut rng = TestRng::from_env();
+    let published = MovingView::at(7);
+    let board = Arc::new(PolicyVersionBoard::new());
+    board.note_published(Some(PolicyVersion::new(7).unwrap()));
+    board.note_seen(PolicyVersion::new(seen).unwrap());
+    let barrier = Arc::new(ReadYourWritesBarrier::new(
+        Arc::<MovingView>::clone(&published),
+        Arc::clone(&board),
+        WAIT,
+    ));
+    let gateway = gateway_barred(
+        CountingPolicyView::serving(snapshot(&mut rng, true)),
+        false,
+        Some(barrier),
+    );
+    (gateway, published, board)
+}
+
+fn request_with(header: &str, value: &str) -> Request<Body> {
+    Request::get("/api/users/1")
+        .header("host", HOST)
+        .header(AUTHORIZATION, format!("Bearer {GOOD}"))
+        .header(header, value)
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_version_above_the_highest_seen_is_a_503_iam_propagating_at_once_and_loads_no_snapshot() {
+    let (gateway, _published, _board) = barred(7);
+
+    let response = send(&gateway, request_with("x-iam-min-policy-version", "8")).await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers().get("retry-after").unwrap(), "1");
+    assert_eq!(problem_type(response).await, "/problems/iam_propagating");
+    assert_eq!(gateway.view.loads(), 0);
+    assert_eq!(gateway.forwarder.seen(), []);
+}
+
+#[tokio::test]
+async fn a_version_the_pod_has_published_goes_through_the_pipeline() {
+    let (gateway, _published, _board) = barred(7);
+
+    let response = send(&gateway, request_with("x-iam-min-policy-version", "7")).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(gateway.forwarder.seen().len(), 1);
+}
+
+#[tokio::test]
+async fn a_request_without_a_version_never_meets_the_barrier() {
+    let (gateway, _published, _board) = barred(9);
+
+    let response = send(&gateway, request("/api/users/1", Some(GOOD))).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_seen_version_waits_for_its_publication_and_then_proceeds() {
+    let (gateway, published, board) = barred(8);
+    let waiting = tokio::spawn({
+        let gateway = gateway.router.clone();
+        async move {
+            gateway
+                .oneshot(request_with("x-iam-min-policy-version", "8"))
+                .await
+                .unwrap()
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(!waiting.is_finished());
+
+    published.publish(8);
+    board.note_published(Some(PolicyVersion::new(8).unwrap()));
+
+    assert_eq!(waiting.await.unwrap().status(), StatusCode::OK);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_seen_version_that_is_not_published_before_the_wait_ends_is_a_503_iam_propagating() {
+    let (gateway, _published, _board) = barred(8);
+
+    let response = send(&gateway, request_with("x-iam-min-policy-version", "8")).await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(problem_type(response).await, "/problems/iam_propagating");
+    assert_eq!(gateway.forwarder.seen(), []);
+}
+
+#[tokio::test]
+async fn a_write_response_sets_the_version_cookie_and_the_cookie_alone_brings_the_barrier() {
+    let (gateway, _published, _board) = barred(7);
+
+    let write = send(&gateway, request_with("x-test-write-version", "12")).await;
+
+    let cookie = write.headers().get("set-cookie").unwrap().to_str().unwrap();
+    assert_eq!(
+        cookie,
+        "__Host-iam_pv=12; Max-Age=60; Path=/; Secure; HttpOnly; SameSite=Strict"
+    );
+    let follow_up = send(&gateway, request_with("cookie", "__Host-iam_pv=12")).await;
+    assert_eq!(follow_up.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(problem_type(follow_up).await, "/problems/iam_propagating");
+}
+
+#[tokio::test]
+async fn a_response_without_a_policy_version_sets_no_cookie() {
+    let (gateway, _published, _board) = barred(7);
+
+    let response = send(&gateway, request("/api/users/1", Some(GOOD))).await;
+
+    assert!(response.headers().get("set-cookie").is_none());
+}
+
+#[tokio::test]
+async fn a_former_holder_naming_the_version_of_its_revocation_is_denied_and_never_forwarded() {
+    let (gateway, _published, _board) = barred(7);
+    let request = Request::get("/api/users/1")
+        .header("host", HOST)
+        .header(AUTHORIZATION, format!("Bearer {OTHER}"))
+        .header("x-iam-min-policy-version", "7")
+        .body(Body::empty())
+        .unwrap();
+
+    let response = send(&gateway, request).await;
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(gateway.forwarder.seen(), []);
 }

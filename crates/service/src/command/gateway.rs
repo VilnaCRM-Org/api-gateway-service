@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::serve::Listener;
-use iam_application::PodProbes;
+use iam_application::{PodProbes, ReadYourWritesBarrier};
 use iam_domain::PolicyView;
 use shared_domain::{BoxError, Clock};
 use tokio::net::TcpListener;
@@ -25,6 +25,7 @@ use super::serve::{
 use crate::bootstrap::gateway::decision::{self, DecisionPorts};
 use crate::bootstrap::gateway::listener::{self, ReloadableCertificate, TlsListener};
 use crate::bootstrap::gateway::shedding::{self, ConnectionSignals};
+use crate::bootstrap::gateway::upstream::HyperUpstreamForwarder;
 use crate::bootstrap::gateway::{self, GatewayAdapters, internal, pipeline, policy, probe};
 use crate::bootstrap::{TaskStop, TaskSupervisor};
 use crate::config::{GatewayConfig, TlsFiles};
@@ -92,6 +93,7 @@ where
 fn spawn_shedding_server<L>(listener: L, router: Router, signals: ConnectionSignals) -> Server
 where
     L: Listener,
+    L::Addr: Into<SocketAddr>,
 {
     tokio::spawn(shedding::serve(listener, router, signals))
 }
@@ -124,8 +126,8 @@ fn start_public(
     Ok(spawn_shedding_server(secured, router, signals))
 }
 
-/// The router of the public listener: with a freshness state it is the request pipeline of Story
-/// 10.2, without one every request is answered 503 `iam_stale`.
+/// The router of the public listener: with a freshness state it is the request pipeline that hands
+/// authorized requests to `forwarder`, without one every request is answered 503 `iam_stale`.
 ///
 /// # Errors
 ///
@@ -134,14 +136,36 @@ fn public_router(
     config: &GatewayConfig,
     policy: &policy::PolicyAdapters,
     clock: &Arc<dyn Clock>,
+    forwarder: Arc<pipeline::Forwarder>,
+    access_log: Arc<pipeline::PipelineAccessLog>,
 ) -> Result<Router, BoxError> {
     let Some(freshness) = policy.freshness.as_ref() else {
         return Ok(listener::stale_router());
     };
     let view: Arc<dyn PolicyView> =
         Arc::<iam_infrastructure::ArcSwapPolicySnapshot>::clone(&policy.cell);
-    let pipeline = pipeline::from_config(config, view, Arc::clone(&freshness.state), clock)?;
+    let pipeline =
+        pipeline::from_config(config, view, Arc::clone(&freshness.state), clock, forwarder)?;
+    let pipeline = pipeline
+        .with_read_your_writes(read_your_writes_barrier(config, policy))
+        .with_rate_limits(pipeline::gate_from_config(config))
+        .with_access_log(access_log);
     Ok(pipeline::router(pipeline))
+}
+
+/// The read-your-writes barrier of the pod (Story 10.10): over the published snapshot and the
+/// versions the apply thread announces, waiting at most `RYW_MAX_WAIT`.
+fn read_your_writes_barrier(
+    config: &GatewayConfig,
+    policy: &policy::PolicyAdapters,
+) -> Arc<ReadYourWritesBarrier> {
+    let view: Arc<dyn PolicyView> =
+        Arc::<iam_infrastructure::ArcSwapPolicySnapshot>::clone(&policy.cell);
+    Arc::new(ReadYourWritesBarrier::new(
+        view,
+        Arc::clone(&policy.versions),
+        config.ryw_max_wait,
+    ))
 }
 
 /// The router of the internal listener: with a freshness state it serves `/internal/freshness`.
@@ -177,7 +201,8 @@ fn decision_router(
         freshness: Arc::clone(&freshness.state),
         clock,
     };
-    Ok(decision::router(config, ports)?)
+    let barrier = read_your_writes_barrier(config, policy);
+    Ok(decision::router_with_barrier(config, ports, &barrier)?)
 }
 
 /// The router of the probe listener: with a freshness state it serves the three probes of the pod
@@ -210,7 +235,15 @@ fn start_servers(
     stopping: &watch::Receiver<bool>,
 ) -> Result<Vec<Server>, BoxError> {
     let policy = &adapters.policy;
-    let public_router = public_router(config, policy, &adapters.clock)?;
+    let forwarder = HyperUpstreamForwarder::new(
+        adapters.endpoints.directory.view(),
+        config.endpoints.zone_aware,
+        Arc::clone(&adapters.rng),
+    );
+    let access_log = adapters.access_log.pipeline_step(&adapters.clock);
+    let forwarder = Arc::new(forwarder);
+    let built = public_router(config, policy, &adapters.clock, forwarder, access_log);
+    let public_router = built?;
     let internal_router = internal_router(policy);
     let decision_router = decision_router(config, policy, Arc::clone(&adapters.clock))?;
     let tls = config.tls.as_ref();
@@ -337,6 +370,7 @@ async fn gateway(config: &GatewayConfig) -> Result<Shutdown, BoxError> {
     };
     stop.send_replace(true);
     let shutdown = drain(servers, tasks, config.shutdown_grace_period).await;
+    adapters.access_log.finish();
     outcome.map(|()| shutdown).map_err(BoxError::from)
 }
 
