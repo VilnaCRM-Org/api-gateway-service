@@ -49,9 +49,17 @@ const DOCUMENT: &str = "{ orders { id total } }";
 #[derive(Debug, Default)]
 struct Upstream {
     bodies: Mutex<Vec<Bytes>>,
+    uris: Mutex<Vec<String>>,
 }
 
 impl Upstream {
+    fn uris(&self) -> Vec<String> {
+        self.uris
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     fn bodies(&self) -> Vec<Bytes> {
         self.bodies
             .lock()
@@ -70,6 +78,10 @@ impl UpstreamForwarder for Upstream {
         _target: UpstreamTarget,
         request: Request<Body>,
     ) -> Result<Response, ForwardError> {
+        self.uris
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(request.uri().to_string());
         let body = request.into_body().collect().await.unwrap().to_bytes();
         self.bodies
             .lock()
@@ -146,9 +158,23 @@ fn snapshot(grants: &[&str]) -> GatewaySnapshot {
     );
     large_route.flags = flags;
     large_route.body_limit = IAM_LIMIT;
+    let mut anonymous_route = route_draft(
+        HOST,
+        "/anon/graphql",
+        &[HttpMethod::Post],
+        "orders",
+        users.id,
+    );
+    anonymous_route.flags = flags.with(RouteFlag::Anonymous, true);
+    anonymous_route.body_limit = DEFAULT_LIMIT;
+    let mut rest_route = route_draft(HOST, "/api/rest", &[HttpMethod::Post], "orders", users.id);
+    rest_route.flags = RouteFlags::default().with(RouteFlag::Anonymous, true);
+    rest_route.body_limit = DEFAULT_LIMIT;
     GatewaySnapshot::at(PolicyVersion::new(7).unwrap())
         .with_upstream(users)
         .with_route(RouteState::of(route(&mut rng, &default_route).parts()))
+        .with_route(RouteState::of(route(&mut rng, &anonymous_route).parts()))
+        .with_route(RouteState::of(route(&mut rng, &rest_route).parts()))
         .with_route(RouteState::of(route(&mut rng, &large_route).parts()))
         .with_catalogue(ServiceName::new("orders").unwrap(), orders())
         .with_assignments(
@@ -415,4 +441,39 @@ async fn a_subject_over_its_parse_budget_gets_429_while_cached_documents_are_sti
     assert_eq!(first.status(), StatusCode::OK);
     assert_eq!(over.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(cached.status(), StatusCode::OK);
+}
+
+#[rstest]
+#[case::leading_space("%20query=x")]
+#[case::literal_leading_space("+query=x")]
+#[case::array("query[]=x")]
+#[case::upper_case("QUERY=x")]
+#[case::percent_encoded("%71uery=x")]
+#[case::harmless("foo=1")]
+#[tokio::test]
+async fn a_graphql_route_forwards_no_query_string_whatever_it_holds(
+    #[case] query: &str,
+    #[values("/api/graphql", "/anon/graphql")] path: &str,
+) {
+    let gateway = gateway(&["gql:orders:*"]);
+    let target = format!("{path}?{query}");
+
+    let response = send(
+        &gateway,
+        post(&target, "application/json", envelope(DOCUMENT)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(gateway.upstream.uris(), [path]);
+}
+
+#[tokio::test]
+async fn a_rest_route_still_forwards_its_query_string() {
+    let gateway = gateway(&["gql:orders:*"]);
+
+    let response = send(&gateway, post("/api/rest?foo=1", "application/json", "{}")).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(gateway.upstream.uris(), ["/api/rest?foo=1"]);
 }

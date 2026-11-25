@@ -402,16 +402,14 @@ impl Pipeline {
             route,
             request: &request,
         };
-        if route.fields.flags().graphql() {
-            graphql::query_string(parts)?;
-        }
         let (principal, body) = self.principal_and_body(&matched, body, seen).await?;
         let upstream = snapshot
             .upstream_by_id(route.fields.upstream_id())
             .ok_or(Refusal::Failed(ForwardError::NoEndpoint))?;
         Ok(Admitted {
             target: target_of(upstream, route),
-            uri: forwarded_uri(&path, parts.uri.query()).ok_or(Refusal::MalformedPath)?,
+            uri: forwarded_uri(&path, upstream_query(route.fields.flags().graphql(), parts))
+                .ok_or(Refusal::MalformedPath)?,
             principal,
             version: snapshot.version().value(),
             body,
@@ -652,6 +650,13 @@ fn target_of(upstream: &iam_domain::UpstreamState, route: &RouteState) -> Upstre
     UpstreamTarget::new(upstream.name.clone(), route.id)
         .with_settings(&upstream.settings)
         .with_route(&route.fields)
+}
+
+/// The query string the upstream receives: none on a GraphQL route, whose operations travel in the
+/// body only. Upstream frameworks normalise parameter names (leading spaces, `query[]`, `.`), so no
+/// refusal list can tell which spelling an upstream would read as an operation; nothing is forwarded.
+fn upstream_query(graphql: bool, parts: &Parts) -> Option<&str> {
+    if graphql { None } else { parts.uri.query() }
 }
 
 /// The target of the upstream request: the canonical re-encoded path, so that the single decoding

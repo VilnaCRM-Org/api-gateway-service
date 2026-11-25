@@ -56,6 +56,17 @@ fn the_upstream_target_is_the_canonical_path_with_the_query_as_it_came() {
     );
 }
 
+#[rstest::rstest]
+#[case("/g?%20query=x&foo=1")]
+#[case("/g?query[]=x")]
+#[case("/g")]
+fn a_graphql_route_forwards_no_query_string_and_a_rest_route_keeps_it(#[case] uri: &str) {
+    let request = parts(None, uri);
+
+    assert_eq!(upstream_query(true, &request), None);
+    assert_eq!(upstream_query(false, &request), request.uri.query());
+}
+
 #[test]
 fn a_query_that_is_no_uri_has_no_target() {
     let path = PathNormalizer::normalize("/api").unwrap();
