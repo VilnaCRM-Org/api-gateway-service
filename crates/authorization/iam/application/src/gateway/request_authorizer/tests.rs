@@ -418,3 +418,120 @@ async fn a_traced_allow_through_a_wildcard_grant_is_noted() {
     assert_eq!(traced.authorization, Authorization::Allowed(version()));
     assert!(traced.trace.wildcard);
 }
+
+const AUDITED_KEY: &str = "rest:users:DELETE /api/users/{}";
+const ORDINARY_KEY: &str = "rest:users:GET /api/users/{}";
+
+fn audited_snapshot(grants: &[&str], sensitive: bool) -> Arc<dyn PolicySnapshot> {
+    let role = RoleId::parse(ROLE).unwrap();
+    let set = CompiledRoleSet::compile(
+        grants
+            .iter()
+            .map(|raw| (PermissionGrant::parse(raw).unwrap(), GrantStatus::Active)),
+    );
+    let audited = CatalogueEntryState {
+        key: AUDITED_KEY.to_owned(),
+        sensitive,
+        audit_always: !sensitive,
+    };
+    Arc::new(
+        GatewaySnapshot::at(version())
+            .with_assignments(
+                iam_domain::SubjectRef::user(Uuid::parse(USER).unwrap()),
+                vec![AssignmentState {
+                    role,
+                    scope: AssignmentScope::Global,
+                    expires_at_micros: None,
+                }],
+            )
+            .with_role_set(role, set)
+            .with_catalogue(
+                ServiceName::new("users").unwrap(),
+                vec![audited, entry(ORDINARY_KEY)],
+            ),
+    )
+}
+
+fn gated(open: bool) -> RequestAuthorizer {
+    let (authorizer, _recorded) = authorizer();
+    let clock = Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH));
+    let gate = Arc::new(crate::access_log::AuditGate::new(
+        clock,
+        std::time::Duration::from_secs(5),
+        10,
+    ));
+    if !open {
+        gate.mark_channel_full();
+    }
+    authorizer.with_audit_gate(gate)
+}
+
+#[tokio::test]
+async fn a_closed_audit_gate_refuses_an_allow_on_an_always_audit_key() {
+    let snapshot = audited_snapshot(&[AUDITED_KEY], false);
+
+    let refused = authorize(
+        &gated(false),
+        &snapshot,
+        "users",
+        HttpMethod::Delete,
+        "/api/users/42",
+    )
+    .await;
+    let served = authorize(
+        &gated(true),
+        &snapshot,
+        "users",
+        HttpMethod::Delete,
+        "/api/users/42",
+    )
+    .await;
+
+    assert_eq!(refused, Authorization::AuditUnavailable);
+    assert_eq!(served, Authorization::Allowed(version()));
+}
+
+#[tokio::test]
+async fn a_closed_audit_gate_refuses_an_allow_on_a_sensitive_key() {
+    let snapshot = audited_snapshot(&[AUDITED_KEY], true);
+
+    let refused = authorize(
+        &gated(false),
+        &snapshot,
+        "users",
+        HttpMethod::Delete,
+        "/api/users/42",
+    )
+    .await;
+
+    assert_eq!(refused, Authorization::AuditUnavailable);
+}
+
+#[tokio::test]
+async fn a_closed_audit_gate_leaves_ordinary_keys_and_denials_alone() {
+    let snapshot = audited_snapshot(&[ORDINARY_KEY], false);
+    let closed = gated(false);
+
+    let ordinary = authorize(
+        &closed,
+        &snapshot,
+        "users",
+        HttpMethod::Get,
+        "/api/users/42",
+    )
+    .await;
+    let denied = authorize(
+        &closed,
+        &snapshot,
+        "users",
+        HttpMethod::Delete,
+        "/api/users/42",
+    )
+    .await;
+
+    assert_eq!(ordinary, Authorization::Allowed(version()));
+    assert_eq!(
+        denied,
+        Authorization::Denied(DecisionReason::PermissionMissing)
+    );
+}

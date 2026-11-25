@@ -238,9 +238,10 @@ jobs:
           fallback: cargo-binstall
 
       # The compose broker for the integration suite: no test reads it since Story 1.7; kept for Epic 7. The compose
-      # Valkey holds the shared rate counters of the rate limit tests (Story 12.2).
-      - name: Start the compose Kafka broker and Valkey
-        run: make start-deps DEPS="kafka valkey"
+      # Valkey holds the shared rate counters of the rate limit tests (Story 12.2) and Loki the audit lane of the access
+      # log (Story 14.2).
+      - name: Start the compose Kafka broker, Valkey and Loki
+        run: make start-deps DEPS="kafka valkey loki"
 
       - name: Run the mutation shard
         id: mutation

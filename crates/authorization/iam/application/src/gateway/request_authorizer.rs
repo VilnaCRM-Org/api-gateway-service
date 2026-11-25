@@ -1,6 +1,6 @@
 //! The authorization of a REST request that the gateway matched to a route (FR-4, FR-13, FR-59).
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use iam_domain::{
     AccessCheck, AccessTarget, DecisionOutcome, DecisionReason, HttpMethod, NormalizedPath,
@@ -10,7 +10,7 @@ use shared_domain::{Clock, CommandBus, UuidGenerator};
 
 use super::snapshot_reads::{CatalogueCache, LoadedSnapshotReads};
 use crate::access_decision_service::AccessDecisionService;
-use crate::access_log::DecisionTrace;
+use crate::access_log::{AuditGate, DecisionTrace};
 use crate::error::IamError;
 use crate::iam_access_guard::{IamAccessGuard, OperationRequest};
 use crate::operation_rules::OperationRules;
@@ -41,6 +41,9 @@ pub enum Authorization {
     Denied(DecisionReason),
     /// The decision could not be made on the policy that was read: the request fails closed.
     Unavailable,
+    /// The request is on an always-audit or sensitive key and the audit lane cannot take its
+    /// record: audit-or-deny refuses it (Story 14.2).
+    AuditUnavailable,
 }
 
 /// What authorizing a request found, with the facts of the decision that the access log records.
@@ -74,6 +77,11 @@ impl From<Authorization> for TracedAuthorization {
 /// other request is decided by the [`AccessDecisionService`] on the key of the matched operation.
 /// Both read the snapshot through [`LoadedSnapshotReads`].
 ///
+/// A request that the decision allows on an always-audit or sensitive key is refused with
+/// [`Authorization::AuditUnavailable`] while the [`AuditGate`] of [`Self::with_audit_gate`] is
+/// closed: the audit lane is full, or its oldest record has waited for the log store longer than
+/// `ACCESS_LOG_AUDIT_MAX_PENDING`.
+///
 /// A row of the decision API whose rule depends on the services that the body names is decided
 /// without the body, so a caller needs `iam:validate:*` for it through the gateway.
 #[derive(Debug)]
@@ -83,6 +91,7 @@ pub struct RequestAuthorizer {
     ids: Arc<dyn UuidGenerator>,
     commands: Arc<dyn CommandBus>,
     cache: Arc<CatalogueCache>,
+    audit_gate: OnceLock<Arc<AuditGate>>,
 }
 
 impl RequestAuthorizer {
@@ -101,7 +110,36 @@ impl RequestAuthorizer {
             ids,
             commands,
             cache: Arc::new(CatalogueCache::new()),
+            audit_gate: OnceLock::new(),
         }
+    }
+
+    /// The same authorizer under audit-or-deny: while `gate` is closed it refuses what it would
+    /// allow on an always-audit or sensitive key.
+    #[must_use]
+    pub fn with_audit_gate(self, gate: Arc<AuditGate>) -> Self {
+        self.install_audit_gate(gate);
+        self
+    }
+
+    /// Puts the authorizer, which the pipeline already shares, under audit-or-deny. The first gate
+    /// installed stays; a second one is ignored.
+    pub fn install_audit_gate(&self, gate: Arc<AuditGate>) {
+        drop(self.audit_gate.set(gate));
+    }
+
+    /// Audit-or-deny: an allow on a key whose record must be audited becomes
+    /// [`Authorization::AuditUnavailable`] while the audit lane cannot take the record.
+    fn audited(&self, traced: TracedAuthorization) -> TracedAuthorization {
+        let recorded = traced.trace.flags.is_audit_always() || traced.trace.flags.is_sensitive();
+        let closed = self.audit_gate.get().is_some_and(|gate| !gate.admits());
+        if recorded && closed && matches!(traced.authorization, Authorization::Allowed(_)) {
+            return TracedAuthorization {
+                authorization: Authorization::AuditUnavailable,
+                ..traced
+            };
+        }
+        traced
     }
 
     /// Decides whether `principal` may send `request`.
@@ -133,11 +171,11 @@ impl RequestAuthorizer {
             let (outcome, trace) = decisions
                 .decide_traced_for_subject(subject_of(principal), &check)
                 .await;
-            TracedAuthorization {
+            self.audited(TracedAuthorization {
                 authorization: Self::authorization_of(&outcome, version),
                 trace,
                 denied: outcome.denied().to_vec(),
-            }
+            })
         }
     }
 

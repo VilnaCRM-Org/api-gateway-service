@@ -9,9 +9,9 @@ use serde_json::{Map, Value, json};
 
 /// Writes every entry as one line of JSON to its writer, stdout by default.
 ///
-/// Until the Loki push sink of Story 14.2 exists, the records of the audit lane are written here
-/// too, with the field `lane` set to `audit`. A write that fails is logged and the entry is lost:
-/// the access log never delays or changes a decision.
+/// In production it takes the ordinary lane only: the audit lane goes to the Loki push sink of
+/// Story 14.2, so no audit-lane entry is written to stdout. A write that fails is logged and the
+/// entry is lost: the access log never delays or changes a decision.
 #[derive(Debug)]
 pub struct StdoutAccessLogSink<W: Write + Send + std::fmt::Debug = Stdout> {
     writer: Mutex<W>,

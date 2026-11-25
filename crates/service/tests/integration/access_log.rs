@@ -44,28 +44,29 @@ use test_support::upstream::upstream;
 use tokio::time::Instant;
 use tower::ServiceExt as _;
 
-const HOST: &str = "api.example.test";
+pub(crate) const HOST: &str = "api.example.test";
 const USER: &str = "3d9b7c1e-5a2f-4e8d-b6c0-9f1e2d3c4b5a";
 const OTHER_USER: &str = "7a1c5e3b-2d4f-4a6b-8c9d-0e1f2a3b4c5d";
 const ROLE: &str = "0190f2a8-7b3c-7d4e-8f10-1234567890cd";
-const NOW: u64 = 1_800_000_000;
-const GOOD: &str = "good.token.value";
-const OTHER: &str = "other.token.value";
+pub(crate) const NOW: u64 = 1_800_000_000;
+pub(crate) const GOOD: &str = "good.token.value";
+pub(crate) const OTHER: &str = "other.token.value";
 
-fn at(seconds: u64) -> SystemTime {
+pub(crate) fn at(seconds: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH
         .checked_add(Duration::from_secs(seconds))
         .unwrap()
 }
 
-fn token(user: &str, session: &str) -> AccessToken {
+/// A token of `user` that is valid at `now` seconds after the epoch.
+fn token(user: &str, session: &str, now: u64) -> AccessToken {
     AccessToken::new(AccessTokenParts {
         subject: SubjectId::User(Uuid::parse(user).unwrap()),
         session: Some(SessionId::new(session).unwrap()),
         token_id: TokenId::new("token-1").unwrap(),
         roles: vec!["ROLE_USER".to_owned()],
-        issued_at: at(NOW - 60),
-        expires_at: at(NOW + 900),
+        issued_at: at(now.saturating_sub(60)),
+        expires_at: at(now.saturating_add(900)),
     })
 }
 
@@ -174,6 +175,30 @@ struct Harness {
 }
 
 fn harness(rate: SampleRate, seed: u64) -> Harness {
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock::at(at(NOW)));
+    let sink = Arc::new(RecordingAccessLogSink::new());
+    let access = AccessLogAdapters::start(
+        &AccessLogSettings {
+            allow_sample_rate: rate,
+            class_budgets: ClassBudgets::default(),
+            channel_capacity: 65_536,
+        },
+        Arc::new(FakeRng::seeded(seed)),
+        Arc::clone(&clock),
+        Arc::<RecordingAccessLogSink>::clone(&sink),
+    )
+    .unwrap();
+    let router = pipeline_router(&clock, &access);
+    Harness {
+        router,
+        sink,
+        access,
+    }
+}
+
+/// The public pipeline of the snapshot above, deciding on `clock` and recording through `access`,
+/// whose audit gate it is under (audit-or-deny).
+pub(crate) fn pipeline_router(clock: &Arc<dyn Clock>, access: &AccessLogAdapters) -> Router {
     let mut rng = TestRng::from_env();
     let view = Arc::new(test_support::gateway_snapshot::CountingPolicyView::serving(
         snapshot(&mut rng),
@@ -192,12 +217,16 @@ fn harness(rate: SampleRate, seed: u64) -> Harness {
         },
         PolicyVersion::new(7).unwrap(),
     );
-    let clock: Arc<dyn Clock> = Arc::new(FixedClock::at(at(NOW)));
     let policy: Arc<dyn PolicyView> = view;
+    let now = clock
+        .now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let verifier: Arc<dyn AccessTokenVerifier> = Arc::new(
         FakeAccessTokenVerifier::new()
-            .accepting(GOOD, token(USER, "session-1"))
-            .accepting(OTHER, token(OTHER_USER, "session-2"))
+            .accepting(GOOD, token(USER, "session-1", now))
+            .accepting(OTHER, token(OTHER_USER, "session-2", now))
             .rejecting("expired.token.value", TokenRejection::Expired),
     );
     let memo: Arc<dyn TokenMemo> = Arc::new(MokaTokenMemo::new(
@@ -205,7 +234,7 @@ fn harness(rate: SampleRate, seed: u64) -> Harness {
             capacity: 1_000,
             max_ttl: Duration::from_mins(5),
         },
-        Arc::clone(&clock),
+        Arc::clone(clock),
     ));
     let revocations: Arc<dyn RevocationView> =
         Arc::new(SnapshotRevocationView::new(Arc::clone(&policy)));
@@ -214,22 +243,10 @@ fn harness(rate: SampleRate, seed: u64) -> Harness {
     let commands: Arc<dyn CommandBus> = Arc::new(UnauditedCommands);
     let authorizer = RequestAuthorizer::new(
         token_port,
-        Arc::clone(&clock),
+        Arc::clone(clock),
         Arc::new(SequenceUuidGenerator::starting_at(1)),
         commands,
     );
-    let sink = Arc::new(RecordingAccessLogSink::new());
-    let access = AccessLogAdapters::start(
-        &AccessLogSettings {
-            allow_sample_rate: rate,
-            class_budgets: ClassBudgets::default(),
-            channel_capacity: 65_536,
-        },
-        Arc::new(FakeRng::seeded(seed)),
-        Arc::clone(&clock),
-        Arc::<RecordingAccessLogSink>::clone(&sink),
-    )
-    .unwrap();
     let pipeline = Pipeline::new(
         policy,
         freshness,
@@ -237,15 +254,11 @@ fn harness(rate: SampleRate, seed: u64) -> Harness {
         Arc::new(authorizer),
         Arc::new(Ok200),
     )
-    .with_access_log(access.pipeline_step(&clock));
-    Harness {
-        router: router(pipeline),
-        sink,
-        access,
-    }
+    .with_access_log(access.pipeline_step(clock));
+    router(pipeline)
 }
 
-fn request(path: &str, token: Option<&str>) -> Request<Body> {
+pub(crate) fn request(path: &str, token: Option<&str>) -> Request<Body> {
     let mut builder = Request::get(path).header("host", HOST);
     if let Some(token) = token {
         builder = builder.header(AUTHORIZATION, format!("Bearer {token}"));

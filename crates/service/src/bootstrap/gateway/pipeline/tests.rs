@@ -213,6 +213,22 @@ fn an_authorization_that_cannot_be_decided_is_stale() {
         permitted(Authorization::Unavailable),
         Err(Refusal::Stale)
     ));
+    assert!(matches!(
+        permitted(Authorization::AuditUnavailable),
+        Err(Refusal::AuditUnavailable)
+    ));
+}
+
+#[tokio::test]
+async fn an_unavailable_audit_lane_is_a_503_problem_that_asks_to_retry() {
+    let response = Response::from(Refusal::AuditUnavailable);
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers().get(RETRY_AFTER).unwrap(), "1");
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let problem: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(problem["type"], TYPE_AUDIT_UNAVAILABLE);
+    assert_eq!(problem["status"], 503);
 }
 
 #[tokio::test]
@@ -259,6 +275,7 @@ fn every_refusal_has_the_reason_that_the_access_record_names() {
     let cases = [
         (Refusal::Stale, None, DecisionReason::Unavailable),
         (Refusal::Propagating, None, DecisionReason::Unavailable),
+        (Refusal::AuditUnavailable, None, DecisionReason::Unavailable),
         (
             Refusal::MalformedPath,
             None,

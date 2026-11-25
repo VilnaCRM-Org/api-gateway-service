@@ -214,3 +214,187 @@ fn an_unbudgeted_class_has_never_used_any_of_a_window() {
     assert_eq!(window.used(AccessClass::Error), 0);
     assert_eq!(window.used(AccessClass::Audit), 0);
 }
+
+struct Tracked {
+    writer: AccessLogWriter,
+    sink: Arc<RecordingAccessLogSink>,
+    clock: Arc<ManualClock>,
+    gate: Arc<crate::access_log::AuditGate>,
+    counters: Arc<AccessLogCounters>,
+}
+
+fn tracked(capacity: usize) -> Tracked {
+    let sink = Arc::new(RecordingAccessLogSink::withholding());
+    let clock = Arc::new(ManualClock::at(at(1_800_000_000)));
+    let gate = Arc::new(crate::access_log::AuditGate::new(
+        Arc::<ManualClock>::clone(&clock),
+        Duration::from_secs(5),
+        capacity,
+    ));
+    let counters = Arc::new(AccessLogCounters::new());
+    let writer = AccessLogWriter::new(
+        Arc::<RecordingAccessLogSink>::clone(&sink),
+        Arc::<ManualClock>::clone(&clock),
+        ClassBudgets::new(1_000, 1_000),
+    )
+    .with_audit_gate(Arc::clone(&gate), Arc::clone(&counters));
+    Tracked {
+        writer,
+        sink,
+        clock,
+        gate,
+        counters,
+    }
+}
+
+fn audit_item(counter: u32) -> crate::access_log::AccessItem {
+    let mut facts = denied(DecisionReason::PermissionMissing, 403);
+    facts.decision_id = decision_id(counter);
+    item(AccessLane::Audit, AccessClass::Audit, facts)
+}
+
+#[test]
+fn unacknowledged_audit_records_are_pending_until_the_sink_acknowledges_them() {
+    let Tracked {
+        mut writer,
+        sink,
+        clock,
+        gate,
+        ..
+    } = tracked(100);
+
+    writer.write(audit_item(1));
+    clock.advance(Duration::from_secs(2));
+    writer.write(audit_item(2));
+    writer.write(audit_item(3));
+
+    assert_eq!(gate.pending(), 3);
+    assert_eq!(gate.oldest_wait(), Duration::from_secs(2));
+    sink.acknowledge(2);
+    writer.tick();
+    assert_eq!(gate.pending(), 1);
+    assert_eq!(gate.oldest_wait(), Duration::ZERO);
+    sink.acknowledge(1);
+    writer.tick();
+    assert_eq!(gate.pending(), 0);
+    assert!(gate.admits());
+}
+
+#[test]
+fn an_acknowledged_batch_is_not_counted_twice() {
+    let Tracked {
+        mut writer,
+        sink,
+        gate,
+        ..
+    } = tracked(100);
+    writer.write(audit_item(1));
+    writer.write(audit_item(2));
+    sink.acknowledge(2);
+    writer.tick();
+
+    writer.tick();
+    writer.write(audit_item(3));
+
+    assert_eq!(gate.pending(), 1);
+}
+
+#[test]
+fn an_oldest_record_that_waits_beyond_the_bound_closes_the_gate_and_the_acknowledgement_opens_it() {
+    let Tracked {
+        mut writer,
+        sink,
+        clock,
+        gate,
+        ..
+    } = tracked(100);
+    writer.write(audit_item(1));
+
+    clock.advance(Duration::from_secs(6));
+    assert!(!gate.admits());
+    sink.acknowledge(1);
+    writer.tick();
+
+    assert!(gate.admits());
+}
+
+#[test]
+fn an_audit_record_beyond_the_capacity_is_dropped_and_counted_and_the_gate_closes() {
+    let Tracked {
+        mut writer,
+        sink,
+        gate,
+        counters,
+        ..
+    } = tracked(2);
+
+    writer.write(audit_item(1));
+    writer.write(audit_item(2));
+    writer.write(audit_item(3));
+
+    assert_eq!(sink.records(AccessLane::Audit).len(), 2);
+    assert_eq!(
+        counters.dropped_count(AccessLane::Audit, AccessClass::Audit),
+        1
+    );
+    assert!(!gate.admits());
+}
+
+#[test]
+fn a_sink_without_acknowledgements_leaves_nothing_pending() {
+    let sink = Arc::new(RecordingAccessLogSink::new());
+    let clock = Arc::new(ManualClock::at(at(1_800_000_000)));
+    let gate = Arc::new(crate::access_log::AuditGate::new(
+        Arc::<ManualClock>::clone(&clock),
+        Duration::from_secs(5),
+        10,
+    ));
+    let mut writer = AccessLogWriter::new(
+        Arc::<RecordingAccessLogSink>::clone(&sink),
+        clock,
+        ClassBudgets::new(1_000, 1_000),
+    )
+    .with_audit_gate(Arc::clone(&gate), Arc::new(AccessLogCounters::new()));
+
+    writer.write(audit_item(1));
+
+    assert_eq!(gate.pending(), 0);
+}
+
+#[test]
+fn ordinary_lane_records_are_never_pending() {
+    let Tracked {
+        mut writer, gate, ..
+    } = tracked(10);
+
+    writer.write(error_item(1, 100, 503));
+
+    assert_eq!(gate.pending(), 0);
+}
+
+#[test]
+fn audit_records_are_dropped_and_counted_while_the_oldest_waits_beyond_the_bound() {
+    let Tracked {
+        mut writer,
+        sink,
+        clock,
+        gate,
+        counters,
+    } = tracked(100);
+    writer.write(audit_item(1));
+    clock.advance(Duration::from_secs(6));
+
+    writer.write(audit_item(2));
+    writer.write(audit_item(3));
+
+    assert_eq!(sink.records(AccessLane::Audit).len(), 1);
+    assert_eq!(
+        counters.dropped_count(AccessLane::Audit, AccessClass::Audit),
+        2
+    );
+    sink.acknowledge(1);
+    writer.tick();
+    assert!(gate.admits());
+    writer.write(audit_item(4));
+    assert_eq!(sink.records(AccessLane::Audit).len(), 2);
+}

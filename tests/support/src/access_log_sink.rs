@@ -1,12 +1,19 @@
 //! Access log sink double.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use iam_domain::{AccessAggregate, AccessEntry, AccessLane, AccessLogSink, AccessRecord};
 
 /// Remembers every entry it is asked to write, with its lane, in order.
+///
+/// A sink made with [`Self::withholding`] also keeps the account of audit acknowledgements, which
+/// the test advances with [`Self::acknowledge`]; any other sink keeps none.
 #[derive(Debug, Default)]
-pub struct RecordingAccessLogSink(Mutex<Vec<(AccessLane, AccessEntry)>>);
+pub struct RecordingAccessLogSink {
+    written: Mutex<Vec<(AccessLane, AccessEntry)>>,
+    acknowledged: Option<AtomicU64>,
+}
 
 impl RecordingAccessLogSink {
     /// An empty sink.
@@ -15,10 +22,27 @@ impl RecordingAccessLogSink {
         Self::default()
     }
 
+    /// An empty sink that acknowledges no audit entry until the test says so.
+    #[must_use]
+    pub const fn withholding() -> Self {
+        Self {
+            written: Mutex::new(Vec::new()),
+            acknowledged: Some(AtomicU64::new(0)),
+        }
+    }
+
+    /// Acknowledges `count` more audit entries, as the log store would; does nothing for a sink
+    /// that keeps no account.
+    pub fn acknowledge(&self, count: u64) {
+        if let Some(acknowledged) = self.acknowledged.as_ref() {
+            acknowledged.fetch_add(count, Ordering::AcqRel);
+        }
+    }
+
     /// Every entry written so far, with its lane.
     #[must_use]
     pub fn entries(&self) -> Vec<(AccessLane, AccessEntry)> {
-        self.0
+        self.written
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
@@ -52,10 +76,16 @@ impl RecordingAccessLogSink {
 
 impl AccessLogSink for RecordingAccessLogSink {
     fn write(&self, lane: AccessLane, entry: &AccessEntry) {
-        self.0
+        self.written
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push((lane, entry.clone()));
+    }
+
+    fn acknowledged_audit(&self) -> Option<u64> {
+        self.acknowledged
+            .as_ref()
+            .map(|acknowledged| acknowledged.load(Ordering::Acquire))
     }
 }
 

@@ -2,10 +2,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iam_domain::{AccessClass, AccessLane};
+use test_support::clock::ManualClock;
 
 use super::{Received, access_log_channel};
+use crate::access_log::audit_gate::AuditGate;
 use crate::access_log::counters::AccessLogCounters;
-use crate::access_log::fixtures::{decision_id, error_item, item, unavailable};
+use crate::access_log::fixtures::{at, decision_id, error_item, item, unavailable};
 
 #[test]
 fn an_offered_item_reaches_the_receiver_in_order() {
@@ -71,4 +73,20 @@ fn the_receiver_tells_an_idle_channel_from_a_closed_one() {
     ));
     drop(channel);
     assert_eq!(receiver.receive(Duration::from_millis(1)), Received::Closed);
+}
+
+#[test]
+fn a_dropped_audit_record_marks_the_audit_gate_full_and_an_ordinary_drop_does_not() {
+    let counters = Arc::new(AccessLogCounters::new());
+    let clock = Arc::new(ManualClock::at(at(1_800_000_000)));
+    let gate = Arc::new(AuditGate::new(clock, Duration::from_secs(5), 10));
+    let (channel, _receiver) = access_log_channel(1, counters);
+    let channel = channel.with_audit_gate(Arc::clone(&gate));
+    channel.offer(error_item(1, 100, 503));
+
+    channel.offer(error_item(2, 100, 503));
+    assert!(gate.admits());
+    channel.offer(item(AccessLane::Audit, AccessClass::Audit, unavailable()));
+
+    assert!(!gate.admits());
 }

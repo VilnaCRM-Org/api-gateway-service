@@ -86,9 +86,14 @@ impl GatewayAdapters {
         let policy = PolicyAdapters::from_config(config).comparing(readiness);
         policy.status.mark_keys_parsed();
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
-        let access_log =
-            AccessLogAdapters::to_stdout(&config.access_log, Arc::clone(&rng), Arc::clone(&clock))
-                .map_err(GatewayAdapterError::AccessLog)?;
+        let access_log = AccessLogAdapters::to_production(
+            &config.access_log,
+            &config.audit_lane,
+            config.app_env,
+            Arc::clone(&rng),
+            Arc::clone(&clock),
+        )
+        .map_err(GatewayAdapterError::AccessLog)?;
         Ok(Self {
             rng,
             clock,

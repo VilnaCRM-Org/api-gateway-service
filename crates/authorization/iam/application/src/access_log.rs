@@ -5,6 +5,7 @@
 //! waits. The [`AccessLogWriter`] drains the channel on a dedicated thread, applies the per-class
 //! budgets and writes through the [`iam_domain::AccessLogSink`] port.
 
+pub mod audit_gate;
 pub mod builder;
 pub mod channel;
 pub mod counters;
@@ -15,6 +16,7 @@ mod fixtures;
 pub mod recorder;
 pub mod writer;
 
+pub use audit_gate::AuditGate;
 pub use builder::{AccessItem, AccessRecordBuilder};
 pub use channel::{AccessLogChannel, AccessLogReceiver, access_log_channel};
 pub use counters::AccessLogCounters;

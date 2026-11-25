@@ -1,0 +1,38 @@
+# The compose Loki of the audit lane (Story 14.2, FR-50): one process, filesystem storage, no authentication, structured
+# metadata on (schema v13 on TSDB), and no retention of its own. Development and test only; a deployment brings its own
+# Loki, names its push endpoint in LOKI_PUSH_URL and its tenant in LOKI_TENANT_ID.
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: '2024-01-01'
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  allow_structured_metadata: true
+  reject_old_samples: false
+  volume_enabled: true
+
+analytics:
+  reporting_enabled: false

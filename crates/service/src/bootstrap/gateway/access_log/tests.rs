@@ -126,3 +126,85 @@ fn a_writer_thread_that_ended_normally_or_is_gone_logs_nothing() {
 
     assert_eq!(recorder.lines().len(), 0);
 }
+
+/// Polls `condition` for up to five seconds.
+fn eventually(condition: impl Fn() -> bool) -> bool {
+    for _ in 0..500 {
+        if condition() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    condition()
+}
+
+#[test]
+fn the_production_wiring_pushes_the_audit_lane_to_loki_and_starts_with_an_open_gate() {
+    let audit = crate::config::GatewayConfig::from_args(&{
+        let mut args = crate::cli::GatewayArgs::default();
+        args.service.app_env = Some("test".to_owned());
+        args.service.tokens.public_keys_file =
+            Some(test_support::access_token::DEVELOPMENT_PUBLIC_KEYS_FILE.to_owned());
+        args.service.kafka.bootstrap_servers = Some("localhost:9092".to_owned());
+        args.service.kafka.security_protocol = Some("PLAINTEXT".to_owned());
+        args
+    })
+    .unwrap()
+    .audit_lane;
+
+    let adapters = AccessLogAdapters::to_production(
+        &AccessLogSettings::default(),
+        &audit,
+        crate::config::AppEnv::Test,
+        Arc::new(FakeRng::seeded(5)),
+        Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH)),
+    )
+    .unwrap();
+
+    assert!(adapters.audit_gate().admits());
+    adapters.finish();
+}
+
+#[test]
+fn an_audit_record_that_the_sink_does_not_acknowledge_closes_the_gate_until_it_does() {
+    let sink = Arc::new(RecordingAccessLogSink::withholding());
+    let clock = Arc::new(test_support::clock::ManualClock::at(SystemTime::UNIX_EPOCH));
+    let gate = Arc::new(iam_application::AuditGate::new(
+        Arc::<test_support::clock::ManualClock>::clone(&clock),
+        std::time::Duration::from_secs(5),
+        64,
+    ));
+    let adapters = AccessLogAdapters::start_gated(
+        &settings(SampleRate::NONE, 64),
+        Arc::clone(&gate),
+        Arc::new(FakeRng::seeded(5)),
+        Arc::<test_support::clock::ManualClock>::clone(&clock),
+        Arc::<RecordingAccessLogSink>::clone(&sink),
+    )
+    .unwrap();
+    adapters.recorder().record(facts(
+        Decision::Deny,
+        DecisionReason::PermissionMissing,
+        403,
+    ));
+    assert!(eventually(|| gate.pending() == 1));
+
+    clock.advance(std::time::Duration::from_secs(6));
+    assert!(!gate.admits());
+    sink.acknowledge(1);
+
+    assert!(eventually(|| gate.admits()));
+    assert_eq!(gate.pending(), 0);
+    adapters.finish();
+}
+
+#[test]
+fn the_pipeline_step_carries_the_audit_gate_of_the_adapters() {
+    let (adapters, _sink) = started(SampleRate::NONE);
+    let clock: Arc<dyn shared_domain::Clock> = Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH));
+
+    let step = adapters.pipeline_step(&clock);
+
+    assert!(step.audit_gate().is_some());
+    adapters.finish();
+}

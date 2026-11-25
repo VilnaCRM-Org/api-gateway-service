@@ -13,7 +13,7 @@ use axum::http::header::CONTENT_LENGTH;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, Response};
 use iam_application::{
-    AccessFacts, AccessRecorder, DecisionTrace, RequestFacts, ResponseFacts, RouteFacts,
+    AccessFacts, AccessRecorder, AuditGate, DecisionTrace, RequestFacts, ResponseFacts, RouteFacts,
     VerdictFacts,
 };
 use iam_domain::{
@@ -88,6 +88,7 @@ pub struct PipelineAccessLog {
     recorder: Arc<AccessRecorder>,
     clock: Arc<dyn Clock>,
     ids: Arc<dyn UuidGenerator>,
+    audit_gate: Option<Arc<AuditGate>>,
 }
 
 impl PipelineAccessLog {
@@ -103,7 +104,22 @@ impl PipelineAccessLog {
             recorder,
             clock,
             ids,
+            audit_gate: None,
         }
+    }
+
+    /// The same step, whose pipeline refuses the requests that need an audit record while `gate`
+    /// is closed (Story 14.2, audit-or-deny).
+    #[must_use]
+    pub fn with_audit_gate(mut self, gate: Arc<AuditGate>) -> Self {
+        self.audit_gate = Some(gate);
+        self
+    }
+
+    /// The gate of the audit lane, when the log has one.
+    #[must_use]
+    pub fn audit_gate(&self) -> Option<Arc<AuditGate>> {
+        self.audit_gate.clone()
     }
 
     /// Notes the request as it arrives.

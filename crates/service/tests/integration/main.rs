@@ -3,6 +3,8 @@
 #[cfg(test)]
 mod access_log;
 #[cfg(test)]
+mod access_log_audit;
+#[cfg(test)]
 mod authentication;
 #[cfg(test)]
 mod bootstrap;

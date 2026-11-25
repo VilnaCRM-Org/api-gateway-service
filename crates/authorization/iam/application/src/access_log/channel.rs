@@ -4,6 +4,9 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
 use std::time::Duration;
 
+use iam_domain::AccessLane;
+
+use super::audit_gate::AuditGate;
 use super::builder::AccessItem;
 use super::counters::AccessLogCounters;
 
@@ -15,6 +18,7 @@ use super::counters::AccessLogCounters;
 pub struct AccessLogChannel {
     sender: SyncSender<AccessItem>,
     counters: Arc<AccessLogCounters>,
+    audit_gate: Option<Arc<AuditGate>>,
 }
 
 /// The receiving side, owned by the writer thread.
@@ -31,12 +35,24 @@ pub fn access_log_channel(
 ) -> (AccessLogChannel, AccessLogReceiver) {
     let (sender, receiver) = mpsc::sync_channel(capacity);
     (
-        AccessLogChannel { sender, counters },
+        AccessLogChannel {
+            sender,
+            counters,
+            audit_gate: None,
+        },
         AccessLogReceiver { receiver },
     )
 }
 
 impl AccessLogChannel {
+    /// The same channel, which marks `gate` full whenever it drops a record of the audit lane, so
+    /// that audit-or-deny refuses the operations that depend on such a record (Story 14.2).
+    #[must_use]
+    pub fn with_audit_gate(mut self, gate: Arc<AuditGate>) -> Self {
+        self.audit_gate = Some(gate);
+        self
+    }
+
     /// Hands `item` to the writer without waiting; a full channel, or a writer that is gone, drops
     /// it and counts the drop.
     pub fn offer(&self, item: AccessItem) {
@@ -44,7 +60,18 @@ impl AccessLogChannel {
             Ok(()) => {}
             Err(TrySendError::Full(item) | TrySendError::Disconnected(item)) => {
                 self.counters.dropped(item.lane, item.class);
+                self.mark_full(item.lane);
             }
+        }
+    }
+
+    /// Marks the audit gate full after a drop of the audit lane.
+    fn mark_full(&self, lane: AccessLane) {
+        if lane != AccessLane::Audit {
+            return;
+        }
+        if let Some(gate) = self.audit_gate.as_ref() {
+            gate.mark_channel_full();
         }
     }
 }

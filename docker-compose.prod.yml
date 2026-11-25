@@ -42,6 +42,10 @@ services:
       # The exact global quotas of the rate policies (Story 12.2): the Valkey of the deployment, or a Sentinel group as
       # redis+sentinel://<host>:<port>,<host>:<port>/<service>.
       RATE_LIMIT_STORE_URL: ${RATE_LIMIT_STORE_URL:?RATE_LIMIT_STORE_URL is required}
+      # The log store of the audit lane (Story 14.2): the push endpoint of the Loki of the deployment, a plain http://
+      # URL, and its tenant.
+      LOKI_PUSH_URL: ${LOKI_PUSH_URL:?LOKI_PUSH_URL is required}
+      LOKI_TENANT_ID: ${LOKI_TENANT_ID:-iam}
       # The pair is mounted from a directory of the host; the gateway reloads it when the files change.
       GATEWAY_TLS_CERT_FILE: ${GATEWAY_TLS_CERT_FILE:-/etc/service/tls/tls.crt}
       GATEWAY_TLS_KEY_FILE: ${GATEWAY_TLS_KEY_FILE:-/etc/service/tls/tls.key}
@@ -89,4 +93,7 @@ services:
     profiles: [local]
 
   valkey:
+    profiles: [local]
+
+  loki:
     profiles: [local]

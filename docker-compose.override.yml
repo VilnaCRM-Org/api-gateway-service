@@ -32,6 +32,9 @@ services:
       # The compose Valkey at its in-network port (VALKEY_PORT of .env is the host port).
       VALKEY_HOST: valkey
       VALKEY_PORT: '6379'
+      # The compose Loki at its in-network port (LOKI_PORT of .env is the host port).
+      LOKI_HOST: loki
+      LOKI_PORT: '3100'
       # Removed so that the binary reads .env and the test targets read .env.test.
       APP_ENV: !reset null
       LOG_LEVEL: !reset null

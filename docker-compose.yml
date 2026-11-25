@@ -61,6 +61,8 @@ services:
     depends_on:
       valkey:
         condition: service_healthy
+      loki:
+        condition: service_healthy
     environment:
       APP_ENV: dev
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -76,6 +78,8 @@ services:
       UPSTREAM_STATIC_ENDPOINTS_FILE: /etc/service/upstream-endpoints.json
       # The compose Valkey at its in-network port: the exact global quotas of the rate policies (Story 12.2).
       RATE_LIMIT_STORE_URL: redis://valkey:6379
+      # The compose Loki at its in-network port: the audit lane of the access log (Story 14.2).
+      LOKI_PUSH_URL: http://loki:3100/loki/api/v1/push
     volumes:
       - ${JWT_PUBLIC_KEYS_HOST_FILE:-./config/jwt/dev-public-keys.pem}:/etc/service/jwt-public-keys.pem:ro
       - ${UPSTREAM_ENDPOINTS_HOST_FILE:-./config/upstream/dev-static-endpoints.json}:/etc/service/upstream-endpoints.json:ro
@@ -160,6 +164,25 @@ services:
       retries: 10
       start_period: 5s
       start_interval: 1s
+    restart: unless-stopped
+
+  loki:
+    # The log store of the audit lane (Story 14.2, FR-50): `LokiPushAccessLogSink` pushes the audit records to
+    # `/loki/api/v1/push` and the gateway serves an audited request only while Loki keeps up with the acknowledgements
+    # (audit-or-deny). Development and test; the image is pinned to an exact version.
+    image: grafana/loki:3.4.2
+    command: ['-config.file=/etc/loki/local-config.yaml']
+    volumes:
+      - ./config/loki/local-config.yaml:/etc/loki/local-config.yaml:ro
+    ports:
+      - '127.0.0.1:${LOKI_PORT:-3100}:3100'
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O - http://localhost:3100/ready | grep -q ready']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 15s
+      start_interval: 2s
     restart: unless-stopped
 
   kafka:

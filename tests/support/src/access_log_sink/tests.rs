@@ -60,3 +60,22 @@ fn the_sink_remembers_records_and_aggregates_by_lane_in_order() {
     assert_eq!(sink.records(AccessLane::Audit).len(), 1);
     assert_eq!(sink.aggregates(), vec![aggregate]);
 }
+
+#[test]
+fn a_withholding_sink_reports_only_the_acknowledgements_the_test_gives() {
+    let sink = RecordingAccessLogSink::withholding();
+    assert_eq!(sink.acknowledged_audit(), Some(0));
+
+    sink.acknowledge(3);
+
+    assert_eq!(sink.acknowledged_audit(), Some(3));
+}
+
+#[test]
+fn a_plain_sink_keeps_no_account_of_acknowledgements() {
+    let sink = RecordingAccessLogSink::new();
+
+    sink.acknowledge(3);
+
+    assert_eq!(sink.acknowledged_audit(), None);
+}

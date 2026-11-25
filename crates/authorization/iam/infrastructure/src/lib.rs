@@ -19,7 +19,10 @@ pub mod rng;
 pub mod token;
 pub mod valkey_rate_limit_store;
 
-pub use access_log::{StdoutAccessLogSink, credential_digest_prefix, render_entry};
+pub use access_log::{
+    BATCH_BYTES, LaneSplitSink, LokiPushAccessLogSink, LokiSinkSettings, LokiTransport,
+    StdoutAccessLogSink, credential_digest_prefix, render_entry,
+};
 pub use bucket_local_rate_limiter::BucketLocalRateLimiter;
 pub use buffered_rejected_attempt_log::BufferedRejectedAttemptLog;
 pub use clock::LinuxBootClock;
