@@ -4,9 +4,9 @@
 use std::time::Duration;
 
 use iam_domain::{
-    AuditAction, AuditChainHead, AuditHash, AuditOutcome, AuditSummary, RepositoryError,
-    SecurityAuditEvent, SecurityAuditFilter, SecurityAuditLog as _, SecurityAuditSearch,
-    StoredSecurityAuditEvent,
+    AuditAction, AuditChainHead, AuditHash, AuditOutcome, AuditSummary, ChainBreak,
+    ChainBreakCause, ChainVerification, RepositoryError, SecurityAuditEvent, SecurityAuditFilter,
+    SecurityAuditLog as _, SecurityAuditSearch, StoredSecurityAuditEvent,
 };
 use iam_infrastructure::PgSecurityAuditLog;
 use shared_infrastructure::persistence::{PostgresSettings, connect_lazy};
@@ -434,6 +434,131 @@ async fn a_missing_chain_head_is_unavailable(pool: PgPool) {
     assert!(matches!(append, RepositoryError::Unavailable(_)));
 }
 
+const DISABLE_APPEND_ONLY: &str =
+    "ALTER TABLE iam_security_audit_events DISABLE TRIGGER iam_security_audit_events_append_only";
+
+/// Appends `count` records and returns the log with its stored records.
+async fn log_with_records(
+    pool: &PgPool,
+    count: usize,
+) -> (PgSecurityAuditLog, Vec<StoredSecurityAuditEvent>) {
+    let log = PgSecurityAuditLog::new(pool.clone());
+    log.append_batch(&events(&mut TestRng::from_env(), count))
+        .await
+        .unwrap();
+    let records = all_records(&log).await;
+    (log, records)
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn an_untampered_chain_verifies_and_counts_its_records(pool: PgPool) {
+    let (log, records) = log_with_records(&pool, 3).await;
+    let anchor = AuditChainHead::new(2, records[1].hash()).unwrap();
+
+    let plain = log.verify_chain(&[]).await.unwrap();
+    let anchored = log.verify_chain(&[anchor]).await.unwrap();
+
+    assert_eq!(plain, ChainVerification::valid(3));
+    assert_eq!(anchored, ChainVerification::valid(3));
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn an_empty_chain_verifies_with_no_record_checked(pool: PgPool) {
+    let log = PgSecurityAuditLog::new(pool);
+
+    assert_eq!(
+        log.verify_chain(&[]).await.unwrap(),
+        ChainVerification::valid(0)
+    );
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn a_record_altered_with_the_trigger_disabled_is_invalid_at_that_record(pool: PgPool) {
+    let (log, records) = log_with_records(&pool, 3).await;
+    execute(&pool, DISABLE_APPEND_ONLY).await.unwrap();
+    sqlx::query("UPDATE iam_security_audit_events SET after_summary = 'role=forged' WHERE seq = 2")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let verification = log.verify_chain(&[]).await.unwrap();
+
+    let id = records[1].event().parts().id;
+    assert_eq!(
+        verification,
+        ChainVerification::invalid(2, ChainBreak::new(2, Some(id), ChainBreakCause::Digest))
+    );
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn a_deleted_record_is_a_gap(pool: PgPool) {
+    let (log, records) = log_with_records(&pool, 3).await;
+    execute(&pool, DISABLE_APPEND_ONLY).await.unwrap();
+    execute(&pool, "DELETE FROM iam_security_audit_events WHERE seq = 2")
+        .await
+        .unwrap();
+
+    let verification = log.verify_chain(&[]).await.unwrap();
+
+    let id = records[2].event().parts().id;
+    assert_eq!(
+        verification,
+        ChainVerification::invalid(2, ChainBreak::new(3, Some(id), ChainBreakCause::Gap))
+    );
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn a_chain_rewritten_and_recomputed_after_an_anchor_is_invalid_at_the_anchored_record(
+    pool: PgPool,
+) {
+    let (log, records) = log_with_records(&pool, 3).await;
+    let anchor = AuditChainHead::new(2, records[1].hash()).unwrap();
+    execute(&pool, DISABLE_APPEND_ONLY).await.unwrap();
+    execute(
+        &pool,
+        "UPDATE iam_security_audit_events SET after_summary = 'role=forged' WHERE seq = 1",
+    )
+    .await
+    .unwrap();
+    let mut prev = AuditHash::GENESIS;
+    for record in all_records(&log).await {
+        let digest = sql_digest(&pool, prev, &record.event().canonical_form()).await;
+        sqlx::query(
+            "UPDATE iam_security_audit_events SET prev_hash = $1, hash = $2 WHERE seq = $3",
+        )
+        .bind(prev.as_bytes().as_slice())
+        .bind(digest.as_slice())
+        .bind(record.seq())
+        .execute(&pool)
+        .await
+        .unwrap();
+        prev = AuditHash::new(&digest).unwrap();
+    }
+
+    let unanchored = log.verify_chain(&[]).await.unwrap();
+    let anchored = log.verify_chain(&[anchor]).await.unwrap();
+
+    assert_eq!(unanchored, ChainVerification::valid(3));
+    let id = records[1].event().parts().id;
+    assert_eq!(
+        anchored,
+        ChainVerification::invalid(2, ChainBreak::new(2, Some(id), ChainBreakCause::Anchor))
+    );
+}
+
+#[sqlx::test(migrator = "shared_infrastructure::persistence::MIGRATOR")]
+async fn an_anchor_beyond_the_newest_record_is_invalid(pool: PgPool) {
+    let (log, records) = log_with_records(&pool, 2).await;
+    let anchor = AuditChainHead::new(5, records[1].hash()).unwrap();
+
+    let verification = log.verify_chain(&[anchor]).await.unwrap();
+
+    assert_eq!(
+        verification,
+        ChainVerification::invalid(2, ChainBreak::new(5, None, ChainBreakCause::AnchorMissing))
+    );
+}
+
 #[tokio::test]
 async fn an_unreachable_database_is_unavailable() {
     let event = security_audit_event(&mut TestRng::from_env());
@@ -459,5 +584,9 @@ async fn an_unreachable_database_is_unavailable() {
     assert!(matches!(append, RepositoryError::Unavailable(_)));
     assert!(matches!(head, RepositoryError::Unavailable(_)));
     assert!(matches!(found, RepositoryError::Unavailable(_)));
+    assert!(matches!(
+        log.verify_chain(&[]).await.unwrap_err(),
+        RepositoryError::Unavailable(_)
+    ));
     assert_eq!(append.to_string(), "the repository is unavailable");
 }

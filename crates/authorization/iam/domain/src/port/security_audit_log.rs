@@ -1,5 +1,6 @@
 //! Port of the hash-chained security audit log.
 
+use crate::audit_chain_verification::ChainVerification;
 use crate::entity::security_audit_event::{SecurityAuditEvent, StoredSecurityAuditEvent};
 use crate::port::RepositoryError;
 use crate::security_audit_search::SecurityAuditSearch;
@@ -62,4 +63,19 @@ pub trait SecurityAuditLog: std::fmt::Debug + Send + Sync {
         &self,
         search: &SecurityAuditSearch,
     ) -> Result<Vec<StoredSecurityAuditEvent>, RepositoryError>;
+
+    /// Verifies the whole chain from the first record: every sequence number follows the one
+    /// before it, every `prev_hash` is the hash of the record before it, every `hash` is the
+    /// digest of its record's stored values, and every anchor in `anchors` (a sequence number and
+    /// the hash published for it) equals the stored hash of that record.
+    ///
+    /// A broken chain is a verdict, not an error.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when the storage fails.
+    async fn verify_chain(
+        &self,
+        anchors: &[AuditChainHead],
+    ) -> Result<ChainVerification, RepositoryError>;
 }

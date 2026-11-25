@@ -7,8 +7,8 @@
 use std::time::SystemTime;
 
 use iam_domain::{
-    ActorRef, AuditAction, AuditOutcome, InvalidIamValue, SecurityAuditFilter,
-    StoredSecurityAuditEvent,
+    ActorRef, AuditAction, AuditChainHead, AuditHash, AuditOutcome, ChainVerdict,
+    ChainVerification, InvalidIamValue, SecurityAuditFilter, StoredSecurityAuditEvent,
 };
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -19,6 +19,7 @@ use crate::http::dto::DEFAULT_PAGE_SIZE;
 use crate::query::get_security_audit_events::{
     GetSecurityAuditEventsQuery, SecurityAuditEventPage,
 };
+use crate::query::verify_security_audit_chain::MAX_ANCHORS;
 
 /// One security audit record with its place in the hash chain.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
@@ -253,6 +254,172 @@ fn bound(property: &str, text: &str) -> Result<SystemTime, IamError> {
 /// The violation that the domain value error describes.
 fn invalid(error: InvalidIamValue) -> IamError {
     IamError::invalid_property(error.property_path(), &error.to_string(), error.code())
+}
+
+/// The result of verifying the security audit hash chain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+#[schema(as = SecurityAuditChainVerification)]
+pub struct ChainVerificationResponse {
+    /// `valid` when every record, link and anchor checked out, `invalid` when the chain breaks.
+    #[schema(example = "valid")]
+    pub status: String,
+    /// The number of records checked, the broken one included.
+    pub records_checked: i64,
+    /// The id of the record where the chain breaks; absent when the chain is valid or the broken
+    /// record is missing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(format = Uuid)]
+    pub invalid_record_id: Option<String>,
+    /// The sequence number where the chain breaks; absent when the chain is valid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invalid_seq: Option<i64>,
+    /// Why the chain breaks: `gap`, `link`, `digest`, `unreadable`, `anchor` or `anchor_missing`;
+    /// absent when the chain is valid.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(example = "digest")]
+    pub cause: Option<String>,
+}
+
+impl From<&ChainVerification> for ChainVerificationResponse {
+    fn from(verification: &ChainVerification) -> Self {
+        let records_checked = verification.records_checked();
+        match verification.verdict() {
+            ChainVerdict::Valid => Self {
+                status: "valid".to_owned(),
+                records_checked,
+                invalid_record_id: None,
+                invalid_seq: None,
+                cause: None,
+            },
+            ChainVerdict::Invalid(broken) => Self {
+                status: "invalid".to_owned(),
+                records_checked,
+                invalid_record_id: broken.record().map(|id| id.to_string()),
+                invalid_seq: Some(broken.seq()),
+                cause: Some(broken.cause().as_str().to_owned()),
+            },
+        }
+    }
+}
+
+/// An anchor as it travels: the sequence number and the lower-case hexadecimal hash that were
+/// published as `iam.security_audit.anchored`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnchorValue {
+    /// The sequence number of the anchored record.
+    pub seq: i64,
+    /// The hash of the anchored record, 64 lower-case hexadecimal digits.
+    pub hash: String,
+}
+
+/// The anchors of the values, each checked for its range and its form.
+///
+/// # Errors
+///
+/// [`IamError::Invalid`] with a violation of `anchors` when there are more than [`MAX_ANCHORS`],
+/// when a sequence number is below 1 or when a hash is not 64 lower-case hexadecimal digits.
+pub fn parse_anchors(values: &[AnchorValue]) -> Result<Vec<AuditChainHead>, IamError> {
+    if values.len() > MAX_ANCHORS {
+        return Err(anchor_violation(
+            "There can be at most 100 anchors.",
+            "count",
+        ));
+    }
+    values.iter().map(parse_anchor).collect()
+}
+
+/// The anchor of one value.
+fn parse_anchor(value: &AnchorValue) -> Result<AuditChainHead, IamError> {
+    let hash = parse_hash(&value.hash)?;
+    if value.seq < 1 {
+        return Err(anchor_violation(
+            "The sequence number of an anchor must be at least 1.",
+            "range",
+        ));
+    }
+    AuditChainHead::new(value.seq, hash).map_err(invalid)
+}
+
+/// The hash of 64 lower-case hexadecimal digits.
+fn parse_hash(text: &str) -> Result<AuditHash, IamError> {
+    let bytes = text
+        .as_bytes()
+        .chunks(2)
+        .map(|pair| match pair {
+            [high, low] => Some(
+                hex_digit(*high)?
+                    .checked_mul(16)?
+                    .checked_add(hex_digit(*low)?)?,
+            ),
+            _unpaired => None,
+        })
+        .collect::<Option<Vec<u8>>>();
+    bytes
+        .and_then(|bytes| AuditHash::new(&bytes).ok())
+        .ok_or_else(|| {
+            anchor_violation(
+                "The hash of an anchor must be 64 lower-case hexadecimal digits.",
+                "format",
+            )
+        })
+}
+
+/// The value of a lower-case hexadecimal digit.
+const fn hex_digit(digit: u8) -> Option<u8> {
+    match digit {
+        b'0'..=b'9' => Some(digit.wrapping_sub(b'0')),
+        b'a'..=b'f' => Some(digit.wrapping_sub(b'a').wrapping_add(10)),
+        _other => None,
+    }
+}
+
+/// The violation of the `anchors` property.
+fn anchor_violation(message: &str, code: &str) -> IamError {
+    IamError::invalid_property("anchors", message, code)
+}
+
+/// Query parameters of the chain verification.
+#[derive(Debug, Clone, Default, Deserialize, IntoParams, Validate)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
+pub struct VerifyChainParams {
+    /// Anchors to check the chain against: up to 100 comma-separated `<seq>:<hash>` pairs, the
+    /// values of `iam.security_audit.anchored` events (`hash` is 64 lower-case hexadecimal
+    /// digits).
+    #[param(example = "42:0000000000000000000000000000000000000000000000000000000000000000")]
+    pub anchors: Option<String>,
+}
+
+impl VerifyChainParams {
+    /// The anchors that these parameters give; none when `anchors` is absent or empty.
+    ///
+    /// # Errors
+    ///
+    /// [`IamError::Invalid`] with a violation of `anchors` when a pair is not `<seq>:<hash>` or an
+    /// anchor is not valid.
+    pub fn into_anchors(self) -> Result<Vec<AuditChainHead>, IamError> {
+        let values = self
+            .anchors
+            .as_deref()
+            .filter(|text| !text.is_empty())
+            .map(|text| text.split(',').map(pair).collect::<Result<Vec<_>, _>>())
+            .transpose()?
+            .unwrap_or_default();
+        parse_anchors(&values)
+    }
+}
+
+/// The anchor value of a `<seq>:<hash>` pair.
+fn pair(text: &str) -> Result<AnchorValue, IamError> {
+    text.split_once(':')
+        .and_then(|(seq, hash)| {
+            Some(AnchorValue {
+                seq: seq.parse().ok()?,
+                hash: hash.to_owned(),
+            })
+        })
+        .ok_or_else(|| anchor_violation("An anchor must be written as <seq>:<hash>.", "format"))
 }
 
 #[cfg(test)]

@@ -208,3 +208,48 @@ Feature: IAM security audit log
       | { securityAuditEvents(after: "nope") { items { id } } }            |
       | { securityAuditEvents(filter: {outcome: "maybe"}) { items { id } } } |
       | { securityAuditEvent(id: "not-a-uuid") { id } }                    |
+
+  Scenario: An administrator verifies the audit chain over both interfaces
+    Given a caller authenticated as the bootstrapped administrator
+    And a role exists with name "Billing administrator"
+    When GET request is sent to "/api/security-audit-events/chain-verification"
+    Then the response status code should be 200
+    And the JSON pointer "/status" should equal "valid"
+    And the JSON pointer "/recordsChecked" should be present
+    And the JSON pointer "/invalidRecordId" should be absent
+    And the JSON pointer "/invalidSeq" should be absent
+    And the JSON pointer "/cause" should be absent
+    When the GraphQL operation is sent:
+      """
+      { securityAuditChainVerification { status recordsChecked invalidRecordId invalidSeq cause } }
+      """
+    Then the response status code should be 200
+    And the GraphQL response should have no errors
+    And the JSON pointer "/data/securityAuditChainVerification/status" should equal "valid"
+    And the JSON pointer "/data/securityAuditChainVerification/recordsChecked" should be present
+    And the JSON pointer "/data/securityAuditChainVerification/invalidRecordId" should be null
+    And the JSON pointer "/data/securityAuditChainVerification/cause" should be null
+
+  Scenario: A verification names a published anchor and is audited like every other read
+    Given a caller authenticated as the bootstrapped administrator
+    And a role exists with name "Billing administrator"
+    When GET request is sent to "/api/security-audit-events?action=role.create&limit=1"
+    Then the response status code should be 200
+    And the JSON pointer "/items/0/seq" should be present
+    And the JSON pointer "/items/0/hash" should be present
+    When GET request is sent to "/api/security-audit-events/chain-verification?anchors=0:0000000000000000000000000000000000000000000000000000000000000000"
+    Then the response status code should be 422
+    And the JSON pointer "/violations/0/propertyPath" should equal "anchors"
+    When GET request is sent to "/api/security-audit-events/chain-verification?anchors=1:not-a-hash"
+    Then the response status code should be 422
+    When GET request is sent to "/api/security-audit-events?action=security_audit.verify"
+    Then the response status code should be 200
+    And the JSON array at "/items" should have 0 items
+    When GET request is sent to "/api/security-audit-events/chain-verification"
+    Then the response status code should be 200
+    When GET request is sent to "/api/security-audit-events?action=security_audit.verify"
+    Then the response status code should be 200
+    And the JSON array at "/items" should have 1 items
+    And the JSON pointer "/items/0/targetType" should equal "security_audit_event"
+    And the JSON pointer "/items/0/targetId" should equal "chain"
+    And the JSON pointer "/items/0/outcome" should equal "committed"

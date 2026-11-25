@@ -9,7 +9,9 @@ pub mod dto;
 
 use axum::Json;
 use axum::extract::State;
-use iam_domain::{SecurityAuditEventId, StoredSecurityAuditEvent};
+use iam_domain::{
+    AuditChainHead, ChainVerification, SecurityAuditEventId, StoredSecurityAuditEvent,
+};
 use shared_application::http::{ApiPath, Problem, ValidatedQuery, Violation};
 
 use super::IamState;
@@ -18,8 +20,10 @@ use crate::error::IamError;
 use crate::principal::Principal;
 use crate::query::get_security_audit_event::GetSecurityAuditEventQuery;
 use crate::query::get_security_audit_events::SecurityAuditEventPage;
+use crate::query::verify_security_audit_chain::VerifySecurityAuditChainQuery;
 use dto::{
-    ListSecurityAuditEventsParams, SecurityAuditEventPageResponse, SecurityAuditEventResponse,
+    ChainVerificationResponse, ListSecurityAuditEventsParams, SecurityAuditEventPageResponse,
+    SecurityAuditEventResponse, VerifyChainParams,
 };
 
 /// The security audit record id of a path or an argument.
@@ -69,6 +73,23 @@ pub(crate) async fn list_security_audit_events(
     Ok(state.query_bus.ask(query).await?)
 }
 
+/// The verification of the whole audit chain against `anchors`, read as `caller`.
+///
+/// # Errors
+///
+/// The 500 problem of a storage failure, which includes a verification that cannot be audited.
+pub(crate) async fn verify_security_audit_chain(
+    state: &IamState,
+    caller: &Principal,
+    anchors: Vec<AuditChainHead>,
+) -> Result<ChainVerification, Problem> {
+    let query = VerifySecurityAuditChainQuery {
+        actor: caller.actor(),
+        anchors,
+    };
+    Ok(state.query_bus.ask(query).await?)
+}
+
 /// Searches the security audit log.
 ///
 /// # Errors
@@ -106,6 +127,46 @@ pub async fn list(
 ) -> Result<Json<SecurityAuditEventPageResponse>, Problem> {
     let page = list_security_audit_events(&state, &caller, params).await?;
     Ok(Json(SecurityAuditEventPageResponse::from(&page)))
+}
+
+/// Verifies the security audit hash chain.
+///
+/// # Errors
+///
+/// A problem document: 401 without a valid token, 403 without `iam:audit:read`, 422 for an invalid
+/// anchor.
+#[utoipa::path(
+    get,
+    path = "/security-audit-events/chain-verification",
+    operation_id = "api_security_audit_events_chain_verification_get",
+    tag = "iam",
+    summary = "Verifies the security audit hash chain.",
+    description = "Recomputes the hash chain from the first record: every sequence number follows the one before it, every `prevHash` is the hash of the record before it and every `hash` is the digest of the stored values of its record. The result is `valid` with the number of records checked, or `invalid` with the id and the sequence number of the first record where the chain breaks and the cause. `anchors` are `<seq>:<hash>` pairs published as `iam.security_audit.anchored` events and kept outside the database; the chain is `invalid` at an anchored record whose hash differs, which detects a chain that was rewritten and recomputed as a whole. The caller needs `iam:audit:read`, and the verification is itself recorded in the log as `security_audit.verify`.",
+    security(("bearerAuth" = [])),
+    params(VerifyChainParams),
+    responses(
+        (status = 200, description = "The result of the verification.", body = ChainVerificationResponse),
+        (status = 400, description = "Invalid query parameter.", body = Problem, content_type = "application/problem+json"),
+        (
+            status = 401,
+            description = "The caller presented no valid bearer token.",
+            body = Problem,
+            content_type = "application/problem+json",
+            headers(("www-authenticate" = String, description = "The `Bearer` challenge."))
+        ),
+        (status = 403, description = "The caller lacks `iam:audit:read`.", body = Problem, content_type = "application/problem+json"),
+        (status = 422, description = "Validation failed.", body = Problem, content_type = "application/problem+json"),
+        (status = "default", description = "Problem response.", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+pub async fn verify(
+    State(state): State<IamState>,
+    CallerPrincipal(caller): CallerPrincipal,
+    ValidatedQuery(params): ValidatedQuery<VerifyChainParams>,
+) -> Result<Json<ChainVerificationResponse>, Problem> {
+    let anchors = params.into_anchors()?;
+    let verification = verify_security_audit_chain(&state, &caller, anchors).await?;
+    Ok(Json(ChainVerificationResponse::from(&verification)))
 }
 
 /// Reads one audit record.

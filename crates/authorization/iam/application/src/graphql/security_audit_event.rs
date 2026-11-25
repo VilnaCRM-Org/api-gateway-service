@@ -10,10 +10,12 @@ use validator::Validate as _;
 use super::{require_caller, state};
 use crate::http::dto::DEFAULT_PAGE_SIZE;
 use crate::http::security_audit_event::dto::{
-    ListSecurityAuditEventsParams, SecurityAuditEventPageResponse, SecurityAuditEventResponse,
+    AnchorValue, ChainVerificationResponse, ListSecurityAuditEventsParams,
+    SecurityAuditEventPageResponse, SecurityAuditEventResponse, parse_anchors,
 };
 use crate::http::security_audit_event::{
     find_security_audit_event, list_security_audit_events, parse_security_audit_event_id,
+    verify_security_audit_chain,
 };
 
 /// One security audit record with its place in the hash chain.
@@ -158,5 +160,65 @@ pub(super) async fn security_audit_events_field(
     let page = list_security_audit_events(state(ctx)?, caller, params).await?;
     Ok(SecurityAuditEventPageObject::from(
         SecurityAuditEventPageResponse::from(&page),
+    ))
+}
+
+/// An anchor of the audit chain: the sequence number and the hash that were published as
+/// `iam.security_audit.anchored`.
+#[derive(Debug, Clone, PartialEq, Eq, InputObject)]
+#[graphql(name = "SecurityAuditAnchorInput")]
+pub struct SecurityAuditAnchorInput {
+    /// The sequence number of the anchored record, at least 1.
+    pub seq: i64,
+    /// The hash of the anchored record, 64 lower-case hexadecimal digits.
+    pub hash: String,
+}
+
+/// The result of verifying the security audit hash chain.
+#[derive(Debug, Clone, PartialEq, Eq, SimpleObject)]
+#[graphql(name = "SecurityAuditChainVerification")]
+pub struct SecurityAuditChainVerificationObject {
+    /// `valid` when every record, link and anchor checked out, `invalid` when the chain breaks.
+    pub status: String,
+    /// The number of records checked, the broken one included.
+    pub records_checked: i64,
+    /// The id of the record where the chain breaks; null when the chain is valid or the broken record is missing.
+    pub invalid_record_id: Option<ID>,
+    /// The sequence number where the chain breaks; null when the chain is valid.
+    pub invalid_seq: Option<i64>,
+    /// Why the chain breaks: `gap`, `link`, `digest`, `unreadable`, `anchor` or `anchor_missing`; null when the chain is valid.
+    pub cause: Option<String>,
+}
+
+impl From<ChainVerificationResponse> for SecurityAuditChainVerificationObject {
+    fn from(response: ChainVerificationResponse) -> Self {
+        Self {
+            status: response.status,
+            records_checked: response.records_checked,
+            invalid_record_id: response.invalid_record_id.map(ID::from),
+            invalid_seq: response.invalid_seq,
+            cause: response.cause,
+        }
+    }
+}
+
+/// Verifies the audit chain as the caller of the request.
+pub(super) async fn security_audit_chain_verification_field(
+    ctx: &Context<'_>,
+    anchors: Option<Vec<SecurityAuditAnchorInput>>,
+) -> Result<SecurityAuditChainVerificationObject, Problem> {
+    let caller = require_caller(ctx)?;
+    let values: Vec<AnchorValue> = anchors
+        .unwrap_or_default()
+        .into_iter()
+        .map(|anchor| AnchorValue {
+            seq: anchor.seq,
+            hash: anchor.hash,
+        })
+        .collect();
+    let anchors = parse_anchors(&values)?;
+    let verification = verify_security_audit_chain(state(ctx)?, caller, anchors).await?;
+    Ok(SecurityAuditChainVerificationObject::from(
+        ChainVerificationResponse::from(&verification),
     ))
 }

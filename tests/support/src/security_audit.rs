@@ -6,9 +6,9 @@ use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
 use iam_domain::{
     ActorRef, AssignmentScope, AuditAction, AuditChainHead, AuditHash, AuditOutcome, AuditSummary,
-    AuditTarget, IdempotencyKey, PolicyVersion, RepositoryError, RequestId, SecurityAuditEvent,
-    SecurityAuditEventId, SecurityAuditEventParts, SecurityAuditLog, SecurityAuditSearch,
-    StoredSecurityAuditEvent,
+    AuditTarget, ChainBreak, ChainBreakCause, ChainVerification, IdempotencyKey, PolicyVersion,
+    RepositoryError, RequestId, SecurityAuditEvent, SecurityAuditEventId, SecurityAuditEventParts,
+    SecurityAuditLog, SecurityAuditSearch, StoredSecurityAuditEvent,
 };
 use rand::RngExt as _;
 use shared_domain::UuidGenerator as _;
@@ -141,6 +141,57 @@ fn append(
     Ok(())
 }
 
+/// Why `record` does not extend the chain after `prev`, which is the hash of the record before it
+/// and `expected` the sequence number that follows it; none when it does.
+fn break_of(
+    record: &StoredSecurityAuditEvent,
+    expected: i64,
+    prev: AuditHash,
+    anchors: &[AuditChainHead],
+) -> Option<ChainBreakCause> {
+    if record.seq() != expected {
+        Some(ChainBreakCause::Gap)
+    } else if record.prev_hash() != prev {
+        Some(ChainBreakCause::Link)
+    } else if record.hash() != link(record.seq()) {
+        Some(ChainBreakCause::Digest)
+    } else if anchors
+        .iter()
+        .any(|anchor| anchor.seq() == record.seq() && anchor.hash() != record.hash())
+    {
+        Some(ChainBreakCause::Anchor)
+    } else {
+        None
+    }
+}
+
+/// Verifies the placeholder chain of `records`: its links, its sequence numbers and the anchors.
+fn verify(records: &[StoredSecurityAuditEvent], anchors: &[AuditChainHead]) -> ChainVerification {
+    let mut head = AuditChainHead::GENESIS;
+    let mut checked = 0_i64;
+    for record in records {
+        checked = checked.saturating_add(1);
+        let expected = head.seq().saturating_add(1);
+        if let Some(cause) = break_of(record, expected, head.hash(), anchors) {
+            let broken = ChainBreak::new(record.seq(), Some(record.event().parts().id), cause);
+            return ChainVerification::invalid(checked, broken);
+        }
+        head = head_of(std::slice::from_ref(record));
+    }
+    anchors
+        .iter()
+        .map(AuditChainHead::seq)
+        .filter(|seq| *seq > head.seq())
+        .min()
+        .map_or_else(
+            || ChainVerification::valid(checked),
+            |seq| {
+                let broken = ChainBreak::new(seq, None, ChainBreakCause::AnchorMissing);
+                ChainVerification::invalid(checked, broken)
+            },
+        )
+}
+
 #[async_trait]
 impl SecurityAuditLog for FakeSecurityAuditLog {
     async fn append_batch(
@@ -213,6 +264,17 @@ impl SecurityAuditLog for FakeSecurityAuditLog {
             .take(limit)
             .cloned()
             .collect())
+    }
+
+    async fn verify_chain(
+        &self,
+        anchors: &[AuditChainHead],
+    ) -> Result<ChainVerification, RepositoryError> {
+        let records = self
+            .records()?
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        Ok(verify(&records, anchors))
     }
 }
 

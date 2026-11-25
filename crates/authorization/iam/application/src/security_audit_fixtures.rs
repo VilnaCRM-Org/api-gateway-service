@@ -6,8 +6,8 @@ use std::time::{Duration, SystemTime};
 
 use iam_domain::{
     ActorRef, AuditAction, AuditHash, AuditOutcome, AuditReason, AuditSummary, AuditTarget,
-    PolicyVersion, SecurityAuditEvent, SecurityAuditEventId, SecurityAuditEventParts,
-    StoredSecurityAuditEvent,
+    ChainVerification, PolicyVersion, SecurityAuditEvent, SecurityAuditEventId,
+    SecurityAuditEventParts, StoredSecurityAuditEvent,
 };
 use shared_domain::{CommandBus, QueryBus, Uuid};
 use test_support::bus::{FakeCommandBus, FakeQueryBus};
@@ -22,6 +22,7 @@ use crate::query::get_security_audit_event::GetSecurityAuditEventQuery;
 use crate::query::get_security_audit_events::{
     GetSecurityAuditEventsQuery, SecurityAuditEventPage,
 };
+use crate::query::verify_security_audit_chain::VerifySecurityAuditChainQuery;
 
 /// The identifier of the committed record, the first of the chain.
 pub(crate) const COMMITTED: &str = "00000000-0000-0000-0000-000000000001";
@@ -157,17 +158,42 @@ pub(crate) fn scenario(
             )
         }),
     );
+    (iam_state(queries), asked)
+}
+
+/// The state over `queries` and a command bus that answers nothing.
+fn iam_state(queries: Arc<FakeQueryBus>) -> IamState {
     let commands = Arc::new(FakeCommandBus::unregistered());
     let command_bus: Arc<dyn CommandBus> = commands;
     let query_bus: Arc<dyn QueryBus> = queries;
-    let state = IamState {
+    IamState {
         command_bus,
         query_bus,
         uuid_generator: Arc::new(SequenceUuidGenerator::starting_at(1)),
         clock: Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH)),
         request_digester: Arc::new(FakeRequestDigester),
-    };
-    (state, asked)
+    }
+}
+
+/// The chain verifications the double was asked, oldest first.
+pub(crate) type Verified = Arc<Mutex<Vec<VerifySecurityAuditChainQuery>>>;
+
+/// The state over a query bus that answers every chain verification with `answer` and records the
+/// queries; `Err` makes the verification fail with the error that the function builds.
+pub(crate) fn verification_scenario(
+    answer: Result<ChainVerification, fn() -> IamError>,
+) -> (IamState, Verified) {
+    let verified: Verified = Arc::default();
+    let log = Arc::clone(&verified);
+    let queries = Arc::new(FakeQueryBus::answering(
+        move |query: VerifySecurityAuditChainQuery| {
+            log.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(query);
+            answer.map_err(|refuse| refuse())
+        },
+    ));
+    (iam_state(queries), verified)
 }
 
 /// The page of `records` that a search with the cursor `before` and the page size `limit` asks

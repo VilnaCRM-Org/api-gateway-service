@@ -1,6 +1,6 @@
 # 0019. Security audit log in PostgreSQL and access-decision log in Loki
 
-Status: draft. Story 2.2 records the security audit log; Story 14.2 records the access-log part (the two lanes, their guarantees and audit-or-deny) and Story 14.5 adds the threat model.
+Status: draft. Story 2.2 records the security audit log; Story 14.2 records the access-log part (the two lanes, their guarantees and audit-or-deny) and Story 14.5 adds the chain verification, the threat model and the retention basis.
 
 Planning decisions: sections 12.4 and 13 of `specs/8-iam-scaffolding-and-spikes/architecture.md` (security audit log, data model), section 12 (access log) and requirements FR-49, FR-50, FR-52 and NFR-24 of its `prd.md`.
 
@@ -41,6 +41,42 @@ Every gateway decision produces one access record (Story 14.1), which goes to ex
 | Write the audit lane to stdout and let a collector ship it | Rejected for the audit lane | Nothing tells the gateway that the record arrived, so an audited operation could run without a record |
 | Wait for Loki on the request path | Rejected | A slow Loki would slow every audited request and break the latency budget |
 
+## Verifying the chain
+
+`GET /api/security-audit-events/chain-verification` and the GraphQL query `securityAuditChainVerification(anchors: ...)` recompute the whole chain on demand; both need `iam:audit:read`, and every verification is itself recorded as `security_audit.verify` once it has run, so a verification that cannot be audited is not served and never checks its own record (Story 14.5, FR-52).
+
+- **What is checked.** `PgSecurityAuditLog::verify_chain` reads the records in pages of 1,000 from the first one and walks them in order: the sequence number follows the previous one (`gap`), the stored values read back as a valid record (`unreadable`), `prev_hash` is the hash of the previous record (`link`), and `hash` equals `sha256(prev_hash || canonical_form)` of the stored values (`digest`). The canonical form is built by the same domain entity that built it at insert time, and the digest is computed by the same SQL function, over a page at a time. The walk stops at the first break; the result is `valid` with the number of records checked, or `invalid` with the id and sequence number of that record and the cause.
+- **Anchors.** The caller may pass up to 100 `{seq, hash}` values that an external audit pipeline kept from the `iam.security_audit.anchored` events. The chain is `invalid` with cause `anchor` at an anchored record whose stored hash differs, and `anchor_missing` when an anchor names a sequence number beyond the newest record. A chain that an attacker rewrote and fully recomputed passes every internal check, so only an anchor published before the rewrite exposes it.
+- **Reads are consistent per page, not per walk.** Appends continue during a verification; a record appended after the walk read its page is simply not counted, and the count is the number of records the walk saw.
+
+| Option | Outcome | Reason |
+| --- | --- | --- |
+| Rebuild the canonical form in Rust and digest it in SQL, a page at a time | Chosen | One definition of the canonical form, the digest function that wrote the chain, and no hashing crate in the service |
+| Recompute the digest with a second SQL expression of the canonical form | Rejected | Two definitions of the form could drift apart and report a false break |
+| Hold the chain-head lock during the walk | Rejected | It would block every administrative write for the length of a scan |
+
+## Threat model
+
+The chain protects the history against an actor with some access, and is honest about who it does not stop.
+
+| Actor | Can do | Detected by |
+| --- | --- | --- |
+| An administrator of the API | Nothing to existing records: the API has no operation that updates or deletes an audit record | Not applicable |
+| A database user without owner rights, such as the service's runtime role | Read and append; `UPDATE`, `DELETE` and `TRUNCATE` are rejected by the trigger and, in production, not granted | The trigger; the role grants |
+| A user who can disable the trigger or alter the table and changes one record | Alter or delete a record | `verify_chain`: `digest`, `link` or `gap` at that record, without any anchor |
+| A user who rewrites the chain from some record on and recomputes every later hash | Make the whole chain consistent again | Only an external anchor published before the rewrite: `anchor` at the anchored record |
+| A user who also controls the external anchors | Rewrite the history undetected | Nothing inside this design |
+
+Consequences of the model, which operations must provide:
+
+- **External anchors.** The maintenance task publishes the chain head as `iam.security_audit.anchored` on `iam.events.v1` (FR-43). An external audit pipeline, outside the database owner's control, keeps those `seq` and `hash` values and passes them to the verification. Without kept anchors the verification detects accidental corruption and single-record tampering, not a full rewrite.
+- **Separate database roles.** Production runs migrations under an owner role and the service under a runtime role that holds only `INSERT` and `SELECT` on the audit tables, with no `UPDATE`, `DELETE`, `TRUNCATE`, `ALTER` or trigger rights, so that disabling the trigger needs the owner role, which the running service never holds. Setting up the two roles is an operational prerequisite (an open owner item).
+- **Verification on a schedule.** The end-to-end suite verifies the chain of every scenario's database as its last step; production operators verify with their anchors on a schedule they choose.
+
+## Retention basis
+
+The PostgreSQL security audit log keeps its records for at least 400 days and IAM never deletes them (NFR-25, FR-53): the records are the evidence for the security of the service and the legitimate interest of its operator in detecting misuse, and they hold pseudonymous identifiers, role names and permission keys, never a person's name or email, so that keeping them does not require rewriting them when a user is deleted. The Loki lanes age out on their own: `lane="access"` after 90 days and `lane="audit"` after 400 days in the reference configuration. A longer period for the table is a decision of the operator, not of the service.
+
 ## Consequences
 
-Every audited write takes the chain-head lock, which serialises administrative writes together with the policy-version lock of `iam_policy_epoch`. The in-database chain detects accidental corruption and tampering by anyone who cannot rewrite the whole chain; anchoring the chain head outside the database and the threat model are added by Story 14.5. Production runs the service under a database role that holds only `INSERT` and `SELECT` on the audit tables (an operational prerequisite).
+Every audited write takes the chain-head lock, which serialises administrative writes together with the policy-version lock of `iam_policy_epoch`. The in-database chain detects accidental corruption and tampering by anyone who cannot rewrite the whole chain; anchoring the chain head outside the database, the verification and the threat model are described above. Production runs the service under a database role that holds only `INSERT` and `SELECT` on the audit tables (an operational prerequisite).
