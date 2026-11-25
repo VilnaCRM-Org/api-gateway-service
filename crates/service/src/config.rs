@@ -36,6 +36,15 @@ use crate::cli::{
     RelayArgs, ServeArgs, TokenArgs,
 };
 
+mod audit_lane;
+
+use self::audit_lane::lane_bounds;
+
+pub use audit_lane::{
+    AuditLaneSettings, DEFAULT_LOKI_PUSH_URL, DEFAULT_LOKI_TENANT_ID, DEFAULT_MAX_PENDING,
+    env_label,
+};
+
 /// The largest accepted `JWT_CLOCK_SKEW`.
 const MAX_CLOCK_SKEW: Duration = Duration::from_mins(1);
 
@@ -322,7 +331,12 @@ pub struct GatewayConfig {
     /// `LOG_ALLOW_SAMPLE_RATE`, `LOG_CLASS_BUDGETS` and `LOG_CHANNEL_CAPACITY`: what bounds the
     /// access log.
     pub access_log: AccessLogSettings,
-    /// The shared rate counters: `RATE_LIMIT_STORE_URL` and `RATE_LIMIT_STORE_TIMEOUT`.
+    /// `LOKI_PUSH_URL`, `LOKI_TENANT_ID`, `ACCESS_LOG_AUDIT_FLUSH_INTERVAL` and
+    /// `ACCESS_LOG_AUDIT_MAX_PENDING`: where the audit lane goes and when it stops admitting
+    /// audited requests (Story 14.2).
+    pub audit_lane: AuditLaneSettings,
+    /// The shared rate counters: `RATE_LIMIT_STORE_URL`, `RATE_LIMIT_STORE_TIMEOUT` and
+    /// `RATE_LIMIT_BREAKER_OPEN_DURATION`.
     pub rate_limit: RateLimitSettings,
     /// `RYW_MAX_WAIT`: the longest a request waits for a snapshot of the policy version it names
     /// (Story 10.10).
@@ -368,17 +382,16 @@ impl GatewayConfig {
         let endpoints = endpoint_settings(&mut collector, args);
         let kafka = gateway_kafka(&mut collector, args, app_env);
         let tail = tail_settings(&mut collector, args);
-        let access_log = access_log_settings(&mut collector, args);
-        let rate_limit = rate_limit_settings(&mut collector, args);
+        let (access_log, rate_limit, audit_lane) = lane_bounds(&mut collector, args, app_env);
         match (
             (app_env, log_level, grace, tokens),
             (listeners, tls, endpoints, kafka),
-            (tail, rate_limit),
+            (tail, rate_limit, audit_lane),
         ) {
             (
                 (Some(app_env), Some(log_level), Some(shutdown_grace_period), Some(tokens)),
                 (Some(listeners), Some(tls), Some(endpoints), Some(kafka)),
-                (Some(tail), Some(rate_limit)),
+                (Some(tail), Some(rate_limit), Some(audit_lane)),
             ) if collector.problems.is_empty() => Ok(Self {
                 app_env,
                 log_level,
@@ -398,6 +411,7 @@ impl GatewayConfig {
                 derived_state_check_interval: tail.derived_check_interval,
                 readiness_az_floor: tail.az_floor,
                 access_log: access_log.unwrap_or_default(),
+                audit_lane,
                 rate_limit,
                 ryw_max_wait: tail.ryw_max_wait,
                 pod_name,
@@ -615,6 +629,9 @@ pub struct RateLimitSettings {
     pub store: ValkeyEndpoint,
     /// `RATE_LIMIT_STORE_TIMEOUT`: the longest one call of the shared store may take.
     pub store_timeout: Duration,
+    /// `RATE_LIMIT_BREAKER_OPEN_DURATION`: how long the breaker of the store stays open before one
+    /// probe call (Story 12.3).
+    pub breaker_open_duration: Duration,
 }
 
 /// The URL of the local Valkey when `RATE_LIMIT_STORE_URL` is unset.
@@ -626,8 +643,15 @@ const MIN_RATE_LIMIT_STORE_TIMEOUT: Duration = Duration::from_millis(1);
 /// The longest accepted `RATE_LIMIT_STORE_TIMEOUT`.
 const MAX_RATE_LIMIT_STORE_TIMEOUT: Duration = Duration::from_millis(50);
 
-/// `RATE_LIMIT_STORE_URL` (`redis://` or `redis+sentinel://`, default the local Valkey) and
-/// `RATE_LIMIT_STORE_TIMEOUT` (1ms to 50ms, default 10ms).
+/// The shortest accepted `RATE_LIMIT_BREAKER_OPEN_DURATION`.
+const MIN_RATE_LIMIT_BREAKER_OPEN_DURATION: Duration = Duration::from_secs(1);
+
+/// The longest accepted `RATE_LIMIT_BREAKER_OPEN_DURATION`.
+const MAX_RATE_LIMIT_BREAKER_OPEN_DURATION: Duration = Duration::from_secs(300);
+
+/// `RATE_LIMIT_STORE_URL` (`redis://` or `redis+sentinel://`, default the local Valkey),
+/// `RATE_LIMIT_STORE_TIMEOUT` (1ms to 50ms, default 10ms) and `RATE_LIMIT_BREAKER_OPEN_DURATION`
+/// (1s to 5m, default 5s).
 ///
 /// `None` when a problem was reported.
 fn rate_limit_settings(collector: &mut Collector, args: &GatewayArgs) -> Option<RateLimitSettings> {
@@ -639,9 +663,14 @@ fn rate_limit_settings(collector: &mut Collector, args: &GatewayArgs) -> Option<
         "RATE_LIMIT_STORE_TIMEOUT",
         rate_limit_store_timeout(args.rate_limit_store_timeout.as_deref()),
     );
+    let breaker = collector.collect(
+        "RATE_LIMIT_BREAKER_OPEN_DURATION",
+        rate_limit_breaker_open_duration(args.rate_limit_breaker_open_duration.as_deref()),
+    );
     Some(RateLimitSettings {
         store: store?,
         store_timeout: timeout?,
+        breaker_open_duration: breaker?,
     })
 }
 
@@ -656,6 +685,17 @@ fn rate_limit_store_timeout(raw: Option<&str>) -> Parsed<Duration> {
         Ok(value)
     } else {
         Err("must be a duration from 1ms to 50ms".to_owned())
+    }
+}
+
+fn rate_limit_breaker_open_duration(raw: Option<&str>) -> Parsed<Duration> {
+    let value = duration(raw, Duration::from_secs(5))?;
+    if (MIN_RATE_LIMIT_BREAKER_OPEN_DURATION..=MAX_RATE_LIMIT_BREAKER_OPEN_DURATION)
+        .contains(&value)
+    {
+        Ok(value)
+    } else {
+        Err("must be a duration from 1s to 5m".to_owned())
     }
 }
 

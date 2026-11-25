@@ -27,7 +27,7 @@ use iam_infrastructure::{
 };
 use rstest::rstest;
 use service::bootstrap::gateway::pipeline::{
-    Pipeline, TYPE_MALFORMED_PATH, UnauditedCommands, router,
+    Forwarder, Pipeline, TYPE_MALFORMED_PATH, UnauditedCommands, router,
 };
 use shared_domain::{Clock, CommandBus, Uuid};
 use test_support::access_token::FakeAccessTokenVerifier;
@@ -39,6 +39,8 @@ use test_support::route::{route, route_draft};
 use test_support::seed::TestRng;
 use test_support::upstream::upstream;
 use tower::ServiceExt as _;
+
+mod proxy;
 
 const HOST: &str = "api.example.test";
 const USER: &str = "3d9b7c1e-5a2f-4e8d-b6c0-9f1e2d3c4b5a";
@@ -228,6 +230,29 @@ fn gateway_barred(
     barrier: Option<Arc<ReadYourWritesBarrier>>,
 ) -> Gateway {
     let view = Arc::new(view);
+    let forwarder = Arc::new(RecordingForwarder {
+        view: Arc::clone(&view),
+        seen: Mutex::default(),
+        panics,
+    });
+    let (router, clock, freshness) =
+        pipeline_over(&view, Arc::<RecordingForwarder>::clone(&forwarder), barrier);
+    Gateway {
+        router,
+        view,
+        forwarder,
+        clock,
+        freshness,
+    }
+}
+
+/// The router of a pipeline over `view` that hands authorized requests to `forwarder`, with the
+/// boot clock and the freshness state it runs on.
+fn pipeline_over(
+    view: &Arc<CountingPolicyView>,
+    forwarder: Arc<Forwarder>,
+    barrier: Option<Arc<ReadYourWritesBarrier>>,
+) -> (Router, Arc<FakeBootClock>, Arc<FreshnessState>) {
     let boot = Arc::new(FakeBootClock::starting_at(BootInstant::from_elapsed(
         Duration::from_secs(100),
     )));
@@ -243,7 +268,7 @@ fn gateway_barred(
         PolicyVersion::new(7).unwrap(),
     );
     let clock: Arc<dyn Clock> = Arc::new(FixedClock::at(at(NOW)));
-    let policy: Arc<dyn PolicyView> = Arc::<CountingPolicyView>::clone(&view);
+    let policy: Arc<dyn PolicyView> = Arc::<CountingPolicyView>::clone(view);
     let verifier: Arc<dyn AccessTokenVerifier> = Arc::new(verifier());
     let memo: Arc<dyn TokenMemo> = Arc::new(MokaTokenMemo::new(
         TokenMemoSettings {
@@ -263,29 +288,18 @@ fn gateway_barred(
         Arc::new(SequenceUuidGenerator::starting_at(1)),
         commands,
     );
-    let forwarder = Arc::new(RecordingForwarder {
-        view: Arc::clone(&view),
-        seen: Mutex::default(),
-        panics,
-    });
     let pipeline = Pipeline::new(
         policy,
         Arc::clone(&freshness),
         tokens,
         Arc::new(authorizer),
-        Arc::<RecordingForwarder>::clone(&forwarder),
+        forwarder,
     );
     let pipeline = match barrier {
         Some(barrier) => pipeline.with_read_your_writes(barrier),
         None => pipeline,
     };
-    Gateway {
-        router: router(pipeline),
-        view,
-        forwarder,
-        clock: boot,
-        freshness,
-    }
+    (router(pipeline), boot, freshness)
 }
 
 fn gateway() -> Gateway {

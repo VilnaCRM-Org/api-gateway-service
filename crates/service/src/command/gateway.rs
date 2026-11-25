@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::serve::Listener;
-use iam_application::{PodProbes, ReadYourWritesBarrier};
-use iam_domain::PolicyView;
+use iam_application::{EndpointReadyPeers, PodProbes, ReadYourWritesBarrier};
+use iam_domain::{PolicyView, ReadyPeers};
 use shared_domain::{BoxError, Clock};
 use tokio::net::TcpListener;
 use tokio::runtime::{Builder, Runtime};
@@ -23,6 +23,7 @@ use super::serve::{
     FORCED_EXIT_LIMIT, Shutdown, Signals, log_forced, log_signal, log_stopped, mode, stopped,
 };
 use crate::bootstrap::gateway::decision::{self, DecisionPorts};
+use crate::bootstrap::gateway::endpoints;
 use crate::bootstrap::gateway::listener::{self, ReloadableCertificate, TlsListener};
 use crate::bootstrap::gateway::shedding::{self, ConnectionSignals};
 use crate::bootstrap::gateway::upstream::HyperUpstreamForwarder;
@@ -126,6 +127,13 @@ fn start_public(
     Ok(spawn_shedding_server(secured, router, signals))
 }
 
+/// The collaborators the public pipeline is wired with besides the configuration and the clock.
+struct PublicPorts {
+    forwarder: Arc<pipeline::Forwarder>,
+    access_log: Arc<pipeline::PipelineAccessLog>,
+    peers: Arc<dyn ReadyPeers>,
+}
+
 /// The router of the public listener: with a freshness state it is the request pipeline that hands
 /// authorized requests to `forwarder`, without one every request is answered 503 `iam_stale`.
 ///
@@ -136,20 +144,19 @@ fn public_router(
     config: &GatewayConfig,
     policy: &policy::PolicyAdapters,
     clock: &Arc<dyn Clock>,
-    forwarder: Arc<pipeline::Forwarder>,
-    access_log: Arc<pipeline::PipelineAccessLog>,
+    ports: PublicPorts,
 ) -> Result<Router, BoxError> {
     let Some(freshness) = policy.freshness.as_ref() else {
         return Ok(listener::stale_router());
     };
     let view: Arc<dyn PolicyView> =
         Arc::<iam_infrastructure::ArcSwapPolicySnapshot>::clone(&policy.cell);
-    let pipeline =
-        pipeline::from_config(config, view, Arc::clone(&freshness.state), clock, forwarder)?;
+    let state = Arc::clone(&freshness.state);
+    let pipeline = pipeline::from_config(config, view, state, clock, ports.forwarder)?;
     let pipeline = pipeline
         .with_read_your_writes(read_your_writes_barrier(config, policy))
-        .with_rate_limits(pipeline::gate_from_config(config))
-        .with_access_log(access_log);
+        .with_rate_limits(pipeline::gate_from_config(config, ports.peers))
+        .with_access_log(ports.access_log);
     Ok(pipeline::router(pipeline))
 }
 
@@ -242,7 +249,16 @@ fn start_servers(
     );
     let access_log = adapters.access_log.pipeline_step(&adapters.clock);
     let forwarder = Arc::new(forwarder);
-    let built = public_router(config, policy, &adapters.clock, forwarder, access_log);
+    let peers: Arc<dyn ReadyPeers> = Arc::new(EndpointReadyPeers::new(
+        adapters.endpoints.directory.view(),
+        endpoints::peers_target(config),
+    ));
+    let ports = PublicPorts {
+        forwarder,
+        access_log,
+        peers,
+    };
+    let built = public_router(config, policy, &adapters.clock, ports);
     let public_router = built?;
     let internal_router = internal_router(policy);
     let decision_router = decision_router(config, policy, Arc::clone(&adapters.clock))?;

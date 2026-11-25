@@ -470,6 +470,14 @@ pub struct GatewayArgs {
         hide_env_values = true
     )]
     pub rate_limit_store_timeout: Option<String>,
+    /// How long the breaker of the shared rate counters stays open before one probe call, 1s to 5m
+    /// (default `5s`).
+    #[arg(
+        long = "rate-limit-breaker-open-duration",
+        env = "RATE_LIMIT_BREAKER_OPEN_DURATION",
+        hide_env_values = true
+    )]
+    pub rate_limit_breaker_open_duration: Option<String>,
     /// The share of allowed requests that is written to the access log, a decimal number from 0
     /// to 1 (default `0.01`).
     #[arg(
@@ -494,6 +502,32 @@ pub struct GatewayArgs {
         hide_env_values = true
     )]
     pub log_channel_capacity: Option<String>,
+    /// The push endpoint of Loki for the audit lane of the access log, a plain `http://` URL
+    /// (required outside `dev` and `test`; default the compose Loki there).
+    #[arg(long = "loki-push-url", env = "LOKI_PUSH_URL", hide_env_values = true)]
+    pub loki_push_url: Option<String>,
+    /// The tenant of the audit lane pushes, sent as `X-Scope-OrgID` (default `iam`).
+    #[arg(
+        long = "loki-tenant-id",
+        env = "LOKI_TENANT_ID",
+        hide_env_values = true
+    )]
+    pub loki_tenant_id: Option<String>,
+    /// How often the audit lane is pushed to Loki (default `1s`).
+    #[arg(
+        long = "access-log-audit-flush-interval",
+        env = "ACCESS_LOG_AUDIT_FLUSH_INTERVAL",
+        hide_env_values = true
+    )]
+    pub access_log_audit_flush_interval: Option<String>,
+    /// How long the oldest audit record may wait for Loki's acknowledgement before audit-required
+    /// requests are refused with 503 `audit_unavailable` (default `5s`).
+    #[arg(
+        long = "access-log-audit-max-pending",
+        env = "ACCESS_LOG_AUDIT_MAX_PENDING",
+        hide_env_values = true
+    )]
+    pub access_log_audit_max_pending: Option<String>,
 }
 
 /// Arguments of `check-config`: the run mode and the settings of both modes.

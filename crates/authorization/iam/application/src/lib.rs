@@ -97,7 +97,7 @@ mod user_role_permission_fixtures;
 pub use access_decision_service::AccessDecisionService;
 pub use access_log::{
     AccessFacts, AccessItem, AccessLogChannel, AccessLogCounters, AccessLogReceiver,
-    AccessLogWriter, AccessRecordBuilder, AccessRecorder, BATCH_VALIDATION_TEMPLATE,
+    AccessLogWriter, AccessRecordBuilder, AccessRecorder, AuditGate, BATCH_VALIDATION_TEMPLATE,
     DECISION_API_HOST, DecisionAccessLog, DecisionCall, DecisionTrace, RequestFacts, ResponseFacts,
     RouteFacts, VALIDATION_TEMPLATE, VerdictFacts, WRITER_TICK, access_log_channel,
 };
@@ -175,7 +175,9 @@ pub use freshness::{
     FreshnessProber, FreshnessReading, FreshnessState, PEER_LAG_TOLERANCE, PeerLag, PeerLagTracker,
     ProberPorts, ProberSettings, ProofAttachment, ProofSink, WATCHDOG_INTERVAL,
 };
-pub use gateway::rate_limit::{RateLimitGate, RateRequest, RateStage};
+pub use gateway::rate_limit::{
+    EndpointReadyPeers, RateLimitGate, RateLimitPorts, RateRequest, RateStage, RateStoreBounds,
+};
 pub use gateway::request_authorizer::{
     Authorization, RequestAuthorizer, RouteRequest, TracedAuthorization,
 };

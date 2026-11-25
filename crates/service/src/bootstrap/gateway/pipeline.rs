@@ -81,6 +81,10 @@ pub const TYPE_UNKNOWN_OPERATION: &str = "/problems/unknown_operation";
 /// The `type` of the 403 problem of a route whose service has no catalogue.
 pub const TYPE_UNKNOWN_SERVICE: &str = "/problems/unknown_service";
 
+/// The `type` of the 503 problem of a request on an always-audit or sensitive key whose audit
+/// record the audit lane cannot take (audit-or-deny, Story 14.2).
+pub const TYPE_AUDIT_UNAVAILABLE: &str = "/problems/audit_unavailable";
+
 /// The `type` of the 503 problem of an upstream at its concurrency limit.
 pub const TYPE_UPSTREAM_OVERLOADED: &str = "/problems/upstream_overloaded";
 
@@ -107,6 +111,8 @@ enum Refusal {
     Stale,
     /// 503 `iam_propagating`: the request names a policy version that is not published yet.
     Propagating,
+    /// 503 `audit_unavailable`: the request needs an audit record that the audit lane cannot take.
+    AuditUnavailable,
     /// 400: the path breaks the path rule.
     MalformedPath,
     /// 404: no route matches.
@@ -126,6 +132,7 @@ impl From<Refusal> for Response {
         match refusal {
             Refusal::Stale => stale(),
             Refusal::Propagating => propagating(),
+            Refusal::AuditUnavailable => audit_unavailable(),
             Refusal::MalformedPath => malformed_path(),
             Refusal::NoRoute => no_route(),
             Refusal::RateLimited(seconds) => rate_limit::rate_limited(seconds),
@@ -141,7 +148,9 @@ impl Refusal {
     /// reason, which the pipeline noted when it resolved the token.
     const fn reason(self, token_refusal: Option<DecisionReason>) -> DecisionReason {
         match (self, token_refusal) {
-            (Self::Stale | Self::Propagating, _) => DecisionReason::Unavailable,
+            (Self::Stale | Self::Propagating | Self::AuditUnavailable, _) => {
+                DecisionReason::Unavailable
+            }
             (Self::MalformedPath, _) => DecisionReason::MalformedOperation,
             (Self::NoRoute, _) => DecisionReason::UnknownOperation,
             (Self::RateLimited(_), _) => DecisionReason::LimitsExceeded,
@@ -211,6 +220,9 @@ impl Pipeline {
     /// request, never waiting and never changing the answer.
     #[must_use]
     pub fn with_access_log(mut self, access_log: Arc<PipelineAccessLog>) -> Self {
+        if let Some(gate) = access_log.audit_gate() {
+            self.authorizer.install_audit_gate(gate);
+        }
         self.access_log = Some(access_log);
         self
     }
@@ -347,6 +359,7 @@ const fn permitted(authorization: Authorization) -> Result<(), Refusal> {
         Authorization::Allowed(_version) => Ok(()),
         Authorization::Denied(reason) => Err(Refusal::Forbidden(reason)),
         Authorization::Unavailable => Err(Refusal::Stale),
+        Authorization::AuditUnavailable => Err(Refusal::AuditUnavailable),
     }
 }
 
@@ -431,6 +444,21 @@ fn propagating() -> Response {
         r#type: TYPE_IAM_PROPAGATING,
         ..Problem::new(StatusCode::SERVICE_UNAVAILABLE)
             .with_detail("The policy version the request names is not published here yet.")
+    };
+    let mut response = problem.into_response();
+    response
+        .headers_mut()
+        .insert(RETRY_AFTER, HeaderValue::from_static("1"));
+    response
+}
+
+/// 503 `audit_unavailable` with `Retry-After: 1`: the audit lane cannot take the record of the
+/// request, so the request does not run.
+fn audit_unavailable() -> Response {
+    let problem = Problem {
+        r#type: TYPE_AUDIT_UNAVAILABLE,
+        ..Problem::new(StatusCode::SERVICE_UNAVAILABLE)
+            .with_detail("The audit record of this request cannot be stored right now.")
     };
     let mut response = problem.into_response();
     response

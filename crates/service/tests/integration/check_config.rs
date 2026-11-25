@@ -741,6 +741,9 @@ fn the_sasl_password_is_never_printed() {
 
 const GATEWAY_ENVIRONMENT: [(&str, &str); 1] = [("APP_ENV", "test")];
 
+/// The push endpoint of Loki that a gateway outside `dev` and `test` must name (Story 14.2).
+const LOKI_PUSH_URL: &str = "http://loki:3100/loki/api/v1/push";
+
 #[test]
 fn the_gateway_mode_needs_no_database_setting() {
     let scratch = Scratch::new();
@@ -859,7 +862,7 @@ fn missing_tls_files_outside_dev_and_test_exit_2_naming_both_variables() {
 
     let output = scratch.run(
         &["check-config", "--mode", "gateway"],
-        &[("APP_ENV", "prod")],
+        &[("APP_ENV", "prod"), ("LOKI_PUSH_URL", LOKI_PUSH_URL)],
     );
 
     assert_eq!(output.status.code(), Some(2));
@@ -881,6 +884,7 @@ fn a_missing_bootstrap_credential_outside_dev_and_test_exits_2_naming_the_variab
         &["check-config", "--mode", "gateway"],
         &[
             ("APP_ENV", "prod"),
+            ("LOKI_PUSH_URL", LOKI_PUSH_URL),
             ("GATEWAY_TLS_CERT_FILE", pair.cert.to_str().unwrap()),
             ("GATEWAY_TLS_KEY_FILE", pair.key.to_str().unwrap()),
         ],
@@ -902,6 +906,7 @@ fn a_usable_tls_pair_is_accepted_in_prod() {
         &["check-config", "--mode", "gateway"],
         &[
             ("APP_ENV", "prod"),
+            ("LOKI_PUSH_URL", LOKI_PUSH_URL),
             ("GATEWAY_TLS_CERT_FILE", pair.cert.to_str().unwrap()),
             ("GATEWAY_TLS_KEY_FILE", pair.key.to_str().unwrap()),
         ],
@@ -1065,6 +1070,47 @@ fn a_rate_limit_store_timeout_outside_one_to_fifty_milliseconds_exits_2_naming_i
     );
 }
 
+#[rstest]
+#[case::too_short(("RATE_LIMIT_BREAKER_OPEN_DURATION", "999ms"))]
+#[case::zero(("RATE_LIMIT_BREAKER_OPEN_DURATION", "0s"))]
+#[case::above_five_minutes(("RATE_LIMIT_BREAKER_OPEN_DURATION", "301s"))]
+fn a_breaker_open_duration_outside_one_second_to_five_minutes_exits_2_naming_it(
+    #[case] setting: (&str, &str),
+) {
+    let scratch = Scratch::new();
+
+    let output = scratch.run(
+        &["check-config", "--mode", "gateway"],
+        &[GATEWAY_ENVIRONMENT[0], setting],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(
+        stderr(&output),
+        "RATE_LIMIT_BREAKER_OPEN_DURATION: must be a duration from 1s to 5m\n"
+    );
+}
+
+#[rstest]
+#[case("1s")]
+#[case("5s")]
+#[case("5m")]
+fn a_breaker_open_duration_inside_the_range_is_accepted(#[case] duration: &str) {
+    let scratch = Scratch::new();
+
+    let output = scratch.run(
+        &["check-config", "--mode", "gateway"],
+        &[
+            GATEWAY_ENVIRONMENT[0],
+            ("RATE_LIMIT_BREAKER_OPEN_DURATION", duration),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout(&output), "configuration OK\n");
+}
+
 #[test]
 fn a_rate_limit_store_url_that_names_no_valkey_exits_2_without_echoing_it() {
     let scratch = Scratch::new();
@@ -1128,6 +1174,75 @@ fn a_rate_limit_store_timeout_inside_the_range_is_accepted(#[case] timeout: &str
     "LOG_CHANNEL_CAPACITY: must be an integer from 1 to 16777216\n"
 )]
 fn an_access_log_setting_out_of_range_exits_2_naming_the_variable(
+    #[case] setting: (&str, &str),
+    #[case] expected: &str,
+) {
+    let scratch = Scratch::new();
+
+    let output = scratch.run(
+        &["check-config", "--mode", "gateway"],
+        &[GATEWAY_ENVIRONMENT[0], setting],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), expected);
+}
+
+#[test]
+fn a_missing_loki_push_url_outside_dev_and_test_exits_2_naming_it() {
+    let scratch = Scratch::new();
+    let pair = test_support::tls::self_signed(scratch.path(), "gateway", "loki");
+
+    let output = scratch.run(
+        &["check-config", "--mode", "gateway"],
+        &[
+            ("APP_ENV", "prod"),
+            ("GATEWAY_TLS_CERT_FILE", pair.cert.to_str().unwrap()),
+            ("GATEWAY_TLS_KEY_FILE", pair.key.to_str().unwrap()),
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(
+        stderr(&output),
+        "LOKI_PUSH_URL: is required outside APP_ENV dev and test\n"
+    );
+}
+
+#[rstest]
+#[case::https(("LOKI_PUSH_URL", "https://hunter2-loki:3100/loki/api/v1/push"))]
+#[case::no_scheme(("LOKI_PUSH_URL", "hunter2-loki:3100"))]
+fn a_loki_push_url_that_is_not_a_plain_http_url_exits_2_without_echoing_it(
+    #[case] setting: (&str, &str),
+) {
+    let scratch = Scratch::new();
+
+    let output = scratch.run(
+        &["check-config", "--mode", "gateway"],
+        &[GATEWAY_ENVIRONMENT[0], setting],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).starts_with("LOKI_PUSH_URL: must be an http:// URL with a host"));
+    assert!(!stderr(&output).contains("hunter2-loki"));
+}
+
+#[rstest]
+#[case::zero_flush(
+    ("ACCESS_LOG_AUDIT_FLUSH_INTERVAL", "0s"),
+    "ACCESS_LOG_AUDIT_FLUSH_INTERVAL: must be a positive duration such as 500ms, 2s or 1m\n"
+)]
+#[case::zero_pending(
+    ("ACCESS_LOG_AUDIT_MAX_PENDING", "0s"),
+    "ACCESS_LOG_AUDIT_MAX_PENDING: must be a positive duration such as 500ms, 2s or 1m\n"
+)]
+#[case::pending_not_longer_than_flush(
+    ("ACCESS_LOG_AUDIT_MAX_PENDING", "1s"),
+    "ACCESS_LOG_AUDIT_MAX_PENDING: must be longer than ACCESS_LOG_AUDIT_FLUSH_INTERVAL\n"
+)]
+fn an_audit_lane_setting_out_of_range_exits_2_naming_the_variable(
     #[case] setting: (&str, &str),
     #[case] expected: &str,
 ) {

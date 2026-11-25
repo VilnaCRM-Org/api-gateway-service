@@ -7,6 +7,7 @@ use super::*;
 use crate::cli::RouteConfigurationArgs;
 
 mod access_log;
+mod audit_lane;
 mod endpoints;
 mod rate_limit;
 
@@ -1784,6 +1785,7 @@ fn tls_files_are_required_outside_dev_and_test() {
     let mut args = valid_gateway();
     args.service.app_env = None;
     over_sasl_ssl(&mut args);
+    args.loki_push_url = some("http://loki:3100/loki/api/v1/push");
 
     assert_eq!(
         gateway_problems(&args),
@@ -1844,6 +1846,7 @@ fn a_usable_pair_is_accepted_in_every_environment() {
     let (cert, key) = certificate_pair("accepted");
     let mut args = valid_gateway();
     args.service.app_env = some("prod");
+    args.loki_push_url = some("http://loki:3100/loki/api/v1/push");
     over_sasl_ssl(&mut args);
     args.tls_cert_file = Some(cert.clone());
     args.tls_key_file = Some(key.clone());
