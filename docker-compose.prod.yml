@@ -19,6 +19,10 @@ services:
       KAFKA_CONFIG_GATES: enforce
       KAFKA_SASL_USERNAME: ${KAFKA_SASL_USERNAME:?KAFKA_SASL_USERNAME is required}
       KAFKA_SASL_PASSWORD: ${KAFKA_SASL_PASSWORD:?KAFKA_SASL_PASSWORD is required}
+      # The log store that the access decision queries read (Story 14.3): the base URL of the Loki of the deployment, a
+      # plain http:// URL, and its tenant.
+      LOKI_QUERY_URL: ${LOKI_QUERY_URL:?LOKI_QUERY_URL is required}
+      LOKI_TENANT_ID: ${LOKI_TENANT_ID:-iam}
     volumes: !override
       - ${JWT_PUBLIC_KEYS_HOST_FILE:?JWT_PUBLIC_KEYS_HOST_FILE is required}:/etc/service/jwt-public-keys.pem:ro
     deploy:

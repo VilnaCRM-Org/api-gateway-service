@@ -36,10 +36,15 @@ use crate::cli::{
     RelayArgs, ServeArgs, TokenArgs,
 };
 
+mod access_log_query;
 mod audit_lane;
 
+use self::access_log_query::access_log_query_settings;
 use self::audit_lane::lane_bounds;
 
+pub use access_log_query::{
+    AccessLogQuerySettings, DEFAULT_LOKI_QUERY_URL, DEFAULT_MAX_RANGE, DEFAULT_TIMEOUT,
+};
 pub use audit_lane::{
     AuditLaneSettings, DEFAULT_LOKI_PUSH_URL, DEFAULT_LOKI_TENANT_ID, DEFAULT_MAX_PENDING,
     env_label,
@@ -136,6 +141,10 @@ pub struct Config {
     /// `IAM_NAMESPACE`: the namespace IAM runs in; an upstream that targets
     /// it is refused with 422. None refuses only the system namespaces.
     pub iam_namespace: Option<String>,
+    /// `LOKI_QUERY_URL`, `LOKI_TENANT_ID`, `ACCESS_LOG_QUERY_MAX_RANGE` and
+    /// `ACCESS_LOG_QUERY_TIMEOUT`: how access decisions are read from Loki and what bounds a
+    /// query (Story 14.3).
+    pub access_log_query: AccessLogQuerySettings,
 }
 
 /// The settings of the bulk operation runner.
@@ -192,26 +201,22 @@ impl Config {
         let limits = limits(&mut collector, &args);
         let iam_namespace = iam_namespace(&mut collector, &args);
         let tokens = tokens(&mut collector, &args.tokens);
-        let kafka = kafka(
-            &mut collector,
-            &args.kafka,
-            server.as_ref().map(|server| server.app_env),
-        );
+        let app_env = server.as_ref().map(|server| server.app_env);
+        let kafka = kafka(&mut collector, &args.kafka, app_env);
+        let access_log_query = access_log_query_settings(&mut collector, &args, app_env);
         collector.cross_field_rules(database.as_ref(), sqs.as_ref(), limits.as_ref());
         let tasks = task_settings(
             &mut collector,
             &args,
             database.as_ref().map(|settings| settings.url.as_str()),
         );
-        match (server, database, sqs, limits, tokens, kafka, tasks) {
+        match (
+            (server, database, sqs, limits),
+            (tokens, kafka, tasks, access_log_query),
+        ) {
             (
-                Some(server),
-                Some(database),
-                Some(sqs),
-                Some(limits),
-                Some(tokens),
-                Some(kafka),
-                Some((maintenance, relay, anti_entropy, bulk)),
+                (Some(server), Some(database), Some(sqs), Some(limits)),
+                (Some(tokens), Some(kafka), Some(tasks), Some(access_log_query)),
             ) if collector.problems.is_empty() => Ok(Self {
                 app_env: server.app_env,
                 host: server.host,
@@ -225,12 +230,13 @@ impl Config {
                 shutdown_grace_period: limits.shutdown_grace_period,
                 tokens,
                 kafka,
-                maintenance,
-                relay,
-                anti_entropy,
-                bulk,
+                maintenance: tasks.0,
+                relay: tasks.1,
+                anti_entropy: tasks.2,
+                bulk: tasks.3,
                 route_configuration_max_routes: limits.route_configuration_max_routes,
                 iam_namespace,
+                access_log_query,
             }),
             _ => Err(ConfigErrors(collector.problems)),
         }

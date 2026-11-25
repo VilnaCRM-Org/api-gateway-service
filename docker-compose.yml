@@ -34,6 +34,8 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:19092
       KAFKA_SECURITY_PROTOCOL: PLAINTEXT
       KAFKA_CONFIG_GATES: relaxed
+      # The compose Loki at its in-network port, where the access decision queries read the audit lane (Story 14.3).
+      LOKI_QUERY_URL: http://loki:3100
     volumes:
       # The development public key unless the caller names its own key file; the private half is never committed.
       - ${JWT_PUBLIC_KEYS_HOST_FILE:-./config/jwt/dev-public-keys.pem}:/etc/service/jwt-public-keys.pem:ro

@@ -198,6 +198,47 @@ pub struct ServeArgs {
     /// Namespace IAM runs in; an upstream that targets it is refused (default: none).
     #[arg(long = "iam-namespace", env = "IAM_NAMESPACE", hide_env_values = true)]
     pub iam_namespace: Option<String>,
+    /// Settings of the queries of the access decisions in Loki, and the tenant that the audit lane
+    /// of the gateway shares with them.
+    #[command(flatten)]
+    pub access_log_query: AccessLogQueryArgs,
+}
+
+/// Settings of the access decision queries of `serve`, and `LOKI_TENANT_ID`, which `gateway` reads
+/// for its pushes.
+#[derive(Debug, Clone, Default, Args)]
+pub struct AccessLogQueryArgs {
+    /// The base URL of the Loki that stores the audit lane, a plain `http://` URL (required outside
+    /// `dev` and `test`; default the compose Loki there).
+    #[arg(
+        long = "loki-query-url",
+        env = "LOKI_QUERY_URL",
+        hide_env_values = true
+    )]
+    pub loki_query_url: Option<String>,
+    /// The tenant of the Loki requests, sent as `X-Scope-OrgID` (default `iam`).
+    #[arg(
+        long = "loki-tenant-id",
+        env = "LOKI_TENANT_ID",
+        hide_env_values = true
+    )]
+    pub loki_tenant_id: Option<String>,
+    /// The longest time range of one access decision query, a positive duration of at most 7 days
+    /// (default `24h`).
+    #[arg(
+        long = "access-log-query-max-range",
+        env = "ACCESS_LOG_QUERY_MAX_RANGE",
+        hide_env_values = true
+    )]
+    pub max_range: Option<String>,
+    /// How long an access decision query may take before it fails with 504, a positive duration of
+    /// at most 2 minutes (default `5s`).
+    #[arg(
+        long = "access-log-query-timeout",
+        env = "ACCESS_LOG_QUERY_TIMEOUT",
+        hide_env_values = true
+    )]
+    pub timeout: Option<String>,
 }
 
 /// Settings of the declarative route configuration of `serve`.
@@ -506,13 +547,6 @@ pub struct GatewayArgs {
     /// (required outside `dev` and `test`; default the compose Loki there).
     #[arg(long = "loki-push-url", env = "LOKI_PUSH_URL", hide_env_values = true)]
     pub loki_push_url: Option<String>,
-    /// The tenant of the audit lane pushes, sent as `X-Scope-OrgID` (default `iam`).
-    #[arg(
-        long = "loki-tenant-id",
-        env = "LOKI_TENANT_ID",
-        hide_env_values = true
-    )]
-    pub loki_tenant_id: Option<String>,
     /// How often the audit lane is pushed to Loki (default `1s`).
     #[arg(
         long = "access-log-audit-flush-interval",

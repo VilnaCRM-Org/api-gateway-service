@@ -5,7 +5,9 @@
 //! kernel, never another bounded context.
 
 pub mod access_log;
+pub mod access_log_query;
 pub mod audit_anchor;
+pub mod audit_chain_verification;
 pub mod bulk_operation;
 pub mod catalogue_event;
 pub mod catalogue_statement;
@@ -44,7 +46,12 @@ pub use access_log::{
     ClassBudgets, DEFAULT_CHANNEL_CAPACITY, InvalidAccessLogSetting, SampleRate,
     parse_channel_capacity,
 };
+pub use access_log_query::{
+    AccessLogCursor, AccessLogEntry, AccessLogFilter, AccessLogQueryError, AccessLogRange,
+    AccessLogSearch, ID_WINDOW_NANOS, InvalidAccessLogRange, MAX_PAGE_SIZE as MAX_ACCESS_LOG_PAGE,
+};
 pub use audit_anchor::{AnchorStamp, SecurityAuditAnchored};
+pub use audit_chain_verification::{ChainBreak, ChainBreakCause, ChainVerdict, ChainVerification};
 pub use bulk_operation::chunker::{
     BulkChange, BulkChunk, BulkChunker, BulkPacing, ChangeDirection, InvalidBulkChunking,
 };
@@ -140,6 +147,7 @@ pub use policy::subject_policy::SubjectPolicy;
 pub use policy::token_lifetime_rule::{TokenLifetimeRule, TokenTimes};
 pub use policy::wildcard_matcher::WildcardMatcher;
 pub use port::RepositoryError;
+pub use port::access_log_query::AccessLogQuery;
 pub use port::access_log_sink::AccessLogSink;
 pub use port::access_token_verifier::AccessTokenVerifier;
 pub use port::anti_entropy_store::{AntiEntropyStore, PublishedRecord, StoredHead, WrittenKey};

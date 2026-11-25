@@ -294,6 +294,21 @@ const GRAPHQL_RULES: &[GraphQlRule] = &[
         "global_token_cutoff.read",
         Requirement::Reserved(&[AUDIT_READ]),
     ),
+    field(
+        "Query.securityAuditChainVerification",
+        "security_audit.verify",
+        Requirement::Reserved(&[AUDIT_READ]),
+    ),
+    field(
+        "Query.accessDecision",
+        "access_log.read",
+        Requirement::Reserved(&[AUDIT_READ]),
+    ),
+    field(
+        "Query.accessDecisions",
+        "access_log.list",
+        Requirement::Reserved(&[AUDIT_READ]),
+    ),
     field("Mutation.createRole", "role.create", Requirement::Catalogue),
     field("Mutation.updateRole", "role.update", Requirement::Catalogue),
     field("Mutation.deleteRole", "role.delete", Requirement::Catalogue),
@@ -703,6 +718,12 @@ const RULES: &[OperationRule] = &[
     ),
     row(
         HttpMethod::Get,
+        "/api/security-audit-events/chain-verification",
+        "security_audit.verify",
+        Requirement::Reserved(&[AUDIT_READ]),
+    ),
+    row(
+        HttpMethod::Get,
         "/api/security-audit-events/{id}",
         "security_audit.read",
         Requirement::Reserved(&[AUDIT_READ]),
@@ -729,6 +750,18 @@ const RULES: &[OperationRule] = &[
         HttpMethod::Get,
         "/api/global-token-cutoffs/current",
         "global_token_cutoff.read",
+        Requirement::Reserved(&[AUDIT_READ]),
+    ),
+    row(
+        HttpMethod::Get,
+        "/api/access-decisions",
+        "access_log.list",
+        Requirement::Reserved(&[AUDIT_READ]),
+    ),
+    row(
+        HttpMethod::Get,
+        "/api/access-decisions/{id}",
+        "access_log.read",
         Requirement::Reserved(&[AUDIT_READ]),
     ),
 ];

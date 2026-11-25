@@ -8,12 +8,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
+use axum::http::header::InvalidHeaderValue;
 use health_check_application::HealthCheckState;
 use health_check_application::HealthService;
 use health_check_domain::HealthProbe;
 use health_check_infrastructure::{CacheProbe, PostgresProbe, SqsProbe};
 use iam_application::MaintenanceSettings;
 use iam_application::PublishingUnitOfWork;
+use iam_application::VerifySecurityAuditChainQueryHandler;
 use iam_application::graphql::{AsyncGraphQlSchemaParser, IamAuthorizationExtension};
 use iam_application::http::IamState;
 use iam_application::http::JsonOpenApiDocumentParser;
@@ -61,6 +63,7 @@ use iam_application::{
     FindOpenApiSpecQueryHandler, GetOpenApiSpecDiffQueryHandler, GetOpenApiSpecQueryHandler,
     GetOpenApiSpecsQueryHandler, LoadOpenApiSpecCommandHandler,
 };
+use iam_application::{GetAccessDecisionQueryHandler, GetAccessDecisionsQueryHandler};
 use iam_application::{GetBulkOperationQueryHandler, ListBulkOperationsQueryHandler};
 use iam_application::{
     GetChangeReceiptQueryHandler, GetIdempotentReplayQueryHandler, GetPolicyEpochQueryHandler,
@@ -88,6 +91,7 @@ use iam_application::{
 use iam_application::{RegisterOwnSpecsCommand, RegisterOwnSpecsCommandHandler};
 use iam_application::{ResolveSubjectTokenQueryHandler, ResolveTokenQueryHandler};
 use iam_application::{RetireGraphQlSpecCommandHandler, RetireOpenApiSpecCommandHandler};
+use iam_domain::AccessLogQuery;
 use iam_domain::GraphQlPermissionRepository;
 use iam_domain::GraphQlSpecRepository;
 use iam_domain::OpenApiSpecRepository;
@@ -159,6 +163,8 @@ use crate::http::AppState;
 use crate::http::router::assemble_with_iam_routes;
 use crate::openapi::{self, ExportError};
 
+pub use access_log_query::{HyperLokiQueryTransport, access_log_query};
+pub use access_log_store_probe::AccessLogStoreProbe;
 pub use administrator::{
     AdministratorError, bootstrap_administrator, bootstrap_with_routes, repair_gateway_routes,
 };
@@ -188,6 +194,8 @@ pub struct Adapters {
     pub policy_tail: Arc<dyn PolicyLogTail>,
     /// The hash-chained IAM security audit log.
     pub security_audit_log: Arc<dyn SecurityAuditLog>,
+    /// Reads the access decisions of the audit lane back from the log store (Loki).
+    pub access_log_query: Arc<dyn AccessLogQuery>,
     /// The per-replica buffer of refused IAM requests that the rejected-attempt writer appends to
     /// the audit log.
     pub rejected_attempts: Arc<dyn RejectedAttemptLog>,
@@ -248,7 +256,7 @@ pub struct Adapters {
     pub token_lifetime_floor: Arc<dyn TokenLifetimeFloor>,
     /// The `MAX_TOKEN_LIFETIME` of this start, raised into the floor at startup.
     pub max_token_lifetime: Duration,
-    /// Health probes in the order database, cache, message broker, Kafka.
+    /// Health probes in the order database, cache, message broker, Kafka, access log store.
     pub probes: Vec<Arc<dyn HealthProbe>>,
     /// Bus the command handlers publish domain events to.
     pub event_bus: Arc<dyn EventBus>,
@@ -282,6 +290,9 @@ pub enum BootstrapError {
     /// IAM's own specifications could not be registered.
     #[error("IAM's own specifications could not be registered")]
     Registration(#[from] iam_application::IamError),
+    /// `LOKI_TENANT_ID` cannot be a header value.
+    #[error("invalid LOKI_TENANT_ID")]
+    AccessLogTenant(#[from] InvalidHeaderValue),
 }
 
 /// How often the key file of `JWT_PUBLIC_KEYS_FILE` is checked for a replacement.
@@ -303,6 +314,7 @@ impl Adapters {
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let (unit_of_work, write_unit_of_work) = units_of_work(config, &pool, &clock);
         let access_tokens = access_token_verifier(config, Arc::clone(&clock))?;
+        let access_log_query = access_log_query(&config.access_log_query, config.app_env)?;
         Ok(Self {
             repository: Arc::new(PgExampleApiResourceRepository::new(pool.clone())),
             policy_epochs: Arc::new(PgPolicyEpochRepository::new(pool.clone())),
@@ -340,7 +352,8 @@ impl Adapters {
             token_lifetime_floor: Arc::new(PgTokenLifetimeFloor::new(pool.clone())),
             max_token_lifetime: config.tokens.jwt.lifetime.max_lifetime(),
             access_tokens,
-            probes: probes(config, pool).await,
+            probes: probes(config, pool, Arc::clone(&access_log_query)).await,
+            access_log_query,
             event_bus: event_bus(),
             clock,
             uuid_generator: Arc::new(UuidV7Generator),
@@ -387,9 +400,13 @@ fn units_of_work(
     (unit_of_work, write_unit_of_work)
 }
 
-/// The production probes: PostgreSQL over `pool`, an in-process cache, the SQS client and the
-/// Kafka topic inspector.
-async fn probes(config: &Config, pool: sqlx::PgPool) -> Vec<Arc<dyn HealthProbe>> {
+/// The production probes: PostgreSQL over `pool`, an in-process cache, the SQS client, the
+/// Kafka topic inspector and the ready endpoint of the access log store.
+async fn probes(
+    config: &Config,
+    pool: sqlx::PgPool,
+    access_log_query: Arc<dyn AccessLogQuery>,
+) -> Vec<Arc<dyn HealthProbe>> {
     let sqs = sqs_client(&config.sqs).await;
     let cache = Arc::new(MokaCache::new());
     vec![
@@ -399,6 +416,7 @@ async fn probes(config: &Config, pool: sqlx::PgPool) -> Vec<Arc<dyn HealthProbe>
         Arc::new(KafkaProbe::new(Arc::new(KrafkaTopicInspector::new(
             &config.kafka,
         )))),
+        Arc::new(AccessLogStoreProbe::new(access_log_query)),
     ]
 }
 
@@ -722,8 +740,8 @@ fn register_upstream_queries(
     Ok(bus.register(get)?.register(list)?)
 }
 
-/// Registers the query handlers that read the security audit log; each one appends the record of
-/// its own read to the log.
+/// Registers the query handlers that read the security audit log and verify its chain; each one
+/// appends the record of its own read to the log.
 fn register_security_audit_queries(
     bus: InMemoryQueryBus,
     adapters: &Adapters,
@@ -734,6 +752,34 @@ fn register_security_audit_queries(
         Arc::clone(&adapters.uuid_generator),
     );
     let get = GetSecurityAuditEventQueryHandler::new(
+        Arc::clone(&adapters.security_audit_log),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    let verify = VerifySecurityAuditChainQueryHandler::new(
+        Arc::clone(&adapters.security_audit_log),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+    );
+    Ok(bus.register(search)?.register(get)?.register(verify)?)
+}
+
+/// Registers the query handlers that read the access decisions from the log store; each one appends
+/// the record of its own read to the security audit log.
+fn register_access_decision_queries(
+    bus: InMemoryQueryBus,
+    adapters: &Adapters,
+    config: &Config,
+) -> Result<InMemoryQueryBus, BootstrapError> {
+    let search = GetAccessDecisionsQueryHandler::new(
+        Arc::clone(&adapters.access_log_query),
+        Arc::clone(&adapters.security_audit_log),
+        Arc::clone(&adapters.clock),
+        Arc::clone(&adapters.uuid_generator),
+        config.access_log_query.max_range,
+    );
+    let get = GetAccessDecisionQueryHandler::new(
+        Arc::clone(&adapters.access_log_query),
         Arc::clone(&adapters.security_audit_log),
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
@@ -1150,6 +1196,7 @@ fn register_buses(adapters: &Adapters, config: &Config) -> Result<Buses, Bootstr
     let queries = register_rest_permission_queries(queries, adapters)?;
     let queries = register_user_role_queries(queries, adapters)?;
     let queries = register_security_audit_queries(queries, adapters)?;
+    let queries = register_access_decision_queries(queries, adapters, config)?;
     let queries = register_revocation_queries(queries, adapters)?;
     let queries = register_token_queries(queries, &adapters.tokens, config)?;
     let queries = register_access_validation_queries(queries, adapters)?;
@@ -1294,6 +1341,8 @@ pub fn router_with_iam_routes(
 
 pub mod gateway;
 
+mod access_log_query;
+mod access_log_store_probe;
 mod administrator;
 mod anti_entropy;
 mod kafka_probe;

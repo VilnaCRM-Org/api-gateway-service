@@ -155,3 +155,21 @@ fn a_condition_that_looks_like_a_token_is_not_written_down() {
 
     assert_eq!(summary.as_str(), "filter=unsummarised");
 }
+
+#[tokio::test]
+async fn a_read_of_another_target_type_is_recorded_under_that_type() {
+    let log = Arc::new(FakeSecurityAuditLog::new());
+    let actor = actor();
+
+    audit(&log)
+        .record_about("access_decision", read(&actor, SEARCH_TARGET_ID))
+        .await
+        .unwrap();
+
+    let recorded = log.recorded();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(
+        recorded[0].event().parts().target.target_type(),
+        "access_decision"
+    );
+}

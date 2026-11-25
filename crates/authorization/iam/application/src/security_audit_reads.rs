@@ -59,6 +59,20 @@ impl ReadAudit {
     /// [`IamError::Storage`] when the log cannot be written, so that a read that cannot be audited
     /// is not served; [`IamError::Internal`] when a value breaks an invariant of the domain.
     pub(crate) async fn record(&self, read: ReadRecord<'_>) -> Result<(), IamError> {
+        self.record_about(TARGET_TYPE, read).await
+    }
+
+    /// Appends the committed record of a read of something other than the audit log, such as the
+    /// access decisions, with the target type `target_type`.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`ReadAudit::record`].
+    pub(crate) async fn record_about(
+        &self,
+        target_type: &str,
+        read: ReadRecord<'_>,
+    ) -> Result<(), IamError> {
         let ReadRecord {
             actor,
             action,
@@ -71,7 +85,7 @@ impl ReadAudit {
             actor: actor.clone(),
             caller_service: None,
             action: AuditAction::new(action)?,
-            target: AuditTarget::new(TARGET_TYPE, target_id)?,
+            target: AuditTarget::new(target_type, target_id)?,
             scope: None,
             before: None,
             after: Some(summary),

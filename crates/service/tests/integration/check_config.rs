@@ -403,6 +403,68 @@ fn check_config_with(scratch: &Scratch, extra: &[(&str, &str)]) -> std::process:
 }
 
 #[test]
+fn a_missing_loki_query_url_outside_dev_and_test_exits_2_naming_it() {
+    let scratch = Scratch::new();
+    let mut command = scratch.service(&["check-config"], &VALID_ENVIRONMENT);
+    command.env_remove("LOKI_QUERY_URL");
+
+    let output = command.output().unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(
+        stderr(&output),
+        "LOKI_QUERY_URL: is required outside APP_ENV dev and test\n"
+    );
+}
+
+#[rstest]
+#[case::https(("LOKI_QUERY_URL", "https://hunter2-loki:3100"))]
+#[case::no_scheme(("LOKI_QUERY_URL", "hunter2-loki:3100"))]
+#[case::with_a_path(("LOKI_QUERY_URL", "http://hunter2-loki:3100/loki/api/v1"))]
+fn a_loki_query_url_that_is_not_a_bare_http_url_exits_2_without_echoing_it(
+    #[case] setting: (&str, &str),
+) {
+    let scratch = Scratch::new();
+
+    let output = check_config_with(&scratch, &[setting]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(stderr(&output).starts_with("LOKI_QUERY_URL: must be an http:// URL with a host"));
+    assert!(!stderr(&output).contains("hunter2-loki"));
+}
+
+#[rstest]
+#[case::zero_range(
+    ("ACCESS_LOG_QUERY_MAX_RANGE", "0s"),
+    "ACCESS_LOG_QUERY_MAX_RANGE: must be a positive duration such as 500ms, 2s or 1m\n"
+)]
+#[case::range_above_a_week(
+    ("ACCESS_LOG_QUERY_MAX_RANGE", "169h"),
+    "ACCESS_LOG_QUERY_MAX_RANGE: must be at most 7days\n"
+)]
+#[case::zero_timeout(
+    ("ACCESS_LOG_QUERY_TIMEOUT", "0s"),
+    "ACCESS_LOG_QUERY_TIMEOUT: must be a positive duration such as 500ms, 2s or 1m\n"
+)]
+#[case::timeout_above_two_minutes(
+    ("ACCESS_LOG_QUERY_TIMEOUT", "3m"),
+    "ACCESS_LOG_QUERY_TIMEOUT: must be at most 2m\n"
+)]
+fn an_access_log_query_setting_out_of_range_exits_2_naming_the_variable(
+    #[case] setting: (&str, &str),
+    #[case] expected: &str,
+) {
+    let scratch = Scratch::new();
+
+    let output = check_config_with(&scratch, &[setting]);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(stdout(&output), "");
+    assert_eq!(stderr(&output), expected);
+}
+
+#[test]
 fn a_clock_skew_above_sixty_seconds_exits_2_naming_the_variable() {
     let scratch = Scratch::new();
 

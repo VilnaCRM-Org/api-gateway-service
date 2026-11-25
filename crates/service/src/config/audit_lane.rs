@@ -82,7 +82,10 @@ pub(super) fn audit_lane_settings(
     app_env: Option<AppEnv>,
 ) -> Option<AuditLaneSettings> {
     let push_url = push_url(collector, args.loki_push_url.as_deref(), app_env);
-    let tenant = collector.collect("LOKI_TENANT_ID", tenant_id(args.loki_tenant_id.as_deref()));
+    let tenant = collector.collect(
+        "LOKI_TENANT_ID",
+        tenant_id(args.service.access_log_query.loki_tenant_id.as_deref()),
+    );
     let flush = collector.collect(
         "ACCESS_LOG_AUDIT_FLUSH_INTERVAL",
         bounded_duration(
@@ -145,7 +148,7 @@ fn parse_push_url(raw: &str) -> Parsed<Uri> {
 
 /// `LOKI_TENANT_ID`: a non-empty value without whitespace or control characters, so that it is a
 /// valid header value.
-fn tenant_id(raw: Option<&str>) -> Parsed<String> {
+pub(super) fn tenant_id(raw: Option<&str>) -> Parsed<String> {
     let value = raw.unwrap_or(DEFAULT_LOKI_TENANT_ID);
     let valid = !value.is_empty()
         && value.len() <= 150
@@ -158,7 +161,11 @@ fn tenant_id(raw: Option<&str>) -> Parsed<String> {
 }
 
 /// A positive duration that is at most `max`.
-fn bounded_duration(raw: Option<&str>, default: Duration, max: Duration) -> Parsed<Duration> {
+pub(super) fn bounded_duration(
+    raw: Option<&str>,
+    default: Duration,
+    max: Duration,
+) -> Parsed<Duration> {
     let value = positive_duration(raw, default)
         .map_err(|_reason| "must be a positive duration such as 500ms, 2s or 1m".to_owned())?;
     if value <= max {

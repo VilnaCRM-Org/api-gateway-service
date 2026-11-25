@@ -5,6 +5,7 @@
 //! application layer. SQL lives here and nowhere else.
 
 pub mod access_log;
+pub mod access_log_query;
 pub mod bucket_local_rate_limiter;
 pub mod buffered_rejected_attempt_log;
 pub mod clock;
@@ -23,6 +24,7 @@ pub use access_log::{
     BATCH_BYTES, LaneSplitSink, LokiPushAccessLogSink, LokiSinkSettings, LokiTransport,
     StdoutAccessLogSink, credential_digest_prefix, render_entry,
 };
+pub use access_log_query::{LokiAccessLogQuery, LokiQueryTransport, LokiResponse};
 pub use bucket_local_rate_limiter::BucketLocalRateLimiter;
 pub use buffered_rejected_attempt_log::BufferedRejectedAttemptLog;
 pub use clock::LinuxBootClock;

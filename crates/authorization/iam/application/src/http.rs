@@ -1,6 +1,7 @@
 //! REST adapter of the IAM context: the state its handlers read, the router that registers
 //! them, the header extractors of the writes and their response headers.
 
+pub mod access_decision;
 pub mod access_validation;
 pub mod bulk_operation;
 pub mod dto;
@@ -81,6 +82,7 @@ where
         .merge(route_router())
         .merge(route_configuration_router())
         .merge(security_audit_event_router())
+        .merge(access_decision_router())
 }
 
 /// The routes of the decision API, to be nested under `/api`.
@@ -314,7 +316,19 @@ where
 {
     OpenApiRouter::new()
         .routes(routes!(security_audit_event::list))
+        .routes(routes!(security_audit_event::verify))
         .routes(routes!(security_audit_event::get_one))
+}
+
+/// The routes that read the access decisions of the gateway, merged into [`router`].
+fn access_decision_router<S>() -> OpenApiRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+    IamState: FromRef<S>,
+{
+    OpenApiRouter::new()
+        .routes(routes!(access_decision::list))
+        .routes(routes!(access_decision::get_one))
 }
 
 /// The routes that upload specification documents, to be nested under `/api`.

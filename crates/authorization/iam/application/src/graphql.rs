@@ -8,6 +8,7 @@
 //! transports apply one set of rules; every failure becomes a problem first and a GraphQL error
 //! second.
 
+pub mod access_decision;
 pub mod access_validation;
 pub mod authorization;
 pub mod bulk_operation;
@@ -59,6 +60,10 @@ use crate::http::role::{create_role, find_role, list_roles, parse_role_id, updat
 use crate::principal::Principal;
 use propagation::{PropagationObject, WriteOutcomeMapper, write_mode};
 
+use access_decision::{
+    AccessDecisionFilterInput, AccessDecisionObject, AccessDecisionPageObject,
+    access_decision_field, access_decisions_field,
+};
 use access_validation::{
     AccessValidationObject, ValidateAccessInput, validate_access_batch_field, validate_access_field,
 };
@@ -115,8 +120,10 @@ use route_configuration::{
     apply_route_configuration_field, route_configuration_field,
 };
 use security_audit_event::{
-    SecurityAuditEventFilterInput, SecurityAuditEventObject, SecurityAuditEventPageObject,
-    security_audit_event_field, security_audit_events_field,
+    SecurityAuditAnchorInput, SecurityAuditChainVerificationObject, SecurityAuditEventFilterInput,
+    SecurityAuditEventObject, SecurityAuditEventPageObject,
+    security_audit_chain_verification_field, security_audit_event_field,
+    security_audit_events_field,
 };
 use session_revocation::{RevocationPayload, RevokeSessionsInput, revoke_sessions_field};
 use spec_retirement::{
@@ -759,6 +766,48 @@ impl IamQuery {
             .map_err(iam_problem_to_graphql_error)
     }
 
+    /// Verifies the security audit hash chain and records the verification in the audit log; the result is valid with the number of records checked, or invalid with the id of the first record where the chain breaks. Needs `iam:audit:read`.
+    async fn security_audit_chain_verification(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(
+            desc = "Anchors published as iam.security_audit.anchored, at most 100; the chain is invalid at an anchored record whose hash differs."
+        )]
+        anchors: Option<Vec<SecurityAuditAnchorInput>>,
+    ) -> async_graphql::Result<SecurityAuditChainVerificationObject> {
+        security_audit_chain_verification_field(ctx, anchors)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves an access decision of the gateway by id from the log store and records the read in the audit log; null when the log store holds none. Needs `iam:audit:read`.
+    async fn access_decision(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+    ) -> async_graphql::Result<Option<AccessDecisionObject>> {
+        access_decision_field(ctx, &id)
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
+    /// Retrieves one page of the access decisions of the gateway from the log store, newest first, and records the search in the audit log. The filter needs a time range (`from` and `until`, at most `ACCESS_LOG_QUERY_MAX_RANGE` long) and keeps the decisions that match every other field given. A query that exceeds `ACCESS_LOG_QUERY_TIMEOUT` fails with `QUERY_TIMEOUT` and no partial page; a log store that cannot be reached fails with `SERVICE_UNAVAILABLE`. Needs `iam:audit:read`.
+    #[graphql(complexity = "access_page_complexity(first, child_complexity)")]
+    async fn access_decisions(
+        &self,
+        ctx: &Context<'_>,
+        #[graphql(default = 30, desc = "Page size, from 1 to 500.")] first: Option<i32>,
+        #[graphql(desc = "The nextCursor of the previous page.")] after: Option<String>,
+        #[graphql(
+            desc = "The required time range and the subject, decision, reason, upstream, route and status that the decisions must have."
+        )]
+        filter: Option<AccessDecisionFilterInput>,
+    ) -> async_graphql::Result<AccessDecisionPageObject> {
+        access_decisions_field(ctx, first, after, filter.unwrap_or_default())
+            .await
+            .map_err(iam_problem_to_graphql_error)
+    }
+
     /// Retrieves a security audit record by id and records the read in the audit log; null when it is unknown. Needs `iam:audit:read`.
     async fn security_audit_event(
         &self,
@@ -1146,6 +1195,15 @@ fn page_complexity(first: Option<i32>, child_complexity: usize) -> usize {
     let size = first.unwrap_or(30).clamp(1, 100);
     usize::try_from(size)
         .unwrap_or(100)
+        .saturating_mul(child_complexity)
+}
+
+/// The static complexity of a page of access decisions: its size, clamped to 1 to 500 as the query
+/// clamps it, times the complexity of one item.
+fn access_page_complexity(first: Option<i32>, child_complexity: usize) -> usize {
+    let size = first.unwrap_or(30).clamp(1, 500);
+    usize::try_from(size)
+        .unwrap_or(500)
         .saturating_mul(child_complexity)
 }
 

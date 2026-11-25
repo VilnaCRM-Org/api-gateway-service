@@ -186,8 +186,12 @@ fn handlers_use_only_the_problem_aware_extractors() {
             vec!["get_one", "list"],
         ),
         (
-            include_str!("../security_audit_event.rs"),
+            include_str!("../access_decision.rs"),
             vec!["list", "get_one"],
+        ),
+        (
+            include_str!("../security_audit_event.rs"),
+            vec!["list", "verify", "get_one"],
         ),
         (
             include_str!("../revocation_read.rs"),

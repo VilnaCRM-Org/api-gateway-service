@@ -12,6 +12,9 @@ pub enum Dependency {
     /// The Kafka cluster that carries the IAM policy log: reachable, and its state topic is
     /// configured as the freshness guarantees require.
     Kafka,
+    /// The log store that holds the access decisions of the audit lane (Loki): its ready endpoint
+    /// answers.
+    AccessLogStore,
 }
 
 impl Dependency {
@@ -23,6 +26,7 @@ impl Dependency {
             Self::Cache => "cache",
             Self::MessageBroker => "message_broker",
             Self::Kafka => "kafka",
+            Self::AccessLogStore => "access-log-store",
         }
     }
 
@@ -34,6 +38,7 @@ impl Dependency {
             Self::Cache => "Cache is not working",
             Self::MessageBroker => "Message broker is not available",
             Self::Kafka => "Kafka is not available",
+            Self::AccessLogStore => "Access log store is not available",
         }
     }
 }

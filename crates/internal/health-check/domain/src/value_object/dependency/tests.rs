@@ -11,6 +11,11 @@ use super::Dependency;
     "Message broker is not available"
 )]
 #[case::kafka(Dependency::Kafka, "kafka", "Kafka is not available")]
+#[case::access_log_store(
+    Dependency::AccessLogStore,
+    "access-log-store",
+    "Access log store is not available"
+)]
 fn a_dependency_has_an_identifier_and_a_failure_message(
     #[case] dependency: Dependency,
     #[case] identifier: &str,

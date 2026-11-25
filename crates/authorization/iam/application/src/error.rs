@@ -2,10 +2,11 @@
 
 use axum::http::StatusCode;
 use iam_domain::{
-    ConfigChangeRefused, InvalidCatalogueEntry, InvalidEventEnvelope, InvalidIamValue, InvalidRole,
-    InvalidRoute, InvalidSpec, InvalidUpstream, InvalidUserRole, LastAdministratorRefused,
-    ReferencedByRoute, RepositoryError, RoleChangeRefused, RouteConflict, RouteScopeRefused,
-    TokenRejection, UpstreamChangeRefused, UserRoleChangeRefused, VersionConflict,
+    AccessLogQueryError, ConfigChangeRefused, InvalidCatalogueEntry, InvalidEventEnvelope,
+    InvalidIamValue, InvalidRole, InvalidRoute, InvalidSpec, InvalidUpstream, InvalidUserRole,
+    LastAdministratorRefused, ReferencedByRoute, RepositoryError, RoleChangeRefused, RouteConflict,
+    RouteScopeRefused, TokenRejection, UpstreamChangeRefused, UserRoleChangeRefused,
+    VersionConflict,
 };
 use shared_application::http::{Problem, Violation};
 use shared_domain::BoxError;
@@ -122,6 +123,13 @@ pub enum IamError {
     /// property.
     #[error("The request holds invalid values.")]
     Invalid(Vec<Violation>),
+    /// The access log store did not answer within `ACCESS_LOG_QUERY_TIMEOUT`; no partial page is
+    /// returned.
+    #[error("The access log store did not answer within the time a query may take.")]
+    AccessLogTimeout,
+    /// The access log store refused the connection or answered with an error.
+    #[error("The access log store is unavailable.")]
+    AccessLogUnavailable,
     /// The storage failed.
     #[error("the IAM storage is unavailable")]
     Storage(#[source] BoxError),
@@ -225,6 +233,17 @@ impl From<RepositoryError> for IamError {
             RepositoryError::ReferencedByRoute(refusal) => Self::from(refusal),
             RepositoryError::RouteTable(conflict) => Self::from(conflict),
             unavailable @ RepositoryError::Unavailable(_) => Self::Storage(Box::new(unavailable)),
+        }
+    }
+}
+
+impl From<AccessLogQueryError> for IamError {
+    /// A query that takes too long is a timeout and any other failure of the log store is its
+    /// unavailability.
+    fn from(error: AccessLogQueryError) -> Self {
+        match error {
+            AccessLogQueryError::Timeout => Self::AccessLogTimeout,
+            AccessLogQueryError::Unavailable => Self::AccessLogUnavailable,
         }
     }
 }
@@ -381,6 +400,8 @@ impl From<IamError> for Problem {
             IamError::Forbidden => StatusCode::FORBIDDEN,
             IamError::NotFound => StatusCode::NOT_FOUND,
             IamError::Conflict => StatusCode::CONFLICT,
+            IamError::AccessLogTimeout => StatusCode::GATEWAY_TIMEOUT,
+            IamError::AccessLogUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             IamError::IdempotencyMismatch => StatusCode::UNPROCESSABLE_ENTITY,
             IamError::PreconditionRequired => StatusCode::PRECONDITION_REQUIRED,
             IamError::PreconditionFailed => StatusCode::PRECONDITION_FAILED,

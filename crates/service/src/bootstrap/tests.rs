@@ -21,6 +21,7 @@ use shared_domain::{EventBus, QueryBus};
 use shared_infrastructure::bus::{InMemoryCommandBus, InMemoryQueryBus};
 use some_module_application::{CreateExampleApiResourceHandler, GetExampleApiResourceHandler};
 use some_module_domain::ExampleApiResourceRepository;
+use test_support::access_log_query::FakeAccessLogQuery;
 use test_support::access_token::{DEVELOPMENT_PUBLIC_KEYS_FILE, FakeAccessTokenVerifier};
 use test_support::anti_entropy::{
     FakeAntiEntropyStore, FakePolicyLogTail, HashDigest, TextHeadCodec,
@@ -94,6 +95,7 @@ fn config(app_env: &str) -> Config {
         ..ServeArgs::default()
     };
     args.database.url = Some("postgres://app:unused@127.0.0.1:1/app".to_owned());
+    args.access_log_query.loki_query_url = Some("http://127.0.0.1:1".to_owned());
     args.tokens.public_keys_file = Some(DEVELOPMENT_PUBLIC_KEYS_FILE.to_owned());
     args.kafka = KafkaArgs {
         bootstrap_servers: Some("127.0.0.1:1".to_owned()),
@@ -126,6 +128,7 @@ fn adapters() -> Adapters {
         policy_inventory: Arc::new(FakePolicyStateInventory::new()),
         policy_tail: Arc::new(FakePolicyLogTail::with(Vec::new())),
         security_audit_log: Arc::new(FakeSecurityAuditLog::new()),
+        access_log_query: Arc::new(FakeAccessLogQuery::new()),
         rejected_attempts: Arc::new(BufferedRejectedAttemptLog::new()),
         startup_lock: Arc::new(FakeStartupLock::new()),
         singleton_leadership: Arc::new(FakeSingletonLeadership::leading()),

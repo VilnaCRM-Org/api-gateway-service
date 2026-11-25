@@ -1179,3 +1179,45 @@ Content-Type: application/json
   "query": "query ($id: ID!) { securityAuditEvent(id: $id) { id seq actor action targetType targetId outcome reason policyVersion prevHash hash } }",
   "variables": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe" }
 }
+
+### Verify the security audit hash chain over REST: recomputes the whole chain and answers valid with recordsChecked, or invalid with invalidRecordId, invalidSeq and cause (gap, link, digest, unreadable, anchor or anchor_missing); anchors are up to 100 comma-separated seq:hash pairs from iam.security_audit.anchored events, checked against the stored hashes; an invalid anchor is 422; the caller needs iam:audit:read and the verification is itself recorded as security_audit.verify
+GET {{baseUrl}}/api/security-audit-events/chain-verification?anchors=42:0000000000000000000000000000000000000000000000000000000000000000
+Authorization: Bearer <caller token>
+
+### Verify the security audit hash chain over GraphQL: the same result and anchors; the error codes UNAUTHENTICATED, FORBIDDEN and VALIDATION_FAILED
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($anchors: [SecurityAuditAnchorInput!]) { securityAuditChainVerification(anchors: $anchors) { status recordsChecked invalidRecordId invalidSeq cause } }",
+  "variables": { "anchors": [{ "seq": 42, "hash": "0000000000000000000000000000000000000000000000000000000000000000" }] }
+}
+
+### Search the access decisions over REST: newest first; from and until are required and at most ACCESS_LOG_QUERY_MAX_RANGE apart (422 otherwise); filters subjectId, subjectKind, decision, reason, upstream, routeId and status; at most 500 per page with nextCursor going into after; 503 when Loki is unavailable and 504 when it does not answer within ACCESS_LOG_QUERY_TIMEOUT; the caller needs iam:audit:read and the search is itself recorded as access_log.list
+GET {{baseUrl}}/api/access-decisions?from=2026-11-25T08:00:00Z&until=2026-11-25T09:00:00Z&decision=deny&status=403&limit=100
+Authorization: Bearer <caller token>
+
+### Search the access decisions over GraphQL: the same range and filters; the error codes VALIDATION_FAILED, QUERY_TIMEOUT, SERVICE_UNAVAILABLE, UNAUTHENTICATED and FORBIDDEN
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($first: Int, $after: String, $filter: AccessDecisionFilterInput) { accessDecisions(first: $first, after: $after, filter: $filter) { items { id occurredAt method host routeTemplate status upstream subjectId subjectKind decision reason permissionKey denied policyVersion } nextCursor } }",
+  "variables": { "first": 100, "filter": { "from": "2026-11-25T08:00:00Z", "until": "2026-11-25T09:00:00Z", "decision": "deny", "status": 403 } }
+}
+
+### Read an access decision over REST: the log store is searched within plus or minus 2 seconds of the timestamp of the UUID v7; 404 when it holds none; the read is itself recorded as access_log.read
+GET {{baseUrl}}/api/access-decisions/01a1c6b5-cb86-7134-868a-7608036facfe
+Authorization: Bearer <caller token>
+
+### Read an access decision over GraphQL: null when the log store holds none
+POST {{baseUrl}}/api/graphql
+Authorization: Bearer <caller token>
+Content-Type: application/json
+
+{
+  "query": "query ($id: ID!) { accessDecision(id: $id) { id occurredAt status decision reason subjectId policyVersion } }",
+  "variables": { "id": "01a1c6b5-cb86-7134-868a-7608036facfe" }
+}

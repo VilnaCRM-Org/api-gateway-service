@@ -159,7 +159,8 @@ async fn connect_makes_no_network_access_and_orders_the_probes() {
             Dependency::Database,
             Dependency::Cache,
             Dependency::MessageBroker,
-            Dependency::Kafka
+            Dependency::Kafka,
+            Dependency::AccessLogStore
         ]
     );
     let accepted = listener.accept();

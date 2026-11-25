@@ -6,6 +6,8 @@
 //! `axum`, `utoipa` or `async_graphql`, and `error` names nothing of them but the HTTP status of its
 //! problem mapping; only `http` and `graphql` may use them freely.
 
+#[cfg(test)]
+mod access_decision_fixtures;
 pub mod access_decision_service;
 #[cfg(test)]
 mod access_guard_fixtures;
@@ -209,6 +211,10 @@ pub use principal::Principal;
 pub use publishing_unit_of_work::PublishingUnitOfWork;
 pub use query::find_graphql_spec::{FindGraphQlSpecQuery, FindGraphQlSpecQueryHandler};
 pub use query::find_openapi_spec::{FindOpenApiSpecQuery, FindOpenApiSpecQueryHandler};
+pub use query::get_access_decision::{GetAccessDecisionQuery, GetAccessDecisionQueryHandler};
+pub use query::get_access_decisions::{
+    AccessDecisionPage, GetAccessDecisionsQuery, GetAccessDecisionsQueryHandler,
+};
 pub use query::get_bulk_operation::{GetBulkOperationQuery, GetBulkOperationQueryHandler};
 pub use query::get_change_receipt::{GetChangeReceiptQuery, GetChangeReceiptQueryHandler};
 pub use query::get_global_token_cutoff::{
@@ -298,6 +304,9 @@ pub use query::resolve_token::{ResolveTokenQuery, ResolveTokenQueryHandler};
 pub use query::validate_access::{ValidateAccessQuery, ValidateAccessQueryHandler};
 pub use query::validate_access_batch::{
     BatchCheck, ValidateAccessBatchQuery, ValidateAccessBatchQueryHandler,
+};
+pub use query::verify_security_audit_chain::{
+    VerifySecurityAuditChainQuery, VerifySecurityAuditChainQueryHandler,
 };
 pub use rate_policy_values::{RatePolicyPatch, RatePolicyValues};
 pub use read_your_writes::{BarrierVerdict, PolicyVersionBoard, ReadYourWritesBarrier};

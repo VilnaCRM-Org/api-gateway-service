@@ -140,7 +140,7 @@ fn a_row_with_fixed_keys_has_no_caller_rule() {
 fn every_other_operation_requires_its_catalogue_key() {
     let catalogue = rows_of(|requirement| requirement == Requirement::Catalogue);
 
-    assert_eq!(catalogue.len(), OperationRules::all().len() - 12);
+    assert_eq!(catalogue.len(), OperationRules::all().len() - 15);
     for rule in OperationRules::all() {
         if rule.requirement == Requirement::Catalogue {
             assert!(rule.requirement.needs_catalogue());
@@ -409,6 +409,10 @@ fn the_audit_and_revocation_reads_need_the_audit_key_and_no_catalogue_key_on_bot
     let rest = [
         ("/api/security-audit-events", "security_audit.list"),
         ("/api/security-audit-events/{id}", "security_audit.read"),
+        (
+            "/api/security-audit-events/chain-verification",
+            "security_audit.verify",
+        ),
         ("/api/session-revocations", "session_revocation.list"),
         ("/api/session-revocations/{id}", "session_revocation.read"),
         ("/api/users/{userId}/token-cutoff", "user_token_cutoff.read"),
@@ -420,6 +424,10 @@ fn the_audit_and_revocation_reads_need_the_audit_key_and_no_catalogue_key_on_bot
     let graphql = [
         ("Query.securityAuditEvents", "security_audit.list"),
         ("Query.securityAuditEvent", "security_audit.read"),
+        (
+            "Query.securityAuditChainVerification",
+            "security_audit.verify",
+        ),
         ("Query.sessionRevocations", "session_revocation.list"),
         ("Query.sessionRevocation", "session_revocation.read"),
         ("Query.userTokenCutoff", "user_token_cutoff.read"),
@@ -473,4 +481,33 @@ fn a_request_path_resolves_to_the_row_of_its_operation_and_a_literal_beats_a_par
     );
     assert_eq!(resolve(HttpMethod::Post, "/api/cache-flushes"), None);
     assert_eq!(resolve(HttpMethod::Delete, "/api/roles"), None);
+}
+
+#[test]
+fn the_access_decision_reads_need_the_audit_key_and_no_catalogue_key_on_both_interfaces() {
+    let rest = [
+        ("/api/access-decisions", "access_log.list"),
+        ("/api/access-decisions/{id}", "access_log.read"),
+    ];
+    let graphql = [
+        ("Query.accessDecisions", "access_log.list"),
+        ("Query.accessDecision", "access_log.read"),
+    ];
+
+    let rules = rest
+        .iter()
+        .map(|(template, action)| {
+            let rule = OperationRules::find("GET", template).unwrap();
+            (rule.action, rule.requirement, *action)
+        })
+        .chain(graphql.iter().map(|(coordinate, action)| {
+            let rule = OperationRules::find_graphql(coordinate).unwrap();
+            (rule.action, rule.requirement, *action)
+        }));
+    for (found, requirement, expected) in rules {
+        assert_eq!(found, expected);
+        assert_eq!(requirement, Requirement::Reserved(&[AUDIT_READ]));
+        assert!(!requirement.needs_catalogue());
+        assert_eq!(requirement.reserved(), ["iam:audit:read"]);
+    }
 }

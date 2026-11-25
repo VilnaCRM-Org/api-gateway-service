@@ -27,7 +27,7 @@ fn the_defaults_are_the_compose_loki_and_the_documented_bounds() {
 fn the_values_that_are_set_are_taken_as_given() {
     let mut args = valid_gateway();
     args.loki_push_url = some("http://loki:3100/loki/api/v1/push");
-    args.loki_tenant_id = some("tenant-7");
+    args.service.access_log_query.loki_tenant_id = some("tenant-7");
     args.access_log_audit_flush_interval = some("250ms");
     args.access_log_audit_max_pending = some("2s");
 
@@ -83,7 +83,7 @@ fn a_push_url_that_is_not_a_plain_http_url_names_its_variable(#[case] raw: &str)
 #[case("tab\there")]
 fn a_tenant_that_cannot_be_a_header_value_names_its_variable(#[case] raw: &str) {
     let mut args = valid_gateway();
-    args.loki_tenant_id = some(raw);
+    args.service.access_log_query.loki_tenant_id = some(raw);
 
     let problems = gateway_problems(&args);
 

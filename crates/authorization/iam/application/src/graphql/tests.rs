@@ -24,12 +24,14 @@ use crate::http::IamState;
 use crate::principal::Principal;
 use crate::query::resolve_subject_token::{ResolveSubjectTokenQuery, TokenResolution};
 
+mod access_decisions;
 mod decision_query;
 mod revocation_reads;
 mod role_deletion;
 mod roles;
 mod route_configurations;
 mod routes;
+mod security_audit_chain_verification;
 mod security_audit_events;
 mod upstreams;
 mod user_roles;

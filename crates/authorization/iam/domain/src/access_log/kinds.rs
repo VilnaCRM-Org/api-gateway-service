@@ -82,6 +82,17 @@ impl AccessDecision {
             Self::Error => "error",
         }
     }
+
+    /// The kind that the value of a `decision` label names; none for any other text.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "allow" => Some(Self::Allow),
+            "deny" => Some(Self::Deny),
+            "error" => Some(Self::Error),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]

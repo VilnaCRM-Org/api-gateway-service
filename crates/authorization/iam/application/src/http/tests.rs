@@ -168,7 +168,14 @@ fn the_router_documents_the_role_operations_under_the_iam_tag_behind_the_bearer_
             .get
             .is_some()
     );
-    assert_eq!(document.paths.paths.len(), 34);
+    assert!(
+        document.paths.paths["/security-audit-events/chain-verification"]
+            .get
+            .is_some()
+    );
+    assert!(document.paths.paths["/access-decisions"].get.is_some());
+    assert!(document.paths.paths["/access-decisions/{id}"].get.is_some());
+    assert_eq!(document.paths.paths.len(), 37);
 }
 
 #[test]

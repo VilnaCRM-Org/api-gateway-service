@@ -2,6 +2,8 @@
 
 pub mod find_graphql_spec;
 pub mod find_openapi_spec;
+pub mod get_access_decision;
+pub mod get_access_decisions;
 pub mod get_bulk_operation;
 pub mod get_change_receipt;
 pub mod get_global_token_cutoff;
@@ -43,3 +45,4 @@ pub mod resolve_subject_token;
 pub mod resolve_token;
 pub mod validate_access;
 pub mod validate_access_batch;
+pub mod verify_security_audit_chain;

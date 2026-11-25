@@ -63,3 +63,17 @@ fn a_decision_kind_follows_the_reason_and_the_status(
 fn a_decision_kind_has_its_label_value(#[case] kind: AccessDecision, #[case] expected: &str) {
     assert_eq!(kind.as_str(), expected);
 }
+
+#[rstest]
+#[case("allow", Some(AccessDecision::Allow))]
+#[case("deny", Some(AccessDecision::Deny))]
+#[case("error", Some(AccessDecision::Error))]
+#[case("aggregate", None)]
+#[case("Allow", None)]
+#[case("", None)]
+fn a_decision_label_value_names_its_kind(
+    #[case] text: &str,
+    #[case] expected: Option<AccessDecision>,
+) {
+    assert_eq!(AccessDecision::parse(text), expected);
+}

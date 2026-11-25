@@ -1,11 +1,11 @@
 use std::error::Error as _;
 
 use iam_domain::{
-    ConfigChangeRefused, EntityVersion, InvalidCatalogueEntry, InvalidEventEnvelope,
-    InvalidIamValue, InvalidRole, InvalidRoute, InvalidUpstream, InvalidUserRole,
-    LastAdministratorRefused, ReferencedByRoute, RepositoryError, RoleChangeRefused, RouteConflict,
-    RouteId, RouteScopeRefused, ServiceName, TokenRejection, UpstreamChangeRefused,
-    UserRoleChangeRefused, VersionConflict,
+    AccessLogQueryError, ConfigChangeRefused, EntityVersion, InvalidCatalogueEntry,
+    InvalidEventEnvelope, InvalidIamValue, InvalidRole, InvalidRoute, InvalidUpstream,
+    InvalidUserRole, LastAdministratorRefused, ReferencedByRoute, RepositoryError,
+    RoleChangeRefused, RouteConflict, RouteId, RouteScopeRefused, ServiceName, TokenRejection,
+    UpstreamChangeRefused, UserRoleChangeRefused, VersionConflict,
 };
 use rstest::rstest;
 use shared_application::http::{Problem, TYPE_BLANK, Violation};
@@ -665,4 +665,21 @@ fn the_refusals_of_the_unit_of_work_keep_their_problem_type() {
             code: "same_pattern"
         }
     ));
+}
+
+#[rstest]
+#[case::timeout(AccessLogQueryError::Timeout, 504)]
+#[case::unavailable(AccessLogQueryError::Unavailable, 503)]
+fn a_failure_of_the_access_log_store_is_a_gateway_timeout_or_unavailable_problem(
+    #[case] failure: AccessLogQueryError,
+    #[case] status: u16,
+) {
+    let (recorder, _guard) = LogRecorder::install();
+
+    let problem = Problem::from(IamError::from(failure));
+
+    assert_eq!(problem.status, status);
+    assert_eq!(problem.r#type, TYPE_BLANK);
+    assert!(problem.detail.is_some());
+    assert_eq!(recorder.lines().len(), 0);
 }
