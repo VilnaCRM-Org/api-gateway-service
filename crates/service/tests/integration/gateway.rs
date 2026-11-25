@@ -8,7 +8,7 @@ use test_support::tls::{CertificateFiles, self_signed};
 use tokio::time::Instant;
 
 use crate::support::{
-    DEAD_DATABASE_URL, GatewayPorts, Scratch, Server, gateway, get_on, stderr, stdout,
+    DEAD_DATABASE_URL, GatewayPorts, Scratch, Server, exchange_raw, gateway, get_on, stderr, stdout,
 };
 
 /// A gateway on plain HTTP in `APP_ENV` `test`.
@@ -203,6 +203,7 @@ fn an_unparsable_key_file_keeps_the_gateway_from_listening_so_startup_never_pass
             ("GATEWAY_INTERNAL_LISTEN", "127.0.0.1:0"),
             ("GATEWAY_PROBE_LISTEN", "127.0.0.1:0"),
             ("GATEWAY_DECISION_LISTEN", "127.0.0.1:0"),
+            ("GATEWAY_MESH_LISTEN", "127.0.0.1:0"),
             ("JWT_PUBLIC_KEYS_FILE", keys.to_str().unwrap()),
         ],
     );
@@ -341,6 +342,7 @@ fn a_taken_listener_address_is_one_failure_entry_with_exit_status_1() {
             ("GATEWAY_INTERNAL_LISTEN", "127.0.0.1:0"),
             ("GATEWAY_PROBE_LISTEN", "127.0.0.1:0"),
             ("GATEWAY_DECISION_LISTEN", "127.0.0.1:0"),
+            ("GATEWAY_MESH_LISTEN", "127.0.0.1:0"),
         ],
     );
     drop(first.terminate());
@@ -351,4 +353,59 @@ fn a_taken_listener_address_is_one_failure_entry_with_exit_status_1() {
         "{}",
         stdout(&output)
     );
+}
+
+#[test]
+fn the_mesh_listener_presents_the_certificate_of_the_public_listener_and_serves_the_same_pipeline()
+{
+    let scratch = Scratch::new();
+    let pair = self_signed(scratch.path(), "gateway", "shared");
+    let (server, ports) = secured(&scratch, &pair, &[]);
+
+    let (_output, public) = handshake(ports.public, &["-tls1_3", "-alpn", "h2"]);
+    let (_output, mesh) = handshake(ports.mesh, &["-tls1_3", "-alpn", "h2"]);
+    let finished = server.terminate();
+
+    assert!(public.contains("CN=shared"), "{public}");
+    assert!(mesh.contains("CN=shared"), "{mesh}");
+    assert!(mesh.contains("ALPN protocol: h2"), "{mesh}");
+    assert_eq!(finished.code, Some(0));
+}
+
+#[test]
+fn without_a_snapshot_the_mesh_listener_answers_503_iam_stale_like_the_public_one() {
+    let scratch = Scratch::new();
+    let (server, ports) = plain(&scratch, &[]);
+
+    let mesh = get_on(ports.mesh, "/api/users");
+    let finished = server.terminate();
+
+    assert_eq!(mesh.status, 503);
+    assert!(mesh.body.contains("/problems/iam_stale"), "{}", mesh.body);
+    assert_eq!(finished.code, Some(0));
+}
+
+#[test]
+fn a_connection_to_the_mesh_listener_that_starts_with_a_proxy_protocol_header_is_refused() {
+    let scratch = Scratch::new();
+    let pair = self_signed(scratch.path(), "gateway", "mesh");
+    let (server, ports) = secured(&scratch, &pair, &[]);
+
+    let answer = exchange_raw(
+        ports.mesh,
+        b"PROXY TCP4 198.51.100.7 10.0.0.1 51000 8444\r\nGET / HTTP/1.1\r\n\r\n",
+    );
+    let finished = server.terminate();
+
+    assert!(
+        !answer.starts_with(b"HTTP/"),
+        "{}",
+        String::from_utf8_lossy(&answer)
+    );
+    assert!(
+        !String::from_utf8_lossy(&answer).contains("503"),
+        "{}",
+        String::from_utf8_lossy(&answer)
+    );
+    assert_eq!(finished.code, Some(0));
 }

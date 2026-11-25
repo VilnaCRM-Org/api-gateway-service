@@ -37,9 +37,12 @@ async fn bound_sockets_report_their_own_addresses() {
     assert_ne!(bound.internal.port(), 0);
     assert_ne!(bound.probe.port(), 0);
     assert_ne!(bound.decision.port(), 0);
+    assert_ne!(bound.mesh.port(), 0);
     assert_ne!(bound.public, bound.internal);
     assert_ne!(bound.internal, bound.probe);
     assert_ne!(bound.probe, bound.decision);
+    assert_ne!(bound.decision, bound.mesh);
+    assert_ne!(bound.mesh, bound.public);
 }
 
 #[tokio::test]
@@ -63,6 +66,7 @@ fn config_on(address: SocketAddr) -> GatewayConfig {
     args.listen = Some(text.clone());
     args.internal_listen = Some(text.clone());
     args.decision_listen = Some(text.clone());
+    args.mesh_listen = Some(text.clone());
     args.probe_listen = Some(text);
     GatewayConfig::from_args(&args).unwrap()
 }
@@ -120,7 +124,8 @@ async fn the_plain_public_server_answers_503_and_ends_on_the_stop_flag() {
 
     let router = listener::stale_router();
     let signals = ConnectionSignals::new(stopping, None);
-    let server = start_public(socket, None, router, &mut tasks, signals).unwrap();
+    let config = tls_config(None, &mut tasks).unwrap();
+    let server = start_proxy(socket, config, router, signals).unwrap();
     let answer = raw_get(address).await;
     stop.send_replace(true);
 
@@ -158,7 +163,7 @@ async fn a_gateway_without_a_freshness_state_wires_the_stale_router_and_the_bare
     );
     let clock: Arc<dyn Clock> = Arc::new(shared_infrastructure::clock::SystemClock);
 
-    let public = public_router(
+    let routers = proxy_routers(
         &config_on(loopback()),
         &policy,
         &clock,
@@ -170,13 +175,20 @@ async fn a_gateway_without_a_freshness_state_wires_the_stale_router_and_the_bare
     )
     .unwrap();
     let _internal = internal_router(&policy);
-    let answer = public
+    let answer = routers
+        .public
+        .oneshot(Request::get("/anything").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let mesh_answer = routers
+        .mesh
         .oneshot(Request::get("/anything").body(Body::empty()).unwrap())
         .await
         .unwrap();
 
     assert!(policy.freshness.is_none());
     assert_eq!(answer.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(mesh_answer.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]
@@ -210,7 +222,7 @@ async fn a_gateway_with_a_freshness_state_serves_the_freshness_endpoint_and_the_
             .proving(freshness);
 
     let clock: Arc<dyn Clock> = Arc::new(shared_infrastructure::clock::SystemClock);
-    let public = public_router(
+    let routers = proxy_routers(
         &config_on(loopback()),
         &policy,
         &clock,
@@ -222,7 +234,13 @@ async fn a_gateway_with_a_freshness_state_serves_the_freshness_endpoint_and_the_
     )
     .unwrap();
     let internal = internal_router(&policy);
-    let gated = public
+    let gated = routers
+        .public
+        .oneshot(Request::get("/anything").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let mesh_gated = routers
+        .mesh
         .oneshot(Request::get("/anything").body(Body::empty()).unwrap())
         .await
         .unwrap();
@@ -236,6 +254,7 @@ async fn a_gateway_with_a_freshness_state_serves_the_freshness_endpoint_and_the_
         .unwrap();
 
     assert_eq!(gated.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(mesh_gated.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(report.status(), StatusCode::OK);
 }
 
@@ -382,6 +401,7 @@ fn the_listening_and_runtime_entries_name_the_addresses_the_mode_and_the_workers
     let config = config_on(loopback());
     let bound = Bound {
         public: SocketAddr::from(([127, 0, 0, 1], 8443)),
+        mesh: SocketAddr::from(([127, 0, 0, 1], 8447)),
         internal: SocketAddr::from(([127, 0, 0, 1], 8444)),
         probe: SocketAddr::from(([127, 0, 0, 1], 8445)),
         decision: SocketAddr::from(([127, 0, 0, 1], 8446)),
@@ -404,6 +424,7 @@ fn the_listening_and_runtime_entries_name_the_addresses_the_mode_and_the_workers
             .map(|(_key, value)| value.clone())
     };
     assert_eq!(field("public_addr").as_deref(), Some("127.0.0.1:8443"));
+    assert_eq!(field("mesh_addr").as_deref(), Some("127.0.0.1:8447"));
     assert_eq!(field("tls").as_deref(), Some("false"));
     assert_eq!(field("env").as_deref(), Some("test"));
     assert_eq!(field("pod").as_deref(), Some(""));

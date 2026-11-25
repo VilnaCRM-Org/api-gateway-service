@@ -310,13 +310,31 @@ fn spawn(scratch: &Scratch, arguments: &[&str], variables: &[(&str, &str)]) -> S
     }
 }
 
-/// The ports of the four listeners of a running gateway.
+/// The ports of the five listeners of a running gateway.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct GatewayPorts {
     pub(crate) public: u16,
+    pub(crate) mesh: u16,
     pub(crate) internal: u16,
     pub(crate) probe: u16,
     pub(crate) decision: u16,
+}
+
+/// Writes `bytes` to `127.0.0.1:port` and returns what the server sent before it closed the
+/// connection, waiting at most 10 seconds for it.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "integration tests open the sockets their subject talks to"
+)]
+pub(crate) fn exchange_raw(port: u16, bytes: &[u8]) -> Vec<u8> {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    drop(stream.write_all(bytes));
+    let mut answer = Vec::new();
+    drop(stream.read_to_end(&mut answer));
+    answer
 }
 
 /// The port at the end of the address in a log field.
@@ -331,7 +349,7 @@ fn port_of(entry: &Value, field: &str) -> u16 {
         .unwrap()
 }
 
-/// Starts `service gateway` in `APP_ENV` `test` on four ephemeral loopback ports and waits for its
+/// Starts `service gateway` in `APP_ENV` `test` on five ephemeral loopback ports and waits for its
 /// `listening` entry. `variables` complete or override the configuration. The server's `port` is
 /// the public one.
 pub(crate) fn gateway(scratch: &Scratch, variables: &[(&str, &str)]) -> (Server, GatewayPorts) {
@@ -343,12 +361,14 @@ pub(crate) fn gateway(scratch: &Scratch, variables: &[(&str, &str)]) -> (Server,
         ("GATEWAY_INTERNAL_LISTEN", "127.0.0.1:0"),
         ("GATEWAY_PROBE_LISTEN", "127.0.0.1:0"),
         ("GATEWAY_DECISION_LISTEN", "127.0.0.1:0"),
+        ("GATEWAY_MESH_LISTEN", "127.0.0.1:0"),
     ];
     all.extend_from_slice(variables);
     let mut server = spawn(scratch, &["gateway"], &all);
     let listening = server.read_until("listening").pop().unwrap();
     let ports = GatewayPorts {
         public: port_of(&listening, "public_addr"),
+        mesh: port_of(&listening, "mesh_addr"),
         internal: port_of(&listening, "internal_addr"),
         probe: port_of(&listening, "probe_addr"),
         decision: port_of(&listening, "decision_addr"),

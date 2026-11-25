@@ -196,6 +196,8 @@ fn gateway_takes_every_gateway_setting_as_a_flag() {
         "0.0.0.0:3",
         "--gateway-decision-listen",
         "0.0.0.0:4",
+        "--gateway-mesh-listen",
+        "0.0.0.0:5",
         "--gateway-tls-cert-file",
         "cert.pem",
         "--gateway-tls-key-file",
@@ -216,6 +218,7 @@ fn gateway_takes_every_gateway_setting_as_a_flag() {
     assert_eq!(args.internal_listen.as_deref(), Some("0.0.0.0:2"));
     assert_eq!(args.probe_listen.as_deref(), Some("0.0.0.0:3"));
     assert_eq!(args.decision_listen.as_deref(), Some("0.0.0.0:4"));
+    assert_eq!(args.mesh_listen.as_deref(), Some("0.0.0.0:5"));
     assert_eq!(args.tls_cert_file.as_deref(), Some("cert.pem"));
     assert_eq!(args.tls_key_file.as_deref(), Some("key.pem"));
     assert_eq!(args.pod_name.as_deref(), Some("gateway-0"));
@@ -233,6 +236,7 @@ fn the_gateway_settings_are_bound_to_their_variables_and_hide_their_values() {
         ("internal_listen", "GATEWAY_INTERNAL_LISTEN"),
         ("probe_listen", "GATEWAY_PROBE_LISTEN"),
         ("decision_listen", "GATEWAY_DECISION_LISTEN"),
+        ("mesh_listen", "GATEWAY_MESH_LISTEN"),
         ("tls_cert_file", "GATEWAY_TLS_CERT_FILE"),
         ("tls_key_file", "GATEWAY_TLS_KEY_FILE"),
         ("pod_name", "POD_NAME"),
@@ -596,4 +600,23 @@ fn the_gateway_parses_the_endpoint_discovery_flags() {
     );
     assert_eq!(args.upstream_zone_aware.as_deref(), Some("false"));
     assert_eq!(args.gateway_zone.as_deref(), Some("zone-a"));
+}
+
+#[test]
+fn the_proxy_protocol_flag_is_bound_to_its_variable_and_hides_its_value() {
+    let command = Cli::command();
+    let gateway = command.find_subcommand("gateway").unwrap();
+    let argument = gateway
+        .get_arguments()
+        .find(|argument| argument.get_id() == "gateway_proxy_protocol")
+        .unwrap();
+
+    assert_eq!(argument.get_env().unwrap(), "GATEWAY_PROXY_PROTOCOL");
+    assert!(argument.is_hide_env_values_set());
+
+    let cli = parse(&["gateway", "--gateway-proxy-protocol", "true"]).unwrap();
+    let Command::Gateway(args) = cli.command else {
+        panic!("expected gateway");
+    };
+    assert_eq!(args.gateway_proxy_protocol.as_deref(), Some("true"));
 }

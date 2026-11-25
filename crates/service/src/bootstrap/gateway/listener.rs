@@ -31,6 +31,7 @@ use tokio::sync::{mpsc, watch};
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::server::TlsStream;
 
+use super::edge::{Edge, EdgeLimits, proxy};
 use crate::config::TlsFiles;
 
 /// How often the certificate files are compared with the pair in force.
@@ -302,9 +303,29 @@ impl TlsListener {
     ///
     /// Returns the error of reading the local address of the socket.
     pub fn new(listener: TcpListener, config: Arc<ServerConfig>) -> io::Result<Self> {
+        Self::with_edge(
+            listener,
+            config,
+            Edge::new(EdgeLimits::default(), false, None),
+        )
+    }
+
+    /// [`TlsListener::new`] for an edge that may require a Proxy Protocol v2 header before the TLS
+    /// handshake (Story 10.9): the address of the header is the peer address of the connection,
+    /// and a connection without a valid header is closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of reading the local address of the socket.
+    pub fn with_edge(
+        listener: TcpListener,
+        config: Arc<ServerConfig>,
+        edge: Edge,
+    ) -> io::Result<Self> {
         let local = listener.local_addr()?;
         let (sender, completed) = mpsc::channel(COMPLETED_HANDSHAKES);
-        tokio::spawn(accept_loop(listener, TlsAcceptor::from(config), sender));
+        let acceptor = TlsAcceptor::from(config);
+        tokio::spawn(accept_loop(listener, acceptor, sender, edge));
         Ok(Self { completed, local })
     }
 }
@@ -315,11 +336,12 @@ async fn accept_loop(
     listener: TcpListener,
     acceptor: TlsAcceptor,
     sender: mpsc::Sender<Handshake>,
+    edge: Edge,
 ) {
     loop {
         tokio::select! {
             () = sender.closed() => return,
-            accepted = listener.accept() => accept_one(accepted, &acceptor, &sender).await,
+            accepted = listener.accept() => accept_one(accepted, &acceptor, &sender, &edge).await,
         }
     }
 }
@@ -328,10 +350,12 @@ async fn accept_one(
     accepted: io::Result<(TcpStream, SocketAddr)>,
     acceptor: &TlsAcceptor,
     sender: &mpsc::Sender<Handshake>,
+    edge: &Edge,
 ) {
     match accepted {
         Ok((stream, peer)) => {
-            tokio::spawn(handshake(acceptor.clone(), stream, peer, sender.clone()));
+            let secured = handshake(acceptor.clone(), stream, peer, sender.clone(), edge.clone());
+            tokio::spawn(secured);
         }
         Err(error) => {
             log_accept_failed(&error);
@@ -340,12 +364,31 @@ async fn accept_one(
     }
 }
 
+/// The client address of a connection: the one its Proxy Protocol header names when the edge
+/// requires the header, `None` (the connection is closed) when the header is missing or invalid.
+async fn client_of(stream: &mut TcpStream, peer: SocketAddr, edge: &Edge) -> Option<SocketAddr> {
+    if !edge.proxy_protocol() {
+        return Some(peer);
+    }
+    match proxy::read_header_within(stream, edge.limits().header_read_timeout).await {
+        Ok(client) => Some(client.unwrap_or(peer)),
+        Err(error) => {
+            log_proxy_refused(peer, &error);
+            None
+        }
+    }
+}
+
 async fn handshake(
     acceptor: TlsAcceptor,
-    stream: TcpStream,
+    mut stream: TcpStream,
     peer: SocketAddr,
     sender: mpsc::Sender<Handshake>,
+    edge: Edge,
 ) {
+    let Some(peer) = client_of(&mut stream, peer, &edge).await else {
+        return;
+    };
     match tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await {
         Ok(Ok(secured)) => drop(sender.send((secured, peer)).await),
         Ok(Err(error)) => log_handshake_failed(peer, &error),
@@ -410,6 +453,10 @@ fn log_accept_failed(error: &io::Error) {
 
 fn log_handshake_failed(peer: SocketAddr, error: &io::Error) {
     tracing::debug!(%peer, error = %error, "TLS handshake failed");
+}
+
+fn log_proxy_refused(peer: SocketAddr, error: &proxy::ProxyHeaderError) {
+    tracing::debug!(%peer, error = %error, "connection without a valid Proxy Protocol header closed");
 }
 
 fn log_handshake_timed_out(peer: SocketAddr) {

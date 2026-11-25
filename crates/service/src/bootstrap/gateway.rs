@@ -23,6 +23,7 @@ use crate::config::GatewayConfig;
 pub mod access_log;
 pub mod apply_thread;
 pub mod decision;
+pub mod edge;
 pub mod endpoints;
 pub mod freshness;
 pub mod internal;

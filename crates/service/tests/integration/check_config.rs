@@ -899,6 +899,10 @@ fn a_freshness_or_fetch_setting_out_of_range_exits_2_naming_the_variable(
     ("GATEWAY_DECISION_LISTEN", "127.0.0.1:9100"),
     "GATEWAY_DECISION_LISTEN: must differ from GATEWAY_LISTEN\n"
 )]
+#[case::mesh_equals_public(
+    ("GATEWAY_MESH_LISTEN", "127.0.0.1:9100"),
+    "GATEWAY_MESH_LISTEN: must differ from GATEWAY_LISTEN\n"
+)]
 fn equal_listener_addresses_exit_2_naming_the_variable(
     #[case] other: (&str, &str),
     #[case] expected: &str,

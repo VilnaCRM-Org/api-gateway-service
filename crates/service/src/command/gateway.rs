@@ -1,4 +1,4 @@
-//! `service gateway`: binds the public, internal, decision and probe listeners, serves until SIGTERM or
+//! `service gateway`: binds the public, east-west, internal, decision and probe listeners, serves until SIGTERM or
 //! SIGINT and drains (ADR 0015).
 //!
 //! The data plane needs no database: nothing here opens a PostgreSQL pool. Every line it writes is
@@ -13,6 +13,7 @@ use axum::Router;
 use axum::serve::Listener;
 use iam_application::{EndpointReadyPeers, PodProbes, ReadYourWritesBarrier};
 use iam_domain::{PolicyView, ReadyPeers};
+use rustls::ServerConfig;
 use shared_domain::{BoxError, Clock};
 use tokio::net::TcpListener;
 use tokio::runtime::{Builder, Runtime};
@@ -23,6 +24,7 @@ use super::serve::{
     FORCED_EXIT_LIMIT, Shutdown, Signals, log_forced, log_signal, log_stopped, mode, stopped,
 };
 use crate::bootstrap::gateway::decision::{self, DecisionPorts};
+use crate::bootstrap::gateway::edge::Edge;
 use crate::bootstrap::gateway::endpoints;
 use crate::bootstrap::gateway::listener::{self, ReloadableCertificate, TlsListener};
 use crate::bootstrap::gateway::shedding::{self, ConnectionSignals};
@@ -38,9 +40,10 @@ pub const MAX_BLOCKING_THREADS: usize = 16;
 /// A running listener.
 type Server = JoinHandle<std::io::Result<()>>;
 
-/// The four bound sockets of the gateway.
+/// The five bound sockets of the gateway.
 struct Sockets {
     public: TcpListener,
+    mesh: TcpListener,
     internal: TcpListener,
     probe: TcpListener,
     decision: TcpListener,
@@ -71,6 +74,7 @@ async fn bind(address: SocketAddr) -> std::io::Result<TcpListener> {
 async fn bind_all(config: &GatewayConfig) -> std::io::Result<Sockets> {
     Ok(Sockets {
         public: bind(config.listen).await?,
+        mesh: bind(config.mesh_listen).await?,
         internal: bind(config.internal_listen).await?,
         probe: bind(config.probe_listen).await?,
         decision: bind(config.decision_listen).await?,
@@ -99,17 +103,15 @@ where
     tokio::spawn(shedding::serve(listener, router, signals))
 }
 
-/// Starts the public server: over TLS with the certificate watcher when the files are
-/// configured, over plain HTTP otherwise (the configuration allows that only in `dev` and `test`).
-fn start_public(
-    socket: TcpListener,
+/// The TLS configuration of the proxy listeners, with the watcher that replaces the certificate
+/// without a restart; `None` serves plain HTTP, which the configuration allows only in `dev` and
+/// `test`. The public and the east-west listener share it, so they present the same certificate.
+fn tls_config(
     tls: Option<&TlsFiles>,
-    router: Router,
     tasks: &mut TaskSupervisor,
-    signals: ConnectionSignals,
-) -> Result<Server, BoxError> {
+) -> Result<Option<Arc<ServerConfig>>, BoxError> {
     let Some(files) = tls else {
-        return Ok(spawn_shedding_server(socket, router, signals));
+        return Ok(None);
     };
     let (key, loaded) = listener::load_with_source(files)?;
     let resolver = Arc::new(ReloadableCertificate::new(key));
@@ -123,8 +125,54 @@ fn start_public(
             shutdown,
         )
     });
-    let secured = TlsListener::new(socket, listener::server_config(resolver)?)?;
-    Ok(spawn_shedding_server(secured, router, signals))
+    Ok(Some(listener::server_config(resolver)?))
+}
+
+/// Starts a proxy server on `socket`: over TLS with `config` when there is one, over plain HTTP
+/// otherwise. The accept loop reads no Proxy Protocol header: the client address is the TCP peer.
+fn start_proxy(
+    socket: TcpListener,
+    config: Option<Arc<ServerConfig>>,
+    router: Router,
+    signals: ConnectionSignals,
+) -> Result<Server, BoxError> {
+    match config {
+        Some(config) => Ok(spawn_shedding_server(
+            TlsListener::new(socket, config)?,
+            router,
+            signals,
+        )),
+        None => Ok(spawn_shedding_server(socket, router, signals)),
+    }
+}
+
+/// Starts the public server behind the limits of `edge` (Story 10.9): over TLS with `config` when
+/// there is one, over plain HTTP otherwise. With `GATEWAY_PROXY_PROTOCOL`, every connection starts
+/// with a Proxy Protocol v2 header, read before the TLS handshake, and one without it is closed.
+fn start_edge_proxy(
+    socket: TcpListener,
+    config: Option<Arc<ServerConfig>>,
+    router: Router,
+    signals: ConnectionSignals,
+    edge: Edge,
+) -> Result<Server, BoxError> {
+    let edge = edge.reading_header_in_serve(config.is_none());
+    match config {
+        Some(config) => {
+            let secured = TlsListener::with_edge(socket, config, edge.clone())?;
+            let served = shedding::serve_with_edge(secured, router, signals, edge);
+            Ok(tokio::spawn(served))
+        }
+        None => Ok(tokio::spawn(shedding::serve_with_edge(
+            socket, router, signals, edge,
+        ))),
+    }
+}
+
+/// The edge of the public listener: the limits of the story, the connection age jittered through
+/// the `Rng` port, and the Proxy Protocol of `GATEWAY_PROXY_PROTOCOL`.
+fn public_edge(config: &GatewayConfig, adapters: &GatewayAdapters) -> Edge {
+    Edge::standard(config.proxy_protocol, Arc::clone(&adapters.rng))
 }
 
 /// The collaborators the public pipeline is wired with besides the configuration and the clock.
@@ -134,20 +182,25 @@ struct PublicPorts {
     peers: Arc<dyn ReadyPeers>,
 }
 
-/// The router of the public listener: with a freshness state it is the request pipeline that hands
-/// authorized requests to `forwarder`, without one every request is answered 503 `iam_stale`.
+/// The routers of the two proxy listeners: with a freshness state they are the request pipeline
+/// that hands authorized requests to `forwarder`, without one every request is answered 503
+/// `iam_stale`. The east-west router runs the same pipeline and route table as the public one; its
+/// only difference is the caller rule for `ROLE_SERVICE` tokens (Story 10.13).
 ///
 /// # Errors
 ///
 /// The error of wiring the pipeline, such as an unreadable key file.
-fn public_router(
+fn proxy_routers(
     config: &GatewayConfig,
     policy: &policy::PolicyAdapters,
     clock: &Arc<dyn Clock>,
     ports: PublicPorts,
-) -> Result<Router, BoxError> {
+) -> Result<ProxyRouters, BoxError> {
     let Some(freshness) = policy.freshness.as_ref() else {
-        return Ok(listener::stale_router());
+        return Ok(ProxyRouters {
+            public: listener::stale_router(),
+            mesh: listener::stale_router(),
+        });
     };
     let view: Arc<dyn PolicyView> =
         Arc::<iam_infrastructure::ArcSwapPolicySnapshot>::clone(&policy.cell);
@@ -157,7 +210,19 @@ fn public_router(
         .with_read_your_writes(read_your_writes_barrier(config, policy))
         .with_rate_limits(pipeline::gate_from_config(config, ports.peers))
         .with_access_log(ports.access_log);
-    Ok(pipeline::router(pipeline))
+    let mesh = pipeline
+        .clone()
+        .with_service_callers(config.tokens.callers.clone());
+    Ok(ProxyRouters {
+        public: pipeline::router(pipeline),
+        mesh: pipeline::router(mesh),
+    })
+}
+
+/// The router of each proxy listener.
+struct ProxyRouters {
+    public: Router,
+    mesh: Router,
 }
 
 /// The read-your-writes barrier of the pod (Story 10.10): over the published snapshot and the
@@ -258,11 +323,13 @@ fn start_servers(
         access_log,
         peers,
     };
-    let built = public_router(config, policy, &adapters.clock, ports);
-    let public_router = built?;
+    let ProxyRouters {
+        public: public_router,
+        mesh: mesh_router,
+    } = proxy_routers(config, policy, &adapters.clock, ports)?;
     let internal_router = internal_router(policy);
     let decision_router = decision_router(config, policy, Arc::clone(&adapters.clock))?;
-    let tls = config.tls.as_ref();
+    let tls = tls_config(config.tls.as_ref(), tasks)?;
     let signals = ConnectionSignals::new(
         stopping.clone(),
         policy
@@ -270,16 +337,19 @@ fn start_servers(
             .as_ref()
             .map(|readiness| readiness.gate.shedding()),
     );
-    let public = start_public(sockets.public, tls, public_router, tasks, signals)?;
+    let mesh = start_proxy(sockets.mesh, tls.clone(), mesh_router, signals.clone())?;
+    let edge = public_edge(config, adapters);
+    let public = start_edge_proxy(sockets.public, tls, public_router, signals, edge)?;
     let internal = spawn_server(sockets.internal, internal_router, stopping.clone());
     let probe = spawn_server(sockets.probe, probe_router(policy), stopping.clone());
     let decision = spawn_server(sockets.decision, decision_router, stopping.clone());
-    Ok(vec![public, internal, probe, decision])
+    Ok(vec![public, mesh, internal, probe, decision])
 }
 
 /// The addresses the sockets are bound to.
 struct Bound {
     public: SocketAddr,
+    mesh: SocketAddr,
     internal: SocketAddr,
     probe: SocketAddr,
     decision: SocketAddr,
@@ -289,6 +359,7 @@ impl Sockets {
     fn addresses(&self) -> std::io::Result<Bound> {
         Ok(Bound {
             public: self.public.local_addr()?,
+            mesh: self.mesh.local_addr()?,
             internal: self.internal.local_addr()?,
             probe: self.probe.local_addr()?,
             decision: self.decision.local_addr()?,
@@ -305,6 +376,7 @@ fn log_listening(config: &GatewayConfig, bound: &Bound) {
     let namespace = config.pod_namespace.as_deref().unwrap_or_default();
     tracing::info!(
         public_addr = %bound.public,
+        mesh_addr = %bound.mesh,
         internal_addr = %bound.internal,
         probe_addr = %bound.probe,
         decision_addr = %bound.decision,
