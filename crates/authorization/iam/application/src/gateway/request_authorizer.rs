@@ -10,7 +10,7 @@ use shared_domain::{Clock, CommandBus, UuidGenerator};
 
 use super::snapshot_reads::{CatalogueCache, LoadedSnapshotReads};
 use crate::access_decision_service::AccessDecisionService;
-use crate::access_log::{AuditGate, DecisionTrace};
+use crate::access_log::{AuditGate, AuditSlot, DecisionTrace};
 use crate::error::IamError;
 use crate::iam_access_guard::{IamAccessGuard, OperationRequest};
 use crate::operation_rules::OperationRules;
@@ -47,7 +47,7 @@ pub enum Authorization {
 }
 
 /// What authorizing a request found, with the facts of the decision that the access log records.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct TracedAuthorization {
     /// The answer.
     pub authorization: Authorization,
@@ -56,6 +56,9 @@ pub struct TracedAuthorization {
     pub trace: DecisionTrace,
     /// The keys that were denied.
     pub denied: Vec<String>,
+    /// The audit slot that an allow on an always-audit or sensitive key reserved; the request
+    /// holds it until its record reaches the writer, and gives it back by dropping it.
+    pub audit_slot: Option<AuditSlot>,
 }
 
 impl From<Authorization> for TracedAuthorization {
@@ -64,6 +67,7 @@ impl From<Authorization> for TracedAuthorization {
             authorization,
             trace: DecisionTrace::default(),
             denied: Vec::new(),
+            audit_slot: None,
         }
     }
 }
@@ -132,14 +136,22 @@ impl RequestAuthorizer {
     /// [`Authorization::AuditUnavailable`] while the audit lane cannot take the record.
     fn audited(&self, traced: TracedAuthorization) -> TracedAuthorization {
         let recorded = traced.trace.flags.is_audit_always() || traced.trace.flags.is_sensitive();
-        let closed = self.audit_gate.get().is_some_and(|gate| !gate.admits());
-        if recorded && closed && matches!(traced.authorization, Authorization::Allowed(_)) {
-            return TracedAuthorization {
+        if !recorded || !matches!(traced.authorization, Authorization::Allowed(_)) {
+            return traced;
+        }
+        let Some(gate) = self.audit_gate.get() else {
+            return traced;
+        };
+        match gate.reserve() {
+            Some(slot) => TracedAuthorization {
+                audit_slot: Some(slot),
+                ..traced
+            },
+            None => TracedAuthorization {
                 authorization: Authorization::AuditUnavailable,
                 ..traced
-            };
+            },
         }
-        traced
     }
 
     /// Decides whether `principal` may send `request`.
@@ -175,6 +187,7 @@ impl RequestAuthorizer {
                 authorization: Self::authorization_of(&outcome, version),
                 trace,
                 denied: outcome.denied().to_vec(),
+                audit_slot: None,
             })
         }
     }

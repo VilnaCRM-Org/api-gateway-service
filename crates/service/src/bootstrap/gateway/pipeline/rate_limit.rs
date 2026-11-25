@@ -12,7 +12,6 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::http::header::RETRY_AFTER;
 use axum::http::request::Parts;
@@ -35,16 +34,6 @@ use crate::config::GatewayConfig;
 
 /// The `type` of the 429 problem of a request over a rate limit.
 pub const TYPE_RATE_LIMITED: &str = "/problems/rate_limited";
-
-/// Requests per period of the per-IP flood guard: far above any policy, so only a flood from one
-/// address reaches it.
-const GUARD_LIMIT: u32 = 2_000;
-
-/// The period of the flood guard.
-const GUARD_PERIOD: Duration = Duration::from_secs(1);
-
-/// The burst of the flood guard.
-const GUARD_BURST: u32 = 2_000;
 
 /// The most buckets each pool of the local limiter keeps.
 const BUCKET_CAPACITY: usize = 100_000;
@@ -76,7 +65,11 @@ impl From<SocketAddr> for ClientAddress {
 #[must_use]
 pub fn gate_from_config(config: &GatewayConfig, peers: Arc<dyn ReadyPeers>) -> Arc<RateLimitGate> {
     let clock: Arc<dyn BootClock> = Arc::new(LinuxBootClock);
-    let guard = RateDecisionRule::new(GUARD_LIMIT, GUARD_PERIOD, GUARD_BURST);
+    let guard = RateDecisionRule::new(
+        config.rate_limit.guard.limit,
+        config.rate_limit.guard.period,
+        config.rate_limit.guard.burst,
+    );
     let local: Arc<dyn LocalRateLimiter> = Arc::new(BucketLocalRateLimiter::new(
         Arc::clone(&clock),
         guard,

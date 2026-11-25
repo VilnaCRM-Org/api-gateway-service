@@ -492,6 +492,23 @@ async fn a_closed_audit_gate_refuses_an_allow_on_an_always_audit_key() {
 }
 
 #[tokio::test]
+async fn an_authorizer_without_an_audit_gate_serves_an_allow_on_an_always_audit_key() {
+    let snapshot = audited_snapshot(&[AUDITED_KEY], false);
+    let (authorizer, _recorded) = authorizer();
+
+    let served = authorize(
+        &authorizer,
+        &snapshot,
+        "users",
+        HttpMethod::Delete,
+        "/api/users/42",
+    )
+    .await;
+
+    assert_eq!(served, Authorization::Allowed(version()));
+}
+
+#[tokio::test]
 async fn a_closed_audit_gate_refuses_an_allow_on_a_sensitive_key() {
     let snapshot = audited_snapshot(&[AUDITED_KEY], true);
 
@@ -534,4 +551,38 @@ async fn a_closed_audit_gate_leaves_ordinary_keys_and_denials_alone() {
         denied,
         Authorization::Denied(DecisionReason::PermissionMissing)
     );
+}
+
+#[tokio::test]
+async fn an_audited_allow_holds_its_slot_until_the_request_drops_it() {
+    let (authorizer, _recorded) = authorizer();
+    let clock = Arc::new(FixedClock::at(SystemTime::UNIX_EPOCH));
+    let gate = Arc::new(crate::access_log::AuditGate::new(
+        clock,
+        std::time::Duration::from_secs(5),
+        1,
+    ));
+    let authorizer = authorizer.with_audit_gate(Arc::clone(&gate));
+    let snapshot = audited_snapshot(&[AUDITED_KEY], false);
+    let service = ServiceName::new("users").unwrap();
+    let path = path("/api/users/42");
+    let request = RouteRequest {
+        snapshot: &snapshot,
+        service: &service,
+        method: HttpMethod::Delete,
+        path: &path,
+        request_id: Some("req-1"),
+    };
+
+    let first = authorizer.authorize_traced(&request, &principal()).await;
+    let second = authorizer.authorize_traced(&request, &principal()).await;
+
+    assert_eq!(first.authorization, Authorization::Allowed(version()));
+    assert!(first.audit_slot.is_some());
+    assert_eq!(gate.reserved(), 1);
+    assert_eq!(second.authorization, Authorization::AuditUnavailable);
+    assert!(second.audit_slot.is_none());
+    // A request future dropped before its record exists gives the slot back through `Drop`.
+    drop(first);
+    assert_eq!(gate.reserved(), 0);
 }

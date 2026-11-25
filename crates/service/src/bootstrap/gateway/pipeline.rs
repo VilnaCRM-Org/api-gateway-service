@@ -37,7 +37,7 @@ use axum::middleware::from_fn;
 use axum::response::{IntoResponse as _, Response};
 use iam_application::{
     Authorization, BarrierVerdict, FreshnessState, Principal, RateLimitGate, ReadYourWritesBarrier,
-    RequestAuthorizer, RouteRequest,
+    RequestAuthorizer, RouteRequest, TracedAuthorization,
 };
 use iam_domain::{
     Decision, DecisionReason, ForwardError, HttpMethod, NormalizedPath, PathNormalizer,
@@ -334,8 +334,15 @@ impl Pipeline {
         seen: &mut Observed,
     ) -> Result<(), Refusal> {
         let traced = self.authorizer.authorize_traced(request, principal).await;
-        seen.decision(traced.trace, traced.denied);
-        permitted(traced.authorization)
+        let TracedAuthorization {
+            authorization,
+            trace,
+            denied,
+            audit_slot,
+        } = traced;
+        seen.decision(trace, denied);
+        seen.hold_audit_slot(audit_slot);
+        permitted(authorization)
     }
 
     async fn forward(&self, target: UpstreamTarget, request: Request) -> Response {

@@ -26,11 +26,12 @@ use crate::persistence::outbox_listener::OUTBOX_CHANNEL;
 use crate::persistence::revocation_statement;
 use crate::persistence::role::save_within;
 use crate::persistence::security_audit_log::{PgSecurityAuditLog, emit};
-use crate::persistence::state_writer::{StateCapture, Versioned};
+use crate::persistence::state_writer::{POLICY_TOPIC, StateCapture, Versioned};
 use crate::persistence::user_role;
 use crate::policy_snapshot::MatchitRouteTableCompiler;
 
-/// The topic of the IAM domain events.
+/// The default topic of the IAM domain events; `EVENTS_TOPIC` of the configuration replaces it
+/// through [`PgIamUnitOfWork::with_events_topic`].
 pub const EVENTS_TOPIC: &str = "iam.events.v1";
 
 /// The number of nanoseconds in one microsecond.
@@ -53,6 +54,14 @@ const NANOS_PER_MICRO: i128 = 1_000;
 pub struct PgIamUnitOfWork {
     pool: sqlx::PgPool,
     events_topic: String,
+    policy_topic: String,
+}
+
+/// The topics that the rows of one transaction name.
+#[derive(Debug, Clone, Copy)]
+struct Topics<'topic> {
+    policy: &'topic str,
+    events: &'topic str,
 }
 
 /// The locked policy epoch row; it never leaves this module.
@@ -74,6 +83,7 @@ impl PgIamUnitOfWork {
         Self {
             pool,
             events_topic: EVENTS_TOPIC.to_owned(),
+            policy_topic: POLICY_TOPIC.to_owned(),
         }
     }
 
@@ -85,9 +95,21 @@ impl PgIamUnitOfWork {
         self
     }
 
+    /// The same unit of work whose state rows name `topic` instead of
+    /// [`POLICY_TOPIC`] (`POLICY_TOPIC` of the configuration).
+    #[must_use]
+    pub fn with_policy_topic(mut self, topic: String) -> Self {
+        self.policy_topic = topic;
+        self
+    }
+
     async fn commit_change(&self, change: &IamChange) -> Result<ChangeReceipt, RepositoryError> {
         let mut transaction = self.pool.begin().await.map_err(translate)?;
-        let (version, stored) = write(&mut transaction, change, &self.events_topic).await?;
+        let topics = Topics {
+            policy: &self.policy_topic,
+            events: &self.events_topic,
+        };
+        let (version, stored) = write(&mut transaction, change, topics).await?;
         wake_relay(&mut transaction).await?;
         transaction.commit().await.map_err(translate)?;
         stored.iter().for_each(emit);
@@ -111,7 +133,7 @@ async fn wake_relay(connection: &mut PgConnection) -> Result<(), RepositoryError
 async fn write(
     connection: &mut PgConnection,
     change: &IamChange,
-    events_topic: &str,
+    topics: Topics<'_>,
 ) -> Result<(PolicyVersion, Vec<StoredSecurityAuditEvent>), RepositoryError> {
     let changed_at = timestamp(change.occurred_at_micros())?;
     let locked = lock_and_begin(connection, &change.parts().statements).await?;
@@ -120,6 +142,7 @@ async fn write(
     run(connection, &change.parts().statements).await?;
     if let Some(capture) = capture {
         let target = Versioned {
+            policy_topic: topics.policy,
             version,
             log_epoch: locked.log_epoch,
             changed_at,
@@ -130,7 +153,7 @@ async fn write(
         connection,
         change,
         (version, locked.log_epoch),
-        (changed_at, events_topic),
+        (changed_at, topics.events),
     )
     .await?;
     Ok((version, stored))

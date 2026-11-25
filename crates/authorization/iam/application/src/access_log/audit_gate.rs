@@ -11,6 +11,30 @@ use std::time::{Duration, SystemTime};
 
 use shared_domain::Clock;
 
+/// The reservation of one audit slot.
+///
+/// The request whose audit record is not written yet holds it. Dropping it gives the slot back,
+/// whether the writer consumed it with the record, the record was folded or dropped, or the
+/// request ended before it produced one.
+#[derive(Debug)]
+pub struct AuditSlot {
+    gate: Arc<AuditGate>,
+}
+
+impl PartialEq for AuditSlot {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.gate, &other.gate)
+    }
+}
+
+impl Eq for AuditSlot {}
+
+impl Drop for AuditSlot {
+    fn drop(&mut self) {
+        self.gate.release();
+    }
+}
+
 /// The stored form of "no entry waits".
 const NONE: u64 = u64::MAX;
 
@@ -21,6 +45,7 @@ pub struct AuditGate {
     max_pending: Duration,
     capacity: u64,
     pending: AtomicU64,
+    reserved: AtomicU64,
     oldest_micros: AtomicU64,
     channel_full: AtomicBool,
 }
@@ -35,6 +60,7 @@ impl AuditGate {
             max_pending,
             capacity: u64::try_from(capacity).unwrap_or(u64::MAX),
             pending: AtomicU64::new(0),
+            reserved: AtomicU64::new(0),
             oldest_micros: AtomicU64::new(NONE),
             channel_full: AtomicBool::new(false),
         }
@@ -45,8 +71,54 @@ impl AuditGate {
     #[must_use]
     pub fn admits(&self) -> bool {
         !self.channel_full.load(Ordering::Acquire)
-            && self.pending() < self.capacity
+            && self.occupied() < self.capacity
             && self.oldest_wait() <= self.max_pending
+    }
+
+    /// Admits one operation and reserves its audit slot: the same answer as [`Self::admits`], and
+    /// on `Some` the [`AuditSlot`] counts against the capacity until it is dropped, so that entries
+    /// that other admitted operations are about to write cannot overfill the lane. The slot is
+    /// tied to the record that took it: the writer consumes it with that record, and a request
+    /// that ends before its record exists gives it back by dropping it.
+    #[must_use]
+    pub fn reserve(self: &Arc<Self>) -> Option<AuditSlot> {
+        self.try_reserve().then(|| AuditSlot {
+            gate: Arc::clone(self),
+        })
+    }
+
+    /// Counts one more reserved slot when the lane has room for it.
+    fn try_reserve(&self) -> bool {
+        if self.channel_full.load(Ordering::Acquire) || self.oldest_wait() > self.max_pending {
+            return false;
+        }
+        let pending = self.pending();
+        self.reserved
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |reserved| {
+                (reserved.saturating_add(pending) < self.capacity)
+                    .then(|| reserved.saturating_add(1))
+            })
+            .is_ok()
+    }
+
+    /// Gives back one reserved slot; returns whether a slot was reserved.
+    fn release(&self) -> bool {
+        self.reserved
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |reserved| {
+                reserved.checked_sub(1)
+            })
+            .is_ok()
+    }
+
+    /// How many audit slots admitted operations hold without having written their entry yet.
+    #[must_use]
+    pub fn reserved(&self) -> u64 {
+        self.reserved.load(Ordering::Acquire)
+    }
+
+    /// The entries that wait for an acknowledgement plus the slots that are reserved.
+    fn occupied(&self) -> u64 {
+        self.pending().saturating_add(self.reserved())
     }
 
     /// How many audit entries the log store has not acknowledged.

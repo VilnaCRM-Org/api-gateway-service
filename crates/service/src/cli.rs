@@ -239,6 +239,14 @@ pub struct AccessLogQueryArgs {
         hide_env_values = true
     )]
     pub timeout: Option<String>,
+    /// The key that seals the cursors of the access decision queries, at least 32 characters
+    /// (default a random key per process, so a cursor opens only on the replica that issued it).
+    #[arg(
+        long = "access-log-cursor-key",
+        env = "ACCESS_LOG_CURSOR_KEY",
+        hide_env_values = true
+    )]
+    pub cursor_key: Option<String>,
 }
 
 /// Settings of the declarative route configuration of `serve`.
@@ -519,6 +527,29 @@ pub struct GatewayArgs {
         hide_env_values = true
     )]
     pub rate_limit_breaker_open_duration: Option<String>,
+    /// The requests per period that one client address may make before the local flood guard
+    /// answers 429, 1 to 10000000 (default `2000`).
+    #[arg(
+        long = "rate-limit-guard-limit",
+        env = "RATE_LIMIT_GUARD_LIMIT",
+        hide_env_values = true
+    )]
+    pub rate_limit_guard_limit: Option<String>,
+    /// The period of `RATE_LIMIT_GUARD_LIMIT`, 100ms to 1m (default `1s`).
+    #[arg(
+        long = "rate-limit-guard-period",
+        env = "RATE_LIMIT_GUARD_PERIOD",
+        hide_env_values = true
+    )]
+    pub rate_limit_guard_period: Option<String>,
+    /// The requests that one client address may make at once before the local flood guard answers
+    /// 429, 1 to 10000000 (default `2000`).
+    #[arg(
+        long = "rate-limit-guard-burst",
+        env = "RATE_LIMIT_GUARD_BURST",
+        hide_env_values = true
+    )]
+    pub rate_limit_guard_burst: Option<String>,
     /// The share of allowed requests that is written to the access log, a decimal number from 0
     /// to 1 (default `0.01`).
     #[arg(

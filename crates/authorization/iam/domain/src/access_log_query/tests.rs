@@ -4,7 +4,8 @@ use rstest::rstest;
 use shared_domain::Uuid;
 
 use super::{
-    AccessLogCursor, AccessLogRange, ID_WINDOW_NANOS, InvalidAccessLogRange, NANOS_PER_MILLI,
+    AccessLogCursor, AccessLogRange, CursorSeal, ID_WINDOW_NANOS, InvalidAccessLogRange,
+    NANOS_PER_MILLI,
 };
 
 const DAY: Duration = Duration::from_hours(24);
@@ -104,6 +105,16 @@ fn a_range_never_grows_when_it_continues_a_page() {
 }
 
 #[test]
+fn the_largest_count_a_cursor_may_carry_is_accepted() {
+    let cursor = AccessLogCursor {
+        timestamp_nanos: 7,
+        returned: super::MAX_CURSOR_RETURNED,
+    };
+
+    assert_eq!(AccessLogCursor::parse(&cursor.encode()), Some(cursor));
+}
+
+#[test]
 fn a_cursor_round_trips_through_its_text() {
     let cursor = AccessLogCursor {
         timestamp_nanos: 1_700_000_000_123_456_789,
@@ -122,6 +133,7 @@ fn a_cursor_round_trips_through_its_text() {
 #[case::signed("-1.1")]
 #[case::too_large("ffffffffffffffffff.1")]
 #[case::count_too_large("1.ffffffffff")]
+#[case::count_beyond_a_page("1.1f5")]
 fn a_text_that_is_not_a_cursor_is_refused(#[case] text: &str) {
     assert_eq!(AccessLogCursor::parse(text), None);
 }
@@ -148,4 +160,44 @@ fn the_cursor_after_a_page_counts_the_entries_at_its_last_timestamp(
             returned,
         }
     );
+}
+
+/// A seal that prefixes the payload with a marker, to test what the cursor does with a seal.
+#[derive(Debug)]
+struct MarkedSeal(&'static str);
+
+impl CursorSeal for MarkedSeal {
+    fn seal(&self, payload: &str) -> String {
+        format!("{}~{payload}", self.0)
+    }
+
+    fn open(&self, token: &str) -> Option<String> {
+        token
+            .strip_prefix(self.0)
+            .and_then(|rest| rest.strip_prefix('~'))
+            .map(str::to_owned)
+    }
+}
+
+#[test]
+fn a_sealed_cursor_opens_under_the_seal_that_issued_it() {
+    let cursor = AccessLogCursor {
+        timestamp_nanos: 1_800_000_000_000_000_000,
+        returned: 3,
+    };
+
+    let token = cursor.sealed(&MarkedSeal("a"));
+
+    assert_eq!(
+        AccessLogCursor::opened(&token, &MarkedSeal("a")),
+        Some(cursor)
+    );
+    assert_eq!(AccessLogCursor::opened(&token, &MarkedSeal("b")), None);
+}
+
+#[test]
+fn a_token_whose_payload_is_not_a_cursor_does_not_open() {
+    let token = MarkedSeal("a").seal("not-a-cursor");
+
+    assert_eq!(AccessLogCursor::opened(&token, &MarkedSeal("a")), None);
 }

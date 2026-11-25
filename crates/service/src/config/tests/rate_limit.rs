@@ -122,3 +122,50 @@ fn a_breaker_open_duration_outside_one_second_to_five_minutes_names_its_variable
     assert_eq!(problems.len(), 1);
     assert_eq!(problems[0].0, "RATE_LIMIT_BREAKER_OPEN_DURATION");
 }
+
+#[test]
+fn the_flood_guard_defaults_to_two_thousand_requests_per_second_with_a_burst_of_two_thousand() {
+    let config = GatewayConfig::from_args(&valid_gateway()).unwrap();
+
+    assert_eq!(config.rate_limit.guard.limit, 2_000);
+    assert_eq!(config.rate_limit.guard.period, Duration::from_secs(1));
+    assert_eq!(config.rate_limit.guard.burst, 2_000);
+}
+
+#[test]
+fn the_flood_guard_is_taken_as_given() {
+    let mut args = valid_gateway();
+    args.rate_limit_guard_limit = some("5000");
+    args.rate_limit_guard_period = some("500ms");
+    args.rate_limit_guard_burst = some("7000");
+
+    let config = GatewayConfig::from_args(&args).unwrap();
+
+    assert_eq!(config.rate_limit.guard.limit, 5_000);
+    assert_eq!(config.rate_limit.guard.period, Duration::from_millis(500));
+    assert_eq!(config.rate_limit.guard.burst, 7_000);
+}
+
+#[rstest]
+#[case("RATE_LIMIT_GUARD_LIMIT", "0")]
+#[case("RATE_LIMIT_GUARD_LIMIT", "10000001")]
+#[case("RATE_LIMIT_GUARD_LIMIT", "many")]
+#[case("RATE_LIMIT_GUARD_PERIOD", "99ms")]
+#[case("RATE_LIMIT_GUARD_PERIOD", "2m")]
+#[case("RATE_LIMIT_GUARD_PERIOD", "soon")]
+#[case("RATE_LIMIT_GUARD_BURST", "0")]
+#[case("RATE_LIMIT_GUARD_BURST", "10000001")]
+#[case("RATE_LIMIT_GUARD_BURST", "-1")]
+fn a_flood_guard_value_out_of_range_names_its_variable(#[case] variable: &str, #[case] raw: &str) {
+    let mut args = valid_gateway();
+    match variable {
+        "RATE_LIMIT_GUARD_LIMIT" => args.rate_limit_guard_limit = some(raw),
+        "RATE_LIMIT_GUARD_PERIOD" => args.rate_limit_guard_period = some(raw),
+        _ => args.rate_limit_guard_burst = some(raw),
+    }
+
+    let problems = gateway_problems(&args);
+
+    assert_eq!(problems.len(), 1);
+    assert_eq!(problems[0].0, variable);
+}

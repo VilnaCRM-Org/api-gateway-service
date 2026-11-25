@@ -9,6 +9,7 @@ pub mod access_log_query;
 pub mod bucket_local_rate_limiter;
 pub mod buffered_rejected_attempt_log;
 pub mod clock;
+pub mod cursor_seal;
 pub mod kafka;
 pub mod kubernetes;
 pub mod peer_freshness;
@@ -28,6 +29,7 @@ pub use access_log_query::{LokiAccessLogQuery, LokiQueryTransport, LokiResponse}
 pub use bucket_local_rate_limiter::BucketLocalRateLimiter;
 pub use buffered_rejected_attempt_log::BufferedRejectedAttemptLog;
 pub use clock::LinuxBootClock;
+pub use cursor_seal::HmacCursorSeal;
 pub use kafka::{
     BOOTSTRAP_PRINCIPAL, KafkaSecret, KafkaSecurity, KafkaSettings, KrafkaPolicyLogProbe,
     KrafkaPolicyLogProducer, KrafkaPolicyLogTail, KrafkaTopicInspector, ProbeCredentials,

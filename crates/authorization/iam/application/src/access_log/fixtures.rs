@@ -93,5 +93,6 @@ pub(crate) fn item(lane: AccessLane, class: AccessClass, facts: AccessFacts) -> 
         lane,
         class,
         record: super::builder::record_for_tests(facts),
+        slot: None,
     }
 }

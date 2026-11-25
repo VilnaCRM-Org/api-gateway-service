@@ -13,8 +13,8 @@ use axum::http::header::CONTENT_LENGTH;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, Response};
 use iam_application::{
-    AccessFacts, AccessRecorder, AuditGate, DecisionTrace, RequestFacts, ResponseFacts, RouteFacts,
-    VerdictFacts,
+    AccessFacts, AccessRecorder, AuditGate, AuditSlot, DecisionTrace, RequestFacts, ResponseFacts,
+    RouteFacts, VerdictFacts,
 };
 use iam_domain::{
     Decision, DecisionReason, PolicySnapshot, RouteState, SubjectId, TokenIdentity, TokenRejection,
@@ -35,6 +35,7 @@ pub(super) struct Observed {
     policy_version: Option<i64>,
     trace: DecisionTrace,
     denied: Vec<String>,
+    audit_slot: Option<AuditSlot>,
 }
 
 impl Observed {
@@ -67,6 +68,13 @@ impl Observed {
     pub(super) fn decision(&mut self, trace: DecisionTrace, denied: Vec<String>) {
         self.trace = trace;
         self.denied = denied;
+    }
+
+    /// Keeps the audit slot that the decision reserved for the record of this request. The slot
+    /// goes back to the gate when the record is written, or when the request ends without one
+    /// because the client went away and the handler future was dropped.
+    pub(super) fn hold_audit_slot(&mut self, slot: Option<AuditSlot>) {
+        self.audit_slot = slot;
     }
 
     /// Why the token was refused, when it was.
@@ -151,29 +159,33 @@ impl PipelineAccessLog {
             policy_version,
             trace,
             denied,
+            audit_slot,
             ..
         } = seen;
         let latency_us = u64::try_from(at.elapsed().as_micros()).unwrap_or(u64::MAX);
-        self.recorder.record(AccessFacts {
-            decision_id: self.ids.generate(),
-            occurred_at: self.clock.now(),
-            request,
-            route,
-            verdict: VerdictFacts {
-                decision: verdict.0,
-                reason: verdict.1,
-                subject,
-                policy_version,
-                trace,
-                denied,
-                project_id: None,
+        self.recorder.record_with_slot(
+            AccessFacts {
+                decision_id: self.ids.generate(),
+                occurred_at: self.clock.now(),
+                request,
+                route,
+                verdict: VerdictFacts {
+                    decision: verdict.0,
+                    reason: verdict.1,
+                    subject,
+                    policy_version,
+                    trace,
+                    denied,
+                    project_id: None,
+                },
+                response: ResponseFacts {
+                    status: response.status().as_u16(),
+                    bytes_out: announced_length(response.headers()),
+                    latency_us,
+                },
             },
-            response: ResponseFacts {
-                status: response.status().as_u16(),
-                bytes_out: announced_length(response.headers()),
-                latency_us,
-            },
-        });
+            audit_slot,
+        );
     }
 }
 

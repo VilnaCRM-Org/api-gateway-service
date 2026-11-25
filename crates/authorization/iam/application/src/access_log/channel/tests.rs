@@ -90,3 +90,35 @@ fn a_dropped_audit_record_marks_the_audit_gate_full_and_an_ordinary_drop_does_no
 
     assert!(!gate.admits());
 }
+
+#[test]
+fn a_dropped_audit_record_without_a_slot_leaves_the_reserved_slots_alone() {
+    let counters = Arc::new(AccessLogCounters::new());
+    let clock = Arc::new(ManualClock::at(at(1_800_000_000)));
+    let gate = Arc::new(AuditGate::new(clock, Duration::from_secs(5), 10));
+    let (channel, _receiver) = access_log_channel(1, counters);
+    let channel = channel.with_audit_gate(Arc::clone(&gate));
+    let held = gate.reserve();
+    channel.offer(error_item(1, 100, 503));
+
+    channel.offer(item(AccessLane::Audit, AccessClass::Audit, unavailable()));
+
+    assert_eq!(gate.reserved(), 1);
+    drop(held);
+}
+
+#[test]
+fn a_dropped_audit_record_with_a_slot_gives_its_slot_back() {
+    let counters = Arc::new(AccessLogCounters::new());
+    let clock = Arc::new(ManualClock::at(at(1_800_000_000)));
+    let gate = Arc::new(AuditGate::new(clock, Duration::from_secs(5), 10));
+    let (channel, _receiver) = access_log_channel(1, counters);
+    let channel = channel.with_audit_gate(Arc::clone(&gate));
+    channel.offer(error_item(1, 100, 503));
+    let slot = gate.reserve();
+    assert_eq!(gate.reserved(), 1);
+
+    channel.offer(item(AccessLane::Audit, AccessClass::Audit, unavailable()).with_slot(slot));
+
+    assert_eq!(gate.reserved(), 0);
+}

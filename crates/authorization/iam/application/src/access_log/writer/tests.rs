@@ -6,7 +6,7 @@ use iam_domain::{AccessClass, AccessLane, ClassBudgets, DecisionReason};
 use test_support::access_log_sink::RecordingAccessLogSink;
 use test_support::clock::ManualClock;
 
-use super::{AccessLogWriter, Window};
+use super::{AccessLogWriter, AuditSlot, Window};
 use crate::access_log::channel::access_log_channel;
 use crate::access_log::counters::AccessLogCounters;
 use crate::access_log::fixtures::{allowed, at, decision_id, denied, error_item, item};
@@ -224,6 +224,10 @@ struct Tracked {
 }
 
 fn tracked(capacity: usize) -> Tracked {
+    tracked_with(capacity, ClassBudgets::new(1_000, 1_000))
+}
+
+fn tracked_with(capacity: usize, budgets: ClassBudgets) -> Tracked {
     let sink = Arc::new(RecordingAccessLogSink::withholding());
     let clock = Arc::new(ManualClock::at(at(1_800_000_000)));
     let gate = Arc::new(crate::access_log::AuditGate::new(
@@ -235,7 +239,7 @@ fn tracked(capacity: usize) -> Tracked {
     let writer = AccessLogWriter::new(
         Arc::<RecordingAccessLogSink>::clone(&sink),
         Arc::<ManualClock>::clone(&clock),
-        ClassBudgets::new(1_000, 1_000),
+        budgets,
     )
     .with_audit_gate(Arc::clone(&gate), Arc::clone(&counters));
     Tracked {
@@ -251,6 +255,11 @@ fn audit_item(counter: u32) -> crate::access_log::AccessItem {
     let mut facts = denied(DecisionReason::PermissionMissing, 403);
     facts.decision_id = decision_id(counter);
     item(AccessLane::Audit, AccessClass::Audit, facts)
+}
+
+/// An audit item that carries the slot its request reserved.
+fn admitted_item(counter: u32, slot: AuditSlot) -> crate::access_log::AccessItem {
+    audit_item(counter).with_slot(Some(slot))
 }
 
 #[test]
@@ -397,4 +406,89 @@ fn audit_records_are_dropped_and_counted_while_the_oldest_waits_beyond_the_bound
     assert!(gate.admits());
     writer.write(audit_item(4));
     assert_eq!(sink.records(AccessLane::Audit).len(), 2);
+}
+
+#[test]
+fn an_admitted_record_is_written_although_the_buffer_filled_between_admission_and_write() {
+    let Tracked {
+        mut writer,
+        sink,
+        gate,
+        counters,
+        ..
+    } = tracked(2);
+    let first = gate.reserve().unwrap();
+    let second = gate.reserve().unwrap();
+    assert!(gate.reserve().is_none());
+    // The channel fills while both admitted records are in flight.
+    gate.mark_channel_full();
+
+    writer.write(admitted_item(1, first));
+    writer.write(admitted_item(2, second));
+
+    assert_eq!(sink.records(AccessLane::Audit).len(), 2);
+    assert_eq!(
+        counters.dropped_count(AccessLane::Audit, AccessClass::Audit),
+        0
+    );
+    assert_eq!(gate.reserved(), 0);
+}
+
+#[test]
+fn a_record_without_a_reservation_is_still_dropped_when_the_lane_is_full() {
+    let Tracked {
+        mut writer,
+        sink,
+        gate,
+        ..
+    } = tracked(1);
+    gate.mark_channel_full();
+
+    writer.write(audit_item(1));
+
+    assert_eq!(sink.records(AccessLane::Audit).len(), 0);
+}
+
+#[test]
+fn an_admitted_record_that_is_folded_for_its_budget_gives_its_slot_back() {
+    let Tracked {
+        mut writer,
+        sink,
+        gate,
+        ..
+    } = tracked_with(3, ClassBudgets::new(1_000, 1));
+    let first = gate.reserve().unwrap();
+    let second = gate.reserve().unwrap();
+
+    writer.write(admitted_item(1, first));
+    assert_eq!(gate.reserved(), 1);
+    writer.write(admitted_item(2, second));
+
+    assert_eq!(sink.records(AccessLane::Audit).len(), 1);
+    assert_eq!(gate.reserved(), 0);
+}
+
+#[test]
+fn a_record_without_a_slot_does_not_take_the_slot_of_an_admitted_one() {
+    let Tracked {
+        mut writer,
+        sink,
+        gate,
+        ..
+    } = tracked(2);
+    let admitted = gate.reserve().unwrap();
+    let other = gate.reserve().unwrap();
+    assert_eq!(gate.reserved(), 2);
+
+    // A denial or a wildcard allow reaches the writer between admission and write: it never
+    // reserved, so it must neither bypass the room check nor give a slot back.
+    writer.write(audit_item(1));
+    assert_eq!(gate.reserved(), 2);
+    assert_eq!(sink.records(AccessLane::Audit).len(), 0);
+
+    writer.write(admitted_item(2, admitted));
+    writer.write(admitted_item(3, other));
+
+    assert_eq!(sink.records(AccessLane::Audit).len(), 2);
+    assert_eq!(gate.reserved(), 0);
 }

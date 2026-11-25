@@ -10,7 +10,7 @@ use iam_domain::{
 };
 use shared_domain::Clock;
 
-use super::audit_gate::AuditGate;
+use super::audit_gate::{AuditGate, AuditSlot};
 use super::builder::AccessItem;
 use super::channel::{AccessLogReceiver, Received};
 use super::counters::AccessLogCounters;
@@ -209,12 +209,21 @@ impl AccessLogWriter {
         self
     }
 
-    /// Hands `entry` to the sink; an audit entry that the unacknowledged ones leave no room for is
-    /// dropped and counted.
-    fn emit(&mut self, lane: AccessLane, class: AccessClass, entry: &AccessEntry) {
+    /// Hands `entry` to the sink. An audit record that carries the slot its request reserved is
+    /// always written, and gives the slot back; one without a slot is dropped and counted when the
+    /// unacknowledged ones leave no room for it.
+    fn emit(
+        &mut self,
+        lane: AccessLane,
+        class: AccessClass,
+        entry: &AccessEntry,
+        slot: Option<AuditSlot>,
+    ) {
         let now = self.clock.now();
+        let admitted = slot.is_some();
+        drop(slot);
         if let (AccessLane::Audit, Some(audit)) = (lane, self.audit.as_mut()) {
-            if !audit.has_room() {
+            if !admitted && !audit.has_room() {
                 audit.counters.dropped(lane, class);
                 return;
             }
@@ -240,8 +249,14 @@ impl AccessLogWriter {
             .is_none_or(|budget| self.window.used(item.class) < budget);
         if within {
             self.window.count(item.class);
-            let entry = AccessEntry::Record(Box::new(item.record));
-            self.emit(item.lane, item.class, &entry);
+            let AccessItem {
+                lane,
+                class,
+                record,
+                slot,
+            } = item;
+            let entry = AccessEntry::Record(Box::new(record));
+            self.emit(lane, class, &entry, slot);
             self.reconcile();
         } else {
             self.window.fold(&item);
@@ -263,7 +278,7 @@ impl AccessLogWriter {
     pub fn finish(&mut self) {
         for aggregate in std::mem::take(&mut self.window.aggregates).into_values() {
             let (lane, class) = (aggregate.lane, aggregate.class);
-            self.emit(lane, class, &AccessEntry::Aggregate(aggregate));
+            self.emit(lane, class, &AccessEntry::Aggregate(aggregate), None);
         }
         self.reconcile();
     }

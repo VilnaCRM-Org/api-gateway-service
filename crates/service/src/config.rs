@@ -43,7 +43,8 @@ use self::access_log_query::access_log_query_settings;
 use self::audit_lane::lane_bounds;
 
 pub use access_log_query::{
-    AccessLogQuerySettings, DEFAULT_LOKI_QUERY_URL, DEFAULT_MAX_RANGE, DEFAULT_TIMEOUT,
+    AccessLogQuerySettings, CursorKey, DEFAULT_LOKI_QUERY_URL, DEFAULT_MAX_RANGE, DEFAULT_TIMEOUT,
+    MIN_CURSOR_KEY_BYTES,
 };
 pub use audit_lane::{
     AuditLaneSettings, DEFAULT_LOKI_PUSH_URL, DEFAULT_LOKI_TENANT_ID, DEFAULT_MAX_PENDING,
@@ -638,7 +639,34 @@ pub struct RateLimitSettings {
     /// `RATE_LIMIT_BREAKER_OPEN_DURATION`: how long the breaker of the store stays open before one
     /// probe call (Story 12.3).
     pub breaker_open_duration: Duration,
+    /// `RATE_LIMIT_GUARD_LIMIT`, `RATE_LIMIT_GUARD_PERIOD` and `RATE_LIMIT_GUARD_BURST`: the local
+    /// per-IP flood guard.
+    pub guard: FloodGuardSettings,
 }
+
+/// The local per-IP flood guard that runs before every rate policy (Story 12.2, FR-65): sized far
+/// above any policy, so only a flood from one address reaches it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FloodGuardSettings {
+    /// `RATE_LIMIT_GUARD_LIMIT`: the requests one address may make per `period`.
+    pub limit: u32,
+    /// `RATE_LIMIT_GUARD_PERIOD`: the period of `limit`.
+    pub period: Duration,
+    /// `RATE_LIMIT_GUARD_BURST`: the requests one address may make at once.
+    pub burst: u32,
+}
+
+/// The default `RATE_LIMIT_GUARD_LIMIT` and `RATE_LIMIT_GUARD_BURST`.
+const DEFAULT_GUARD_REQUESTS: u32 = 2_000;
+
+/// The largest accepted `RATE_LIMIT_GUARD_LIMIT` and `RATE_LIMIT_GUARD_BURST`.
+const MAX_GUARD_REQUESTS: u32 = 10_000_000;
+
+/// The shortest accepted `RATE_LIMIT_GUARD_PERIOD`.
+const MIN_GUARD_PERIOD: Duration = Duration::from_millis(100);
+
+/// The longest accepted `RATE_LIMIT_GUARD_PERIOD`.
+const MAX_GUARD_PERIOD: Duration = Duration::from_mins(1);
 
 /// The URL of the local Valkey when `RATE_LIMIT_STORE_URL` is unset.
 pub const DEFAULT_RATE_LIMIT_STORE_URL: &str = "redis://localhost:6379";
@@ -673,11 +701,55 @@ fn rate_limit_settings(collector: &mut Collector, args: &GatewayArgs) -> Option<
         "RATE_LIMIT_BREAKER_OPEN_DURATION",
         rate_limit_breaker_open_duration(args.rate_limit_breaker_open_duration.as_deref()),
     );
+    let guard = flood_guard_settings(collector, args);
     Some(RateLimitSettings {
         store: store?,
         store_timeout: timeout?,
         breaker_open_duration: breaker?,
+        guard: guard?,
     })
+}
+
+/// `RATE_LIMIT_GUARD_LIMIT` and `RATE_LIMIT_GUARD_BURST` (1 to 10000000, default 2000) and
+/// `RATE_LIMIT_GUARD_PERIOD` (100ms to 1m, default 1s).
+fn flood_guard_settings(
+    collector: &mut Collector,
+    args: &GatewayArgs,
+) -> Option<FloodGuardSettings> {
+    let limit = collector.collect(
+        "RATE_LIMIT_GUARD_LIMIT",
+        bounded(
+            args.rate_limit_guard_limit.as_deref(),
+            DEFAULT_GUARD_REQUESTS,
+            1..=MAX_GUARD_REQUESTS,
+        ),
+    );
+    let period = collector.collect(
+        "RATE_LIMIT_GUARD_PERIOD",
+        rate_limit_guard_period(args.rate_limit_guard_period.as_deref()),
+    );
+    let burst = collector.collect(
+        "RATE_LIMIT_GUARD_BURST",
+        bounded(
+            args.rate_limit_guard_burst.as_deref(),
+            DEFAULT_GUARD_REQUESTS,
+            1..=MAX_GUARD_REQUESTS,
+        ),
+    );
+    Some(FloodGuardSettings {
+        limit: limit?,
+        period: period?,
+        burst: burst?,
+    })
+}
+
+fn rate_limit_guard_period(raw: Option<&str>) -> Parsed<Duration> {
+    let value = duration(raw, Duration::from_secs(1))?;
+    if (MIN_GUARD_PERIOD..=MAX_GUARD_PERIOD).contains(&value) {
+        Ok(value)
+    } else {
+        Err("must be a duration from 100ms to 1m".to_owned())
+    }
 }
 
 fn rate_limit_store(raw: Option<&str>) -> Parsed<ValkeyEndpoint> {

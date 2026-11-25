@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use iam_domain::{
     AccessLogEntry, AccessLogQuery, AccessLogQueryError, AccessLogRange, AccessLogSearch,
+    MAX_CURSOR_RETURNED, MAX_LOG_READ,
 };
 use shared_domain::Uuid;
 
@@ -86,13 +87,19 @@ impl LokiAccessLogQuery {
         &self,
         search: &AccessLogSearch,
     ) -> Result<Vec<AccessLogEntry>, AccessLogQueryError> {
-        let skip = search.cursor.map_or(0, |cursor| cursor.returned);
+        let skip = search
+            .cursor
+            .map_or(0, |cursor| cursor.returned.min(MAX_CURSOR_RETURNED));
         let range = search.cursor.map_or(search.range, |cursor| {
             search.range.ending_at(cursor.timestamp_nanos)
         });
         let query = search_query(&self.labels, &search.filter);
         let mut entries = self
-            .query(&query, range, search.limit.saturating_add(skip))
+            .query(
+                &query,
+                range,
+                search.limit.saturating_add(skip).min(MAX_LOG_READ),
+            )
             .await?;
         if let Some(cursor) = search.cursor {
             drop_returned(&mut entries, cursor.timestamp_nanos, skip);

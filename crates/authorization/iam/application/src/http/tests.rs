@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::SystemTime;
 
 use axum::Router;
@@ -13,10 +13,14 @@ use test_support::policy_epoch::seeded_policy_epoch;
 use test_support::request_digester::FakeRequestDigester;
 use tower::ServiceExt as _;
 
-use super::{IamState, decision_router, router, stale_decision_router};
-use crate::access_validation_fixtures::{denied, recorded, scenario};
-use crate::query::get_policy_epoch::GetPolicyEpochQuery;
 use iam_domain::DecisionReason;
+
+use super::{IamState, decision_router, router, stale_decision_router};
+use crate::access_validation_fixtures::{allowed, denied};
+use crate::gateway_decision::stale::{ValidateAccessStaleBatchQuery, ValidateAccessStaleQuery};
+use crate::query::get_policy_epoch::GetPolicyEpochQuery;
+use crate::query::validate_access::ValidateAccessQuery;
+use crate::query::validate_access_batch::ValidateAccessBatchQuery;
 
 /// The state of a whole application that holds the IAM state as one of its fields.
 #[derive(Debug, Clone, FromRef)]
@@ -42,6 +46,61 @@ fn state() -> IamState {
         clock: Arc::new(FixedClock::at(fixed_time())),
         request_digester: Arc::new(FakeRequestDigester),
     }
+}
+
+/// What the bus of a stale gateway was asked: the real decisions, which it must never be asked for,
+/// and the stale answers it gives.
+#[derive(Debug, Default, Clone)]
+struct StaleAsked {
+    decided: Arc<Mutex<Vec<&'static str>>>,
+    stale: Arc<Mutex<Vec<&'static str>>>,
+}
+
+fn names(log: &Arc<Mutex<Vec<&'static str>>>) -> Vec<&'static str> {
+    log.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+fn unavailable() -> iam_domain::DecisionOutcome {
+    denied(DecisionReason::Unavailable, &[])
+}
+
+/// The state over a bus that answers the stale queries with the deny `unavailable` and the real
+/// decisions with an allow, and records which of them it was asked.
+fn stale_state() -> (IamState, StaleAsked) {
+    let asked = StaleAsked::default();
+    let (decided, stale) = (Arc::clone(&asked.decided), Arc::clone(&asked.stale));
+    let (decided_batch, stale_batch) = (Arc::clone(&decided), Arc::clone(&stale));
+    let bus = FakeQueryBus::answering(move |_query: ValidateAccessQuery| {
+        decided
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push("single");
+        Ok(allowed())
+    })
+    .and_answering(move |_query: ValidateAccessBatchQuery| {
+        decided_batch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push("batch");
+        Ok(vec![allowed()])
+    })
+    .and_answering(move |_query: ValidateAccessStaleQuery| {
+        stale
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push("single");
+        Ok(unavailable())
+    })
+    .and_answering(move |query: ValidateAccessStaleBatchQuery| {
+        stale_batch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push("batch");
+        Ok(query.0.checks.iter().map(|_item| unavailable()).collect())
+    });
+    let mut base = state();
+    base.query_bus = Arc::new(bus);
+    (base, asked)
 }
 
 #[tokio::test]
@@ -247,7 +306,7 @@ async fn the_decision_router_serves_no_management_route() {
 
 #[tokio::test]
 async fn the_stale_router_decides_a_check_without_authenticating_the_caller() {
-    let (state, asked) = scenario(Ok(denied(DecisionReason::Unavailable, &[])));
+    let (state, asked) = stale_state();
     let app = stale_decision_router().with_state(state);
     let body = serde_json::json!({
         "credential": "token",
@@ -274,7 +333,69 @@ async fn the_stale_router_decides_a_check_without_authenticating_the_caller() {
     assert_eq!(decision["decision"], "deny");
     assert_eq!(decision["reason"], "unavailable");
     assert_eq!(decision["requestId"], "request-1");
-    assert_eq!(recorded(&asked).len(), 1);
+    assert_eq!(names(&asked.decided), Vec::<&str>::new());
+    assert_eq!(names(&asked.stale), ["single"]);
+}
+
+#[tokio::test]
+async fn the_stale_router_never_asks_the_bus_for_a_decision_of_a_batch() {
+    let (state, asked) = stale_state();
+    let app = stale_decision_router().with_state(state);
+    let item = |id: &str| {
+        serde_json::json!({
+            "credential": "token",
+            "service": "orders",
+            "permissions": ["rest:orders:GET /api/orders"],
+            "requestId": id,
+        })
+    };
+    let body = serde_json::json!({ "checks": [item("a"), item("b")] });
+
+    let response = app
+        .oneshot(
+            Request::post("/api/access-validations/batch")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let decision: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let results = decision["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    for (result, id) in results.iter().zip(["a", "b"]) {
+        assert_eq!(result["decision"], "deny");
+        assert_eq!(result["reason"], "unavailable");
+        assert_eq!(result["requestId"], id);
+    }
+    assert_eq!(names(&asked.decided), Vec::<&str>::new());
+    assert_eq!(names(&asked.stale), ["batch"]);
+}
+
+#[tokio::test]
+async fn the_stale_router_refuses_an_invalid_single_body_with_422() {
+    let (state, asked) = stale_state();
+    let app = stale_decision_router().with_state(state);
+    let body = serde_json::json!({ "credential": "token", "service": "orders", "requestId": "r" });
+
+    let response = app
+        .oneshot(
+            Request::post("/api/access-validations")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(names(&asked.stale), Vec::<&str>::new());
+    assert_eq!(names(&asked.decided), Vec::<&str>::new());
 }
 
 #[tokio::test]

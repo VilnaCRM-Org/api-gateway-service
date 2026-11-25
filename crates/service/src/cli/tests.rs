@@ -406,6 +406,7 @@ fn serve_declares_exactly_the_variables_of_the_configuration_table() {
         "LOKI_TENANT_ID",
         "ACCESS_LOG_QUERY_MAX_RANGE",
         "ACCESS_LOG_QUERY_TIMEOUT",
+        "ACCESS_LOG_CURSOR_KEY",
         "LOG_LEVEL",
         "MAINTENANCE_INTERVAL",
         "MAX_TOKEN_LIFETIME",

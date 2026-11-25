@@ -14,6 +14,7 @@ use shared_application::http::{Problem, ValidatedJson};
 
 use super::IamState;
 use super::extract::CallerPrincipal;
+use crate::gateway_decision::stale::{ValidateAccessStaleBatchQuery, ValidateAccessStaleQuery};
 use batch::{AccessValidationBatchResponse, ValidateAccessBatchRequest};
 use dto::{AccessValidationResponse, ValidateAccessRequest};
 
@@ -134,13 +135,14 @@ pub async fn validate_batch(
     Ok(Json(validate_access_batch(&state, body).await?))
 }
 
-/// Decides a check without authenticating its caller.
+/// Answers a check without authenticating its caller.
 ///
 /// The gateway's decision listener routes the access validations here while its snapshot is not
 /// proven fresh: the caller rule cannot be read then, and the decision API always answers with a
-/// decision body, so the decision path itself answers the deny `unavailable`. The handler gives
-/// no decision of its own, so it must never be mounted behind a route that does not check the
-/// freshness first.
+/// decision body. The handler validates the body and asks the bus for the stale answer only, the
+/// deny `unavailable`, which the stale handler also writes to the access log; it never asks for a
+/// real decision, so a snapshot that turns fresh in between cannot give an unauthenticated caller
+/// one.
 ///
 /// # Errors
 ///
@@ -149,10 +151,21 @@ pub async fn validate_unauthenticated(
     State(state): State<IamState>,
     ValidatedJson(body): ValidatedJson<ValidateAccessRequest>,
 ) -> Result<Json<AccessValidationResponse>, Problem> {
-    Ok(Json(validate_access(&state, body).await?))
+    let parsed = body.parse()?;
+    let outcome = state
+        .query_bus
+        .ask(ValidateAccessStaleQuery(parsed.query))
+        .await?;
+    Ok(Json(AccessValidationResponse::new(
+        &outcome,
+        &parsed.request_id,
+    )))
 }
 
-/// Decides a batch of checks without authenticating its caller; see [`validate_unauthenticated`].
+/// Answers a batch of checks without authenticating its caller; see [`validate_unauthenticated`].
+///
+/// Every readable item is the deny `unavailable` and every unreadable one `malformed_operation`,
+/// each with its own decision id and its own access record, in request order.
 ///
 /// # Errors
 ///
@@ -161,7 +174,15 @@ pub async fn validate_batch_unauthenticated(
     State(state): State<IamState>,
     ValidatedJson(body): ValidatedJson<ValidateAccessBatchRequest>,
 ) -> Result<Json<AccessValidationBatchResponse>, Problem> {
-    Ok(Json(validate_access_batch(&state, body).await?))
+    let parsed = body.parse();
+    let outcomes = state
+        .query_bus
+        .ask(ValidateAccessStaleBatchQuery(parsed.query))
+        .await?;
+    Ok(Json(AccessValidationBatchResponse::new(
+        &outcomes,
+        parsed.request_ids,
+    )))
 }
 
 #[cfg(test)]

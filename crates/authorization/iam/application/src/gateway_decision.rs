@@ -28,17 +28,19 @@ use crate::query::validate_access_batch::{BatchCheck, ValidateAccessBatchQuery};
 use crate::read_your_writes::{BarrierVerdict, ReadYourWritesBarrier};
 use crate::snapshot_policy_reads::SnapshotPolicyReads;
 
+pub mod stale;
+
+/// The barrier of a check and the instant at which its wait ends; a batch gives every item the
+/// same instant, so the whole batch waits at most one barrier timeout.
+type Barred<'barrier> = Option<(&'barrier ReadYourWritesBarrier, Instant)>;
+
 /// Whether the snapshot can decide a check.
 ///
 /// With a `barrier`, a `minPolicyVersion` above the highest version the pod has seen is refused
-/// at once and one the pod has seen but not published waits for its snapshot, up to the wait of
+/// at once and one the pod has seen but not published waits for its snapshot, up to the deadline of
 /// the barrier; a timeout is a refusal too, because the decision API always answers with a
 /// decision body. Without one, the version must be held by the snapshot now.
-async fn decidable(
-    reads: &SnapshotPolicyReads,
-    barrier: Option<&ReadYourWritesBarrier>,
-    check: &AccessCheck,
-) -> bool {
+async fn decidable(reads: &SnapshotPolicyReads, barrier: Barred<'_>, check: &AccessCheck) -> bool {
     if matches!(check.target(), AccessTarget::GraphQl(_)) {
         return false;
     }
@@ -49,7 +51,9 @@ async fn decidable(
         return true;
     };
     let admitted = match barrier {
-        Some(barrier) => barrier.admit(minimum).await == BarrierVerdict::Proceed,
+        Some((barrier, deadline)) => {
+            barrier.admit_by(minimum, deadline).await == BarrierVerdict::Proceed
+        }
         None => true,
     };
     admitted
@@ -98,14 +102,17 @@ impl GatewayValidateAccessQueryHandler {
 
     async fn validate(&self, query: &ValidateAccessQuery) -> DecisionOutcome {
         let started = Instant::now();
-        let (outcome, trace) =
-            if decidable(&self.reads, self.barrier.as_deref(), &query.check).await {
-                self.decisions
-                    .decide_traced(&query.credential, &query.check)
-                    .await
-            } else {
-                (self.decisions.unavailable(), DecisionTrace::default())
-            };
+        let barred = self
+            .barrier
+            .as_deref()
+            .map(|barrier| (barrier, barrier.deadline()));
+        let (outcome, trace) = if decidable(&self.reads, barred, &query.check).await {
+            self.decisions
+                .decide_traced(&query.credential, &query.check)
+                .await
+        } else {
+            (self.decisions.unavailable(), DecisionTrace::default())
+        };
         record(
             self.access_log.as_deref(),
             &Recorded {
@@ -175,14 +182,23 @@ impl GatewayValidateAccessBatchQueryHandler {
 
     async fn validate(&self, query: &ValidateAccessBatchQuery) -> Vec<DecisionOutcome> {
         let memo = BatchTokenMemo::new(Arc::clone(&self.tokens));
+        let barred = self
+            .barrier
+            .as_deref()
+            .map(|barrier| (barrier, barrier.deadline()));
         let mut outcomes = Vec::with_capacity(query.checks.len());
         for item in &query.checks {
-            outcomes.push(self.decide_item(&memo, item).await);
+            outcomes.push(self.decide_item(&memo, barred, item).await);
         }
         outcomes
     }
 
-    async fn decide_item(&self, memo: &BatchTokenMemo, item: &BatchCheck) -> DecisionOutcome {
+    async fn decide_item(
+        &self,
+        memo: &BatchTokenMemo,
+        barred: Barred<'_>,
+        item: &BatchCheck,
+    ) -> DecisionOutcome {
         let started = Instant::now();
         let BatchCheck::Valid(query) = item else {
             let outcome = self.decisions.malformed();
@@ -200,14 +216,13 @@ impl GatewayValidateAccessBatchQueryHandler {
             );
             return outcome;
         };
-        let (outcome, trace) =
-            if decidable(&self.reads, self.barrier.as_deref(), &query.check).await {
-                self.decisions
-                    .decide_traced_with(memo, &query.credential, &query.check)
-                    .await
-            } else {
-                (self.decisions.unavailable(), DecisionTrace::default())
-            };
+        let (outcome, trace) = if decidable(&self.reads, barred, &query.check).await {
+            self.decisions
+                .decide_traced_with(memo, &query.credential, &query.check)
+                .await
+        } else {
+            (self.decisions.unavailable(), DecisionTrace::default())
+        };
         record(
             self.access_log.as_deref(),
             &Recorded {

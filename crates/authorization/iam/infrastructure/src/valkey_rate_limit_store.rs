@@ -7,8 +7,11 @@
 //! the script is loaded again and the same request is decided normally.
 //!
 //! The adapter keeps one multiplexed connection and drops it after a failure, so the next call
-//! connects again (to the new master after a Sentinel failover). It sets no timeout of its own:
-//! the application bounds every call with `RATE_LIMIT_STORE_TIMEOUT`.
+//! connects again (to the new master after a Sentinel failover). The application bounds every call
+//! with `RATE_LIMIT_STORE_TIMEOUT` and drops the future of a call that is too slow; a guard of the
+//! call then drops the connection as well, because a connection that hangs would otherwise stay
+//! cached and fail every later call. The connection also carries a connect timeout and a response
+//! timeout of its own.
 
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
@@ -82,6 +85,7 @@ impl ValkeyRateLimitStore {
         rule: &RateDecisionRule,
     ) -> Result<RateDecision, RateLimitStoreError> {
         let mut connection = self.connected().await.map_err(unavailable)?;
+        let mut guard = DropConnection::armed(self);
         let reply: (i64, i64) = self
             .script
             .key(Self::key_of(policy_id, key))
@@ -89,9 +93,35 @@ impl ValkeyRateLimitStore {
             .arg(micros_up(rule.tolerance()))
             .invoke_async(&mut connection)
             .await
-            .inspect_err(|_error| self.keep(None))
             .map_err(unavailable)?;
+        guard.disarm();
         Ok(decision_of(reply))
+    }
+}
+
+/// Drops the cached connection of the store unless it is disarmed, which a call does only once
+/// the server answered: a call that fails, or whose future its caller drops, leaves the guard
+/// armed.
+struct DropConnection<'store> {
+    store: &'store ValkeyRateLimitStore,
+    armed: bool,
+}
+
+impl<'store> DropConnection<'store> {
+    const fn armed(store: &'store ValkeyRateLimitStore) -> Self {
+        Self { store, armed: true }
+    }
+
+    const fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for DropConnection<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.store.keep(None);
+        }
     }
 }
 

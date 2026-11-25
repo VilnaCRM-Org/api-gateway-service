@@ -65,7 +65,9 @@ impl AccessLogChannel {
         }
     }
 
-    /// Marks the audit gate full after a drop of the audit lane.
+    /// Marks the audit gate full after a drop of the audit lane. The dropped item gives back its
+    /// own slot, if it holds one, when it goes out of scope; a record without a slot releases
+    /// nothing.
     fn mark_full(&self, lane: AccessLane) {
         if lane != AccessLane::Audit {
             return;

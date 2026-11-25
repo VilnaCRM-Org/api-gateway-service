@@ -5,8 +5,8 @@ use std::time::{Duration, SystemTime};
 
 use iam_domain::{
     AccessLogCursor, AccessLogEntry, AccessLogFilter, AccessLogQuery, AccessLogQueryError,
-    AccessLogRange, AccessLogSearch, ActorRef, AuditSummary, InvalidAccessLogRange,
-    SecurityAuditLog,
+    AccessLogRange, AccessLogSearch, ActorRef, AuditSummary, CursorSeal, InvalidAccessLogRange,
+    MAX_CURSOR_RETURNED, SecurityAuditLog,
 };
 use shared_domain::{Clock, Query, QueryHandler, UuidGenerator};
 
@@ -42,8 +42,10 @@ pub struct GetAccessDecisionsQuery {
     /// The largest number of decisions of the page; a value outside 1 to [`MAX_PAGE_SIZE`] is
     /// brought into that range.
     pub limit: u32,
-    /// Where the page starts; none for the first page.
-    pub cursor: Option<AccessLogCursor>,
+    /// The `nextCursor` token of the previous page, as the client handed it back; none for the
+    /// first page. The handler opens it with its [`CursorSeal`] and refuses a token it did not
+    /// issue.
+    pub cursor: Option<String>,
 }
 
 /// One page of access decisions.
@@ -51,8 +53,8 @@ pub struct GetAccessDecisionsQuery {
 pub struct AccessDecisionPage {
     /// The decisions of the page, newest first.
     pub entries: Vec<AccessLogEntry>,
-    /// The cursor of the next page; none when no older decision follows.
-    pub next: Option<AccessLogCursor>,
+    /// The sealed cursor token of the next page; none when no older decision follows.
+    pub next: Option<String>,
 }
 
 impl Query for GetAccessDecisionsQuery {
@@ -73,18 +75,20 @@ pub struct GetAccessDecisionsQueryHandler {
     audit: ReadAudit,
     clock: Arc<dyn Clock>,
     max_range: Duration,
+    seal: Arc<dyn CursorSeal>,
 }
 
 impl GetAccessDecisionsQueryHandler {
     /// A handler over the log store, with the audit log, the `Clock` and `UuidGenerator` ports
-    /// that stamp the record of the search, and the longest range that may be queried.
+    /// that stamp the record of the search, and the paging rules: the longest range that may be
+    /// queried and the seal that protects the cursors it issues.
     #[must_use]
     pub fn new(
         store: Arc<dyn AccessLogQuery>,
         audit_log: Arc<dyn SecurityAuditLog>,
         clock: Arc<dyn Clock>,
         ids: Arc<dyn UuidGenerator>,
-        max_range: Duration,
+        (max_range, seal): (Duration, Arc<dyn CursorSeal>),
     ) -> Self {
         let audit = ReadAudit::new(audit_log, Arc::clone(&clock), ids);
         Self {
@@ -92,25 +96,45 @@ impl GetAccessDecisionsQueryHandler {
             audit,
             clock,
             max_range,
+            seal,
         }
+    }
+
+    /// The cursor that the token of a query names: a token this handler's seal did not issue, or
+    /// one that claims more returned entries than a cursor may, is a 422 on `after`.
+    fn cursor_of(&self, token: Option<&str>) -> Result<Option<AccessLogCursor>, IamError> {
+        token
+            .map(|token| {
+                AccessLogCursor::opened(token, &*self.seal)
+                    .filter(|cursor| cursor.returned <= MAX_CURSOR_RETURNED)
+                    .ok_or_else(|| {
+                        IamError::invalid_property(
+                            "after",
+                            "This value is not a valid cursor.",
+                            "format",
+                        )
+                    })
+            })
+            .transpose()
     }
 
     async fn search(&self, query: GetAccessDecisionsQuery) -> Result<AccessDecisionPage, IamError> {
         let range = AccessLogRange::new(query.from, query.until, self.max_range)
             .map_err(range_violation)?;
+        let cursor = self.cursor_of(query.cursor.as_deref())?;
         let limit = query.limit.clamp(1, MAX_PAGE_SIZE);
-        let summary = search_summary(&query, limit)?;
+        let summary = search_summary(&query, cursor, limit)?;
         let read = AccessLogSearch {
             range,
             filter: query.filter,
-            cursor: query.cursor,
+            cursor,
             limit: limit.saturating_add(1),
         };
         let started = self.clock.now();
         let answer = self.store.search(&read).await;
         log_seconds(&*self.clock, started, "search", answer.as_ref().err());
         let mut entries = answer?;
-        let next = next_cursor(&mut entries, limit, query.cursor);
+        let next = next_cursor(&mut entries, limit, cursor).map(|next| next.sealed(&*self.seal));
         self.audit
             .record_about(
                 TARGET_TYPE,
@@ -155,13 +179,15 @@ fn range_violation(error: InvalidAccessLogRange) -> IamError {
 /// # Errors
 ///
 /// [`IamError::Internal`] only when even the fixed summary of last resort is refused.
-fn search_summary(query: &GetAccessDecisionsQuery, limit: u32) -> Result<AuditSummary, IamError> {
+fn search_summary(
+    query: &GetAccessDecisionsQuery,
+    cursor: Option<AccessLogCursor>,
+    limit: u32,
+) -> Result<AuditSummary, IamError> {
     let filter = &query.filter;
     let parts = [
         Some(format!("limit={limit}")),
-        query
-            .cursor
-            .map(|cursor| format!("cursor={}", cursor.encode())),
+        cursor.map(|cursor| format!("cursor={}", cursor.encode())),
         Some(format!("from={}", seconds(query.from))),
         Some(format!("until={}", seconds(query.until))),
         filter

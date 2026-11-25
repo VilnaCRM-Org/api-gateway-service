@@ -31,7 +31,8 @@ use iam_application::{
     AccessDecisionService, FreshPolicyView, FreshnessState, GatewayValidateAccessBatchQueryHandler,
     GatewayValidateAccessQueryHandler, IamAccessGuard, Principal, ReadYourWritesBarrier,
     RecordRejectedAttemptCommandHandler, ResolveSubjectTokenQueryHandler, ResolveTokenQueryHandler,
-    ServiceCatalogLoader, SnapshotPolicyReads,
+    ServiceCatalogLoader, SnapshotPolicyReads, StaleValidateAccessBatchQueryHandler,
+    StaleValidateAccessQueryHandler,
 };
 use iam_domain::{
     AccessTokenVerifier, AttemptSummary, PolicyReadRepository, PolicyView, RejectedAttempt,
@@ -316,11 +317,15 @@ fn query_bus(
         validate = validate.with_barrier(Arc::clone(barrier));
         batch = batch.with_barrier(Arc::clone(barrier));
     }
+    let stale = StaleValidateAccessQueryHandler::new(Arc::clone(decisions));
+    let stale_batch = StaleValidateAccessBatchQueryHandler::new(Arc::clone(decisions));
     Ok(InMemoryQueryBus::new()
         .register(authenticate)?
         .register(resolve)?
         .register(validate)?
-        .register(batch)?)
+        .register(batch)?
+        .register(stale)?
+        .register(stale_batch)?)
 }
 
 /// The schema over the state of the decision listener, with the caller rule of FR-12 on every

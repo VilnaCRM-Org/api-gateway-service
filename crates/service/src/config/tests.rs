@@ -452,6 +452,7 @@ fn every_variable_accepts_a_valid_value() {
             loki_tenant_id: some("tenant-7"),
             max_range: some("2h"),
             timeout: some("750ms"),
+            cursor_key: some("0123456789abcdef0123456789abcdef"),
         },
     };
 
@@ -1088,7 +1089,7 @@ type Mutator = fn(&mut ServeArgs);
 
 /// One row per variable of `ServeArgs`: the variable, a way to make it the only problem, and the
 /// variable that the problem names.
-const FIELDS: [(&str, Mutator, &str); 58] = [
+const FIELDS: [(&str, Mutator, &str); 59] = [
     ("APP_ENV", |a| a.app_env = some("x"), "APP_ENV"),
     ("APP_HOST", |a| a.app_host = some("x"), "APP_HOST"),
     ("APP_PORT", |a| a.app_port = some("x"), "APP_PORT"),
@@ -1350,6 +1351,11 @@ const FIELDS: [(&str, Mutator, &str); 58] = [
         "ACCESS_LOG_QUERY_TIMEOUT",
         |a| a.access_log_query.timeout = some("x"),
         "ACCESS_LOG_QUERY_TIMEOUT",
+    ),
+    (
+        "ACCESS_LOG_CURSOR_KEY",
+        |a| a.access_log_query.cursor_key = some("short"),
+        "ACCESS_LOG_CURSOR_KEY",
     ),
 ];
 

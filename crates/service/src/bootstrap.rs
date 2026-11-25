@@ -92,6 +92,7 @@ use iam_application::{RegisterOwnSpecsCommand, RegisterOwnSpecsCommandHandler};
 use iam_application::{ResolveSubjectTokenQueryHandler, ResolveTokenQueryHandler};
 use iam_application::{RetireGraphQlSpecCommandHandler, RetireOpenApiSpecCommandHandler};
 use iam_domain::AccessLogQuery;
+use iam_domain::CursorSeal;
 use iam_domain::GraphQlPermissionRepository;
 use iam_domain::GraphQlSpecRepository;
 use iam_domain::OpenApiSpecRepository;
@@ -114,6 +115,7 @@ use iam_domain::{IamUnitOfWork, OWN_SPECIFICATIONS_LOCK, RepositoryError, Reques
 use iam_domain::{PolicyLogTail, PolicyStateInventory};
 use iam_domain::{RevocationRepository, RevocationView, TokenMemo, TokenRepository};
 use iam_infrastructure::BufferedRejectedAttemptLog;
+use iam_infrastructure::HmacCursorSeal;
 use iam_infrastructure::KrafkaTopicInspector;
 use iam_infrastructure::MatchitRouteTableCompiler;
 use iam_infrastructure::PgGraphQlPermissionRepository;
@@ -157,7 +159,7 @@ use some_module_application::{
 use some_module_domain::ExampleApiResourceRepository;
 use some_module_infrastructure::PgExampleApiResourceRepository;
 
-use crate::config::{BulkSettings, Config};
+use crate::config::{AccessLogQuerySettings, BulkSettings, Config};
 use crate::graphql::schema;
 use crate::http::AppState;
 use crate::http::router::assemble_with_iam_routes;
@@ -389,7 +391,9 @@ fn units_of_work(
     clock: &Arc<dyn Clock>,
 ) -> (Arc<dyn IamUnitOfWork>, Arc<dyn IamUnitOfWork>) {
     let unit_of_work: Arc<dyn IamUnitOfWork> = Arc::new(
-        PgIamUnitOfWork::new(pool.clone()).with_events_topic(config.kafka.events_topic.clone()),
+        PgIamUnitOfWork::new(pool.clone())
+            .with_policy_topic(config.kafka.policy_topic.clone())
+            .with_events_topic(config.kafka.events_topic.clone()),
     );
     let write_unit_of_work: Arc<dyn IamUnitOfWork> = Arc::new(PublishingUnitOfWork::new(
         Arc::clone(&unit_of_work),
@@ -776,7 +780,10 @@ fn register_access_decision_queries(
         Arc::clone(&adapters.security_audit_log),
         Arc::clone(&adapters.clock),
         Arc::clone(&adapters.uuid_generator),
-        config.access_log_query.max_range,
+        (
+            config.access_log_query.max_range,
+            cursor_seal(&config.access_log_query),
+        ),
     );
     let get = GetAccessDecisionQueryHandler::new(
         Arc::clone(&adapters.access_log_query),
@@ -785,6 +792,18 @@ fn register_access_decision_queries(
         Arc::clone(&adapters.uuid_generator),
     );
     Ok(bus.register(search)?.register(get)?)
+}
+
+/// The seal of the access decision cursors: the HMAC key of `ACCESS_LOG_CURSOR_KEY` so that every
+/// replica opens the cursors of the others, or a random key of this process when it is not set.
+fn cursor_seal(settings: &AccessLogQuerySettings) -> Arc<dyn CursorSeal> {
+    let seal = settings
+        .cursor_key
+        .as_ref()
+        .map_or_else(HmacCursorSeal::random, |key| {
+            HmacCursorSeal::new(key.as_bytes())
+        });
+    Arc::new(seal)
 }
 
 /// Registers the query handlers that read session revocations and token cut-offs.

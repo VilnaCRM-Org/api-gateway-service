@@ -1,6 +1,6 @@
 use std::time::{Duration, SystemTime};
 
-use iam_domain::{AccessDecision, AccessLogCursor, DecisionReason, SubjectKind};
+use iam_domain::{AccessDecision, DecisionReason, SubjectKind};
 use rstest::rstest;
 use shared_domain::Uuid;
 
@@ -54,20 +54,16 @@ fn the_route_and_the_project_of_a_decision_are_shown_when_it_has_them() {
 }
 
 #[test]
-fn a_page_carries_the_encoded_cursor_of_the_next_page() {
-    let cursor = AccessLogCursor {
-        timestamp_nanos: 5,
-        returned: 2,
-    };
+fn a_page_carries_the_sealed_cursor_of_the_next_page() {
     let page = AccessDecisionPage {
         entries: vec![entry(1, 5)],
-        next: Some(cursor),
+        next: Some("sealed-token".to_owned()),
     };
 
     let shown = AccessDecisionPageResponse::from(&page);
 
     assert_eq!(shown.items.len(), 1);
-    assert_eq!(shown.next_cursor, Some(cursor.encode()));
+    assert_eq!(shown.next_cursor.as_deref(), Some("sealed-token"));
 }
 
 #[test]
@@ -113,13 +109,7 @@ fn every_filter_is_carried_into_the_query() {
     let query = params.into_query(actor()).unwrap();
 
     assert_eq!(query.limit, 200);
-    assert_eq!(
-        query.cursor,
-        Some(AccessLogCursor {
-            timestamp_nanos: 0x1a,
-            returned: 2,
-        })
-    );
+    assert_eq!(query.cursor.as_deref(), Some("1a.2"));
     assert_eq!(query.filter.subject_id.as_deref(), Some("user-1"));
     assert_eq!(query.filter.subject_kind, Some(SubjectKind::Service));
     assert_eq!(query.filter.decision, Some(AccessDecision::Deny));
@@ -134,7 +124,6 @@ fn every_filter_is_carried_into_the_query() {
 #[case::no_until(ListAccessDecisionsParams { until: None, ..window() }, "until")]
 #[case::bad_from(ListAccessDecisionsParams { from: Some("yesterday".to_owned()), ..window() }, "from")]
 #[case::bad_until(ListAccessDecisionsParams { until: Some("1969-12-31T23:59:59Z".to_owned()), ..window() }, "until")]
-#[case::bad_cursor(ListAccessDecisionsParams { after: Some("zz".to_owned()), ..window() }, "after")]
 #[case::bad_kind(ListAccessDecisionsParams { subject_kind: Some("robot".to_owned()), ..window() }, "subjectKind")]
 #[case::bad_decision(ListAccessDecisionsParams { decision: Some("maybe".to_owned()), ..window() }, "decision")]
 #[case::bad_reason(ListAccessDecisionsParams { reason: Some("because".to_owned()), ..window() }, "reason")]

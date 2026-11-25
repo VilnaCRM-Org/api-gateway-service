@@ -6,7 +6,6 @@ use std::time::SystemTime;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
-use iam_domain::AccessLogCursor;
 use serde_json::Value;
 use shared_domain::{CommandBus, QueryBus};
 use test_support::bus::{FakeCommandBus, FakeQueryBus};
@@ -45,10 +44,7 @@ fn app(failure: Option<fn() -> IamError>) -> (Router, Arc<Mutex<Asked>>) {
                 || {
                     Ok(AccessDecisionPage {
                         entries: vec![entry(2, 2_000_000_000), entry(1, 1_000_000_000)],
-                        next: Some(AccessLogCursor {
-                            timestamp_nanos: 1_000_000_000,
-                            returned: 1,
-                        }),
+                        next: Some("sealed-token".to_owned()),
                     })
                 },
                 |refuse| Err(refuse()),
@@ -123,7 +119,7 @@ async fn the_decisions_are_listed_newest_first_with_the_cursor_of_the_next_page(
     assert_eq!(body["items"][0]["id"], decision_id(2).to_string());
     assert_eq!(body["items"][1]["id"], decision_id(1).to_string());
     assert_eq!(body["items"][0]["decision"], "deny");
-    assert_eq!(body["nextCursor"], "3b9aca00.1");
+    assert_eq!(body["nextCursor"], "sealed-token");
     let recorded = asked.lock().unwrap_or_else(PoisonError::into_inner);
     assert_eq!(recorded.lists[0].limit, 2);
     assert_eq!(recorded.lists[0].actor, actor());

@@ -148,6 +148,7 @@ async fn the_adapter_is_ready_when_the_ready_endpoint_answers() {
         tenant_id: "tenant-7".to_owned(),
         max_range: Duration::from_hours(24),
         timeout: TIMEOUT,
+        cursor_key: None,
     };
 
     let store = access_log_query(&settings, AppEnv::Test).unwrap();

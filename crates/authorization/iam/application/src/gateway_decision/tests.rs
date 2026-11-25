@@ -305,3 +305,22 @@ async fn a_minimum_version_the_snapshot_holds_is_decided_behind_the_barrier() {
         ]
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_batch_of_unpublished_minimum_versions_waits_one_barrier_timeout_in_all() {
+    let scenario = barred_scenario(&seen_up_to(6));
+    let checks = (0..10)
+        .map(|_| BatchCheck::Valid(query("expired", permissions(), Some(6))))
+        .collect();
+    let started = tokio::time::Instant::now();
+
+    let outcomes = batch(&scenario, checks).await;
+
+    assert_eq!(outcomes.len(), 10);
+    assert!(
+        outcomes
+            .iter()
+            .all(|outcome| outcome.reason() == DecisionReason::Unavailable)
+    );
+    assert_eq!(started.elapsed(), Duration::from_secs(1));
+}

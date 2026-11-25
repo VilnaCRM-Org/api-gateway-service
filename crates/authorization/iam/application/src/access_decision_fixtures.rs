@@ -1,14 +1,42 @@
 //! Values and doubles that the tests of the access decision reads share: the entries of a log
 //! store and a store that answers like Loki does, newest first with a cursor.
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use iam_domain::{
-    AccessDecision, AccessLogEntry, AccessLogQuery, AccessLogQueryError, AccessLogSearch,
-    AccessRecord, DecisionReason, SubjectKind,
+    AccessDecision, AccessLogCursor, AccessLogEntry, AccessLogQuery, AccessLogQueryError,
+    AccessLogSearch, AccessRecord, CursorSeal, DecisionReason, SubjectKind,
 };
 use shared_domain::Uuid;
+
+/// A seal that marks the payload with its own name; a token of another seal, or a plain payload,
+/// does not open.
+#[derive(Debug)]
+pub(crate) struct NamedSeal(pub(crate) &'static str);
+
+impl CursorSeal for NamedSeal {
+    fn seal(&self, payload: &str) -> String {
+        format!("{}:{payload}", self.0)
+    }
+
+    fn open(&self, token: &str) -> Option<String> {
+        token
+            .strip_prefix(self.0)
+            .and_then(|rest| rest.strip_prefix(':'))
+            .map(str::to_owned)
+    }
+}
+
+/// The seal that the handlers of the tests use.
+pub(crate) fn test_seal() -> Arc<dyn CursorSeal> {
+    Arc::new(NamedSeal("test"))
+}
+
+/// The token that `cursor` has under [`test_seal`].
+pub(crate) fn sealed(cursor: AccessLogCursor) -> String {
+    cursor.sealed(&*test_seal())
+}
 
 /// The identifier of a decision: a UUID v7 whose last digits are `n`.
 pub(crate) fn decision_id(n: u64) -> Uuid {

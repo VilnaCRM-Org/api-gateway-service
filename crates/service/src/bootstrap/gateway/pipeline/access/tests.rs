@@ -158,3 +158,46 @@ fn a_length_that_is_not_a_number_is_announced_as_zero() {
     headers.insert(CONTENT_LENGTH, "12".parse().unwrap());
     assert_eq!(announced_length(&headers), 12);
 }
+
+fn gate() -> Arc<iam_application::AuditGate> {
+    Arc::new(iam_application::AuditGate::new(
+        Arc::new(FixedClock::at(now())),
+        Duration::from_secs(5),
+        4,
+    ))
+}
+
+#[test]
+fn a_request_dropped_before_its_record_gives_its_audit_slot_back() {
+    let gate = gate();
+    let mut seen = Observed::default();
+    seen.hold_audit_slot(gate.reserve());
+    assert_eq!(gate.reserved(), 1);
+
+    // The client went away while the request was forwarded: the future, and with it the
+    // observations, is dropped and `finish` never runs.
+    drop(seen);
+
+    assert_eq!(gate.reserved(), 0);
+}
+
+#[test]
+fn the_record_of_a_finished_request_carries_the_audit_slot_to_the_writer() {
+    let (step, receiver) = step();
+    let gate = gate();
+    let mut seen = Observed::default();
+    seen.hold_audit_slot(gate.reserve());
+
+    step.finish(
+        PipelineAccessLog::begin(&request()),
+        seen,
+        (Decision::Deny, DecisionReason::PermissionMissing),
+        &response(StatusCode::FORBIDDEN, None),
+    );
+
+    assert_eq!(gate.reserved(), 1);
+    let item = receiver.try_next().unwrap();
+    assert!(item.slot.is_some());
+    drop(item);
+    assert_eq!(gate.reserved(), 0);
+}

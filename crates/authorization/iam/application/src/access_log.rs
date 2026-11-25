@@ -16,7 +16,7 @@ mod fixtures;
 pub mod recorder;
 pub mod writer;
 
-pub use audit_gate::AuditGate;
+pub use audit_gate::{AuditGate, AuditSlot};
 pub use builder::{AccessItem, AccessRecordBuilder};
 pub use channel::{AccessLogChannel, AccessLogReceiver, access_log_channel};
 pub use counters::AccessLogCounters;

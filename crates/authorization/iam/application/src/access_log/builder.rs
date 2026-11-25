@@ -6,10 +6,11 @@ use iam_domain::{
     AccessClass, AccessDecision, AccessLane, AccessRecord, Rng, SampleRate, SubjectId,
 };
 
+use super::audit_gate::AuditSlot;
 use super::facts::{AccessFacts, RouteFacts};
 
 /// A record on its way to the writer: the lane and the class it counts against, and the record.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct AccessItem {
     /// The lane the record is written to.
     pub lane: AccessLane,
@@ -17,6 +18,19 @@ pub struct AccessItem {
     pub class: AccessClass,
     /// The record.
     pub record: AccessRecord,
+    /// The audit slot that the request reserved for this record; only a record that carries one
+    /// bypasses the room check of the writer and gives a slot back.
+    pub slot: Option<AuditSlot>,
+}
+
+impl AccessItem {
+    /// The same item holding `slot`, when it is an audit-lane item; any other item drops the slot,
+    /// which gives it back.
+    #[must_use]
+    pub fn with_slot(self, slot: Option<AuditSlot>) -> Self {
+        let slot = slot.filter(|_| self.lane == AccessLane::Audit);
+        Self { slot, ..self }
+    }
 }
 
 /// Builds the access record of a decision from its outcome and route data.
@@ -59,6 +73,7 @@ impl AccessRecordBuilder {
             lane,
             class,
             record: record_of(facts, kind),
+            slot: None,
         })
     }
 

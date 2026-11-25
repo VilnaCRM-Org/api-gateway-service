@@ -299,3 +299,20 @@ async fn loki_is_ready_when_its_ready_endpoint_answers_with_a_success_status() {
         ["http://loki:3100/ready", "http://loki:3100/ready"]
     );
 }
+
+#[tokio::test]
+async fn a_forged_count_of_returned_entries_cannot_enlarge_the_read_beyond_the_ceiling() {
+    let transport = ScriptedTransport::answering(vec![Ok(answer_of(&[]))]);
+    let cursor = AccessLogCursor {
+        timestamp_nanos: 40,
+        returned: u32::MAX,
+    };
+
+    adapter(&transport)
+        .search(&search(Some(cursor), u32::MAX))
+        .await
+        .unwrap();
+
+    let limit = format!("limit={}&", iam_domain::MAX_LOG_READ);
+    assert!(transport.urls()[0].contains(&limit));
+}

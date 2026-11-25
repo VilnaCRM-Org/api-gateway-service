@@ -310,6 +310,31 @@ fn the_production_gate_connects_to_nothing_until_the_first_request() {
 }
 
 #[test]
+fn the_production_gate_guards_with_the_configured_limit_and_burst() {
+    let mut config = config();
+    config.rate_limit.guard.limit = 1;
+    config.rate_limit.guard.burst = 1;
+    config.rate_limit.guard.period = Duration::from_secs(60);
+    let gate = gate_from_config(&config, Arc::new(FakeReadyPeers::new(1)));
+
+    let decisions: Vec<_> = (0..4)
+        .map(|_| gate.check_guard(Some("203.0.113.9")))
+        .collect();
+
+    assert_eq!(decisions.first(), Some(&RateDecision::Admit));
+    assert!(
+        decisions
+            .iter()
+            .any(|decision| matches!(decision, RateDecision::Reject { .. })),
+        "{decisions:?}"
+    );
+    assert!(
+        decisions.len() > 2 && decisions.get(3).is_some_and(|d| !d.is_admitted()),
+        "{decisions:?}"
+    );
+}
+
+#[test]
 fn the_subject_of_a_user_and_of_a_service_is_the_one_its_token_proved() {
     let user = Uuid::parse("00000000-0000-7000-8000-000000000009").unwrap();
     let service = iam_domain::ServiceName::new("orders").unwrap();

@@ -48,7 +48,8 @@ pub use access_log::{
 };
 pub use access_log_query::{
     AccessLogCursor, AccessLogEntry, AccessLogFilter, AccessLogQueryError, AccessLogRange,
-    AccessLogSearch, ID_WINDOW_NANOS, InvalidAccessLogRange, MAX_PAGE_SIZE as MAX_ACCESS_LOG_PAGE,
+    AccessLogSearch, CursorSeal, ID_WINDOW_NANOS, InvalidAccessLogRange, MAX_CURSOR_RETURNED,
+    MAX_LOG_READ, MAX_PAGE_SIZE as MAX_ACCESS_LOG_PAGE,
 };
 pub use audit_anchor::{AnchorStamp, SecurityAuditAnchored};
 pub use audit_chain_verification::{ChainBreak, ChainBreakCause, ChainVerdict, ChainVerification};

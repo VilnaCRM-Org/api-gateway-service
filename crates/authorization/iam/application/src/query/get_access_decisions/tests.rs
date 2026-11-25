@@ -15,7 +15,9 @@ use super::{
     AUDIT_ACTION, AccessDecisionPage, GetAccessDecisionsQuery, GetAccessDecisionsQueryHandler,
     MAX_PAGE_SIZE, SEARCH_TARGET_ID, TARGET_TYPE,
 };
-use crate::access_decision_fixtures::{FakeAccessLogQuery, decision_id, entry};
+use crate::access_decision_fixtures::{
+    FakeAccessLogQuery, NamedSeal, decision_id, entry, sealed, test_seal,
+};
 use crate::error::IamError;
 use crate::security_audit_fixtures::{actor, at};
 
@@ -38,7 +40,7 @@ fn handler_over(
         log,
         Arc::new(FixedClock::at(at(900))),
         Arc::new(SequenceUuidGenerator::starting_at(1_000)),
-        DAY,
+        (DAY, test_seal()),
     )
 }
 
@@ -82,10 +84,10 @@ async fn a_page_smaller_than_the_stock_names_its_last_decision_as_the_cursor() {
     assert_eq!(ids(&page), [5, 4]);
     assert_eq!(
         page.next,
-        Some(AccessLogCursor {
+        Some(sealed(AccessLogCursor {
             timestamp_nanos: 4_000_000_000,
             returned: 1,
-        })
+        }))
     );
 }
 
@@ -233,7 +235,7 @@ async fn a_search_with_every_condition_records_every_condition() {
     };
     let route = decision_id(9);
     let filtered = GetAccessDecisionsQuery {
-        cursor: Some(cursor),
+        cursor: Some(sealed(cursor)),
         filter: AccessLogFilter {
             subject_id: Some("alice".to_owned()),
             subject_kind: Some(SubjectKind::User),
@@ -336,4 +338,78 @@ async fn an_empty_range_of_the_store_is_an_empty_page_that_is_still_audited() {
     assert_eq!(page.entries.len(), 0);
     assert_eq!(page.next, None);
     assert_eq!(log.recorded().len(), 1);
+}
+
+#[tokio::test]
+async fn a_cursor_that_claims_more_returned_entries_than_a_page_is_refused_before_the_store_is_asked()
+ {
+    let store = Arc::new(FakeAccessLogQuery::holding(entries(3)));
+    let log = Arc::new(FakeSecurityAuditLog::new());
+    let forged = GetAccessDecisionsQuery {
+        cursor: Some(sealed(AccessLogCursor {
+            timestamp_nanos: 3_000_000_000,
+            returned: iam_domain::MAX_CURSOR_RETURNED + 1,
+        })),
+        ..query(2)
+    };
+
+    let error = handler_over(&store, &log).handle(forged).await.unwrap_err();
+
+    let IamError::Invalid(violations) = error else {
+        panic!("expected a violation");
+    };
+    assert_eq!(violations[0].property_path, "after");
+    assert_eq!(store.searches().len(), 0);
+    assert_eq!(log.recorded().len(), 0);
+}
+
+fn genuine_cursor() -> AccessLogCursor {
+    AccessLogCursor {
+        timestamp_nanos: 3_000_000_000,
+        returned: 1,
+    }
+}
+
+#[rstest]
+#[case::plain_text_that_parses_as_a_cursor(genuine_cursor().encode())]
+#[case::altered_after_sealing(sealed(genuine_cursor()).replacen("test", "tesx", 1))]
+#[case::sealed_by_another_key(genuine_cursor().sealed(&NamedSeal("other")))]
+#[case::not_a_cursor_at_all("garbage".to_owned())]
+#[case::empty(String::new())]
+#[tokio::test]
+async fn a_forged_cursor_is_refused_with_422_before_the_store_is_asked(#[case] forged: String) {
+    let store = Arc::new(FakeAccessLogQuery::holding(entries(3)));
+    let log = Arc::new(FakeSecurityAuditLog::new());
+    let forged = GetAccessDecisionsQuery {
+        cursor: Some(forged),
+        ..query(2)
+    };
+
+    let error = handler_over(&store, &log).handle(forged).await.unwrap_err();
+
+    let IamError::Invalid(violations) = error else {
+        panic!("expected a violation");
+    };
+    assert_eq!(violations[0].property_path, "after");
+    assert_eq!(store.searches().len(), 0);
+    assert_eq!(log.recorded().len(), 0);
+}
+
+#[tokio::test]
+async fn a_cursor_the_handler_issued_pages_on() {
+    let store = Arc::new(FakeAccessLogQuery::holding(entries(5)));
+    let log = Arc::new(FakeSecurityAuditLog::new());
+    let handler = handler_over(&store, &log);
+    let first = handler.handle(query(2)).await.unwrap();
+
+    let second = handler
+        .handle(GetAccessDecisionsQuery {
+            cursor: first.next.clone(),
+            ..query(2)
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(ids(&second), [3, 2]);
+    assert_ne!(second.next, first.next);
 }

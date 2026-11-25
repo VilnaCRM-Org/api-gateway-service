@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_graphql::{EmptySubscription, Request, Schema, Value, Variables};
-use iam_domain::AccessLogCursor;
 use rstest::rstest;
 use serde_json::json;
 use shared_domain::{CommandBus, QueryBus};
@@ -34,10 +33,7 @@ fn schema(failure: Option<fn() -> IamError>) -> IamSchema {
                 || {
                     Ok(AccessDecisionPage {
                         entries: vec![entry(2, 2_000_000_000), entry(1, 1_000_000_000)],
-                        next: Some(AccessLogCursor {
-                            timestamp_nanos: 1_000_000_000,
-                            returned: 1,
-                        }),
+                        next: Some("sealed-token".to_owned()),
                     })
                 },
                 |refuse| Err(refuse()),
@@ -110,7 +106,7 @@ async fn the_decisions_are_listed_newest_first_with_the_cursor_of_the_next_page(
     assert_eq!(page["items"][0]["id"], decision_id(2).to_string());
     assert_eq!(page["items"][1]["id"], decision_id(1).to_string());
     assert_eq!(page["items"][0]["decision"], "deny");
-    assert_eq!(page["nextCursor"], "3b9aca00.1");
+    assert_eq!(page["nextCursor"], "sealed-token");
 }
 
 #[tokio::test]

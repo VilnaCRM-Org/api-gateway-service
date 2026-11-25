@@ -1,11 +1,20 @@
 //! Where the Valkey store connects: one server, or the master that Sentinel names.
 
-use redis::IntoConnectionInfo as _;
+use std::time::Duration;
+
 use redis::aio::MultiplexedConnection;
 use redis::sentinel::{SentinelClient, SentinelServerType};
+use redis::{AsyncConnectionConfig, IntoConnectionInfo as _};
 
 /// The port Sentinel listens on when a node of `redis+sentinel://` names none.
 const DEFAULT_SENTINEL_PORT: u16 = 26379;
+
+/// The longest the store waits to open a connection, a Sentinel lookup included.
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// The longest the store waits for the reply to one command, so a connection that hangs fails by
+/// itself even when nobody drops the call; the application bounds each call far below it.
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The URL does not name a Valkey server or a Sentinel group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -59,10 +68,13 @@ impl ValkeyEndpoint {
 
     /// Opens a connection to the server, or to the master that Sentinel reports now.
     pub(super) async fn connect(&self) -> redis::RedisResult<MultiplexedConnection> {
+        let config = AsyncConnectionConfig::new()
+            .set_connection_timeout(CONNECTION_TIMEOUT)
+            .set_response_timeout(RESPONSE_TIMEOUT);
         match self {
             Self::Direct(url) => {
                 redis::Client::open(url.as_str())?
-                    .get_multiplexed_async_connection()
+                    .get_multiplexed_async_connection_with_config(&config)
                     .await
             }
             Self::Sentinel { nodes, service } => {
@@ -72,7 +84,7 @@ impl ValkeyEndpoint {
                     None,
                     SentinelServerType::Master,
                 )?;
-                client.get_async_connection().await
+                client.get_async_connection_with_config(&config).await
             }
         }
     }

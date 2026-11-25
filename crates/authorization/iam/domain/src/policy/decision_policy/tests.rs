@@ -575,3 +575,68 @@ fn a_sensitive_key_is_never_held_through_a_wildcard() {
         &[sensitive("rest:orders:POST /api/orders")]
     ));
 }
+
+fn through_wildcard_in(
+    assignments: &[RoleAssignment],
+    roles: &BTreeMap<RoleId, CompiledRoleSet>,
+    keys: &[RequiredKey],
+    project: Option<ProjectId>,
+) -> bool {
+    DecisionPolicy::holds_through_wildcard(&DecisionRequest {
+        assignments,
+        role_sets: roles,
+        required: keys,
+        project,
+        now: at(NOW),
+    })
+}
+
+#[test]
+fn an_exact_grant_in_another_project_does_not_hide_a_global_wildcard_allow() {
+    let roles = role_sets(&[
+        (1, &["rest:orders:*"], &[]),
+        (2, &["rest:orders:GET /api/orders/{}"], &[]),
+    ]);
+    let keys = [required("rest:orders:GET /api/orders/{}")];
+    let assignments = [global(1), in_project(2, 2)];
+
+    assert!(through_wildcard_in(
+        &assignments,
+        &roles,
+        &keys,
+        Some(project(1))
+    ));
+    assert!(through_wildcard_in(&assignments, &roles, &keys, None));
+}
+
+#[test]
+fn an_exact_grant_in_the_same_project_keeps_the_allow_out_of_the_wildcard_lane() {
+    let roles = role_sets(&[
+        (1, &["rest:orders:*"], &[]),
+        (2, &["rest:orders:GET /api/orders/{}"], &[]),
+    ]);
+    let keys = [required("rest:orders:GET /api/orders/{}")];
+    let assignments = [global(1), in_project(2, 1)];
+
+    assert!(!through_wildcard_in(
+        &assignments,
+        &roles,
+        &keys,
+        Some(project(1))
+    ));
+}
+
+#[test]
+fn a_global_wildcard_key_beside_a_project_exact_key_is_a_wildcard_allow_without_a_project() {
+    let roles = role_sets(&[
+        (1, &["rest:orders:*"], &[]),
+        (2, &["rest:billing:GET /api/invoices"], &[]),
+    ]);
+    let keys = [
+        required("rest:orders:GET /api/orders/{}"),
+        required("rest:billing:GET /api/invoices"),
+    ];
+    let assignments = [global(1), in_project(2, 1)];
+
+    assert!(through_wildcard_in(&assignments, &roles, &keys, None));
+}

@@ -2,9 +2,13 @@
 //! the running digest and the `__head` row, written into the outbox in the transaction of the
 //! change (FR-70).
 //!
-//! The state of an entity is read from the tables of the system of record before the statements of
-//! the change run and again after they ran, so the digest moves by exactly what the transaction
-//! changed. The reads are checked at run time, so the offline query metadata does not hold them.
+//! The state of an entity is read from the tables of the system of record after the statements of
+//! the change ran, and compared with the state the topic holds for it from before: the state the
+//! tables held before the statements ran, except for a role, whose published state is stored with
+//! it (`iam_roles.published_state`) because a change that does not affect decisions writes the role
+//! without publishing it. The digest therefore moves by exactly what the topic gains, and the head
+//! digest stays the digest of the records on the topic. The reads are checked at run time, so the
+//! offline query metadata does not hold them.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -14,7 +18,7 @@ use iam_domain::{
     EntityVersion, GrantState, InvalidIamValue, LogEpoch, PolicyDigestValue, PolicyState,
     PolicyVersion, ProjectId, RatePolicyId, RatePolicyState, RepositoryError, RoleId, RoleKind,
     RoleState, RouteId, RouteState, ServiceName, SessionId, StateBatch, StateChange, StateKey,
-    StateRow, SubjectRef, SubjectState, UpstreamName, UpstreamState,
+    StateRecordCodec as _, StateRow, SubjectRef, SubjectState, UpstreamName, UpstreamState,
 };
 use sha2::{Digest as _, Sha256};
 use shared_domain::Uuid;
@@ -31,7 +35,8 @@ use crate::persistence::upstream;
 use crate::policy_state::json_state_record_codec::JsonStateRecordCodec;
 use crate::policy_state::sha256_policy_digest::Sha256PolicyDigest;
 
-/// The topic of the policy state records.
+/// The default topic of the policy state records; `POLICY_TOPIC` of the configuration replaces it
+/// through `PgIamUnitOfWork::with_policy_topic`.
 pub const POLICY_TOPIC: &str = "iam.policy.state.v1";
 
 /// The number of nanoseconds in one microsecond.
@@ -41,7 +46,9 @@ type States = BTreeMap<StateKey, PolicyState>;
 
 /// Where a versioned transaction writes its rows.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Versioned {
+pub(crate) struct Versioned<'topic> {
+    /// The topic of the state rows.
+    pub(crate) policy_topic: &'topic str,
     /// The policy version of the transaction.
     pub(crate) version: PolicyVersion,
     /// The log epoch of the policy epoch row.
@@ -131,7 +138,7 @@ impl StateCapture {
             .cloned()
             .chain(republished.services.iter().cloned())
             .collect();
-        let before = read_all(connection, &keys, &services).await?;
+        let before = read_before(connection, &keys, &services).await?;
         Ok(Self {
             keys,
             services,
@@ -145,7 +152,7 @@ impl StateCapture {
     pub(crate) async fn write(
         self,
         connection: &mut PgConnection,
-        target: &Versioned,
+        target: &Versioned<'_>,
     ) -> Result<(), RepositoryError> {
         let after = read_all(connection, &self.keys, &self.services).await?;
         let keys: BTreeSet<&StateKey> = self.before.keys().chain(after.keys()).collect();
@@ -165,9 +172,77 @@ impl StateCapture {
         .map_err(unusable)?;
         for row in batch.rows() {
             insert_row(connection, row, target).await?;
+            store_published_role(connection, row).await?;
         }
         store_digest(connection, batch.digest()).await
     }
+}
+
+/// The state that the topic holds for the entities of `keys` and the catalogue records of
+/// `services` before the statements run. The tables hold it, except for a role: a change that does
+/// not affect decisions creates or renames a role without publishing it, so the state of a role
+/// is the one its last row on the topic carries, or none when it was never published.
+async fn read_before(
+    connection: &mut PgConnection,
+    keys: &BTreeSet<StateKey>,
+    services: &BTreeSet<ServiceName>,
+) -> Result<States, RepositoryError> {
+    let mut roles = Vec::new();
+    let mut others = BTreeSet::new();
+    for key in keys {
+        if let StateKey::Role(id) = key {
+            roles.push(*id);
+        } else {
+            others.insert(key.clone());
+        }
+    }
+    let mut states = read_all(connection, &others, services).await?;
+    for id in roles {
+        let key = StateKey::Role(id);
+        if let Some(state) = read_published_role(connection, &key, &id).await? {
+            states.insert(key, state);
+        }
+    }
+    Ok(states)
+}
+
+/// The state of the role of `key` as its last row on the topic carries it, or `None` when the role
+/// was never published or its last row is a tombstone.
+async fn read_published_role(
+    connection: &mut PgConnection,
+    key: &StateKey,
+    id: &RoleId,
+) -> Result<Option<PolicyState>, RepositoryError> {
+    let published = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT published_state FROM iam_roles WHERE id = $1",
+    )
+    .bind(id.as_uuid().as_uuid())
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(translate)?
+    .flatten();
+    published
+        .map(|payload| JsonStateRecordCodec.decode(key, &payload).map_err(unusable))
+        .transpose()
+}
+
+/// Keeps the state that a row of the topic carries for a role with the role, so that a later
+/// transaction takes away exactly what the topic holds; a tombstone clears it. Rows of other
+/// entities store nothing.
+async fn store_published_role(
+    connection: &mut PgConnection,
+    row: &StateRow,
+) -> Result<(), RepositoryError> {
+    let StateKey::Role(id) = row.key() else {
+        return Ok(());
+    };
+    sqlx::query("UPDATE iam_roles SET published_state = $2 WHERE id = $1")
+        .bind(id.as_uuid().as_uuid())
+        .bind(row.payload())
+        .execute(&mut *connection)
+        .await
+        .map(|_done| ())
+        .map_err(translate)
 }
 
 /// The state of the entities of `keys` that exist, and the catalogue records of `services`, as the
@@ -448,7 +523,7 @@ fn row_id(log_epoch: LogEpoch, version: PolicyVersion, seq: u32) -> SqlUuid {
 async fn insert_row(
     connection: &mut PgConnection,
     row: &StateRow,
-    target: &Versioned,
+    target: &Versioned<'_>,
 ) -> Result<(), RepositoryError> {
     let seq = i32::try_from(row.seq()).ok().ok_or_else(out_of_range)?;
     let count = i32::try_from(row.count()).ok().ok_or_else(out_of_range)?;
@@ -458,7 +533,7 @@ async fn insert_row(
         VALUES ($1, 'state', $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(row_id(target.log_epoch, target.version, row.seq()))
-    .bind(POLICY_TOPIC)
+    .bind(target.policy_topic)
     .bind(row.key().to_string())
     .bind(row.payload())
     .bind(target.version.value())

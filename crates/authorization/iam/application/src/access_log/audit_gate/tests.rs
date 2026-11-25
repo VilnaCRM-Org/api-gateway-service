@@ -6,9 +6,13 @@ use test_support::clock::ManualClock;
 use super::AuditGate;
 use crate::access_log::fixtures::at;
 
-fn gate(max_pending: Duration, capacity: usize) -> (AuditGate, Arc<ManualClock>) {
+fn gate(max_pending: Duration, capacity: usize) -> (Arc<AuditGate>, Arc<ManualClock>) {
     let clock = Arc::new(ManualClock::at(at(1_800_000_000)));
-    let gate = AuditGate::new(Arc::<ManualClock>::clone(&clock), max_pending, capacity);
+    let gate = Arc::new(AuditGate::new(
+        Arc::<ManualClock>::clone(&clock),
+        max_pending,
+        capacity,
+    ));
     (gate, clock)
 }
 
@@ -65,4 +69,63 @@ fn an_entry_from_the_future_does_not_count_as_waiting() {
 
     assert_eq!(gate.oldest_wait(), Duration::ZERO);
     assert!(gate.admits());
+}
+
+#[test]
+fn reserved_slots_count_against_the_capacity_until_dropped() {
+    let (gate, _clock) = gate(Duration::from_secs(5), 2);
+
+    let first = gate.reserve();
+    let second = gate.reserve();
+    assert!(first.is_some() && second.is_some());
+    assert!(gate.reserve().is_none());
+    assert!(!gate.admits());
+    assert_eq!(gate.reserved(), 2);
+}
+
+#[test]
+fn a_dropped_slot_can_be_reserved_again() {
+    let (gate, _clock) = gate(Duration::from_secs(5), 1);
+    let slot = gate.reserve();
+    assert!(slot.is_some());
+    assert!(gate.reserve().is_none());
+
+    drop(slot);
+
+    assert_eq!(gate.reserved(), 0);
+    assert!(gate.reserve().is_some());
+}
+
+#[test]
+fn dropping_a_reservation_without_a_record_gives_the_slot_back() {
+    let (gate, _clock) = gate(Duration::from_secs(5), 3);
+
+    {
+        let _held = gate.reserve();
+        assert_eq!(gate.reserved(), 1);
+    }
+
+    assert_eq!(gate.reserved(), 0);
+    assert!(gate.admits());
+}
+
+#[test]
+fn releasing_without_a_reservation_changes_nothing() {
+    let (gate, _clock) = gate(Duration::from_secs(5), 2);
+
+    assert!(!gate.release());
+    assert_eq!(gate.reserved(), 0);
+}
+
+#[test]
+fn slots_are_equal_only_when_they_hold_the_same_gate() {
+    let (gate, _clock) = gate(Duration::from_secs(5), 3);
+    let (other, _other_clock) = self::gate(Duration::from_secs(5), 3);
+
+    let first = gate.reserve().unwrap();
+    let second = gate.reserve().unwrap();
+    let foreign = other.reserve().unwrap();
+
+    assert_eq!(first, second);
+    assert_ne!(first, foreign);
 }

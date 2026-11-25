@@ -16,6 +16,18 @@ use crate::value_object::subject::SubjectKind;
 /// The most entries of one page.
 pub const MAX_PAGE_SIZE: u32 = 500;
 
+/// The most entries at one timestamp that a cursor may say earlier pages returned.
+///
+/// Entries share a nanosecond timestamp only in a handful, so a larger count is not a cursor this
+/// service issued and is refused instead of being sent to the log store as a larger read.
+pub const MAX_CURSOR_RETURNED: u32 = MAX_PAGE_SIZE;
+
+/// The most entries one read of the log store may ask for.
+///
+/// It is a page, the entry that tells whether another page follows, and the entries that a cursor
+/// skips.
+pub const MAX_LOG_READ: u32 = MAX_PAGE_SIZE + 1 + MAX_CURSOR_RETURNED;
+
 /// How far from the timestamp of a UUID v7 a read by id looks, in nanoseconds: two seconds.
 pub const ID_WINDOW_NANOS: u64 = 2_000_000_000;
 
@@ -183,7 +195,8 @@ impl AccessLogCursor {
         format!("{:x}.{:x}", self.timestamp_nanos, self.returned)
     }
 
-    /// The cursor that `text` names; `None` for any other text.
+    /// The cursor that `text` names; `None` for any other text, one whose count of returned
+    /// entries exceeds [`MAX_CURSOR_RETURNED`] included.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         let (timestamp, returned) = text.split_once('.')?;
@@ -192,9 +205,12 @@ impl AccessLogCursor {
         if !digits(timestamp) || !digits(returned) {
             return None;
         }
+        let returned = u32::from_str_radix(returned, 16)
+            .ok()
+            .filter(|returned| *returned <= MAX_CURSOR_RETURNED)?;
         Some(Self {
             timestamp_nanos: u64::from_str_radix(timestamp, 16).ok()?,
-            returned: u32::from_str_radix(returned, 16).ok()?,
+            returned,
         })
     }
 
@@ -210,6 +226,32 @@ impl AccessLogCursor {
             returned: earlier.saturating_add(in_page),
         }
     }
+
+    /// The token of the cursor under `seal`.
+    #[must_use]
+    pub fn sealed(self, seal: &dyn CursorSeal) -> String {
+        seal.seal(&self.encode())
+    }
+
+    /// The cursor that `token` carries; `None` when `seal` did not issue it or its payload is not
+    /// a cursor.
+    #[must_use]
+    pub fn opened(token: &str, seal: &dyn CursorSeal) -> Option<Self> {
+        Self::parse(&seal.open(token)?)
+    }
+}
+
+/// The integrity protection of the cursors this service issues.
+///
+/// A cursor is a position in the log store that the client hands back; sealing it makes every
+/// cursor one that this service issued, so that a forged position is refused (Story 14.3, NFR-44).
+pub trait CursorSeal: std::fmt::Debug + Send + Sync {
+    /// The opaque token that carries `payload` and proves where it came from.
+    fn seal(&self, payload: &str) -> String;
+
+    /// The payload that `token` carries; `None` for a token this seal did not issue, one that
+    /// was altered included.
+    fn open(&self, token: &str) -> Option<String>;
 }
 
 /// One page of a query: the entries newest first.

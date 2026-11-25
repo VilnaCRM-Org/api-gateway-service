@@ -7,8 +7,7 @@
 use std::time::SystemTime;
 
 use iam_domain::{
-    AccessDecision, AccessLogCursor, AccessLogEntry, AccessLogFilter, ActorRef, DecisionReason,
-    SubjectKind,
+    AccessDecision, AccessLogEntry, AccessLogFilter, ActorRef, DecisionReason, SubjectKind,
 };
 use serde::{Deserialize, Serialize};
 use shared_domain::Uuid;
@@ -131,7 +130,7 @@ impl From<&AccessDecisionPage> for AccessDecisionPageResponse {
                 .iter()
                 .map(AccessDecisionResponse::from)
                 .collect(),
-            next_cursor: page.next.map(AccessLogCursor::encode),
+            next_cursor: page.next.clone(),
         }
     }
 }
@@ -186,7 +185,6 @@ impl ListAccessDecisionsParams {
     ///
     /// [`IamError::Invalid`] with a violation of the first parameter that is not valid.
     pub fn into_query(self, caller: ActorRef) -> Result<GetAccessDecisionsQuery, IamError> {
-        let cursor = self.after.as_deref().map(cursor).transpose()?;
         let from = bound("from", self.from.as_deref())?;
         let until = bound("until", self.until.as_deref())?;
         let filter = self.filter()?;
@@ -196,7 +194,7 @@ impl ListAccessDecisionsParams {
             until,
             filter,
             limit: self.limit.unwrap_or(DEFAULT_PAGE_SIZE).unsigned_abs(),
-            cursor,
+            cursor: self.after,
         })
     }
 
@@ -236,13 +234,6 @@ fn decision(text: &str) -> Result<AccessDecision, IamError> {
 fn reason(text: &str) -> Result<DecisionReason, IamError> {
     DecisionReason::parse(text).ok_or_else(|| {
         IamError::invalid_property("reason", "This value is not a known reason code.", "enum")
-    })
-}
-
-/// The cursor that a text names.
-fn cursor(text: &str) -> Result<AccessLogCursor, IamError> {
-    AccessLogCursor::parse(text).ok_or_else(|| {
-        IamError::invalid_property("after", "This value is not a valid cursor.", "format")
     })
 }
 

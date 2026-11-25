@@ -99,9 +99,10 @@ mod user_role_permission_fixtures;
 pub use access_decision_service::AccessDecisionService;
 pub use access_log::{
     AccessFacts, AccessItem, AccessLogChannel, AccessLogCounters, AccessLogReceiver,
-    AccessLogWriter, AccessRecordBuilder, AccessRecorder, AuditGate, BATCH_VALIDATION_TEMPLATE,
-    DECISION_API_HOST, DecisionAccessLog, DecisionCall, DecisionTrace, RequestFacts, ResponseFacts,
-    RouteFacts, VALIDATION_TEMPLATE, VerdictFacts, WRITER_TICK, access_log_channel,
+    AccessLogWriter, AccessRecordBuilder, AccessRecorder, AuditGate, AuditSlot,
+    BATCH_VALIDATION_TEMPLATE, DECISION_API_HOST, DecisionAccessLog, DecisionCall, DecisionTrace,
+    RequestFacts, ResponseFacts, RouteFacts, VALIDATION_TEMPLATE, VerdictFacts, WRITER_TICK,
+    access_log_channel,
 };
 pub use administrator_safeguard::{AdministratorSafeguard, Admission, SafeguardPorts};
 pub use anti_entropy::{
@@ -184,6 +185,10 @@ pub use gateway::request_authorizer::{
     Authorization, RequestAuthorizer, RouteRequest, TracedAuthorization,
 };
 pub use gateway::snapshot_reads::{CatalogueCache, LoadedSnapshotReads};
+pub use gateway_decision::stale::{
+    StaleValidateAccessBatchQueryHandler, StaleValidateAccessQueryHandler,
+    ValidateAccessStaleBatchQuery, ValidateAccessStaleQuery,
+};
 pub use gateway_decision::{
     GatewayValidateAccessBatchQueryHandler, GatewayValidateAccessQueryHandler,
 };

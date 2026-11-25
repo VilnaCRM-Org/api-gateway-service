@@ -1,5 +1,6 @@
 //! The settings of the access decision queries (Story 14.3, FR-51, FR-54, NFR-44):
-//! `LOKI_QUERY_URL`, `LOKI_TENANT_ID`, `ACCESS_LOG_QUERY_MAX_RANGE` and `ACCESS_LOG_QUERY_TIMEOUT`.
+//! `LOKI_QUERY_URL`, `LOKI_TENANT_ID`, `ACCESS_LOG_QUERY_MAX_RANGE`, `ACCESS_LOG_QUERY_TIMEOUT` and
+//! `ACCESS_LOG_CURSOR_KEY`.
 
 use std::time::Duration;
 
@@ -24,6 +25,30 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 /// The longest accepted `ACCESS_LOG_QUERY_TIMEOUT`.
 const MAX_TIMEOUT: Duration = Duration::from_mins(2);
 
+/// The shortest accepted `ACCESS_LOG_CURSOR_KEY`, in bytes: the size of an HMAC-SHA256 key.
+pub const MIN_CURSOR_KEY_BYTES: usize = 32;
+
+/// The longest accepted `ACCESS_LOG_CURSOR_KEY`, in bytes.
+const MAX_CURSOR_KEY_BYTES: usize = 256;
+
+/// The key that seals the cursors; its debug form never shows it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CursorKey(Vec<u8>);
+
+impl CursorKey {
+    /// The bytes of the key.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for CursorKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("CursorKey(<redacted>)")
+    }
+}
+
 /// How the control plane reaches Loki to read access decisions and what bounds a query.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessLogQuerySettings {
@@ -35,11 +60,14 @@ pub struct AccessLogQuerySettings {
     pub max_range: Duration,
     /// `ACCESS_LOG_QUERY_TIMEOUT`: how long a query may take before it fails with 504.
     pub timeout: Duration,
+    /// `ACCESS_LOG_CURSOR_KEY`: the key that seals the cursors; none means a random key that lives
+    /// as long as the process.
+    pub cursor_key: Option<CursorKey>,
 }
 
 /// `LOKI_QUERY_URL` (required outside `dev` and `test`), `LOKI_TENANT_ID` (default `iam`),
-/// `ACCESS_LOG_QUERY_MAX_RANGE` (default `24h`, at most 7 days) and `ACCESS_LOG_QUERY_TIMEOUT`
-/// (default `5s`, at most 2 minutes).
+/// `ACCESS_LOG_QUERY_MAX_RANGE` (default `24h`, at most 7 days), `ACCESS_LOG_QUERY_TIMEOUT`
+/// (default `5s`, at most 2 minutes) and `ACCESS_LOG_CURSOR_KEY` (optional, 32 to 256 characters).
 ///
 /// `None` when a problem was reported.
 pub(super) fn access_log_query_settings(
@@ -58,12 +86,31 @@ pub(super) fn access_log_query_settings(
         "ACCESS_LOG_QUERY_TIMEOUT",
         bounded_duration(raw.timeout.as_deref(), DEFAULT_TIMEOUT, MAX_TIMEOUT),
     );
+    let cursor_key = collector.collect(
+        "ACCESS_LOG_CURSOR_KEY",
+        cursor_key(raw.cursor_key.as_deref()),
+    );
     Some(AccessLogQuerySettings {
         query_url: query_url?,
         tenant_id: tenant?,
         max_range: max_range?,
         timeout: timeout?,
+        cursor_key: cursor_key?,
     })
+}
+
+/// `ACCESS_LOG_CURSOR_KEY`: unset it is none; set it must be 32 to 256 characters.
+fn cursor_key(raw: Option<&str>) -> Parsed<Option<CursorKey>> {
+    raw.map(|raw| {
+        if (MIN_CURSOR_KEY_BYTES..=MAX_CURSOR_KEY_BYTES).contains(&raw.len()) {
+            Ok(CursorKey(raw.as_bytes().to_vec()))
+        } else {
+            Err(format!(
+                "must be {MIN_CURSOR_KEY_BYTES} to {MAX_CURSOR_KEY_BYTES} characters"
+            ))
+        }
+    })
+    .transpose()
 }
 
 /// `LOKI_QUERY_URL`: a plain `http://` URL with a host and no path; unset it is the compose Loki

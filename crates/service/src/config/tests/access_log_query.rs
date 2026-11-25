@@ -114,3 +114,40 @@ fn a_tenant_that_cannot_be_a_header_value_names_its_variable(#[case] raw: &str) 
 fn the_environment_label_of_an_app_environment_is_the_label_of_its_decisions() {
     assert_eq!(crate::config::env_label(AppEnv::Test), "test");
 }
+
+const CURSOR_KEY: &str = "0123456789abcdef0123456789abcdef";
+
+#[test]
+fn without_a_cursor_key_the_settings_hold_none_and_a_process_key_is_used() {
+    let settings = Config::from_args(valid()).unwrap().access_log_query;
+
+    assert_eq!(settings.cursor_key, None);
+}
+
+#[test]
+fn a_cursor_key_is_taken_as_given_and_never_shown() {
+    let mut args = valid();
+    args.access_log_query.cursor_key = some(CURSOR_KEY);
+
+    let settings = Config::from_args(args).unwrap().access_log_query;
+
+    assert_eq!(
+        settings
+            .cursor_key
+            .as_ref()
+            .map(super::super::access_log_query::CursorKey::as_bytes),
+        Some(CURSOR_KEY.as_bytes())
+    );
+    assert!(!format!("{settings:?}").contains(CURSOR_KEY));
+}
+
+#[rstest]
+#[case::empty("")]
+#[case::too_short("0123456789abcdef0123456789abcde")]
+#[case::too_long(&"k".repeat(257))]
+fn a_cursor_key_of_the_wrong_length_names_its_variable(#[case] raw: &str) {
+    let mut args = valid();
+    args.access_log_query.cursor_key = some(raw);
+
+    assert_eq!(variables(args), ["ACCESS_LOG_CURSOR_KEY"]);
+}

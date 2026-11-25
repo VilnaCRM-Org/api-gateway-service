@@ -14,12 +14,11 @@ use iam_application::{
     AccessDecisionPage, GetAccessDecisionsQuery, GetAccessDecisionsQueryHandler, IamError,
 };
 use iam_domain::{
-    AccessDecision, AccessEntry, AccessLane, AccessLogCursor, AccessLogFilter, AccessLogQuery,
-    AccessLogSink as _, AccessRecord, ActorRef, DecisionReason, SecurityAuditLog, SubjectKind,
-    SystemComponent,
+    AccessDecision, AccessEntry, AccessLane, AccessLogFilter, AccessLogQuery, AccessLogSink as _,
+    AccessRecord, ActorRef, DecisionReason, SecurityAuditLog, SubjectKind, SystemComponent,
 };
 use iam_infrastructure::{
-    LokiAccessLogQuery, LokiPushAccessLogSink, LokiQueryTransport, LokiSinkSettings,
+    HmacCursorSeal, LokiAccessLogQuery, LokiPushAccessLogSink, LokiQueryTransport, LokiSinkSettings,
 };
 use service::bootstrap::gateway::access_log::LOKI_APP_LABEL;
 use service::bootstrap::gateway::access_log::loki_transport::HyperLokiTransport;
@@ -73,11 +72,11 @@ fn handler_over(base: &str, timeout: Duration) -> GetAccessDecisionsQueryHandler
         log,
         Arc::new(SystemClock),
         Arc::new(SequenceUuidGenerator::starting_at(1)),
-        MAX_RANGE,
+        (MAX_RANGE, Arc::new(HmacCursorSeal::random())),
     )
 }
 
-fn query(subject: &str, cursor: Option<AccessLogCursor>, limit: u32) -> GetAccessDecisionsQuery {
+fn query(subject: &str, cursor: Option<String>, limit: u32) -> GetAccessDecisionsQuery {
     let now = SystemClock.now();
     GetAccessDecisionsQuery {
         actor: ActorRef::System(SystemComponent::Startup),
@@ -150,7 +149,7 @@ async fn pages(
     let mut cursor = None;
     loop {
         let page = handler.handle(query(subject, cursor, limit)).await.unwrap();
-        cursor = page.next;
+        cursor = page.next.clone();
         pages.push(page);
         if cursor.is_none() {
             return pages;

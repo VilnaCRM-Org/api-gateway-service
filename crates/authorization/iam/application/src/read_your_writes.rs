@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use iam_domain::{PolicyVersion, PolicyView};
 use tokio::sync::watch;
+use tokio::time::Instant;
 
 /// The `published` value while no snapshot is published.
 const NOTHING_PUBLISHED: i64 = -1;
@@ -120,13 +121,29 @@ impl ReadYourWritesBarrier {
     /// Lets a request through when a snapshot of `minimum` or higher is published, waits for one
     /// when the log holds `minimum` already, and refuses otherwise.
     pub async fn admit(&self, minimum: PolicyVersion) -> BarrierVerdict {
+        self.admit_by(minimum, self.deadline()).await
+    }
+
+    /// The instant at which a wait that starts now ends.
+    ///
+    /// A batch takes it once and passes it to [`Self::admit_by`] for every item, so that the
+    /// whole batch waits at most one `RYW_MAX_WAIT`.
+    #[must_use]
+    pub fn deadline(&self) -> Instant {
+        let now = Instant::now();
+        now.checked_add(self.max_wait).unwrap_or(now)
+    }
+
+    /// Like [`Self::admit`], but the wait ends at `deadline`, which a caller shares among several
+    /// checks.
+    pub async fn admit_by(&self, minimum: PolicyVersion, deadline: Instant) -> BarrierVerdict {
         if !self.board.has_seen(minimum) {
             return BarrierVerdict::Propagating;
         }
         if self.published(minimum) {
             return BarrierVerdict::Proceed;
         }
-        match tokio::time::timeout(self.max_wait, self.board.published_at_least(minimum)).await {
+        match tokio::time::timeout_at(deadline, self.board.published_at_least(minimum)).await {
             Ok(true) => BarrierVerdict::Proceed,
             Ok(false) | Err(_) => BarrierVerdict::Propagating,
         }

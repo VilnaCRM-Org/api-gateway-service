@@ -222,3 +222,73 @@ async fn a_call_that_fails_on_a_kept_connection_drops_it_and_the_next_call_recon
     assert!(second.is_err());
     assert_eq!(connections.load(Ordering::SeqCst), 2);
 }
+
+/// A server that answers the handshake of a connection and then never answers a script call, and
+/// the number of connections it took.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "an integration test serves its fake Valkey on a free loopback port"
+)]
+fn hanging_server() -> (u16, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&connections);
+    drop(std::thread::spawn(move || {
+        for stream in listener.incoming().map_while(Result::ok) {
+            counted.fetch_add(1, Ordering::SeqCst);
+            drop(std::thread::spawn(move || stall_on_script(stream)));
+        }
+    }));
+    (port, connections)
+}
+
+/// Replies `+OK` to every command until the script call, then holds the connection open without
+/// ever answering.
+fn stall_on_script(mut stream: TcpStream) {
+    let mut buffer = [0_u8; 4096];
+    while let Ok(read @ 1..) = stream.read(&mut buffer) {
+        let text = String::from_utf8_lossy(buffer.get(..read).unwrap_or_default());
+        if text.contains("EVALSHA") {
+            std::thread::park();
+        }
+        let commands = text
+            .split("\r\n")
+            .filter(|line| line.starts_with('*'))
+            .count();
+        if stream
+            .write_all("+OK\r\n".repeat(commands).as_bytes())
+            .is_err()
+        {
+            return;
+        }
+    }
+}
+
+/// Whether a call of `store` is still unanswered after `bound`, which drops its future.
+async fn hangs(store: &ValkeyRateLimitStore, bound: Duration) -> bool {
+    let rule = RateDecisionRule::new(10, Duration::from_secs(1), 0);
+    let key = key("198.51.100.2");
+    let policy = policy();
+    tokio::time::timeout(bound, store.check(&policy, &key, &rule))
+        .await
+        .is_err()
+}
+
+#[tokio::test]
+async fn a_call_that_its_caller_drops_while_the_connection_hangs_drops_the_connection_too() {
+    let (port, connections) = hanging_server();
+    let store = ValkeyRateLimitStore::new(
+        ValkeyEndpoint::parse(&format!("redis://127.0.0.1:{port}")).unwrap(),
+    );
+    let bound = Duration::from_millis(200);
+
+    assert!(hangs(&store, bound).await, "the hung call must time out");
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
+    assert!(hangs(&store, bound).await, "the hung call must time out");
+    assert_eq!(
+        connections.load(Ordering::SeqCst),
+        2,
+        "the second call must open a new connection, not reuse the hung one"
+    );
+}
