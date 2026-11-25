@@ -100,6 +100,24 @@ Feature: IAM routes
     And the audit log should hold 2 rejected "route.create" records with the reason "anonymous_route_forbidden"
     And the outbox should hold 0 "iam.route.created" events
 
+  Scenario: A principal without iam:route:anonymous cannot switch a route to audit mode over REST or GraphQL
+    Given a caller authenticated as an administrator that holds iam:route:core only
+    And an upstream exists with name "core" of the catalogue service "core"
+    And a route exists on host "app.example.test" with pattern "/api/orders/{order}" and methods "GET" for the upstream "core"
+    And the If-Match header '"1"'
+    When PATCH request is sent to "/api/routes/{id}" with body:
+      """
+      {"enforcement": "audit"}
+      """
+    Then the response status code should be 403
+    When the GraphQL operation is sent:
+      """
+      mutation { updateRoute(input: {id: "{id}", expectedVersion: 1, enforcement: "audit"}) { id } }
+      """
+    Then the GraphQL error code should be "FORBIDDEN"
+    And the audit log should hold 2 rejected "route.update" records with the reason "anonymous_route_forbidden"
+    And the outbox should hold 0 "iam.route.updated" events
+
   Scenario: The administrator makes a route anonymous and the audit record names the flag change
     Given a caller authenticated as the bootstrapped administrator
     And an upstream exists with name "core" of the catalogue service "core"

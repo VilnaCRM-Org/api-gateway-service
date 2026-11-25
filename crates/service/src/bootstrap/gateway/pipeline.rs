@@ -9,6 +9,11 @@
 //! barrier, the CORS slot of Story 10.12 follows the route match, the header rewrite of Story 10.4
 //! comes before the forward and the access record of Story 14.1 after the response.
 //!
+//! The header rewrite of Story 10.4 runs just before the forward: the client's `X-IAM-*`,
+//! `Forwarded` and `X-Forwarded-*` headers are removed, the principal headers are set, and the
+//! credentials go only to upstreams with `forwardCredentials = true`. Every response, the answers
+//! of the gateway itself included, carries `X-IAM-Policy-Version`.
+//!
 //! The rate-limit step of Story 12.2 follows the route match: the local per-IP guard, then the
 //! policies of the route that count by address or route, before authentication, and those that
 //! count by subject after it. Over a limit the answer is 429 `rate_limited` with `Retry-After`.
@@ -18,6 +23,11 @@
 //! version the pod has not seen is 503 `iam_propagating` at once, a version it has seen but not
 //! published is waited for up to `RYW_MAX_WAIT`. A response that carries `Iam-Policy-Version` also
 //! gets the `__Host-iam_pv` cookie.
+//!
+//! A route flagged `anonymous` (Story 10.6) skips authentication, the policies that count by
+//! subject and authorization: [`RequestAuthorizer::authorize_anonymous`] allows it without a key,
+//! the token is never read, and the upstream receives no principal header. The freshness check, the
+//! body limit and the rate limits before authentication apply to it as to every route.
 //!
 //! One snapshot answers the whole request: the freshness check, the route, the revocation check and
 //! the decision read the same version, and the request drops its `Arc` before it awaits the
@@ -52,11 +62,13 @@ use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 
 use self::access::Observed;
+use self::headers::Propagated;
 use super::listener::stale_response;
 use crate::http::authentication::credential;
 use crate::http::request_id::{REQUEST_ID_HEADER, sanitize_request_id};
 
 mod access;
+mod headers;
 mod rate_limit;
 mod read_your_writes;
 mod wiring;
@@ -163,10 +175,16 @@ impl Refusal {
 
 /// The decision and its reason that the access record names: a request that was admitted is an
 /// allow, and so is one whose forwarder failed, which the status of the answer tells apart.
+///
+/// A request that a route in audit mode forwarded although the decision denied it is a deny with
+/// the reason `audit_mode_would_deny` (FR-69).
 fn verdict_of(refusal: Option<&Refusal>, seen: &Observed) -> (Decision, DecisionReason) {
-    let reason = refusal.map_or(DecisionReason::Allowed, |refusal| {
-        refusal.reason(seen.token_refusal())
-    });
+    let admitted = if seen.would_deny() {
+        DecisionReason::AuditModeWouldDeny
+    } else {
+        DecisionReason::Allowed
+    };
+    let reason = refusal.map_or(admitted, |refusal| refusal.reason(seen.token_refusal()));
     (reason.decision(), reason)
 }
 
@@ -175,6 +193,9 @@ fn verdict_of(refusal: Option<&Refusal>, seen: &Observed) -> (Decision, Decision
 struct Admitted {
     target: UpstreamTarget,
     uri: Uri,
+    /// The caller the token proved; `None` on a route flagged `anonymous`, which resolves no token.
+    principal: Option<Principal>,
+    version: i64,
 }
 
 impl Pipeline {
@@ -239,12 +260,25 @@ impl Pipeline {
         let mut response = match admitted {
             Ok(admitted) => {
                 parts.uri = admitted.uri;
+                let forward_credentials = admitted.target.forward_credentials();
+                match admitted.principal.as_ref() {
+                    Some(principal) => headers::rewrite(
+                        &mut parts,
+                        &Propagated {
+                            principal,
+                            version: admitted.version,
+                            forward_credentials,
+                        },
+                    ),
+                    None => headers::rewrite_anonymous(&mut parts, forward_credentials),
+                }
                 self.forward(admitted.target, Request::from_parts(parts, body))
                     .await
             }
             Err(refusal) => refusal.into(),
         };
         read_your_writes::carry_version(&mut response);
+        headers::stamp_version(&mut response, self.response_version(&seen));
         if let (Some(log), Some(started)) = (self.access_log.as_ref(), started) {
             log.finish(started, seen, verdict, &response);
         }
@@ -270,7 +304,7 @@ impl Pipeline {
     /// nothing of it is held while the forwarder runs.
     async fn admit(&self, parts: &Parts, seen: &mut Observed) -> Result<Admitted, Refusal> {
         self.await_version(&parts.headers).await?;
-        let snapshot = self.snapshot().ok_or(Refusal::Stale)?;
+        let snapshot = self.snapshot(seen).ok_or(Refusal::Stale)?;
         seen.snapshot(&snapshot);
         let method = HttpMethod::parse(parts.method.as_str()).ok_or(Refusal::NoRoute)?;
         let path =
@@ -279,36 +313,80 @@ impl Pipeline {
         seen.route(&snapshot, route);
         rate_limit::before_authentication(self.rate_limits.as_ref(), parts, &snapshot, route)
             .await?;
-        let principal = self.authenticate(&snapshot, &parts.headers, seen).await?;
-        rate_limit::subject(
-            self.rate_limits.as_ref(),
-            parts,
-            &snapshot,
-            route,
-            &principal,
-        )
-        .await?;
         let request = RouteRequest {
             snapshot: &snapshot,
             service: route.fields.service(),
+            enforcement: route.fields.enforcement(),
             method,
             path: &path,
             request_id: request_id_of(&parts.headers),
         };
-        self.authorize(&request, &principal, seen).await?;
+        let principal = self.identify(parts, route, &request, seen).await?;
         let upstream = snapshot
             .upstream_by_id(route.fields.upstream_id())
             .ok_or(Refusal::Failed(ForwardError::NoEndpoint))?;
         Ok(Admitted {
             target: target_of(upstream, route),
             uri: forwarded_uri(&path, parts.uri.query()).ok_or(Refusal::MalformedPath)?,
+            principal,
+            version: snapshot.version().value(),
+        })
+    }
+
+    /// Steps 5 to 7 of the pipeline for a matched route: authentication, the policies that count by
+    /// subject and authorization. A route flagged `anonymous` skips all three (FR-63): the token,
+    /// valid or not, is never read, and the request has no principal. The freshness check before
+    /// the route match, the body limit of the forwarder and the rate limits before authentication
+    /// apply to it as to every other route.
+    async fn identify(
+        &self,
+        parts: &Parts,
+        route: &RouteState,
+        request: &RouteRequest<'_>,
+        seen: &mut Observed,
+    ) -> Result<Option<Principal>, Refusal> {
+        if route.fields.flags().anonymous() {
+            let TracedAuthorization {
+                authorization,
+                trace,
+                denied,
+                audit_slot,
+            } = RequestAuthorizer::authorize_anonymous(request);
+            seen.decision(trace, denied);
+            seen.hold_audit_slot(audit_slot);
+            return permitted(authorization).map(|()| None);
+        }
+        let principal = self
+            .authenticate(request.snapshot, &parts.headers, seen)
+            .await?;
+        rate_limit::subject(
+            self.rate_limits.as_ref(),
+            parts,
+            request.snapshot,
+            route,
+            &principal,
+        )
+        .await?;
+        self.authorize(request, &principal, seen).await?;
+        Ok(Some(principal))
+    }
+
+    /// The version that every response names: the one of the snapshot the request was decided on,
+    /// or the published one when the request ended before a snapshot was loaded.
+    fn response_version(&self, seen: &Observed) -> Option<i64> {
+        seen.answer_version(|| {
+            self.view
+                .current()
+                .map(|snapshot| snapshot.version().value())
         })
     }
 
     /// The snapshot of this request: the published one, while the pod is proven fresh. The view is
     /// asked exactly once, whatever the answer of the freshness check.
-    fn snapshot(&self) -> Option<Arc<dyn PolicySnapshot>> {
-        let snapshot = self.view.current()?;
+    fn snapshot(&self, seen: &mut Observed) -> Option<Arc<dyn PolicySnapshot>> {
+        let current = self.view.current();
+        seen.published(current.as_ref().map(|snapshot| snapshot.version().value()));
+        let snapshot = current?;
         self.freshness.is_fresh().then_some(snapshot)
     }
 
@@ -341,6 +419,7 @@ impl Pipeline {
             audit_slot,
         } = traced;
         seen.decision(trace, denied);
+        seen.audit_mode(matches!(authorization, Authorization::WouldDeny(_)));
         seen.hold_audit_slot(audit_slot);
         permitted(authorization)
     }
@@ -365,6 +444,7 @@ const fn permitted(authorization: Authorization) -> Result<(), Refusal> {
     match authorization {
         Authorization::Allowed(_version) => Ok(()),
         Authorization::Denied(reason) => Err(Refusal::Forbidden(reason)),
+        Authorization::WouldDeny(_reason) => Ok(()),
         Authorization::Unavailable => Err(Refusal::Stale),
         Authorization::AuditUnavailable => Err(Refusal::AuditUnavailable),
     }
@@ -423,11 +503,11 @@ fn request_id_of(headers: &HeaderMap) -> Option<&str> {
 }
 
 /// Where the request of `route` goes and how it is delivered: the Service, protocol and timeouts
-/// of its upstream, and the body limit of the route.
+/// of its upstream, and the body limit, flags, retry policy and request timeout of the route.
 fn target_of(upstream: &iam_domain::UpstreamState, route: &RouteState) -> UpstreamTarget {
     UpstreamTarget::new(upstream.name.clone(), route.id)
         .with_settings(&upstream.settings)
-        .with_body_limit(route.fields.body_limit())
+        .with_route(&route.fields)
 }
 
 /// The target of the upstream request: the canonical re-encoded path, so that the single decoding

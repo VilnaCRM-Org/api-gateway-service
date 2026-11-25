@@ -13,6 +13,11 @@ use crate::unit_of_work::uuid_v7;
 
 /// A stored upstream named `name` that serves the catalogue service `catalog_service`, at version 1,
 /// created and updated at a random time after 2020.
+pub fn upstream(rng: &mut TestRng, name: &str, catalog_service: &str) -> Upstream {
+    upstream_forwarding(rng, name, catalog_service, false)
+}
+
+/// [`upstream`], whose `forward_credentials` setting is `forward_credentials`.
 ///
 /// # Panics
 ///
@@ -21,7 +26,12 @@ use crate::unit_of_work::uuid_v7;
     clippy::expect_used,
     reason = "a fixture with an invalid name is a defect of the test"
 )]
-pub fn upstream(rng: &mut TestRng, name: &str, catalog_service: &str) -> Upstream {
+pub fn upstream_forwarding(
+    rng: &mut TestRng,
+    name: &str,
+    catalog_service: &str,
+    forward_credentials: bool,
+) -> Upstream {
     let (name, settings) = UpstreamFields::new(
         name,
         &UpstreamSettingsDraft {
@@ -30,7 +40,7 @@ pub fn upstream(rng: &mut TestRng, name: &str, catalog_service: &str) -> Upstrea
             catalog_service: catalog_service.to_owned(),
             port: 8080,
             protocol: UpstreamProtocol::Http1,
-            forward_credentials: false,
+            forward_credentials,
             connect_timeout_ms: 1_000,
             response_timeout_ms: 30_000,
             concurrency_limit: 256,

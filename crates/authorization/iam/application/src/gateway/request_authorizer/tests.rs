@@ -3,8 +3,8 @@ use std::time::SystemTime;
 
 use iam_domain::{
     AssignmentScope, AssignmentState, CatalogueEntryState, CompiledRoleSet, DecisionReason,
-    GrantStatus, HttpMethod, NormalizedPath, PathNormalizer, PermissionGrant, PolicySnapshot,
-    PolicyVersion, RoleId, ServiceName,
+    EnforcementMode, GrantStatus, HttpMethod, NormalizedPath, PathNormalizer, PermissionGrant,
+    PolicySnapshot, PolicyVersion, RoleId, ServiceName,
 };
 use shared_domain::{CommandBus, Uuid};
 use test_support::bus::FakeCommandBus;
@@ -96,6 +96,7 @@ async fn authorize(
     let request = RouteRequest {
         snapshot,
         service: &service,
+        enforcement: EnforcementMode::Enforce,
         method,
         path: &path,
         request_id: Some("req-1"),
@@ -372,6 +373,7 @@ async fn authorize_traced(
     let request = RouteRequest {
         snapshot,
         service: &service,
+        enforcement: EnforcementMode::Enforce,
         method: HttpMethod::Get,
         path: &path,
         request_id: Some("req-1"),
@@ -569,6 +571,7 @@ async fn an_audited_allow_holds_its_slot_until_the_request_drops_it() {
     let request = RouteRequest {
         snapshot: &snapshot,
         service: &service,
+        enforcement: EnforcementMode::Enforce,
         method: HttpMethod::Delete,
         path: &path,
         request_id: Some("req-1"),
@@ -585,4 +588,107 @@ async fn an_audited_allow_holds_its_slot_until_the_request_drops_it() {
     // A request future dropped before its record exists gives the slot back through `Drop`.
     drop(first);
     assert_eq!(gate.reserved(), 0);
+}
+
+async fn authorize_on(
+    mode: EnforcementMode,
+    authorizer: &RequestAuthorizer,
+    snapshot: &Arc<dyn PolicySnapshot>,
+    service: &str,
+) -> super::TracedAuthorization {
+    let service = ServiceName::new(service).unwrap();
+    let path = path("/api/users/42");
+    let request = RouteRequest {
+        snapshot,
+        service: &service,
+        enforcement: mode,
+        method: HttpMethod::Get,
+        path: &path,
+        request_id: Some("req-1"),
+    };
+    authorizer.authorize_traced(&request, &principal()).await
+}
+
+#[tokio::test]
+async fn a_denial_on_a_route_in_audit_mode_is_a_would_deny_that_keeps_the_denied_key() {
+    let (authorizer, _recorded) = authorizer();
+    let snapshot = snapshot_with(&[], &[("users", &["rest:users:GET /api/users/{}"])]);
+
+    let enforced = authorize_on(EnforcementMode::Enforce, &authorizer, &snapshot, "users").await;
+    let audited = authorize_on(EnforcementMode::Audit, &authorizer, &snapshot, "users").await;
+
+    assert_eq!(
+        enforced.authorization,
+        Authorization::Denied(DecisionReason::PermissionMissing)
+    );
+    assert_eq!(
+        audited.authorization,
+        Authorization::WouldDeny(DecisionReason::PermissionMissing)
+    );
+    assert_eq!(audited.denied, enforced.denied);
+    assert_eq!(
+        audited.denied,
+        vec!["rest:users:GET /api/users/{}".to_owned()]
+    );
+}
+
+#[tokio::test]
+async fn audit_mode_leaves_an_allow_alone() {
+    let (authorizer, _recorded) = authorizer();
+    let snapshot = snapshot_with(
+        &["rest:users:GET /api/users/{}"],
+        &[("users", &["rest:users:GET /api/users/{}"])],
+    );
+
+    let audited = authorize_on(EnforcementMode::Audit, &authorizer, &snapshot, "users").await;
+
+    assert_eq!(audited.authorization, Authorization::Allowed(version()));
+}
+
+#[tokio::test]
+async fn audit_mode_forwards_every_denial_but_never_a_decision_that_could_not_be_made() {
+    let (authorizer, _recorded) = authorizer();
+    let snapshot = snapshot_with(&[], &[("users", &["rest:users:GET /api/users/{}"])]);
+
+    let audited = authorize_on(EnforcementMode::Audit, &authorizer, &snapshot, "unlisted").await;
+
+    assert_eq!(
+        audited.authorization,
+        Authorization::WouldDeny(DecisionReason::UnknownService)
+    );
+    assert_eq!(
+        RequestAuthorizer::enforced(EnforcementMode::Audit, Authorization::Unavailable.into())
+            .authorization,
+        Authorization::Unavailable
+    );
+    assert_eq!(
+        RequestAuthorizer::enforced(
+            EnforcementMode::Audit,
+            Authorization::AuditUnavailable.into()
+        )
+        .authorization,
+        Authorization::AuditUnavailable
+    );
+}
+
+#[test]
+fn an_anonymous_route_is_allowed_at_the_version_of_the_snapshot_without_a_key_or_a_catalogue() {
+    let snapshot = snapshot_with(&[], &[]);
+    let service = ServiceName::new("users").unwrap();
+    let path = path("/api/signin");
+    let request = RouteRequest {
+        snapshot: &snapshot,
+        service: &service,
+        enforcement: EnforcementMode::Enforce,
+        method: HttpMethod::Post,
+        path: &path,
+        request_id: None,
+    };
+
+    let traced = RequestAuthorizer::authorize_anonymous(&request);
+
+    assert_eq!(traced.authorization, Authorization::Allowed(version()));
+    assert_eq!(traced.trace, crate::access_log::DecisionTrace::default());
+    assert_eq!(traced.denied, Vec::<String>::new());
+    assert!(traced.audit_slot.is_none());
 }

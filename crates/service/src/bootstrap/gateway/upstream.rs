@@ -15,6 +15,18 @@
 //!   it is refused before any connection is made;
 //! - the response is relayed as it arrives, without buffering, and hop-by-hop headers are removed
 //!   from the request and from the response.
+//!
+//! What it adds in Story 10.5 (FR-66):
+//!
+//! - the timeouts: the response headers (10 seconds, 30 for a GraphQL route) and the whole request
+//!   (60 seconds, none for a streaming route), each overridable by the upstream and the route;
+//! - at most one retry, to another endpoint, of a request that provably was not sent or of an
+//!   idempotent request that the route allows to retry, within the retry budget of the upstream
+//!   (the rules are `RetryRule` and `RetryBudget` of the domain);
+//! - passive outlier ejection of an endpoint after consecutive connect errors or 5xx responses
+//!   (`OutlierRule`), which the choice of the endpoint honours;
+//! - the `concurrencyLimit` of the upstream, which fails fast with 503 `upstream_overloaded` and is
+//!   held until the response body ends.
 
 use std::collections::HashMap;
 use std::error::Error as StdError;
@@ -27,20 +39,32 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::header::CONTENT_LENGTH;
+use axum::http::request::Parts;
 use axum::http::uri::{PathAndQuery, Scheme};
-use axum::http::{HeaderMap, Uri, Version};
+use axum::http::{HeaderMap, Method, Uri, Version};
 use axum::response::Response;
-use http_body_util::{LengthLimitError, Limited};
+use hyper::body::Incoming;
+use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::client::legacy::{Client, Error as ClientError};
 use hyper_util::rt::{TokioExecutor, TokioTimer};
 use iam_application::EndpointView;
 use iam_domain::endpoint::selector::{Candidate, DEFAULT_SPILL_THRESHOLD};
 use iam_domain::{
-    EndpointSelector, ForwardError, Rng, UpstreamEndpoint, UpstreamForwarder, UpstreamProtocol,
-    UpstreamTarget,
+    Delivery, EndpointSelector, ForwardError, HttpMethod, OutlierRule, RequestBody, RetryCase,
+    RetryRule, Rng, UpstreamEndpoint, UpstreamForwarder, UpstreamProtocol, UpstreamTarget,
 };
+use tokio::time::Instant;
 use tower::Service;
+
+use self::failure::{Classified, classify};
+use self::payload::{Payload, ReplayBody};
+use self::registry::{Permit, Registry};
+use self::relay::RelayBody;
+
+mod failure;
+mod payload;
+mod registry;
+mod relay;
 
 /// The headers that describe one connection and are never forwarded (RFC 9110, section 7.6.1).
 const HOP_BY_HOP: [&str; 8] = [
@@ -54,11 +78,11 @@ const HOP_BY_HOP: [&str; 8] = [
     "upgrade",
 ];
 
-/// The request as the client sends it: the body of the caller under the limit of the route.
-type Outgoing = axum::http::Request<Limited<Body>>;
-
 /// The pooled client of one protocol and one connect timeout.
-type UpstreamClient = Client<TimedConnector<HttpConnector>, Limited<Body>>;
+type UpstreamClient = Client<TimedConnector<HttpConnector>, ReplayBody>;
+
+/// The response of an endpoint before it is relayed to the caller.
+type Answered = axum::http::Response<Incoming>;
 
 /// What tells two pooled clients apart.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -148,6 +172,31 @@ pub struct HyperUpstreamForwarder {
     rng: Arc<dyn Rng>,
     clients: Mutex<HashMap<ClientKey, UpstreamClient>>,
     in_flight: InFlightCounts,
+    registry: Arc<Registry>,
+}
+
+/// The request as every attempt sends it, apart from its endpoint and its body.
+#[derive(Debug)]
+struct Template {
+    method: Method,
+    uri: Uri,
+    version: Version,
+    headers: HeaderMap,
+}
+
+/// What the attempts of one request share: where it goes, how it is sent and what it carries.
+#[derive(Debug, Clone, Copy)]
+struct Shared<'a> {
+    target: &'a UpstreamTarget,
+    template: &'a Template,
+    payload: &'a Payload,
+}
+
+/// Why an attempt failed and whether the request provably did not reach the endpoint.
+#[derive(Debug, Clone, Copy)]
+struct Failure {
+    error: ForwardError,
+    delivery: Delivery,
 }
 
 impl HyperUpstreamForwarder {
@@ -161,6 +210,7 @@ impl HyperUpstreamForwarder {
             rng,
             clients: Mutex::new(HashMap::new()),
             in_flight: Arc::new(Mutex::new(HashMap::new())),
+            registry: Registry::new(),
         }
     }
 
@@ -172,26 +222,156 @@ impl HyperUpstreamForwarder {
         if declared_above(request.headers(), target.body_limit()) {
             return Err(ForwardError::BodyTooLarge);
         }
-        let endpoint = self.choose(&target)?;
-        let _in_flight = InFlight::enter(&self.in_flight, endpoint_key(&endpoint));
-        let outgoing = outgoing(request, &endpoint, &target)?;
-        let wait = Duration::from_millis(u64::from(target.response_timeout_ms()));
-        let answer = tokio::time::timeout(wait, self.client(&target).request(outgoing)).await;
-        match answer {
-            Ok(Ok(response)) => Ok(relayed(response)),
-            Ok(Err(error)) => Err(classify(&error)),
-            Err(_elapsed) => Err(ForwardError::ResponseTimeout),
+        let permit = self.registry.admit(&target)?;
+        let deadline = deadline_of(&target);
+        let (parts, body) = request.into_parts();
+        let payload = Payload::prepare(body, target.body_limit(), buffers(&target, &parts)).await?;
+        let template = Template::of(parts, &target);
+        let shared = Shared {
+            target: &target,
+            template: &template,
+            payload: &payload,
+        };
+        let attempts = self.attempts(shared);
+        let answered = within(deadline, attempts).await??;
+        Ok(relayed(answered, deadline, permit))
+    }
+
+    /// The first attempt and, when the rules allow it, one retry on another endpoint.
+    async fn attempts(&self, shared: Shared<'_>) -> Result<Answered, ForwardError> {
+        let first = self.choose(shared.target, None)?;
+        let failure = match self.attempt(shared, &first).await {
+            Ok(answered) => return Ok(answered),
+            Err(failure) => failure,
+        };
+        let Some(second) = self.alternative(shared, failure, &first) else {
+            return Err(failure.error);
+        };
+        self.attempt(shared, &second)
+            .await
+            .map_err(|failed| failed.error)
+    }
+
+    /// One attempt on `endpoint`: the response headers must arrive within the timeout.
+    async fn attempt(
+        &self,
+        shared: Shared<'_>,
+        endpoint: &UpstreamEndpoint,
+    ) -> Result<Answered, Failure> {
+        let Shared {
+            target,
+            template,
+            payload,
+        } = shared;
+        let key = endpoint_key(endpoint);
+        let _in_flight = InFlight::enter(&self.in_flight, key.clone());
+        let request = template
+            .request(endpoint, payload.body())
+            .map_err(Failure::unsent)?;
+        self.registry.count_request(target);
+        let wait = Duration::from_millis(u64::from(target.headers_timeout_ms()));
+        match tokio::time::timeout(wait, self.client(target).request(request)).await {
+            Ok(Ok(answered)) => {
+                self.settle(target, &key, answered.status().is_server_error());
+                Ok(answered)
+            }
+            Ok(Err(error)) => Err(self.failed(target, &key, classify(&error))),
+            Err(_elapsed) => Err(Failure {
+                error: ForwardError::ResponseTimeout,
+                delivery: Delivery::MaybeSent,
+            }),
         }
     }
 
-    /// The endpoint of a new request: the selector over the offered endpoints of the Service.
-    fn choose(&self, target: &UpstreamTarget) -> Result<UpstreamEndpoint, ForwardError> {
+    /// The endpoint of the retry, when the failed attempt may be retried: the rules allow it, the
+    /// body can be sent again, another endpoint is offered and the retry budget has room.
+    fn alternative(
+        &self,
+        shared: Shared<'_>,
+        failure: Failure,
+        failed: &UpstreamEndpoint,
+    ) -> Option<UpstreamEndpoint> {
+        let Shared {
+            target,
+            template,
+            payload,
+        } = shared;
+        let case = RetryCase {
+            policy: target.retry(),
+            method: HttpMethod::parse(template.method.as_str())?,
+            graphql: target.graphql(),
+            body: payload.kind(),
+            delivery: failure.delivery,
+            retries_made: 0,
+        };
+        if !RetryRule::allows(&case) || !payload.replayable() {
+            return None;
+        }
+        let next = self.choose(target, Some(&endpoint_key(failed))).ok()?;
+        self.registry.try_retry(target).then_some(next)
+    }
+
+    /// Records the answer of an endpoint: a 5xx response counts as a failure, any other as a good
+    /// answer.
+    fn settle(&self, target: &UpstreamTarget, key: &str, server_error: bool) {
+        if server_error {
+            self.record_error(target, key);
+        } else {
+            self.registry.record_success(key);
+        }
+    }
+
+    /// The failure of an attempt on the endpoint `key`; a connect error counts towards the
+    /// ejection of the endpoint.
+    fn failed(&self, target: &UpstreamTarget, key: &str, classified: Classified) -> Failure {
+        if classified.connect {
+            self.record_error(target, key);
+        }
+        Failure {
+            error: classified.error,
+            delivery: classified.delivery,
+        }
+    }
+
+    fn record_error(&self, target: &UpstreamTarget, key: &str) {
+        let offered: Vec<String> = self
+            .endpoints
+            .offered(target.service())
+            .iter()
+            .map(endpoint_key)
+            .collect();
+        let rule = OutlierRule::for_threshold(target.outlier_threshold());
+        self.registry.record_error(key, &rule, &offered);
+    }
+
+    /// The endpoints that a new request may go to: those that are not ejected (all of them when
+    /// every one is) and, on a retry, not the endpoint `avoid` that just failed.
+    fn pool(&self, target: &UpstreamTarget, avoid: Option<&str>) -> Vec<UpstreamEndpoint> {
         let offered = self.endpoints.offered(target.service());
+        let now = self.registry.now_ms();
+        let healthy: Vec<UpstreamEndpoint> = offered
+            .iter()
+            .filter(|endpoint| !self.registry.is_ejected(&endpoint_key(endpoint), now))
+            .cloned()
+            .collect();
+        let pool = if healthy.is_empty() { offered } else { healthy };
+        pool.into_iter()
+            .filter(|endpoint| avoid.is_none_or(|key| endpoint_key(endpoint) != key))
+            .collect()
+    }
+
+    /// The endpoint of a new request: the selector over the pool of the Service of `target`.
+    fn choose(
+        &self,
+        target: &UpstreamTarget,
+        avoid: Option<&str>,
+    ) -> Result<UpstreamEndpoint, ForwardError> {
+        let pool = self.pool(target, avoid);
         let counts = self
             .in_flight
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let candidates: Vec<Candidate<'_>> = offered
+        let candidates: Vec<Candidate<'_>> = pool
             .iter()
             .map(|endpoint| Candidate {
                 endpoint,
@@ -207,7 +387,7 @@ impl HyperUpstreamForwarder {
         drop(candidates);
         drop(counts);
         chosen
-            .and_then(|index| offered.into_iter().nth(index))
+            .and_then(|index| pool.into_iter().nth(index))
             .ok_or(ForwardError::NoEndpoint)
     }
 
@@ -267,25 +447,82 @@ fn declared_above(headers: &HeaderMap, limit: u64) -> bool {
         .is_some_and(|length| length > limit)
 }
 
-/// The request for the endpoint: its absolute target, the protocol version, no hop-by-hop headers
-/// and a body that fails when it exceeds the limit of the route.
-fn outgoing(
-    request: Request,
-    endpoint: &UpstreamEndpoint,
-    target: &UpstreamTarget,
-) -> Result<Outgoing, ForwardError> {
-    let (mut parts, body) = request.into_parts();
-    parts.uri = absolute(endpoint, &parts.uri).ok_or(ForwardError::NoEndpoint)?;
-    parts.version = match target.protocol() {
-        UpstreamProtocol::Http1 => Version::HTTP_11,
-        UpstreamProtocol::H2c => Version::HTTP_2,
-    };
-    strip_hop_by_hop(&mut parts.headers);
-    let limit = usize::try_from(target.body_limit()).unwrap_or(usize::MAX);
-    Ok(axum::http::Request::from_parts(
-        parts,
-        Limited::new(body, limit),
-    ))
+impl Template {
+    /// The request of `parts` as the attempts send it: the protocol version of the upstream and no
+    /// hop-by-hop headers.
+    fn of(parts: Parts, target: &UpstreamTarget) -> Self {
+        let mut headers = parts.headers;
+        strip_hop_by_hop(&mut headers);
+        Self {
+            method: parts.method,
+            uri: parts.uri,
+            version: match target.protocol() {
+                UpstreamProtocol::Http1 => Version::HTTP_11,
+                UpstreamProtocol::H2c => Version::HTTP_2,
+            },
+            headers,
+        }
+    }
+
+    /// The request for `endpoint`: its absolute target, the headers and `body`.
+    fn request(
+        &self,
+        endpoint: &UpstreamEndpoint,
+        body: ReplayBody,
+    ) -> Result<axum::http::Request<ReplayBody>, ForwardError> {
+        let uri = absolute(endpoint, &self.uri).ok_or(ForwardError::NoEndpoint)?;
+        let mut request = axum::http::Request::builder()
+            .method(self.method.clone())
+            .uri(uri)
+            .version(self.version)
+            .body(body)
+            .map_err(|_invalid| ForwardError::NoEndpoint)?;
+        *request.headers_mut() = self.headers.clone();
+        Ok(request)
+    }
+}
+
+impl Failure {
+    /// A request that never left the gateway.
+    const fn unsent(error: ForwardError) -> Self {
+        Self {
+            error,
+            delivery: Delivery::NotSent,
+        }
+    }
+}
+
+/// Whether the body of the request is read into memory: when the request may be retried after it
+/// was sent, which takes a route with the retry policy `idempotent`, an idempotent method and, on
+/// GraphQL routes, no chance of a mutation.
+fn buffers(target: &UpstreamTarget, parts: &Parts) -> bool {
+    HttpMethod::parse(parts.method.as_str()).is_some_and(|method| {
+        RetryRule::allows(&RetryCase {
+            policy: target.retry(),
+            method,
+            graphql: target.graphql(),
+            body: RequestBody::Empty,
+            delivery: Delivery::MaybeSent,
+            retries_made: 0,
+        })
+    })
+}
+
+/// The moment the whole request must be over, `None` for a streaming route.
+fn deadline_of(target: &UpstreamTarget) -> Option<Instant> {
+    let limit = Duration::from_millis(u64::from(target.request_timeout_ms()?));
+    Instant::now().checked_add(limit)
+}
+
+/// Runs `work` until `deadline`, when there is one; the request fails with
+/// [`ForwardError::ResponseTimeout`] when it runs out.
+async fn within<F: Future>(deadline: Option<Instant>, work: F) -> Result<F::Output, ForwardError> {
+    match deadline {
+        Some(at) => tokio::time::timeout_at(at, work)
+            .await
+            .map_err(|_elapsed| ForwardError::ResponseTimeout),
+        None => Ok(work.await),
+    }
 }
 
 /// The target of the request on `endpoint`: the path and query that the pipeline decided on.
@@ -320,27 +557,12 @@ fn strip_hop_by_hop(headers: &mut HeaderMap) {
     }
 }
 
-/// The response of the upstream as the caller receives it: the body is relayed as it arrives.
-fn relayed(response: axum::http::Response<hyper::body::Incoming>) -> Response {
+/// The response of the upstream as the caller receives it: the body is relayed as it arrives,
+/// under the deadline of the request, and holds the concurrency permit until it ends.
+fn relayed(response: Answered, deadline: Option<Instant>, permit: Permit) -> Response {
     let (mut parts, body) = response.into_parts();
     strip_hop_by_hop(&mut parts.headers);
-    Response::from_parts(parts, Body::new(body))
-}
-
-/// Why a request that was handed to the client did not get a response.
-fn classify(error: &ClientError) -> ForwardError {
-    let root: &(dyn StdError + 'static) = error;
-    let causes: Vec<&(dyn StdError + 'static)> =
-        std::iter::successors(Some(root), |&cause| cause.source()).collect();
-    if causes.iter().any(|cause| cause.is::<LengthLimitError>()) {
-        ForwardError::BodyTooLarge
-    } else if causes.iter().any(|cause| cause.is::<ConnectTimedOut>()) {
-        ForwardError::ConnectTimeout
-    } else if error.is_connect() {
-        ForwardError::NotSent
-    } else {
-        ForwardError::Upstream
-    }
+    Response::from_parts(parts, Body::new(RelayBody::new(body, deadline, permit)))
 }
 
 #[cfg(test)]

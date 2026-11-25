@@ -209,6 +209,7 @@ fn an_authorization_that_cannot_be_decided_is_stale() {
         permitted(Authorization::Denied(DecisionReason::PermissionMissing)),
         Err(Refusal::Forbidden(DecisionReason::PermissionMissing))
     ));
+    assert!(permitted(Authorization::WouldDeny(DecisionReason::PermissionMissing)).is_ok());
     assert!(matches!(
         permitted(Authorization::Unavailable),
         Err(Refusal::Stale)
@@ -317,5 +318,20 @@ fn an_admitted_request_is_an_allow_and_a_refusal_is_a_deny_with_its_reason() {
     assert_eq!(
         verdict_of(Some(&Refusal::NoRoute), &seen),
         (Decision::Deny, DecisionReason::UnknownOperation)
+    );
+}
+
+#[test]
+fn a_denial_that_a_route_in_audit_mode_forwarded_is_a_deny_with_the_audit_reason() {
+    let mut seen = Observed::default();
+    seen.audit_mode(true);
+
+    assert_eq!(
+        verdict_of(None, &seen),
+        (Decision::Deny, DecisionReason::AuditModeWouldDeny)
+    );
+    assert_eq!(
+        verdict_of(Some(&Refusal::Unauthorized), &seen),
+        (Decision::Deny, DecisionReason::TokenInvalid)
     );
 }

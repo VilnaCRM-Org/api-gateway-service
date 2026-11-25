@@ -3,8 +3,9 @@
 use std::sync::{Arc, OnceLock};
 
 use iam_domain::{
-    AccessCheck, AccessTarget, DecisionOutcome, DecisionReason, HttpMethod, NormalizedPath,
-    PolicySnapshot, PolicyVersion, RestTarget, ServiceName, SubjectId, SubjectRef, TokenRepository,
+    AccessCheck, AccessTarget, DecisionOutcome, DecisionReason, EnforcementMode, HttpMethod,
+    NormalizedPath, PolicySnapshot, PolicyVersion, RestTarget, ServiceName, SubjectId, SubjectRef,
+    TokenRepository,
 };
 use shared_domain::{Clock, CommandBus, UuidGenerator};
 
@@ -24,6 +25,8 @@ pub struct RouteRequest<'request> {
     pub snapshot: &'request Arc<dyn PolicySnapshot>,
     /// The service of the matched route, whose catalogue the operation is looked up in.
     pub service: &'request ServiceName,
+    /// What the gateway does with a denial on the matched route (FR-69).
+    pub enforcement: EnforcementMode,
     /// The HTTP method.
     pub method: HttpMethod,
     /// The normalised path.
@@ -39,6 +42,10 @@ pub enum Authorization {
     Allowed(PolicyVersion),
     /// The principal may not do it; the reason code never names an operation of another service.
     Denied(DecisionReason),
+    /// The request is denied, but its route is in audit mode: it is forwarded, and the decision
+    /// outcome carries [`DecisionReason::AuditModeWouldDeny`]. The reason is the one that
+    /// enforce mode would have refused with.
+    WouldDeny(DecisionReason),
     /// The decision could not be made on the policy that was read: the request fails closed.
     Unavailable,
     /// The request is on an always-audit or sensitive key and the audit lane cannot take its
@@ -172,6 +179,16 @@ impl RequestAuthorizer {
         request: &RouteRequest<'_>,
         principal: &Principal,
     ) -> TracedAuthorization {
+        let traced = self.decided(request, principal).await;
+        Self::enforced(request.enforcement, traced)
+    }
+
+    /// The decision of the request, before the enforcement mode of its route applies.
+    async fn decided(
+        &self,
+        request: &RouteRequest<'_>,
+        principal: &Principal,
+    ) -> TracedAuthorization {
         let decisions = self.decisions(request.snapshot);
         let version = request.snapshot.version();
         if request.service.is_iam() {
@@ -190,6 +207,29 @@ impl RequestAuthorizer {
                 audit_slot: None,
             })
         }
+    }
+
+    /// The enforcement mode of the route: in audit mode a denial becomes
+    /// [`Authorization::WouldDeny`], so the request goes on. Authentication has run before the
+    /// decision, so a request without a valid token never gets here, and a decision that could
+    /// not be made stays refused.
+    fn enforced(mode: EnforcementMode, traced: TracedAuthorization) -> TracedAuthorization {
+        match (mode, traced.authorization) {
+            (EnforcementMode::Audit, Authorization::Denied(reason)) => TracedAuthorization {
+                authorization: Authorization::WouldDeny(reason),
+                ..traced
+            },
+            _ => traced,
+        }
+    }
+
+    /// The decision for a route flagged `anonymous` (FR-63): an allow at the version of the
+    /// snapshot, without a key to hold and without a catalogue read. The pipeline calls it instead
+    /// of authenticating the request, so no token is resolved and no principal exists; the
+    /// freshness check, the body limit and the rate limits stay with the pipeline.
+    #[must_use]
+    pub fn authorize_anonymous(request: &RouteRequest<'_>) -> TracedAuthorization {
+        Authorization::Allowed(request.snapshot.version()).into()
     }
 
     /// The decision path over `snapshot`, built for one request: its parts are shared handles.

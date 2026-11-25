@@ -18,7 +18,8 @@ use http_body_util::BodyExt as _;
 use iam_application::{EndpointDirectory, ZoneSource};
 use iam_domain::{EndpointConditions, EndpointParts, EndpointSlice, UpstreamEndpoint, WatchTarget};
 use service::bootstrap::gateway::upstream::HyperUpstreamForwarder;
-use test_support::gateway_snapshot::CountingPolicyView;
+use test_support::boot_clock::FakeBootClock;
+use test_support::gateway_snapshot::{CountingPolicyView, GatewaySnapshot};
 use test_support::rng::FakeRng;
 use test_support::seed::TestRng;
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
@@ -31,6 +32,16 @@ const LIMIT: usize = 1_048_576;
 
 /// The pipeline over a snapshot whose upstream `users` has one endpoint at `address`.
 fn proxy_to(address: SocketAddr) -> Router {
+    let mut rng = TestRng::from_env();
+    proxy_over(address, snapshot(&mut rng, true)).0
+}
+
+/// The pipeline over `state`, whose upstream `users` has one endpoint at `address`, with the boot
+/// clock it runs on.
+pub(super) fn proxy_over(
+    address: SocketAddr,
+    state: GatewaySnapshot,
+) -> (Router, Arc<FakeBootClock>) {
     let directory = EndpointDirectory::new(ZoneSource {
         peers: WatchTarget {
             namespace: "platform".to_owned(),
@@ -60,9 +71,9 @@ fn proxy_to(address: SocketAddr) -> Router {
         true,
         Arc::new(FakeRng::seeded(1)),
     ));
-    let mut rng = TestRng::from_env();
-    let view = Arc::new(CountingPolicyView::serving(snapshot(&mut rng, true)));
-    pipeline_over(&view, forwarder, None).0
+    let view = Arc::new(CountingPolicyView::serving(state));
+    let (router, clock, _freshness) = pipeline_over(&view, forwarder, None);
+    (router, clock)
 }
 
 #[expect(

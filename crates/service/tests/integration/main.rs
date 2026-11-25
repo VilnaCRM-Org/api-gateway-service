@@ -27,6 +27,8 @@ mod gateway_pipeline;
 #[cfg(test)]
 mod gateway_rate_limit;
 #[cfg(test)]
+mod gateway_resilience;
+#[cfg(test)]
 mod gateway_upstream;
 #[cfg(test)]
 mod healthcheck;

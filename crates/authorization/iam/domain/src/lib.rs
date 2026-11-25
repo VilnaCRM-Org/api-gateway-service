@@ -29,6 +29,7 @@ pub mod port;
 pub mod rate_limit;
 pub mod rate_policy;
 pub mod rejected_attempt;
+pub mod resilience;
 pub mod rest_permission;
 pub mod resync;
 pub mod revocation;
@@ -227,6 +228,14 @@ pub use rate_policy::statement::RatePolicyStatement;
 pub use rate_policy::{RatePolicy, RatePolicyParts, RatePolicyStamp};
 pub use rejected_attempt::{
     AttemptSummary, RejectedAttempt, RejectedAttemptBuffer, SUMMARY_WINDOW,
+};
+pub use resilience::outlier_rule::{
+    DEFAULT_CONSECUTIVE_ERRORS, DEFAULT_EJECTION_MS, DEFAULT_MAX_EJECTION_PERCENT, EndpointHealth,
+    OutlierRule,
+};
+pub use resilience::retry_budget::{BUDGET_FLOOR_RETRIES, BUDGET_WINDOW_REQUESTS, RetryBudget};
+pub use resilience::retry_rule::{
+    Delivery, MAX_BUFFERED_BODY_BYTES, RequestBody, RetryCase, RetryRule,
 };
 pub use rest_permission::{RestPermission, RestPermissionParts};
 pub use resync::{EpochChange, InventoryEntry, PolicyResynced, Republication, ResyncStart};

@@ -196,3 +196,15 @@ Feature: IAM route configurations
     And the response body should contain "/problems/system-entry"
     And the audit log should hold 1 system-entry "route_configuration.apply" record in a second
     And the routes of the host "app.example.test" should number 1
+
+  Scenario: The reference route configuration of User service validates in a dry run and lists the public endpoints as anonymous
+    Given a caller authenticated as the bootstrapped administrator
+    And a credential-forwarding upstream exists with name "user" of the catalogue service "user-service"
+    When GET request is sent to "/api/route-configurations/app.example.test"
+    Given the If-Match header is the ETag of the last response
+    When the reference route configuration "deploy/kubernetes/routes/user-service.json" is put in a dry run to "/api/route-configurations/app.example.test" for the upstream "user"
+    Then the response status code should be 200
+    And the JSON boolean at "/dryRun" should be true
+    And the dry run should list exactly the routes of the reference route configuration "deploy/kubernetes/routes/user-service.json" as added
+    And every route of the reference route configuration "deploy/kubernetes/routes/user-service.json" should be anonymous
+    And the routes of the host "app.example.test" should number 0

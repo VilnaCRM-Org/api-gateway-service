@@ -1,0 +1,131 @@
+{
+  "routes": [
+    {
+      "methods": [
+        "POST"
+      ],
+      "pathPattern": "/api/signin",
+      "service": "user-service",
+      "upstreamId": "UPSTREAM",
+      "anonymous": true,
+      "enforcement": "enforce",
+      "bodyLimitBytes": 65536,
+      "requestTimeoutMs": 30000,
+      "idleTimeoutMs": 60000,
+      "retryPolicy": "none"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "pathPattern": "/api/signin/2fa",
+      "service": "user-service",
+      "upstreamId": "UPSTREAM",
+      "anonymous": true,
+      "enforcement": "enforce",
+      "bodyLimitBytes": 65536,
+      "requestTimeoutMs": 30000,
+      "idleTimeoutMs": 60000,
+      "retryPolicy": "none"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "pathPattern": "/api/token",
+      "service": "user-service",
+      "upstreamId": "UPSTREAM",
+      "anonymous": true,
+      "enforcement": "enforce",
+      "bodyLimitBytes": 65536,
+      "requestTimeoutMs": 30000,
+      "idleTimeoutMs": 60000,
+      "retryPolicy": "none"
+    },
+    {
+      "methods": [
+        "GET",
+        "POST"
+      ],
+      "pathPattern": "/api/oauth/{rest:*}",
+      "service": "user-service",
+      "upstreamId": "UPSTREAM",
+      "anonymous": true,
+      "enforcement": "enforce",
+      "bodyLimitBytes": 65536,
+      "requestTimeoutMs": 30000,
+      "idleTimeoutMs": 60000,
+      "retryPolicy": "none"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "pathPattern": "/api/reset-password",
+      "service": "user-service",
+      "upstreamId": "UPSTREAM",
+      "anonymous": true,
+      "enforcement": "enforce",
+      "bodyLimitBytes": 65536,
+      "requestTimeoutMs": 30000,
+      "idleTimeoutMs": 60000,
+      "retryPolicy": "none"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "pathPattern": "/api/reset-password/confirm",
+      "service": "user-service",
+      "upstreamId": "UPSTREAM",
+      "anonymous": true,
+      "enforcement": "enforce",
+      "bodyLimitBytes": 65536,
+      "requestTimeoutMs": 30000,
+      "idleTimeoutMs": 60000,
+      "retryPolicy": "none"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "pathPattern": "/api/users",
+      "service": "user-service",
+      "upstreamId": "UPSTREAM",
+      "anonymous": true,
+      "enforcement": "enforce",
+      "bodyLimitBytes": 65536,
+      "requestTimeoutMs": 30000,
+      "idleTimeoutMs": 60000,
+      "retryPolicy": "none"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "pathPattern": "/api/users/confirm",
+      "service": "user-service",
+      "upstreamId": "UPSTREAM",
+      "anonymous": true,
+      "enforcement": "enforce",
+      "bodyLimitBytes": 65536,
+      "requestTimeoutMs": 30000,
+      "idleTimeoutMs": 60000,
+      "retryPolicy": "none"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "pathPattern": "/api/health",
+      "service": "user-service",
+      "upstreamId": "UPSTREAM",
+      "anonymous": true,
+      "enforcement": "enforce",
+      "bodyLimitBytes": 1024,
+      "requestTimeoutMs": 30000,
+      "idleTimeoutMs": 60000,
+      "retryPolicy": "none"
+    }
+  ]
+}

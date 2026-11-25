@@ -1,10 +1,10 @@
 use axum::http::header::{CONNECTION, CONTENT_LENGTH, HOST};
 use axum::http::{HeaderName, HeaderValue};
-use http_body_util::BodyExt as _;
 use iam_application::{EndpointDirectory, ZoneSource};
 use iam_domain::{
-    BodyLimit, EndpointConditions, EndpointParts, EndpointSlice, RouteId, UpstreamName,
-    UpstreamSettings, UpstreamSettingsDraft, WatchTarget,
+    EndpointConditions, EndpointParts, EndpointSlice, EnforcementMode, RetryPolicy, RouteDraft,
+    RouteFields, RouteFlag, RouteFlags, RouteId, UpstreamId, UpstreamName, UpstreamSettings,
+    UpstreamSettingsDraft, WatchTarget,
 };
 use shared_domain::Uuid;
 use test_support::rng::FakeRng;
@@ -52,6 +52,36 @@ fn target() -> UpstreamTarget {
         RouteId::from_uuid(Uuid::parse("00000000-0000-0000-0000-000000000001").unwrap()),
     )
     .with_settings(&settings)
+}
+
+fn route_fields(retry: RetryPolicy, graphql: bool) -> RouteFields {
+    let flags = RouteFlags::default().with(RouteFlag::Graphql, graphql);
+    RouteFields::new(&route_draft(flags, retry)).unwrap()
+}
+
+fn streaming_route() -> RouteFields {
+    let flags = RouteFlags::default().with(RouteFlag::Streaming, true);
+    RouteFields::new(&route_draft(flags, RetryPolicy::None)).unwrap()
+}
+
+fn route_draft(flags: RouteFlags, retry: RetryPolicy) -> RouteDraft {
+    RouteDraft {
+        host: "api.example.test".to_owned(),
+        methods: vec![HttpMethod::Get],
+        path_pattern: "/x".to_owned(),
+        service: "core".to_owned(),
+        upstream_id: UpstreamId::from_uuid(
+            Uuid::parse("00000000-0000-0000-0000-000000000002").unwrap(),
+        ),
+        flags,
+        enforcement: EnforcementMode::Enforce,
+        body_limit: 1_048_576,
+        request_timeout_ms: 2_500,
+        idle_timeout_ms: 60_000,
+        retry,
+        rate_policies: Vec::new(),
+        cors: None,
+    }
 }
 
 fn forwarder_over(endpoints: Vec<UpstreamEndpoint>) -> HyperUpstreamForwarder {
@@ -148,16 +178,23 @@ fn hop_by_hop_headers_and_the_headers_the_connection_names_are_removed() {
     assert_eq!(left, ["host", "x-kept"]);
 }
 
+fn template_of(request: Request, target: &UpstreamTarget) -> Template {
+    Template::of(request.into_parts().0, target)
+}
+
 #[test]
-fn the_outgoing_request_is_absolute_in_the_version_of_the_protocol() {
+fn the_request_of_an_attempt_is_absolute_in_the_version_of_the_protocol() {
     let request = Request::builder()
         .uri("/api/users?a=1")
         .header(CONNECTION, "close")
         .header("x-kept", "yes")
         .body(Body::empty())
         .unwrap();
+    let template = template_of(request, &target());
 
-    let sent = outgoing(request, &endpoint("10.0.0.7", 8080), &target()).unwrap();
+    let sent = template
+        .request(&endpoint("10.0.0.7", 8080), Payload::Empty.body())
+        .unwrap();
 
     assert_eq!(sent.uri().to_string(), "http://10.0.0.7:8080/api/users?a=1");
     assert_eq!(sent.version(), Version::HTTP_11);
@@ -166,26 +203,91 @@ fn the_outgoing_request_is_absolute_in_the_version_of_the_protocol() {
 }
 
 #[test]
+fn the_template_keeps_the_method_and_serves_every_attempt() {
+    let request = Request::builder()
+        .method("PUT")
+        .uri("/x")
+        .body(Body::empty())
+        .unwrap();
+    let template = template_of(request, &target());
+
+    for address in ["10.0.0.1", "10.0.0.2"] {
+        let sent = template
+            .request(&endpoint(address, 80), Payload::Empty.body())
+            .unwrap();
+        assert_eq!(sent.method(), Method::PUT);
+        assert_eq!(sent.uri().host(), Some(address));
+    }
+}
+
+#[test]
 fn a_target_with_no_valid_address_cannot_be_built() {
     let request = Request::builder().uri("/x").body(Body::empty()).unwrap();
+    let template = template_of(request, &target());
 
-    let outcome = outgoing(request, &endpoint("bad host", 80), &target());
+    let outcome = template.request(&endpoint("bad host", 80), Payload::Empty.body());
 
     assert_eq!(outcome.unwrap_err(), ForwardError::NoEndpoint);
 }
 
-#[tokio::test]
-async fn the_body_limit_of_the_target_bounds_the_body() {
-    let limited = target().with_body_limit(BodyLimit::new(4).unwrap());
-    let request = Request::builder()
-        .uri("/x")
-        .body(Body::from("12345"))
-        .unwrap();
+#[test]
+fn only_a_request_that_may_be_retried_after_it_was_sent_is_buffered() {
+    let parts = |method: &str| {
+        Request::builder()
+            .method(method)
+            .uri("/x")
+            .body(Body::empty())
+            .unwrap()
+            .into_parts()
+            .0
+    };
+    let idempotent = target().with_route(&route_fields(RetryPolicy::Idempotent, false));
+    let none = target().with_route(&route_fields(RetryPolicy::None, false));
+    let graphql = target().with_route(&route_fields(RetryPolicy::Idempotent, true));
 
-    let sent = outgoing(request, &endpoint("10.0.0.7", 80), &limited).unwrap();
+    assert!(buffers(&idempotent, &parts("PUT")));
+    assert!(buffers(&idempotent, &parts("GET")));
+    assert!(!buffers(&idempotent, &parts("POST")));
+    assert!(!buffers(&none, &parts("PUT")));
+    assert!(buffers(&graphql, &parts("GET")));
+    assert!(!buffers(&graphql, &parts("PUT")));
+    assert!(!buffers(&idempotent, &parts("TRACE")));
+}
 
-    let streamed = sent.into_body().collect().await;
-    assert!(streamed.unwrap_err().is::<LengthLimitError>());
+#[tokio::test(start_paused = true)]
+async fn the_deadline_is_the_request_timeout_of_the_route_and_none_for_a_streaming_route() {
+    let ordinary = target().with_route(&route_fields(RetryPolicy::None, false));
+    let before = Instant::now();
+
+    let deadline = deadline_of(&ordinary).unwrap();
+
+    assert_eq!(deadline - before, Duration::from_millis(2_500));
+    assert_eq!(deadline_of(&target().with_route(&streaming_route())), None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn work_that_outlasts_the_deadline_fails_with_a_response_timeout() {
+    let deadline = Instant::now().checked_add(Duration::from_secs(2));
+
+    let outcome = within(deadline, tokio::time::sleep(Duration::from_secs(3))).await;
+
+    assert_eq!(outcome.unwrap_err(), ForwardError::ResponseTimeout);
+}
+
+#[tokio::test(start_paused = true)]
+async fn work_that_finishes_before_the_deadline_or_has_none_completes() {
+    let deadline = Instant::now().checked_add(Duration::from_secs(2));
+
+    assert!(
+        within(deadline, async { 7 })
+            .await
+            .is_ok_and(|value| value == 7)
+    );
+    assert!(
+        within(None, tokio::time::sleep(Duration::from_secs(3_600)))
+            .await
+            .is_ok()
+    );
 }
 
 #[test]
@@ -212,7 +314,7 @@ fn a_service_without_endpoints_has_none_to_choose() {
     let forwarder = forwarder_over(Vec::new());
 
     assert_eq!(
-        forwarder.choose(&target()).unwrap_err(),
+        forwarder.choose(&target(), None).unwrap_err(),
         ForwardError::NoEndpoint
     );
 }
@@ -222,7 +324,7 @@ fn only_an_endpoint_that_is_ready_is_chosen() {
     let unready = endpoint_with("10.0.0.1", 80, EndpointConditions::default());
     let forwarder = forwarder_over(vec![unready.clone(), endpoint("10.0.0.2", 80)]);
 
-    let chosen = forwarder.choose(&target()).unwrap();
+    let chosen = forwarder.choose(&target(), None).unwrap();
 
     assert_eq!(chosen.address(), "10.0.0.2");
     assert_ne!(chosen, unready);
@@ -234,7 +336,10 @@ fn the_choice_avoids_the_endpoint_with_more_requests_in_flight() {
     let _busy = InFlight::enter(&forwarder.in_flight, "10.0.0.1:80".to_owned());
 
     for _ in 0..20 {
-        assert_eq!(forwarder.choose(&target()).unwrap().address(), "10.0.0.2");
+        assert_eq!(
+            forwarder.choose(&target(), None).unwrap().address(),
+            "10.0.0.2"
+        );
     }
 }
 
@@ -282,19 +387,22 @@ async fn a_connect_that_never_completes_fails_with_the_connect_timeout() {
 
 #[tokio::test(start_paused = true)]
 async fn a_request_whose_connect_times_out_is_classified_as_a_connect_timeout() {
-    let client: Client<_, Limited<Body>> =
+    let client: Client<_, ReplayBody> =
         Client::builder(TokioExecutor::new()).build(TimedConnector {
             inner: NeverConnects,
             timeout: Duration::from_millis(250),
         });
     let request = Request::builder()
         .uri("http://10.0.0.7:80/x")
-        .body(Limited::new(Body::empty(), 10))
+        .body(Payload::Empty.body())
         .unwrap();
 
     let error = client.request(request).await.unwrap_err();
 
-    assert_eq!(classify(&error), ForwardError::ConnectTimeout);
+    let classified = classify(&error);
+    assert_eq!(classified.error, ForwardError::ConnectTimeout);
+    assert_eq!(classified.delivery, Delivery::NotSent);
+    assert!(classified.connect);
 }
 
 #[tokio::test(start_paused = true)]

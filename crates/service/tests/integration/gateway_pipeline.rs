@@ -17,10 +17,11 @@ use iam_application::{
 use iam_domain::freshness::proof::FreshnessProof;
 use iam_domain::{
     AccessToken, AccessTokenParts, AccessTokenVerifier, AssignmentScope, AssignmentState,
-    BootClock as _, BootInstant, CatalogueEntryState, CompiledRoleSet, ForwardError, FreshnessRule,
-    GrantStatus, HttpMethod, PermissionGrant, PolicyVersion, PolicyView, RevocationView, RoleId,
-    RouteState, ServiceName, SessionId, SubjectId, SubjectRef, TokenId, TokenMemo, TokenRejection,
-    TokenRepository, UpstreamForwarder, UpstreamState, UpstreamTarget,
+    BootClock as _, BootInstant, CatalogueEntryState, CompiledRoleSet, EnforcementMode,
+    ForwardError, FreshnessRule, GrantStatus, HttpMethod, PermissionGrant, PolicyVersion,
+    PolicyView, RevocationView, RoleId, RouteState, ServiceName, SessionId, SubjectId, SubjectRef,
+    TokenId, TokenMemo, TokenRejection, TokenRepository, UpstreamForwarder, UpstreamState,
+    UpstreamTarget,
 };
 use iam_infrastructure::{
     CachingTokenRepository, MokaTokenMemo, SnapshotRevocationView, TokenMemoSettings,
@@ -40,6 +41,8 @@ use test_support::seed::TestRng;
 use test_support::upstream::upstream;
 use tower::ServiceExt as _;
 
+mod anonymous;
+mod headers;
 mod proxy;
 
 const HOST: &str = "api.example.test";
@@ -173,19 +176,30 @@ fn snapshot_registering(
     orders_elsewhere: bool,
     held: UpstreamHeld,
 ) -> GatewaySnapshot {
+    snapshot_in_mode(rng, orders_elsewhere, held, EnforcementMode::Enforce)
+}
+
+/// [`snapshot_registering`], with the route `GET /api/users/{id}` in `mode`.
+fn snapshot_in_mode(
+    rng: &mut TestRng,
+    orders_elsewhere: bool,
+    held: UpstreamHeld,
+    mode: EnforcementMode,
+) -> GatewaySnapshot {
     let users = UpstreamState::of(upstream(rng, "users", "users").parts());
     let roles = RoleId::parse(ROLE).unwrap();
     let granted = CompiledRoleSet::compile([(
         PermissionGrant::parse("rest:users:GET /api/users/{}").unwrap(),
         GrantStatus::Active,
     )]);
-    let users_route = route_draft(
+    let mut users_route = route_draft(
         HOST,
         "/api/users/{id}",
         &[HttpMethod::Get],
         "users",
         users.id,
     );
+    users_route.enforcement = mode;
     let orders_route = route_draft(HOST, "/api/orders", &[HttpMethod::Get], "users", users.id);
     let base = GatewaySnapshot::at(PolicyVersion::new(7).unwrap());
     let base = if held == UpstreamHeld::Yes {
@@ -515,6 +529,59 @@ async fn a_subject_without_the_key_of_the_route_gets_403_permission_missing() {
     assert_eq!(gateway.forwarder.seen(), []);
 }
 
+fn gateway_in_mode(mode: EnforcementMode) -> Gateway {
+    let mut rng = TestRng::from_env();
+    let snapshot = snapshot_in_mode(&mut rng, true, UpstreamHeld::Yes, mode);
+    gateway_over(CountingPolicyView::serving(snapshot), false)
+}
+
+#[tokio::test]
+async fn a_denied_request_on_a_route_in_audit_mode_reaches_the_upstream() {
+    let gateway = gateway_in_mode(EnforcementMode::Audit);
+
+    let response = send(&gateway, request("/api/users/1", Some(OTHER))).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(gateway.forwarder.seen().len(), 1);
+}
+
+#[tokio::test]
+async fn the_same_request_on_a_route_in_enforce_mode_is_a_403_and_reaches_nothing() {
+    let gateway = gateway_in_mode(EnforcementMode::Enforce);
+
+    let response = send(&gateway, request("/api/users/1", Some(OTHER))).await;
+
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(gateway.forwarder.seen(), []);
+}
+
+#[rstest]
+#[case::missing(None)]
+#[case::invalid(Some(INVALID))]
+#[case::expired(Some(EXPIRED))]
+#[case::revoked(Some(REVOKED))]
+#[tokio::test]
+async fn audit_mode_still_answers_a_request_without_a_valid_token_with_401(
+    #[case] token: Option<&str>,
+) {
+    let gateway = gateway_in_mode(EnforcementMode::Audit);
+
+    let response = send(&gateway, request("/api/users/1", token)).await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(gateway.forwarder.seen(), []);
+}
+
+#[tokio::test]
+async fn a_subject_holding_the_key_is_forwarded_in_audit_mode_too() {
+    let gateway = gateway_in_mode(EnforcementMode::Audit);
+
+    let response = send(&gateway, request("/api/users/1", Some(GOOD))).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(gateway.forwarder.seen().len(), 1);
+}
+
 #[tokio::test]
 async fn the_refusal_of_an_operation_unknown_to_the_service_is_the_same_whether_or_not_another_service_has_it()
  {
@@ -659,15 +726,23 @@ fn request_with(header: &str, value: &str) -> Request<Body> {
 }
 
 #[tokio::test]
-async fn a_version_above_the_highest_seen_is_a_503_iam_propagating_at_once_and_loads_no_snapshot() {
+async fn a_version_above_the_highest_seen_is_a_503_iam_propagating_at_once_and_reads_only_the_published_version()
+ {
     let (gateway, _published, _board) = barred(7);
 
     let response = send(&gateway, request_with("x-iam-min-policy-version", "8")).await;
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(response.headers().get("retry-after").unwrap(), "1");
+    let named = response
+        .headers()
+        .get("x-iam-policy-version")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     assert_eq!(problem_type(response).await, "/problems/iam_propagating");
-    assert_eq!(gateway.view.loads(), 0);
+    // The decision loads no snapshot; the response names the published version, read once.
+    assert_eq!(gateway.view.loads(), 1);
+    assert_eq!(named.as_deref(), Some("7"));
     assert_eq!(gateway.forwarder.seen(), []);
 }
 

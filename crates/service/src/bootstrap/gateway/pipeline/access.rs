@@ -36,6 +36,9 @@ pub(super) struct Observed {
     trace: DecisionTrace,
     denied: Vec<String>,
     audit_slot: Option<AuditSlot>,
+    would_deny: bool,
+    viewed: bool,
+    published_version: Option<i64>,
 }
 
 impl Observed {
@@ -70,11 +73,40 @@ impl Observed {
         self.denied = denied;
     }
 
+    /// Notes that the route is in audit mode and the decision would have denied the request.
+    pub(super) const fn audit_mode(&mut self, would_deny: bool) {
+        self.would_deny = would_deny;
+    }
+
+    /// Whether a route in audit mode forwarded a request that the decision denied.
+    pub(super) const fn would_deny(&self) -> bool {
+        self.would_deny
+    }
+
     /// Keeps the audit slot that the decision reserved for the record of this request. The slot
     /// goes back to the gate when the record is written, or when the request ends without one
     /// because the client went away and the handler future was dropped.
     pub(super) fn hold_audit_slot(&mut self, slot: Option<AuditSlot>) {
         self.audit_slot = slot;
+    }
+
+    /// Notes what the view of the pod published when the request asked for it: the version of the
+    /// published snapshot, or nothing when none was published. The request is decided on it only
+    /// when the pod is fresh, which [`Self::snapshot`] notes.
+    pub(super) const fn published(&mut self, version: Option<i64>) {
+        self.viewed = true;
+        self.published_version = version;
+    }
+
+    /// The version that the answer to the request names: the snapshot it was decided on, else the
+    /// published one. `view` asks the pod for the published version when the view was not asked
+    /// before.
+    pub(super) fn answer_version(&self, view: impl FnOnce() -> Option<i64>) -> Option<i64> {
+        match (self.policy_version, self.viewed) {
+            (Some(version), _) => Some(version),
+            (None, true) => self.published_version,
+            (None, false) => view(),
+        }
     }
 
     /// Why the token was refused, when it was.

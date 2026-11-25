@@ -18,10 +18,10 @@ use iam_domain::freshness::proof::FreshnessProof;
 use iam_domain::{
     AccessClass, AccessDecision, AccessEntry, AccessLane, AccessToken, AccessTokenParts,
     AccessTokenVerifier, AssignmentScope, AssignmentState, BootClock as _, BootInstant,
-    CatalogueEntryState, ClassBudgets, CompiledRoleSet, DecisionReason, ForwardError,
-    FreshnessRule, GrantStatus, HttpMethod, PermissionGrant, PolicyVersion, PolicyView,
-    RevocationView, Rng as _, RoleId, RouteState, SampleRate, ServiceName, SessionId, SubjectId,
-    SubjectKind, SubjectRef, TokenId, TokenMemo, TokenRejection, TokenRepository,
+    CatalogueEntryState, ClassBudgets, CompiledRoleSet, DecisionReason, EnforcementMode,
+    ForwardError, FreshnessRule, GrantStatus, HttpMethod, PermissionGrant, PolicyVersion,
+    PolicyView, RevocationView, Rng as _, RoleId, RouteState, SampleRate, ServiceName, SessionId,
+    SubjectId, SubjectKind, SubjectRef, TokenId, TokenMemo, TokenRejection, TokenRepository,
     UpstreamForwarder, UpstreamState, UpstreamTarget,
 };
 use iam_infrastructure::{
@@ -37,6 +37,7 @@ use test_support::boot_clock::FakeBootClock;
 use test_support::clock::FixedClock;
 use test_support::gateway_snapshot::GatewaySnapshot;
 use test_support::id::SequenceUuidGenerator;
+use test_support::log::LogRecorder;
 use test_support::rng::FakeRng;
 use test_support::route::{route, route_draft};
 use test_support::seed::TestRng;
@@ -145,6 +146,29 @@ fn snapshot(rng: &mut TestRng) -> GatewaySnapshot {
             .with_catalogue(
                 ServiceName::new(service).unwrap(),
                 vec![entry(key, (sensitive, audit_always))],
+            );
+    }
+    for (service, template, key, enforcement) in [
+        (
+            "auditmode",
+            "/api/audit-mode/{id}",
+            "rest:auditmode:GET /api/audit-mode/{}",
+            EnforcementMode::Audit,
+        ),
+        (
+            "enforcemode",
+            "/api/enforce-mode/{id}",
+            "rest:enforcemode:GET /api/enforce-mode/{}",
+            EnforcementMode::Enforce,
+        ),
+    ] {
+        let mut draft = route_draft(HOST, template, &[HttpMethod::Get], service, backend_id);
+        draft.enforcement = enforcement;
+        snapshot = snapshot
+            .with_route(RouteState::of(route(rng, &draft).parts()))
+            .with_catalogue(
+                ServiceName::new(service).unwrap(),
+                vec![entry(key, (false, false))],
             );
     }
     snapshot
@@ -519,6 +543,46 @@ async fn a_would_deny_of_a_route_in_audit_mode_is_written_with_its_reason() {
         &AccessEntry::Record(Box::new(records[0].clone())),
     );
     assert!(line.contains("\"reason\":\"audit_mode_would_deny\""));
+}
+
+#[tokio::test]
+async fn a_request_the_decision_denies_on_a_route_in_audit_mode_is_forwarded_and_counted_by_its_reason()
+ {
+    let (recorder, _guard) = LogRecorder::install();
+    let harness = harness(SampleRate::NONE, 1);
+
+    let audited = send(&harness, request("/api/audit-mode/1", Some(GOOD))).await;
+    let enforced = send(&harness, request("/api/enforce-mode/1", Some(GOOD))).await;
+    let anonymous = send(&harness, request("/api/audit-mode/1", None)).await;
+    harness.access.finish();
+
+    assert_eq!(audited, StatusCode::OK);
+    assert_eq!(enforced, StatusCode::FORBIDDEN);
+    assert_eq!(anonymous, StatusCode::UNAUTHORIZED);
+    let reasons: Vec<DecisionReason> = harness
+        .sink
+        .records(AccessLane::Audit)
+        .iter()
+        .map(|record| record.reason)
+        .collect();
+    assert_eq!(
+        reasons,
+        [
+            DecisionReason::AuditModeWouldDeny,
+            DecisionReason::PermissionMissing,
+            DecisionReason::TokenMissing,
+        ]
+    );
+    let counted: Vec<String> = recorder
+        .lines()
+        .iter()
+        .filter(|line| line.field("metric") == Some("gateway_decisions_total"))
+        .filter_map(|line| line.field("reason").map(str::to_owned))
+        .collect();
+    assert!(
+        counted.contains(&"audit_mode_would_deny".to_owned()),
+        "{counted:?}"
+    );
 }
 
 #[tokio::test]

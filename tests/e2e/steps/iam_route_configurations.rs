@@ -3,7 +3,7 @@
 //! in the scenario database.
 
 use cucumber::gherkin::Step;
-use cucumber::{then, when};
+use cucumber::{given, then, when};
 use serde_json::{Value, json};
 
 use crate::world::AppWorld;
@@ -164,4 +164,137 @@ async fn newest_records(world: &mut AppWorld, configurations: i64, tombstones: i
         configurations
     );
     assert_eq!(world.count(NEWEST_RECORDS, "tombstone").await, tombstones);
+}
+
+/// The root of the repository, where the reference route configurations are kept.
+const REPOSITORY_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+
+/// The text of the reference route configuration at `file`, relative to the repository root.
+///
+/// # Panics
+///
+/// When the file cannot be read.
+fn reference_text(file: &str) -> String {
+    std::fs::read_to_string(format!("{REPOSITORY_ROOT}/{file}"))
+        .expect("the reference route configuration is readable")
+}
+
+/// The `(methods, pathPattern)` pairs of the routes in `document`, methods sorted and joined.
+///
+/// # Panics
+///
+/// When a route lacks `methods` or `pathPattern`.
+fn route_keys(routes: &Value) -> std::collections::BTreeSet<(String, String)> {
+    routes
+        .as_array()
+        .expect("a list of routes")
+        .iter()
+        .map(|route| {
+            let mut methods: Vec<&str> = route["methods"]
+                .as_array()
+                .expect("methods")
+                .iter()
+                .map(|method| method.as_str().expect("a method"))
+                .collect();
+            methods.sort_unstable();
+            (
+                methods.join(","),
+                route["pathPattern"]
+                    .as_str()
+                    .expect("a path pattern")
+                    .to_owned(),
+            )
+        })
+        .collect()
+}
+
+#[given(
+    expr = "a credential-forwarding upstream exists with name {string} of the catalogue service {string}"
+)]
+async fn credential_forwarding_upstream_exists(
+    world: &mut AppWorld,
+    name: String,
+    catalog_service: String,
+) {
+    let body = json!({
+        "name": name,
+        "namespace": "platform",
+        "service": format!("{name}-service"),
+        "catalogService": catalog_service,
+        "port": 8080,
+        "protocol": "h2c",
+        "forwardCredentials": true,
+    })
+    .to_string();
+    world
+        .send("POST", "/api/upstreams", Some("application/json"), &body)
+        .await;
+    assert_eq!(world.reply().status, 201, "body: {}", world.reply().body);
+}
+
+#[when(
+    expr = "the reference route configuration {string} is put in a dry run to {string} for the upstream {string}"
+)]
+async fn reference_configuration_dry_run(
+    world: &mut AppWorld,
+    file: String,
+    path: String,
+    upstream: String,
+) {
+    let body = reference_text(&file).replace(UPSTREAM_TOKEN, &upstream_id(world, &upstream).await);
+    world
+        .send_verbatim(
+            "PUT",
+            &format!("{path}?dryRun=true"),
+            Some("application/json"),
+            &body,
+        )
+        .await;
+}
+
+#[then(
+    expr = "the dry run should list exactly the routes of the reference route configuration {string} as added"
+)]
+#[expect(
+    clippy::needless_pass_by_ref_mut,
+    reason = "cucumber fixes the step signature"
+)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "cucumber fixes the step signature"
+)]
+fn dry_run_lists_the_reference_routes(world: &mut AppWorld, file: String) {
+    let declared: Value = serde_json::from_str(&reference_text(&file)).expect("valid JSON");
+    let reply = world.reply().json();
+    assert_eq!(
+        route_keys(&reply["added"]),
+        route_keys(&declared["routes"]),
+        "body: {}",
+        world.reply().body
+    );
+    assert_eq!(
+        reply["added"].as_array().map(Vec::len),
+        declared["routes"].as_array().map(Vec::len)
+    );
+    assert_eq!(reply["changed"].as_array().map(Vec::len), Some(0));
+    assert_eq!(reply["removed"].as_array().map(Vec::len), Some(0));
+}
+
+#[then(expr = "every route of the reference route configuration {string} should be anonymous")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "cucumber fixes the step signature"
+)]
+fn every_reference_route_is_anonymous(_world: &mut AppWorld, file: String) {
+    let declared: Value = serde_json::from_str(&reference_text(&file)).expect("valid JSON");
+    let routes = declared["routes"].as_array().expect("a list of routes");
+    assert_ne!(routes.len(), 0);
+    for route in routes {
+        assert_eq!(
+            route["anonymous"],
+            Value::Bool(true),
+            "route: {}",
+            route["pathPattern"]
+        );
+    }
 }

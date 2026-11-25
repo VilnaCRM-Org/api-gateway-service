@@ -10,6 +10,7 @@ Runbooks for operating the service and for maintaining the repository that hosts
 - [Resync the policy state](#resync-the-policy-state)
 - [Revoke sessions and cut off tokens](#revoke-sessions-and-cut-off-tokens)
 - [The first IAM administrator](#the-first-iam-administrator)
+- [Anonymous routes and the User service reference configuration](#anonymous-routes-and-the-user-service-reference-configuration)
 - [Logs and request ids](#logs-and-request-ids)
 - [Shutdown sequence](#shutdown-sequence)
 - [Toolchain update procedure](#toolchain-update-procedure)
@@ -107,6 +108,33 @@ The Schemathesis credential target `make schemathesis-iam` bootstraps the servic
 Every REST operation of IAM requires a valid bearer token (`401` otherwise, and nothing is audited) and the keys of its row in the rule table of the application layer: its catalogue key (`rest:iam:POST /api/roles`), except the decision API (`/api/access-validations`, its batch form and `/api/token-resolutions`), which requires the reserved key `iam:validate:*` and no catalogue key. A caller that lacks a key receives `403` with a problem document, and so does a request for an operation that has no row in the table. The refusal is offered, without waiting, to a per-replica buffer, and the rejected-attempt writer appends the buffered records to the audit log in one batch at most once a second: the log holds a record with the outcome `rejected` and the reason `forbidden` (`operation_unlisted` for an operation without a row), whose summary reads `attempts=<n>`. Identical refusals of one actor, action and reason are summarised: the first one is appended at the next flush, the others within 60 seconds are appended together as one record with their count when the window ends. A refusal that was not appended, because the database was unreachable, stays in the buffer for the next flush; a replica that stops flushes once more. When the policy of the caller cannot be read, the request fails closed with `500` and nothing is audited.
 
 The same rule protects IAM's GraphQL fields (Story 6.12). The `IamAuthorizationExtension` of the schema reads the operation of every request before it runs and collects the IAM root fields it selects (`Query.roles`, `Mutation.createRole` and the others of the GraphQL rule table). A document that selects none behaves as in the template and needs no token. A document that selects any IAM field needs a valid bearer token (`UNAUTHENTICATED` otherwise, nothing audited) and, for every IAM field, the catalogue key `gql:iam:{coordinate}` (`validateAccess`, `validateAccessBatch` and `resolveToken` require `iam:validate:*` instead); a caller that lacks one receives `FORBIDDEN` before any field runs, even when the document also selects example fields, and the refusal is offered to the audit log under the same action name as the REST operation (`role.list`, `role.create`, `access.validate`).
+
+## Anonymous routes and the User service reference configuration
+
+A route flagged `anonymous` is served without a token (FR-63), so that the public endpoints of User service work through the gateway: signing in, refreshing tokens, resetting a password and registering. The pipeline treats such a route as follows.
+
+- The request is not authenticated and not authorized: the token, valid or not, is never read, and no key is checked. A request without a token and one with an invalid token are both forwarded, and the invalid token reaches the upstream unchanged when the upstream has `forwardCredentials` true.
+- Every `X-IAM-*`, `Forwarded` and `X-Forwarded-*` header that the client sent is removed, and no principal header (`X-IAM-Subject`, `X-IAM-Subject-Kind`, `X-IAM-Session`, `X-IAM-Policy-Version`) is set, because the request has no principal. `X-Forwarded-For` carries the client address.
+- Everything else stays: the freshness fence (a proof older than `FRESHNESS_HARD_BOUND` is 503 `iam_stale`, exactly as on a protected route), the body limit of the route (413 above it) and the rate limits that count by address or route (429 `rate_limited`; Story 12.2 proves them on anonymous routes).
+- The decision is read from the snapshot of the request, so a route that a newer version makes protected needs a token again on every pod that has applied that version: a request without one is 401.
+
+Only a holder of `iam:route:anonymous` can make a route anonymous or change one that is (the route configuration refuses the whole set otherwise), and clearing `anonymous` is a revocation-class change.
+
+The reference route configuration for User service is `deploy/kubernetes/routes/user-service.json`, in the request format of `PUT /api/route-configurations/{host}` (the body is `{"routes": [...]}`). It declares exactly these routes, all anonymous, with the catalogue service `user-service`, a body limit of 64 KiB (1 KiB for the health probe) and a request timeout of 30 s:
+
+| Route | Methods |
+| --- | --- |
+| `/api/signin` | `POST` |
+| `/api/signin/2fa` | `POST` |
+| `/api/token` | `POST` |
+| `/api/oauth/{rest:*}` | `GET`, `POST` |
+| `/api/reset-password` | `POST` |
+| `/api/reset-password/confirm` | `POST` |
+| `/api/users` | `POST` (registration) |
+| `/api/users/confirm` | `POST` |
+| `/api/health` | `GET` |
+
+The upstream of the routes is the User service upstream, which must set `forwardCredentials` true, because User service re-checks the session of the routes it protects itself. The file holds the placeholder `UPSTREAM` as the `upstreamId` of every route: replace it with the id of that upstream (`GET /api/upstreams`) before sending the file, and send it first with `?dryRun=true` and the `If-Match` header of `GET /api/route-configurations/{host}`. A dry run returns the diff and writes nothing; check that `added` lists the nine routes above and that nothing is `removed` before the set is applied. Applying the set replaces the whole route set of the host, so merge these routes into the full set of the host when it has other routes. The e2e scenario "The reference route configuration of User service validates in a dry run" runs this dry run against the file in the repository.
 
 ## Health-probe runbook
 

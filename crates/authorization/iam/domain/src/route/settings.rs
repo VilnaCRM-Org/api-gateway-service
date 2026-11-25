@@ -39,6 +39,9 @@ impl RouteFlag {
 pub struct RouteFlags(u8);
 
 impl RouteFlags {
+    /// The flags of a route that serves REST, buffers its response and needs a token.
+    pub const NONE: Self = Self(0);
+
     /// The flags with `flag` switched on or off.
     #[must_use]
     pub const fn with(self, flag: RouteFlag, on: bool) -> Self {
