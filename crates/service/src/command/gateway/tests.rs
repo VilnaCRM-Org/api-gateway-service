@@ -162,8 +162,11 @@ async fn a_gateway_without_a_freshness_state_wires_the_stale_router_and_the_bare
         &config_on(loopback()),
         &policy,
         &clock,
-        Arc::new(pipeline::UnreachableUpstreams),
-        access_log_step(&clock),
+        PublicPorts {
+            forwarder: Arc::new(pipeline::UnreachableUpstreams),
+            access_log: access_log_step(&clock),
+            peers: Arc::new(test_support::ready_peers::FakeReadyPeers::new(1)),
+        },
     )
     .unwrap();
     let _internal = internal_router(&policy);
@@ -211,8 +214,11 @@ async fn a_gateway_with_a_freshness_state_serves_the_freshness_endpoint_and_the_
         &config_on(loopback()),
         &policy,
         &clock,
-        Arc::new(pipeline::UnreachableUpstreams),
-        access_log_step(&clock),
+        PublicPorts {
+            forwarder: Arc::new(pipeline::UnreachableUpstreams),
+            access_log: access_log_step(&clock),
+            peers: Arc::new(test_support::ready_peers::FakeReadyPeers::new(1)),
+        },
     )
     .unwrap();
     let internal = internal_router(&policy);

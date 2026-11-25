@@ -40,6 +40,7 @@ pub mod probe;
 pub mod propagation_store;
 pub mod rate_limit_store;
 pub mod rate_policy;
+pub mod ready_peers;
 pub mod repository;
 pub mod request_digester;
 pub mod rest_permission;

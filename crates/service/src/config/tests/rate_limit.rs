@@ -1,5 +1,5 @@
-//! The rate limit variables of the gateway: `RATE_LIMIT_STORE_URL` and
-//! `RATE_LIMIT_STORE_TIMEOUT`.
+//! The rate limit variables of the gateway: `RATE_LIMIT_STORE_URL`, `RATE_LIMIT_STORE_TIMEOUT`
+//! and `RATE_LIMIT_BREAKER_OPEN_DURATION`.
 
 use std::time::Duration;
 
@@ -10,7 +10,7 @@ use super::{gateway_problems, some, valid_gateway};
 use crate::config::{DEFAULT_RATE_LIMIT_STORE_URL, GatewayConfig};
 
 #[test]
-fn the_defaults_are_the_local_valkey_and_ten_milliseconds() {
+fn the_defaults_are_the_local_valkey_ten_milliseconds_and_a_five_second_breaker() {
     let config = GatewayConfig::from_args(&valid_gateway()).unwrap();
 
     assert_eq!(
@@ -18,6 +18,10 @@ fn the_defaults_are_the_local_valkey_and_ten_milliseconds() {
         ValkeyEndpoint::Direct(DEFAULT_RATE_LIMIT_STORE_URL.to_owned())
     );
     assert_eq!(config.rate_limit.store_timeout, Duration::from_millis(10));
+    assert_eq!(
+        config.rate_limit.breaker_open_duration,
+        Duration::from_secs(5)
+    );
 }
 
 #[rstest]
@@ -80,4 +84,41 @@ fn a_timeout_outside_one_to_fifty_milliseconds_names_its_variable(#[case] raw: &
 
     assert_eq!(problems.len(), 1);
     assert_eq!(problems[0].0, "RATE_LIMIT_STORE_TIMEOUT");
+}
+
+#[rstest]
+#[case("1s", 1)]
+#[case("5s", 5)]
+#[case("5m", 300)]
+fn a_breaker_open_duration_from_one_second_to_five_minutes_is_taken_as_given(
+    #[case] raw: &str,
+    #[case] seconds: u64,
+) {
+    let mut args = valid_gateway();
+    args.rate_limit_breaker_open_duration = some(raw);
+
+    let config = GatewayConfig::from_args(&args).unwrap();
+
+    assert_eq!(
+        config.rate_limit.breaker_open_duration,
+        Duration::from_secs(seconds)
+    );
+}
+
+#[rstest]
+#[case("0s")]
+#[case("999ms")]
+#[case("301s")]
+#[case("1h")]
+#[case("slow")]
+fn a_breaker_open_duration_outside_one_second_to_five_minutes_names_its_variable(
+    #[case] raw: &str,
+) {
+    let mut args = valid_gateway();
+    args.rate_limit_breaker_open_duration = some(raw);
+
+    let problems = gateway_problems(&args);
+
+    assert_eq!(problems.len(), 1);
+    assert_eq!(problems[0].0, "RATE_LIMIT_BREAKER_OPEN_DURATION");
 }

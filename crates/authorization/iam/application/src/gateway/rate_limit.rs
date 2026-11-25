@@ -7,17 +7,28 @@
 //!
 //! Every call of the shared store is bounded by `RATE_LIMIT_STORE_TIMEOUT`, measured on the boot
 //! clock. A call that fails or times out is decided by the fallback bucket of the local limiter
-//! under the full limit of the policy, so a store problem never answers 503 and never changes who
-//! is authorized; Story 12.3 adds the breaker and the conservative limit.
+//! under the conservative limit of the policy (`limit / N_ready` for `fallback = divided`, the
+//! full limit for `full`, `N_ready` being the ready endpoints of `iam-gateway-peers`), so a store
+//! problem never answers 503 and never changes who is authorized.
+//!
+//! After five consecutive failures or timeouts the [`StoreBreaker`] opens for
+//! `RATE_LIMIT_BREAKER_OPEN_DURATION`: no call reaches the store and the local limiter decides
+//! every request. When the duration has passed one probe call is let through; its answer closes
+//! the breaker and exact counting resumes. Every degraded decision is reported as the metric event
+//! `rate_limit_store_degraded`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use iam_domain::{
-    BootClock, LocalRateLimiter, PolicySnapshot, RateDecision, RateDecisionRule, RateKey,
-    RateKeyKind, RateKeyParts, RateLimitStore, RatePolicyFields, RatePolicyId, RequestDigester,
-    RouteId, SubjectRef,
+    BootClock, BreakerPermit, LocalRateLimiter, PolicySnapshot, RateDecision, RateDecisionRule,
+    RateKey, RateKeyKind, RateKeyParts, RateLimitStore, RatePolicyFields, RatePolicyId, ReadyPeers,
+    RequestDigester, RouteId, StoreBreaker, SubjectRef,
 };
+
+pub use self::peers::EndpointReadyPeers;
+
+mod peers;
 
 /// Which of the policies of a route a check decides.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,14 +65,56 @@ pub struct RateRequest<'request> {
     pub subject: Option<&'request SubjectRef>,
 }
 
+/// The time bounds of the shared store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateStoreBounds {
+    /// `RATE_LIMIT_STORE_TIMEOUT`: the longest one call of the store may take.
+    pub store_timeout: Duration,
+    /// `RATE_LIMIT_BREAKER_OPEN_DURATION`: how long the breaker stays open before one probe.
+    pub breaker_open_duration: Duration,
+}
+
+/// The ports a [`RateLimitGate`] decides with.
+#[derive(Debug, Clone)]
+pub struct RateLimitPorts {
+    /// The shared counters.
+    pub store: Arc<dyn RateLimitStore>,
+    /// The in-process limiter: the flood guard and the fallback buckets.
+    pub local: Arc<dyn LocalRateLimiter>,
+    /// Hashes the key parts.
+    pub digester: Arc<dyn RequestDigester>,
+    /// Measures the store timeout and the breaker interval.
+    pub clock: Arc<dyn BootClock>,
+    /// Counts the ready gateway pods for the conservative limit.
+    pub peers: Arc<dyn ReadyPeers>,
+}
+
 /// Decides the rate policies of a route against the shared counters.
 #[derive(Debug)]
 pub struct RateLimitGate {
-    store: Arc<dyn RateLimitStore>,
-    local: Arc<dyn LocalRateLimiter>,
-    digester: Arc<dyn RequestDigester>,
-    clock: Arc<dyn BootClock>,
+    ports: RateLimitPorts,
+    breaker: Mutex<StoreBreaker>,
     timeout: Duration,
+}
+
+/// Why a request was decided by the local limiter, for the degraded metric.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Degradation {
+    Unavailable,
+    TimedOut,
+    BreakerOpen,
+    BreakerOpened,
+}
+
+impl Degradation {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unavailable => "unavailable",
+            Self::TimedOut => "timed_out",
+            Self::BreakerOpen => "breaker_open",
+            Self::BreakerOpened => "breaker_opened",
+        }
+    }
 }
 
 /// How a call of the shared store ended, for the latency metric.
@@ -83,22 +136,14 @@ impl StoreOutcome {
 }
 
 impl RateLimitGate {
-    /// A gate over the shared `store` and the `local` limiter. `timeout` bounds every call of the
-    /// store and is measured on `clock`; keys are hashed with `digester`.
+    /// A gate over `ports`. `bounds.store_timeout` bounds every call of the store and is
+    /// measured on the boot clock; the breaker opens for `bounds.breaker_open_duration`.
     #[must_use]
-    pub fn new(
-        store: Arc<dyn RateLimitStore>,
-        local: Arc<dyn LocalRateLimiter>,
-        digester: Arc<dyn RequestDigester>,
-        clock: Arc<dyn BootClock>,
-        timeout: Duration,
-    ) -> Self {
+    pub const fn new(ports: RateLimitPorts, bounds: RateStoreBounds) -> Self {
         Self {
-            store,
-            local,
-            digester,
-            clock,
-            timeout,
+            ports,
+            breaker: Mutex::new(StoreBreaker::new(bounds.breaker_open_duration)),
+            timeout: bounds.store_timeout,
         }
     }
 
@@ -110,8 +155,10 @@ impl RateLimitGate {
             ip,
             ..RateKeyParts::default()
         };
-        RateKey::new(RateKeyKind::Ip, &parts, self.digester.as_ref())
-            .map_or(RateDecision::Admit, |key| self.local.check_guard(&key))
+        RateKey::new(RateKeyKind::Ip, &parts, self.ports.digester.as_ref())
+            .map_or(RateDecision::Admit, |key| {
+                self.ports.local.check_guard(&key)
+            })
     }
 
     /// Decides the policies of the route that belong to `stage`, in order, and stops at the first
@@ -148,46 +195,94 @@ impl RateLimitGate {
         if !stage.counts(fields.key_kind()) {
             return None;
         }
-        let key = RateKey::new(fields.key_kind(), parts, self.digester.as_ref()).ok()?;
+        let key = RateKey::new(fields.key_kind(), parts, self.ports.digester.as_ref()).ok()?;
         Some(self.decide(id, &key, fields).await)
     }
 
-    /// One policy: the shared counter under the timeout, the local fallback when it cannot answer.
+    /// One policy: the shared counter under the timeout and the breaker, the local fallback when
+    /// it cannot answer.
     async fn decide(
         &self,
         id: &RatePolicyId,
         key: &RateKey,
         fields: &RatePolicyFields,
     ) -> RateDecision {
+        let permit = self.permit();
+        if permit == BreakerPermit::Skip {
+            log_degraded(Degradation::BreakerOpen);
+            return self.fallback(id, key, fields);
+        }
         let rule = RateDecisionRule::for_policy(fields);
-        let started = self.clock.now();
-        let answer = tokio::time::timeout(self.timeout, self.store.check(id, key, &rule)).await;
-        let elapsed = self.clock.now().saturating_since(started);
+        let started = self.ports.clock.now();
+        let answer =
+            tokio::time::timeout(self.timeout, self.ports.store.check(id, key, &rule)).await;
+        let elapsed = self.ports.clock.now().saturating_since(started);
         match answer {
             Ok(Ok(decision)) => {
                 log_latency(elapsed, StoreOutcome::Answered);
+                self.answered(permit);
                 decision
             }
             Ok(Err(_unavailable)) => {
                 log_latency(elapsed, StoreOutcome::Unavailable);
+                self.failed(permit, Degradation::Unavailable);
                 self.fallback(id, key, fields)
             }
             Err(_elapsed) => {
                 log_latency(elapsed, StoreOutcome::TimedOut);
+                self.failed(permit, Degradation::TimedOut);
                 self.fallback(id, key, fields)
             }
         }
     }
 
+    fn permit(&self) -> BreakerPermit {
+        let now = self.ports.clock.now();
+        self.breaker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .permit(now)
+    }
+
+    fn answered(&self, permit: BreakerPermit) {
+        self.breaker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .record_success(permit);
+    }
+
+    fn failed(&self, permit: BreakerPermit, reason: Degradation) {
+        let now = self.ports.clock.now();
+        let opened = self
+            .breaker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .record_failure(permit, now);
+        log_degraded(reason);
+        if opened {
+            log_degraded(Degradation::BreakerOpened);
+        }
+    }
+
+    /// The local fallback bucket under the conservative limit for the ready pods now.
     fn fallback(
         &self,
         id: &RatePolicyId,
         key: &RateKey,
         fields: &RatePolicyFields,
     ) -> RateDecision {
-        let rule = RateDecisionRule::conservative(fields, 1);
-        self.local.check_fallback(id, key, &rule)
+        let rule = RateDecisionRule::conservative(fields, self.ports.peers.ready_endpoints());
+        self.ports.local.check_fallback(id, key, &rule)
     }
+}
+
+fn log_degraded(reason: Degradation) {
+    let reason = reason.as_str();
+    tracing::warn!(
+        metric = "rate_limit_store_degraded",
+        reason,
+        "the rate limit store is degraded; the local limiter decides"
+    );
 }
 
 fn log_latency(elapsed: Duration, outcome: StoreOutcome) {

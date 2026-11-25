@@ -9,7 +9,7 @@ use axum::http::header::RETRY_AFTER;
 use axum::http::{Request, StatusCode};
 use axum::response::Response;
 use http_body_util::BodyExt as _;
-use iam_application::{FreshnessState, RateLimitGate};
+use iam_application::{FreshnessState, RateLimitGate, RateLimitPorts, RateStoreBounds};
 use iam_domain::freshness::proof::FreshnessProof;
 use iam_domain::{
     BootClock as _, BootInstant, FreshnessRule, HttpMethod, PolicyVersion, PolicyView,
@@ -24,6 +24,7 @@ use test_support::gateway_snapshot::{CountingPolicyView, GatewaySnapshot};
 use test_support::local_rate_limiter::FakeLocalRateLimiter;
 use test_support::rate_limit_store::FakeRateLimitStore;
 use test_support::rate_policy::rate_policy_state;
+use test_support::ready_peers::FakeReadyPeers;
 use test_support::request_digester::FakeRequestDigester;
 use test_support::route::{route, route_draft};
 use test_support::seed::TestRng;
@@ -117,11 +118,17 @@ fn pipeline(snapshot: GatewaySnapshot, gate: RateLimitGate) -> Pipeline {
 
 fn gate(store: Arc<dyn RateLimitStore>, local: &Arc<FakeLocalRateLimiter>) -> RateLimitGate {
     RateLimitGate::new(
-        store,
-        Arc::<FakeLocalRateLimiter>::clone(local),
-        Arc::new(FakeRequestDigester),
-        Arc::new(FakeBootClock::new()),
-        Duration::from_millis(20),
+        RateLimitPorts {
+            store,
+            local: Arc::<FakeLocalRateLimiter>::clone(local),
+            digester: Arc::new(FakeRequestDigester),
+            clock: Arc::new(FakeBootClock::new()),
+            peers: Arc::new(FakeReadyPeers::new(1)),
+        },
+        RateStoreBounds {
+            store_timeout: Duration::from_millis(20),
+            breaker_open_duration: Duration::from_secs(5),
+        },
     )
 }
 
@@ -297,7 +304,7 @@ fn the_client_address_is_the_ip_of_the_peer() {
 
 #[test]
 fn the_production_gate_connects_to_nothing_until_the_first_request() {
-    let gate = gate_from_config(&config());
+    let gate = gate_from_config(&config(), Arc::new(FakeReadyPeers::new(1)));
 
     assert_ne!(format!("{gate:?}"), "");
 }

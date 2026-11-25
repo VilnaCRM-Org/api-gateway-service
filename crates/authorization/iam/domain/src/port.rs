@@ -38,6 +38,7 @@ pub mod policy_view;
 pub mod propagation_store;
 pub mod rate_limit_store;
 pub mod rate_policy_repository;
+pub mod ready_peers;
 pub mod rejected_attempt_log;
 pub mod request_digester;
 pub mod rest_permission_repository;

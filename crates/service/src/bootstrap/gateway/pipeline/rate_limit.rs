@@ -18,10 +18,12 @@ use axum::http::header::RETRY_AFTER;
 use axum::http::request::Parts;
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse as _, Response};
-use iam_application::{Principal, RateLimitGate, RateRequest, RateStage};
+use iam_application::{
+    Principal, RateLimitGate, RateLimitPorts, RateRequest, RateStage, RateStoreBounds,
+};
 use iam_domain::{
-    BootClock, LocalRateLimiter, PolicySnapshot, RateDecision, RateDecisionRule, RequestDigester,
-    RouteState, SubjectId, SubjectRef,
+    BootClock, LocalRateLimiter, PolicySnapshot, RateDecision, RateDecisionRule, ReadyPeers,
+    RequestDigester, RouteState, SubjectId, SubjectRef,
 };
 use iam_infrastructure::{
     BucketLocalRateLimiter, LinuxBootClock, Sha256RequestDigester, ValkeyRateLimitStore,
@@ -67,10 +69,12 @@ impl From<SocketAddr> for ClientAddress {
 
 /// The gate of production, over the Valkey at `RATE_LIMIT_STORE_URL`.
 ///
-/// Every call of the shared store is bounded by `RATE_LIMIT_STORE_TIMEOUT`; the local limiter holds
-/// the flood guard and the fallback buckets.
+/// Every call of the shared store is bounded by `RATE_LIMIT_STORE_TIMEOUT`, and the breaker opens
+/// for `RATE_LIMIT_BREAKER_OPEN_DURATION` after five consecutive failures; the local limiter holds
+/// the flood guard and the fallback buckets, which divide a limit among the `peers` that are
+/// ready.
 #[must_use]
-pub fn gate_from_config(config: &GatewayConfig) -> Arc<RateLimitGate> {
+pub fn gate_from_config(config: &GatewayConfig, peers: Arc<dyn ReadyPeers>) -> Arc<RateLimitGate> {
     let clock: Arc<dyn BootClock> = Arc::new(LinuxBootClock);
     let guard = RateDecisionRule::new(GUARD_LIMIT, GUARD_PERIOD, GUARD_BURST);
     let local: Arc<dyn LocalRateLimiter> = Arc::new(BucketLocalRateLimiter::new(
@@ -80,11 +84,17 @@ pub fn gate_from_config(config: &GatewayConfig) -> Arc<RateLimitGate> {
     ));
     let digester: Arc<dyn RequestDigester> = Arc::new(Sha256RequestDigester);
     Arc::new(RateLimitGate::new(
-        Arc::new(ValkeyRateLimitStore::new(config.rate_limit.store.clone())),
-        local,
-        digester,
-        clock,
-        config.rate_limit.store_timeout,
+        RateLimitPorts {
+            store: Arc::new(ValkeyRateLimitStore::new(config.rate_limit.store.clone())),
+            local,
+            digester,
+            clock,
+            peers,
+        },
+        RateStoreBounds {
+            store_timeout: config.rate_limit.store_timeout,
+            breaker_open_duration: config.rate_limit.breaker_open_duration,
+        },
     ))
 }
 
