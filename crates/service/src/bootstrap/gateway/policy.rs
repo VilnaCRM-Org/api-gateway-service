@@ -19,10 +19,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iam_application::{
-    BootstrapMachine, BootstrapOutcome, BootstrapPorts, BootstrapSnapshot, DerivedStateChecker,
-    FenceCause, FreshnessProber, PeerReadinessChecker, PeerSet, PodStatus, PolicyVersionBoard,
-    ProofSink, ReevaluationBoard, TailApplier, TailEnd, TailMachine, TailPorts, TailProgress,
-    rebootstrap_delay, run_bootstrap, run_tail,
+    BootstrapHighWater, BootstrapMachine, BootstrapOutcome, BootstrapPorts, BootstrapSnapshot,
+    DerivedStateChecker, FenceCause, FreshnessProber, PeerReadinessChecker, PeerSet, PodStatus,
+    PolicyVersionBoard, ProofSink, RecordingBootstrapLog, ReevaluationBoard, TailApplier, TailEnd,
+    TailMachine, TailPorts, TailProgress, rebootstrap_delay, run_bootstrap, run_tail,
 };
 use iam_domain::{
     BootClock, KafkaTopicInspector, PeerFreshnessClient, PolicyBootstrapLog, PolicyDigest,
@@ -106,6 +106,9 @@ pub struct PolicyAdapters {
     /// The publications that wait for the re-authorization of the open streams, and the highest
     /// version whose re-evaluation has finished (Story 11.2).
     pub reevaluation: Arc<ReevaluationBoard>,
+    /// The end of the state topic that the bootstraps of the pod captured, which
+    /// `/internal/policy/applied` compares with the offset of a write (Story 13.3).
+    pub high_water: Arc<BootstrapHighWater>,
 }
 
 impl PolicyAdapters {
@@ -171,6 +174,9 @@ impl PolicyAdapters {
     pub fn with(log: Arc<dyn PolicyBootstrapLog>, boot_clock: Arc<dyn BootClock>) -> Self {
         let codec: Arc<dyn StateRecordCodec> = Arc::new(JsonStateRecordCodec);
         let digest: Arc<dyn PolicyDigest> = Arc::new(Sha256PolicyDigest);
+        let high_water = Arc::new(BootstrapHighWater::new());
+        let log: Arc<dyn PolicyBootstrapLog> =
+            Arc::new(RecordingBootstrapLog::new(log, Arc::clone(&high_water)));
         Self {
             cell: Arc::new(ArcSwapPolicySnapshot::deferred()),
             log,
@@ -191,6 +197,7 @@ impl PolicyAdapters {
             readiness: None,
             versions: Arc::new(PolicyVersionBoard::new()),
             reevaluation: Arc::new(ReevaluationBoard::new()),
+            high_water,
         }
     }
 }

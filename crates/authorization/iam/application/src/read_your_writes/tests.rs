@@ -129,3 +129,15 @@ async fn a_pod_without_a_snapshot_refuses_after_the_wait() {
 
     assert_eq!(barrier.admit(version(1)).await, BarrierVerdict::Propagating);
 }
+
+#[test]
+fn the_published_version_is_none_until_a_snapshot_is_published_and_again_when_it_is_withdrawn() {
+    let board = PolicyVersionBoard::new();
+    assert_eq!(board.published(), None);
+
+    board.note_published(Some(version(3)));
+    assert_eq!(board.published(), Some(version(3)));
+
+    board.note_published(None);
+    assert_eq!(board.published(), None);
+}

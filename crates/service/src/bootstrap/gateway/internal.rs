@@ -2,24 +2,56 @@
 //!
 //! Only `iam-control` and the gateway pods reach this listener; the admission is the network
 //! policy of the deployment. `/internal/freshness` joins it with Story 9.5 (see
-//! [`router_with_freshness`]) and `/internal/policy/applied` joins it in Story 13.3, so every
-//! other path answers the 404 problem.
+//! [`router_with_freshness`]) and `/internal/policy/applied` joins it in Story 13.3 (see
+//! [`with_applied`]), so every other path answers the 404 problem.
 
 use std::sync::Arc;
 
 use axum::extract::State;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse as _, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use iam_application::FreshnessState;
+use iam_application::{AppliedAnswer, AppliedPoll, AppliedQuery, FreshnessState};
 use iam_domain::PolicyView;
 use serde_json::{Value, json};
 use shared_application::http::fallback::{method_not_allowed, not_found};
+use shared_application::http::{Problem, ValidatedQuery};
 
 /// The router of the internal listener without the freshness endpoint.
 pub fn router() -> Router {
     Router::new()
         .fallback(not_found)
         .method_not_allowed_fallback(method_not_allowed)
+}
+
+/// `router` with `/internal/policy/applied` added (Story 13.3).
+///
+/// The long poll of the Sync-Fence coordinator is served whether or not the pod has bootstrapped.
+pub fn with_applied(router: Router, poll: Arc<AppliedPoll>) -> Router {
+    router.route("/internal/policy/applied", get(applied).with_state(poll))
+}
+
+/// `GET /internal/policy/applied?atLeast=V&offset=O&wait=T`.
+///
+/// 200 with the published version, the pod name and `hardBoundMs` once the pod enforces `V`, 204
+/// when the wait ends first and 503 when `APPLIED_POLL_MAX_CONCURRENT` polls wait already.
+async fn applied(
+    State(poll): State<Arc<AppliedPoll>>,
+    ValidatedQuery(query): ValidatedQuery<AppliedQuery>,
+) -> Response {
+    match poll.poll(query.version(), query.offset, query.wait()).await {
+        AppliedAnswer::Applied { published } => Json(json!({
+            "version": published.map(iam_domain::PolicyVersion::value),
+            "pod": poll.pod(),
+            "hardBoundMs": millis(poll.hard_bound()),
+        }))
+        .into_response(),
+        AppliedAnswer::Unanswered => StatusCode::NO_CONTENT.into_response(),
+        AppliedAnswer::Busy => Problem::new(StatusCode::SERVICE_UNAVAILABLE)
+            .with_detail("The pod already holds the most applied-version polls it may.")
+            .into_response(),
+    }
 }
 
 /// What `/internal/freshness` reads.

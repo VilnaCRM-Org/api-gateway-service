@@ -185,7 +185,7 @@ async fn a_gateway_without_a_freshness_state_wires_the_stale_router_and_the_bare
         },
     )
     .unwrap();
-    let _internal = internal_router(&policy);
+    let _internal = internal_router(&config_on(loopback()), &policy);
     let answer = routers
         .public
         .oneshot(Request::get("/anything").body(Body::empty()).unwrap())
@@ -200,6 +200,34 @@ async fn a_gateway_without_a_freshness_state_wires_the_stale_router_and_the_bare
     assert!(policy.freshness.is_none());
     assert_eq!(answer.status(), StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(mesh_answer.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn the_internal_listener_serves_the_applied_poll_from_process_start_even_without_a_freshness_state()
+ {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use test_support::boot_clock::FakeBootClock;
+    use test_support::policy_bootstrap_log::FakePolicyBootstrapLog;
+    use tower::ServiceExt as _;
+
+    let policy = policy::PolicyAdapters::with(
+        Arc::new(FakePolicyBootstrapLog::with(Vec::new())),
+        Arc::new(FakeBootClock::new()),
+    );
+    policy.high_water.capture(10);
+    let get = |path: &'static str| {
+        internal_router(&config_on(loopback()), &policy)
+            .oneshot(Request::get(path).body(Body::empty()).unwrap())
+    };
+
+    let covered = get("/internal/policy/applied?atLeast=3&offset=2&wait=0")
+        .await
+        .unwrap();
+    let freshness = get("/internal/freshness").await.unwrap();
+
+    assert_eq!(covered.status(), StatusCode::OK);
+    assert_eq!(freshness.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -245,7 +273,7 @@ async fn a_gateway_with_a_freshness_state_serves_the_freshness_endpoint_and_the_
         },
     )
     .unwrap();
-    let internal = internal_router(&policy);
+    let internal = internal_router(&config_on(loopback()), &policy);
     let gated = routers
         .public
         .oneshot(Request::get("/anything").body(Body::empty()).unwrap())

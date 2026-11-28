@@ -70,14 +70,21 @@ impl PolicyVersionBoard {
         PolicyVersion::new(self.highest_seen.load(Ordering::Acquire)).ok()
     }
 
+    /// The version published now, or `None` while no snapshot is published.
+    #[must_use]
+    pub fn published(&self) -> Option<PolicyVersion> {
+        PolicyVersion::new(*self.published.borrow()).ok()
+    }
+
     /// Whether `minimum` has been seen in the log.
     fn has_seen(&self, minimum: PolicyVersion) -> bool {
         self.highest_seen.load(Ordering::Acquire) >= minimum.value()
     }
 
     /// Resolves once a snapshot of `minimum` or higher is published; never when the board is
-    /// dropped first.
-    async fn published_at_least(&self, minimum: PolicyVersion) -> bool {
+    /// dropped first. Every caller subscribes to the one channel of the board, so any number of
+    /// waiters share a single watch on the published version.
+    pub async fn published_at_least(&self, minimum: PolicyVersion) -> bool {
         let mut receiver = self.published.subscribe();
         receiver
             .wait_for(|published| *published >= minimum.value())
