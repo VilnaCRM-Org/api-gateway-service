@@ -75,6 +75,7 @@ use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetReques
 use self::access::Observed;
 use self::headers::Propagated;
 use super::edge::framing::reject_ambiguous;
+use super::graphql_ws::{Handshake, SocketSettings};
 use super::listener::stale_response;
 use super::streams::{StreamHandle, Streams};
 use crate::http::authentication::credential;
@@ -87,12 +88,14 @@ mod graphql;
 mod headers;
 mod rate_limit;
 mod read_your_writes;
+mod socket;
 mod stream;
 mod wiring;
 
 pub use access::PipelineAccessLog;
 pub use connection_limit::TYPE_CONNECTION_LIMIT;
 pub use cors::{TYPE_CORS_REJECTED, TYPE_CSRF_REJECTED};
+pub use graphql::decode_operation;
 pub use rate_limit::{ClientAddress, TYPE_RATE_LIMITED, gate_from_config};
 pub use wiring::{PipelineSetupError, UnauditedCommands, UnreachableUpstreams, from_config};
 
@@ -135,6 +138,7 @@ pub struct Pipeline {
     access_log: Option<Arc<PipelineAccessLog>>,
     service_callers: Option<CallerTokenRule>,
     streams: Option<Arc<Streams>>,
+    sockets: SocketSettings,
 }
 
 /// Why the pipeline answers a request itself, kept small until the answer is built.
@@ -254,6 +258,9 @@ struct Admitted {
     body: Body,
     /// The registration of the stream the request opens, on a route flagged `streaming`.
     stream: Option<Arc<StreamHandle>>,
+    /// The handshake of a GraphQL subscription socket (Story 11.3), which the gateway answers
+    /// itself instead of forwarding the request.
+    socket: Option<Handshake>,
 }
 
 /// What a request matched: its parts, its route and the request the decision reads.
@@ -287,6 +294,7 @@ impl Pipeline {
             access_log: None,
             service_callers: None,
             streams: None,
+            sockets: SocketSettings::DEFAULT,
         }
     }
 
@@ -338,8 +346,15 @@ impl Pipeline {
         self
     }
 
+    /// The same pipeline with the limits of the GraphQL subscription sockets of Story 11.3.
+    #[must_use]
+    pub const fn with_graphql_ws(mut self, sockets: SocketSettings) -> Self {
+        self.sockets = sockets;
+        self
+    }
+
     async fn handle(&self, request: Request) -> Response {
-        let (mut parts, body) = request.into_parts();
+        let (parts, body) = request.into_parts();
         let started = self
             .access_log
             .is_some()
@@ -349,25 +364,7 @@ impl Pipeline {
         let admitted = self.admit(&parts, body, &mut seen, &mut cors).await;
         let verdict = verdict_of(admitted.as_ref().err(), &seen);
         let mut response = match admitted {
-            Ok(admitted) => {
-                parts.uri = admitted.uri;
-                let forward_credentials = admitted.target.forward_credentials();
-                match admitted.principal.as_ref() {
-                    Some(principal) => headers::rewrite(
-                        &mut parts,
-                        &Propagated {
-                            principal,
-                            version: admitted.version,
-                            forward_credentials,
-                        },
-                    ),
-                    None => headers::rewrite_anonymous(&mut parts, forward_credentials),
-                }
-                stream::admit(self.streams.as_ref(), admitted.stream.as_ref()).await;
-                stream::attach(&mut parts, admitted.stream);
-                self.forward(admitted.target, Request::from_parts(parts, admitted.body))
-                    .await
-            }
+            Ok(admitted) => self.hand_over(parts, admitted).await,
             Err(refusal) => refusal.into(),
         };
         cors::decorate(&mut response, cors.as_ref());
@@ -377,6 +374,31 @@ impl Pipeline {
             log.finish(started, seen, verdict, &response);
         }
         response
+    }
+
+    /// Hands an admitted request on: the upgrade of a GraphQL socket is answered by the gateway
+    /// itself, any other request has its headers rewritten and goes to the forwarder.
+    async fn hand_over(&self, mut parts: Parts, admitted: Admitted) -> Response {
+        if let Some(handshake) = admitted.socket {
+            return socket::open(self, parts, &handshake);
+        }
+        parts.uri = admitted.uri;
+        let forward_credentials = admitted.target.forward_credentials();
+        match admitted.principal.as_ref() {
+            Some(principal) => headers::rewrite(
+                &mut parts,
+                &Propagated {
+                    principal,
+                    version: admitted.version,
+                    forward_credentials,
+                },
+            ),
+            None => headers::rewrite_anonymous(&mut parts, forward_credentials),
+        }
+        stream::admit(self.streams.as_ref(), admitted.stream.as_ref()).await;
+        stream::attach(&mut parts, admitted.stream);
+        self.forward(admitted.target, Request::from_parts(parts, admitted.body))
+            .await
     }
 
     /// Step 2 of the pipeline: a request that names a policy version waits for it before the
@@ -410,12 +432,18 @@ impl Pipeline {
         let path =
             PathNormalizer::normalize(parts.uri.path()).map_err(|_rule| Refusal::MalformedPath)?;
         cors::preflight(&snapshot, parts, &path, seen, cors)?;
-        graphql_posts_only(&snapshot, parts, method, &path, seen)?;
+        let socket = socket::opens(self, &snapshot, parts, method, &path);
+        if !socket {
+            graphql_posts_only(&snapshot, parts, method, &path, seen)?;
+        }
         let route = route_of(&snapshot, parts, method, &path).ok_or(Refusal::NoRoute)?;
         seen.route(&snapshot, route);
         cors::simple(parts, route, cors);
         rate_limit::before_authentication(self.rate_limits.as_ref(), parts, &snapshot, route)
             .await?;
+        if socket {
+            return socket::admit(&snapshot, parts, route, &path);
+        }
         let request = RouteRequest {
             snapshot: &snapshot,
             service: route.fields.service(),
@@ -469,6 +497,7 @@ impl Pipeline {
             version: snapshot.version().value(),
             body,
             stream,
+            socket: None,
         })
     }
 

@@ -36,7 +36,7 @@ async fn settle(streams: &Streams, watched: &Watched, now: SystemTime) {
 fn due(streams: &Streams, watched: &Watched, now: SystemTime) -> Option<Due> {
     if watched.token_expires_at.is_some_and(|at| at <= now) {
         Some(Due::Close(CloseReason::TokenExpired))
-    } else if watched.activity.idle_for() >= streams.idle_timeout {
+    } else if !watched.operation && watched.activity.idle_for() >= streams.idle_timeout {
         Some(Due::Close(CloseReason::Idle))
     } else if watched.assignment_expires_at.is_some_and(|at| at <= now) {
         Some(Due::Redecide)

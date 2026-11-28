@@ -68,6 +68,7 @@ use self::failure::{Classified, classify};
 use self::payload::{Payload, ReplayBody};
 use self::registry::{Permit, Registry};
 use self::relay::RelayBody;
+pub use self::stream::{Tunnel, TunnelSlot, tunnel};
 use self::stream::{guarded, opens_websocket};
 use crate::bootstrap::gateway::streams::StreamHandle;
 

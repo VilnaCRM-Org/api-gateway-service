@@ -26,6 +26,7 @@ pub mod decision;
 pub mod edge;
 pub mod endpoints;
 pub mod freshness;
+pub mod graphql_ws;
 pub mod internal;
 pub mod listener;
 pub mod pipeline;

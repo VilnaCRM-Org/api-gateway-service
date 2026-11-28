@@ -2574,6 +2574,67 @@ fn a_stream_idle_timeout_that_is_not_a_positive_duration_names_its_variable(#[ca
 }
 
 #[test]
+fn the_graphql_ws_init_timeout_defaults_to_five_seconds() {
+    let config = GatewayConfig::from_args(&valid_gateway()).unwrap();
+
+    assert_eq!(config.graphql_ws_init_timeout, Duration::from_secs(5));
+}
+
+#[test]
+fn a_graphql_ws_init_timeout_is_taken_as_given() {
+    let mut args = valid_gateway();
+    args.graphql_ws_init_timeout = some("750ms");
+
+    let config = GatewayConfig::from_args(&args).unwrap();
+
+    assert_eq!(config.graphql_ws_init_timeout, Duration::from_millis(750));
+}
+
+#[rstest]
+#[case("0s")]
+#[case("soon")]
+fn a_graphql_ws_init_timeout_that_is_not_a_positive_duration_names_its_variable(#[case] raw: &str) {
+    let mut args = valid_gateway();
+    args.graphql_ws_init_timeout = some(raw);
+
+    assert_eq!(gateway_variables(&args), vec!["GRAPHQL_WS_INIT_TIMEOUT"]);
+}
+
+#[test]
+fn the_applied_poll_limit_defaults_to_256() {
+    let config = GatewayConfig::from_args(&valid_gateway()).unwrap();
+
+    assert_eq!(config.applied_poll_max_concurrent, 256);
+}
+
+#[rstest]
+#[case("1", 1)]
+#[case("40", 40)]
+#[case("100000", 100_000)]
+fn an_applied_poll_limit_in_range_is_taken_as_given(#[case] raw: &str, #[case] expected: usize) {
+    let mut args = valid_gateway();
+    args.applied_poll_max_concurrent = some(raw);
+
+    let config = GatewayConfig::from_args(&args).unwrap();
+
+    assert_eq!(config.applied_poll_max_concurrent, expected);
+}
+
+#[rstest]
+#[case("0")]
+#[case("100001")]
+#[case("many")]
+fn an_applied_poll_limit_out_of_range_names_its_variable(#[case] raw: &str) {
+    let mut args = valid_gateway();
+    args.applied_poll_max_concurrent = some(raw);
+
+    assert_eq!(
+        gateway_variables(&args),
+        vec!["APPLIED_POLL_MAX_CONCURRENT"]
+    );
+}
+
+#[test]
 fn the_graphql_parse_budget_defaults_to_twenty_misses_and_one_mebibyte_per_second() {
     let config = GatewayConfig::from_args(&valid_gateway()).unwrap();
 

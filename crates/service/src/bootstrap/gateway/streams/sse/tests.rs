@@ -25,6 +25,7 @@ fn open(registry: &Arc<StreamRegistry>) -> Arc<StreamHandle> {
         host: "api.example.test".to_owned(),
         method: HttpMethod::Get,
         path: "/events".to_owned(),
+        operation: None,
     };
     Arc::new(registry.open(record, grant).unwrap())
 }

@@ -38,22 +38,35 @@ pub(super) async fn decided(
     principal: &Principal,
     operations: &[GraphQlOperation],
 ) -> Option<TracedAuthorization> {
+    decided_keyed(authorizer, request, principal, operations)
+        .await
+        .map(|(traced, _keys)| traced)
+}
+
+/// Decides like [`decided`] and also names the permission keys the documents required, which an
+/// open subscription operation is registered with (Story 11.3); empty when no key was read.
+pub(super) async fn decided_keyed(
+    authorizer: &RequestAuthorizer,
+    request: &RouteRequest<'_>,
+    principal: &Principal,
+    operations: &[GraphQlOperation],
+) -> Option<(TracedAuthorization, Vec<String>)> {
     let Some(analyzer) = authorizer.graphql.get() else {
-        return Some(Authorization::Unavailable.into());
+        return Some((Authorization::Unavailable.into(), Vec::new()));
     };
     let reads =
         LoadedSnapshotReads::new(Arc::clone(request.snapshot), Arc::clone(&authorizer.cache));
     let read = reads.read_service_catalog(request.service).await;
     let Ok(Some(catalog)) = read else {
-        return Some(missing_catalog(&read).into());
+        return Some((missing_catalog(&read).into(), Vec::new()));
     };
     let subject = principal.subject().to_string();
     match analyzer.analyze(&catalog, &subject, operations).await {
         Analysis::Analyzed(document) => {
             Some(authorized(authorizer, request, principal, &document).await)
         }
-        Analysis::Refused(reason) => Some(Authorization::Denied(reason).into()),
-        Analysis::Unavailable => Some(Authorization::Unavailable.into()),
+        Analysis::Refused(reason) => Some((Authorization::Denied(reason).into(), Vec::new())),
+        Analysis::Unavailable => Some((Authorization::Unavailable.into(), Vec::new())),
         Analysis::RateLimited => None,
     }
 }
@@ -65,35 +78,41 @@ fn missing_catalog(read: &Result<Option<ServiceCatalog>, RepositoryError>) -> Au
     })
 }
 
-/// The decision over the coordinates of the analysed documents.
+/// The decision over the coordinates of the analysed documents, and the keys it was made on.
 async fn authorized(
     authorizer: &RequestAuthorizer,
     request: &RouteRequest<'_>,
     principal: &Principal,
     document: &AnalyzedDocument,
-) -> TracedAuthorization {
+) -> (TracedAuthorization, Vec<String>) {
     let decisions = authorizer.decisions(request.snapshot);
     let version = request.snapshot.version();
     if request.service.is_iam() {
         let guard = IamAccessGuard::new(decisions, Arc::clone(&authorizer.commands));
-        return iam_graphql(&guard, request, principal, document)
+        let traced: TracedAuthorization = iam_graphql(&guard, request, principal, document)
             .await
             .map_or_else(
                 || Authorization::Denied(DecisionReason::PermissionMissing),
                 |answer| RequestAuthorizer::guarded(answer, version),
             )
             .into();
+        return (traced, root_coordinates(document));
     }
     let required = required_keys(request.service, document);
+    let keys = required
+        .iter()
+        .map(|required| required.key().to_string())
+        .collect();
     let (outcome, trace) = decisions
         .decide_required_traced(subject_of(principal), &required)
         .await;
-    authorizer.audited(TracedAuthorization {
+    let traced = authorizer.audited(TracedAuthorization {
         authorization: RequestAuthorizer::authorization_of(&outcome, version),
         trace,
         denied: outcome.denied().to_vec(),
         audit_slot: None,
-    })
+    });
+    (traced, keys)
 }
 
 /// IAM's own GraphQL route: the rule table of [`IamAccessGuard`] decides the root fields, as it

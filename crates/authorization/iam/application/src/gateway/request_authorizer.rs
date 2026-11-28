@@ -171,6 +171,20 @@ impl RequestAuthorizer {
             })
     }
 
+    /// Decides like [`Self::authorize_graphql`] and also names the permission keys the documents
+    /// required, so that a caller can record what an allowed operation rests on (Story 11.3).
+    /// `None` when the subject is over its parse budget.
+    pub async fn authorize_graphql_keyed(
+        &self,
+        request: &RouteRequest<'_>,
+        principal: &Principal,
+        operations: &[GraphQlOperation],
+    ) -> Option<(TracedAuthorization, Vec<String>)> {
+        graphql::decided_keyed(self, request, principal, operations)
+            .await
+            .map(|(traced, keys)| (Self::enforced(request.enforcement, traced), keys))
+    }
+
     /// Audit-or-deny: an allow on a key whose record must be audited becomes
     /// [`Authorization::AuditUnavailable`] while the audit lane cannot take the record.
     fn audited(&self, traced: TracedAuthorization) -> TracedAuthorization {

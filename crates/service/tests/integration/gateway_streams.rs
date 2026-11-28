@@ -21,7 +21,8 @@ use axum::routing::get;
 use hyper::body::{Frame, SizeHint};
 use hyper_util::rt::TokioIo;
 use iam_application::{
-    EndpointDirectory, FreshnessState, Principal, ReevaluationBoard, RequestAuthorizer,
+    AppliedAnswer, AppliedPoll, AppliedPollSettings, BootstrapHighWater, EndpointDirectory,
+    FreshnessState, PolicyVersionBoard, Principal, ReevaluationBoard, RequestAuthorizer,
     StreamReauthorizer, ZoneSource,
 };
 use iam_domain::freshness::proof::FreshnessProof;
@@ -821,6 +822,7 @@ fn alice_stream(streams: &Streams) -> StreamHandle {
         host: HOST.to_owned(),
         method: HttpMethod::Get,
         path: "/ws".to_owned(),
+        operation: None,
     };
     streams.registry().open(record, grant).unwrap()
 }
@@ -877,4 +879,75 @@ async fn a_slow_hook_never_stalls_the_versions_that_follow_and_the_record_advanc
 
     assert_eq!(harness.board.finished(), 20);
     echo(&mut socket, b"\x81\x02hi").await;
+}
+
+/// The applied-version poll of the pod of `harness` (Story 13.3), over a board of published
+/// versions that the test moves, as the apply thread does.
+fn applied_poll(harness: &Harness, versions: &Arc<PolicyVersionBoard>) -> Arc<AppliedPoll> {
+    Arc::new(AppliedPoll::new(
+        Arc::clone(versions),
+        Arc::clone(&harness.board),
+        Arc::new(BootstrapHighWater::new()),
+        AppliedPollSettings {
+            pod: "gateway-0".to_owned(),
+            hard_bound: HARD_BOUND,
+            max_concurrent: 256,
+        },
+    ))
+}
+
+#[tokio::test]
+async fn the_applied_poll_waits_for_the_stream_opened_while_the_version_is_applied() {
+    let harness = Harness::start(8).await;
+    let versions = Arc::new(PolicyVersionBoard::new());
+    let poll = applied_poll(&harness, &versions);
+    let version = PolicyVersion::new(8).unwrap();
+    let late = alice_stream(&harness.streams);
+    harness.moving.publish(snapshot_at(8, &without_alice()));
+    versions.note_published(Some(version));
+    let waiting = tokio::spawn({
+        let poll = Arc::clone(&poll);
+        async move { poll.poll(version, 99, BOUND).await }
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !waiting.is_finished(),
+        "the version is published but its streams are not decided"
+    );
+    harness.board.submit(PolicyChange {
+        version,
+        touch: PolicyTouch::nothing(),
+    });
+
+    assert_eq!(
+        waiting.await.unwrap(),
+        AppliedAnswer::Applied {
+            published: Some(version)
+        }
+    );
+    assert_eq!(
+        late.closed().await,
+        CloseReason::Revoked,
+        "the stream was decided against the version before the poll answered"
+    );
+}
+
+#[tokio::test]
+async fn the_applied_poll_of_a_pod_that_never_applies_the_version_answers_without_an_acknowledgement()
+ {
+    let harness = Harness::start(8).await;
+    let versions = Arc::new(PolicyVersionBoard::new());
+    versions.note_published(Some(PolicyVersion::new(7).unwrap()));
+    let poll = applied_poll(&harness, &versions);
+
+    let answer = poll
+        .poll(
+            PolicyVersion::new(8).unwrap(),
+            99,
+            Duration::from_millis(200),
+        )
+        .await;
+
+    assert_eq!(answer, AppliedAnswer::Unanswered);
 }

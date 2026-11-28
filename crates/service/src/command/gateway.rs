@@ -12,7 +12,8 @@ use std::time::Duration;
 use axum::Router;
 use axum::serve::Listener;
 use iam_application::{
-    EndpointReadyPeers, OpenStreams, PodProbes, ReadYourWritesBarrier, StreamReauthorizer,
+    AppliedPoll, AppliedPollSettings, EndpointReadyPeers, OpenStreams, PodProbes,
+    ReadYourWritesBarrier, StreamReauthorizer,
 };
 use iam_domain::{PolicyView, ReadyPeers};
 use rustls::ServerConfig;
@@ -28,6 +29,7 @@ use super::serve::{
 use crate::bootstrap::gateway::decision::{self, DecisionPorts};
 use crate::bootstrap::gateway::edge::{Edge, EdgeLimits};
 use crate::bootstrap::gateway::endpoints;
+use crate::bootstrap::gateway::graphql_ws::SocketSettings;
 use crate::bootstrap::gateway::listener::{self, ReloadableCertificate, TlsListener};
 use crate::bootstrap::gateway::shedding::{self, ConnectionSignals};
 use crate::bootstrap::gateway::streams::{PodFence, StreamFence, StreamSettings, Streams};
@@ -214,7 +216,10 @@ fn proxy_routers(
         .with_read_your_writes(read_your_writes_barrier(config, policy))
         .with_rate_limits(pipeline::gate_from_config(config, ports.peers))
         .with_access_log(ports.access_log)
-        .with_streams(ports.streams);
+        .with_streams(ports.streams)
+        .with_graphql_ws(SocketSettings {
+            init_timeout: config.graphql_ws_init_timeout,
+        });
     let mesh = pipeline
         .clone()
         .with_service_callers(config.tokens.callers.clone());
@@ -245,16 +250,38 @@ fn read_your_writes_barrier(
     ))
 }
 
-/// The router of the internal listener: with a freshness state it serves `/internal/freshness`.
-fn internal_router(policy: &policy::PolicyAdapters) -> Router {
-    policy
+/// The router of the internal listener: with a freshness state it serves `/internal/freshness`,
+/// and it serves `/internal/policy/applied` from process start (Story 13.3).
+fn internal_router(config: &GatewayConfig, policy: &policy::PolicyAdapters) -> Router {
+    let base = policy
         .freshness
         .as_ref()
         .map_or_else(internal::router, |freshness| {
             let view: Arc<dyn PolicyView> =
                 Arc::<iam_infrastructure::ArcSwapPolicySnapshot>::clone(&policy.cell);
             internal::router_with_freshness(Arc::clone(&freshness.state), view)
-        })
+        });
+    internal::with_applied(base, applied_poll(config, policy))
+}
+
+/// The pod's answer to the Sync-Fence coordinator.
+///
+/// It reads the published version, the finished re-evaluations of the open streams and the `HW0`
+/// that the bootstrap captured.
+fn applied_poll(config: &GatewayConfig, policy: &policy::PolicyAdapters) -> Arc<AppliedPoll> {
+    Arc::new(AppliedPoll::new(
+        Arc::clone(&policy.versions),
+        Arc::clone(&policy.reevaluation),
+        Arc::clone(&policy.high_water),
+        AppliedPollSettings {
+            pod: config
+                .pod_name
+                .clone()
+                .unwrap_or_else(|| "unknown".to_owned()),
+            hard_bound: config.freshness_hard_bound,
+            max_concurrent: config.applied_poll_max_concurrent,
+        },
+    ))
 }
 
 /// The router of the decision listener: with a freshness state it serves the decision API from the
@@ -384,7 +411,7 @@ fn start_servers(
         public: public_router,
         mesh: mesh_router,
     } = proxy_routers(config, policy, &adapters.clock, ports)?;
-    let internal_router = internal_router(policy);
+    let internal_router = internal_router(config, policy);
     let decision_router = decision_router(config, policy, Arc::clone(&adapters.clock))?;
     let tls = tls_config(config.tls.as_ref(), tasks)?;
     let signals = ConnectionSignals::new(

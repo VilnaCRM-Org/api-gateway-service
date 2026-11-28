@@ -23,6 +23,8 @@ mod gateway;
 #[cfg(test)]
 mod gateway_bootstrap;
 #[cfg(test)]
+mod gateway_graphql_ws;
+#[cfg(test)]
 mod gateway_pipeline;
 #[cfg(test)]
 mod gateway_rate_limit;

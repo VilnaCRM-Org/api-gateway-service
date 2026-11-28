@@ -22,6 +22,7 @@ fn grant() -> Grant {
         host: "api.example.test".to_owned(),
         method: HttpMethod::Get,
         path: "/api/stream".to_owned(),
+        operation: None,
     }
 }
 
@@ -450,4 +451,88 @@ fn deciding_a_stream_that_is_gone_changes_nothing() {
     registry.admitted(5);
 
     assert!(registry.is_empty());
+}
+
+#[test]
+fn an_operation_is_held_under_its_subject_and_counted_apart_from_the_streams() {
+    let registry = StreamRegistry::new(1);
+    let socket = registry
+        .open(record(Some("user-1"), Some("session-1")), grant())
+        .unwrap();
+
+    let first = registry.open_operation(record(Some("user-1"), Some("session-1")), grant());
+    let second = registry.open_operation(record(Some("user-1"), Some("session-1")), grant());
+
+    assert_eq!(registry.len(), 3);
+    assert_eq!(registry.operations(), 2);
+    assert_eq!(registry.held_by_subject("user-1"), 3);
+    assert_eq!(registry.held_by_session("session-1"), 3);
+    drop(first);
+    assert_eq!(registry.operations(), 1);
+    drop(second);
+    drop(socket);
+    assert!(registry.is_empty());
+}
+
+#[test]
+fn operations_do_not_use_up_the_stream_cap_of_their_subject() {
+    let registry = StreamRegistry::new(1);
+    let _first = registry.open_operation(record(Some("user-1"), None), grant());
+    let _second = registry.open_operation(record(Some("user-1"), None), grant());
+
+    let socket = registry.open(record(Some("user-1"), None), grant());
+    let refused = registry.open(record(Some("user-1"), None), grant());
+
+    assert!(socket.is_ok());
+    assert_eq!(refused.unwrap_err(), SubjectAtCap);
+}
+
+#[test]
+fn an_operation_is_beyond_the_stream_cap_even_when_the_subject_is_at_it() {
+    let registry = StreamRegistry::new(1);
+    let _socket = registry
+        .open(record(Some("user-1"), None), grant())
+        .unwrap();
+
+    let operation = registry.open_operation(record(Some("user-1"), None), grant());
+
+    assert_eq!(registry.operations(), 1);
+    drop(operation);
+}
+
+#[test]
+fn a_scope_that_names_the_subject_selects_its_operations_too() {
+    let registry = StreamRegistry::new(4);
+    let socket = registry
+        .open(record(Some("user-1"), None), grant())
+        .unwrap();
+    let operation = registry.open_operation(record(Some("user-1"), None), grant());
+    let _other = registry.open_operation(record(Some("user-2"), None), grant());
+    let scope = StreamScope {
+        subjects: ["user-1".to_owned()].into(),
+        ..StreamScope::default()
+    };
+
+    let selected = registry.select(&scope);
+
+    assert_eq!(selected, vec![socket.id(), operation.id()]);
+}
+
+#[test]
+fn the_scan_sees_which_entries_are_operations() {
+    let registry = StreamRegistry::new(4);
+    let _socket = registry
+        .open(record(Some("user-1"), None), grant())
+        .unwrap();
+    let _operation = registry.open_operation(record(Some("user-1"), None), grant());
+
+    let watched = registry.watched();
+
+    assert_eq!(
+        watched
+            .iter()
+            .map(|entry| entry.operation)
+            .collect::<Vec<_>>(),
+        vec![false, true]
+    );
 }

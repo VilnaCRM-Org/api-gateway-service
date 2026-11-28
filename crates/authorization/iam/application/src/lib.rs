@@ -180,6 +180,10 @@ pub use freshness::{
     FreshnessProber, FreshnessReading, FreshnessState, PEER_LAG_TOLERANCE, PeerLag, PeerLagTracker,
     ProberPorts, ProberSettings, ProofAttachment, ProofSink, WATCHDOG_INTERVAL,
 };
+pub use gateway::applied_poll::{
+    AppliedAnswer, AppliedPoll, AppliedPollSettings, AppliedQuery, BootstrapHighWater,
+    RecordingBootstrapLog,
+};
 pub use gateway::graphql_request::{
     Analysis, BLOCKING_THRESHOLD_BYTES, GraphQlOperation, GraphQlRequestAnalyzer,
     MAX_BATCH_OPERATIONS, ParseBudget, ParseBudgetSettings, ParseObserver, ParseSite,
@@ -194,6 +198,7 @@ pub use gateway::snapshot_reads::{CatalogueCache, LoadedSnapshotReads};
 pub use gateway::stream_reauthorizer::{
     OpenStreams, ReevaluationBoard, StreamReauthorizer, StreamScope,
 };
+pub use gateway::subscription_authorizer::{OperationVerdict, SubscriptionAuthorizer};
 pub use gateway_decision::stale::{
     StaleValidateAccessBatchQueryHandler, StaleValidateAccessQueryHandler,
     ValidateAccessStaleBatchQuery, ValidateAccessStaleQuery,

@@ -29,5 +29,6 @@ These records explain why the structure of the template is what it is. Each one 
 | [0024](0024-freshness-contract.md) | Freshness contract: watermark proof, replica-quorum epoch check, `T_hard` and Sync-Fence (proposed) | IAM architecture sections 9.5 to 9.8, FR-73, NFR-36 |
 | [0026](0026-krafka-as-the-kafka-client.md) | krafka as the Kafka client: phase-0 spike results and rdkafka fallback | IAM architecture section 20.4, NFR-30 |
 | [0027](0027-rate-limiting-with-valkey-and-its-degradation.md) | Rate limiting with Valkey and its degradation: GCRA script, store timeout, breaker and conservative local limit | IAM architecture section on rate limiting, FR-63, FR-65, NFR-42 |
+| [0030](0030-streams-through-the-gateway-websocket-sse-and-graphql-subscriptions.md) | Streams through the gateway: WebSocket, SSE and GraphQL subscriptions | IAM architecture sections 8.5 and 8.6, FR-61, FR-62 |
 
 A downstream service keeps its own records in this directory next to the twelve of the template. To add one, copy the form of an existing record, number it with the next free four-digit prefix and add a row to the table above.

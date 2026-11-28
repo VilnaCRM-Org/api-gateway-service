@@ -204,32 +204,49 @@ fn decode(bytes: &[u8]) -> Result<Vec<GraphQlOperation>, Refusal> {
 }
 
 /// The operation of one envelope.
-fn operation(members: &Map<String, Value>) -> Result<GraphQlOperation, Refusal> {
+fn read_operation(members: &Map<String, Value>) -> Result<GraphQlOperation, &'static str> {
     if members.keys().any(|name| !MEMBERS.contains(&name.as_str())) {
-        return Err(invalid(
-            "The request has a member that GraphQL does not define.",
-        ));
+        return Err("The request has a member that GraphQL does not define.");
     }
     if persisted(members.get("extensions")) {
-        return Err(invalid("Persisted queries are not accepted."));
+        return Err("Persisted queries are not accepted.");
     }
     let document = match members.get("query") {
         Some(Value::String(text)) if !text.is_empty() => text.clone(),
-        _ => return Err(invalid("The query must be a non-empty string.")),
+        _ => return Err("The query must be a non-empty string."),
     };
     let operation_name = match members.get("operationName") {
         None | Some(Value::Null) => None,
         Some(Value::String(name)) => Some(name.clone()),
-        Some(_other) => return Err(invalid("The operationName must be a string.")),
+        Some(_other) => return Err("The operationName must be a string."),
     };
     match members.get("variables") {
         None | Some(Value::Null | Value::Object(_)) => {}
-        Some(_other) => return Err(invalid("The variables must be an object.")),
+        Some(_other) => return Err("The variables must be an object."),
     }
     Ok(GraphQlOperation {
         document,
         operation_name,
     })
+}
+
+fn operation(members: &Map<String, Value>) -> Result<GraphQlOperation, Refusal> {
+    read_operation(members).map_err(invalid)
+}
+
+/// The operation of the payload of a `subscribe` or `start` message of a GraphQL socket.
+///
+/// The envelope rules of a request apply (Story 11.3): a payload with a persisted query, a member
+/// GraphQL does not define, a member given twice or no non-empty `query` is refused. The text of
+/// the error is the detail of the refusal.
+///
+/// # Errors
+///
+/// The detail of the refusal.
+pub fn decode_operation(text: &str) -> Result<GraphQlOperation, &'static str> {
+    const INVALID: &str = "The payload is not a valid GraphQL request.";
+    let Distinct(members) = serde_json::from_str(text).map_err(|_error| INVALID)?;
+    read_operation(&members)
 }
 
 /// Whether `extensions` names a persisted query, or is not an object.

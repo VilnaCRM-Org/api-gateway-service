@@ -31,6 +31,7 @@ fn handle(registry: &Arc<StreamRegistry>) -> Arc<StreamHandle> {
         host: "api.example.test".to_owned(),
         method: HttpMethod::Get,
         path: "/ws".to_owned(),
+        operation: None,
     };
     Arc::new(registry.open(record, grant).unwrap())
 }
@@ -381,4 +382,66 @@ async fn an_upstream_that_switches_protocols_gets_its_101_back_and_a_relay_for_t
     .unwrap();
 
     assert_eq!(answered.status(), StatusCode::SWITCHING_PROTOCOLS);
+}
+
+const SWITCHING: &[u8] =
+    b"HTTP/1.1 101 Switching Protocols\r\nconnection: upgrade\r\nupgrade: websocket\r\n\r\n";
+
+fn tunnel_request(slot: &TunnelSlot) -> Request {
+    let mut request = upgrade_request("websocket", None);
+    request.extensions_mut().insert(slot.clone());
+    request
+}
+
+#[tokio::test]
+async fn an_upstream_that_switches_protocols_hands_its_connection_to_the_tunnel() {
+    let listener = loopback_listener().await;
+    let address = listener.local_addr().unwrap();
+    script(listener, Some(SWITCHING));
+    let (slot, receiver) = tunnel();
+
+    let answered = forward_upgrade(
+        &forwarder_at(address),
+        target_answering_within(10_000),
+        tunnel_request(&slot),
+    )
+    .await
+    .unwrap();
+    let mut connection = receiver.await.unwrap();
+
+    assert_eq!(answered.status(), StatusCode::SWITCHING_PROTOCOLS);
+    connection.write_all(b"ping").await.unwrap();
+    connection.flush().await.unwrap();
+    connection.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_slot_that_was_taken_before_leaves_the_upgraded_connection_alone() {
+    let listener = loopback_listener().await;
+    let address = listener.local_addr().unwrap();
+    script(listener, Some(SWITCHING));
+    let (slot, receiver) = tunnel();
+    let taken = slot.take();
+
+    let answered = forward_upgrade(
+        &forwarder_at(address),
+        target_answering_within(10_000),
+        tunnel_request(&slot),
+    )
+    .await
+    .unwrap();
+
+    assert!(taken.is_some());
+    assert!(slot.take().is_none());
+    assert_eq!(answered.status(), StatusCode::SWITCHING_PROTOCOLS);
+    drop(receiver);
+}
+
+#[tokio::test]
+async fn an_upgrade_that_never_completes_hands_nothing_over() {
+    let (sender, receiver) = oneshot::channel();
+
+    hand_over(hyper::upgrade::on(Request::new(Body::empty())), sender, ()).await;
+
+    assert!(receiver.await.is_err());
 }

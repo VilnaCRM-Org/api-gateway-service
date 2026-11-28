@@ -193,7 +193,7 @@ impl Streams {
         fence: Arc<dyn StreamFence>,
         mut shutdown: watch::Receiver<bool>,
     ) {
-        let mut reported = 0;
+        let mut reported = (0, 0);
         loop {
             tokio::select! {
                 () = stopped(&mut shutdown) => return,
@@ -204,13 +204,18 @@ impl Streams {
         }
     }
 
-    /// Emits the metric event `streams_open` when the number of open streams changed.
-    fn report(&self, reported: usize) -> usize {
-        let open = self.registry.len();
-        if open != reported {
-            log_open(open);
+    /// Emits the metric events `streams_open` and `graphql_subscriptions_open` when the number of
+    /// open streams, or of open operations of GraphQL sockets, changed.
+    fn report(&self, reported: (usize, usize)) -> (usize, usize) {
+        let operations = self.registry.operations();
+        let streams = self.registry.len().saturating_sub(operations);
+        if streams != reported.0 {
+            log_open(streams);
         }
-        open
+        if operations != reported.1 {
+            log_subscriptions(operations);
+        }
+        (streams, operations)
     }
 }
 
@@ -243,6 +248,14 @@ impl OpenStreams for Streams {
 
 fn log_open(streams: usize) {
     tracing::info!(metric = "streams_open", streams, "open streams");
+}
+
+fn log_subscriptions(operations: usize) {
+    tracing::info!(
+        metric = "graphql_subscriptions_open",
+        operations,
+        "open GraphQL subscription operations"
+    );
 }
 
 #[cfg(test)]

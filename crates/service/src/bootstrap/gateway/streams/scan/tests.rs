@@ -96,6 +96,7 @@ fn open(
         host: "api.example.test".to_owned(),
         method: HttpMethod::Get,
         path: "/api/stream".to_owned(),
+        operation: None,
     };
     streams.registry().open(record, grant).unwrap()
 }
@@ -157,6 +158,36 @@ async fn a_stream_without_traffic_ends_after_the_idle_timeout() {
     assert_eq!(quiet.closed().await, CloseReason::Idle);
     assert_eq!(streams.registry().len(), 1);
     drop(busy);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_operation_of_a_socket_never_goes_idle_on_its_own() {
+    let (streams, _clock) = streams();
+    let record = StreamRecord {
+        subject: Some("user-1".to_owned()),
+        session: None,
+        required_keys: Vec::new(),
+        scope: "global".to_owned(),
+        token_expires_at: None,
+        assignment_expires_at: None,
+        version: 3,
+        route: None,
+        service: None,
+    };
+    let grant = Grant {
+        principal: None,
+        host: "api.example.test".to_owned(),
+        method: HttpMethod::Get,
+        path: "/graphql".to_owned(),
+        operation: None,
+    };
+    let operation = streams.registry().open_operation(record, grant);
+
+    tokio::time::advance(IDLE.saturating_mul(3)).await;
+    streams.scan(&Fence::default()).await;
+
+    assert_eq!(streams.registry().operations(), 1);
+    drop(operation);
 }
 
 #[tokio::test]

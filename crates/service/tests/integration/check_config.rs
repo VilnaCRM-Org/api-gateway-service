@@ -878,6 +878,22 @@ fn the_same_configuration_in_control_mode_names_the_database() {
     ("STREAM_IDLE_TIMEOUT", "never"),
     "STREAM_IDLE_TIMEOUT: must be a duration such as 500ms, 2s or 1m\n"
 )]
+#[case::zero_graphql_ws_init_timeout(
+    ("GRAPHQL_WS_INIT_TIMEOUT", "0s"),
+    "GRAPHQL_WS_INIT_TIMEOUT: must be a positive duration such as 10m or 90d\n"
+)]
+#[case::unparsable_graphql_ws_init_timeout(
+    ("GRAPHQL_WS_INIT_TIMEOUT", "soon"),
+    "GRAPHQL_WS_INIT_TIMEOUT: must be a duration such as 500ms, 2s or 1m\n"
+)]
+#[case::zero_applied_poll_max_concurrent(
+    ("APPLIED_POLL_MAX_CONCURRENT", "0"),
+    "APPLIED_POLL_MAX_CONCURRENT: must be an integer from 1 to 100000\n"
+)]
+#[case::unparsable_applied_poll_max_concurrent(
+    ("APPLIED_POLL_MAX_CONCURRENT", "many"),
+    "APPLIED_POLL_MAX_CONCURRENT: must be an integer from 1 to 100000\n"
+)]
 fn a_freshness_or_fetch_setting_out_of_range_exits_2_naming_the_variable(
     #[case] setting: (&str, &str),
     #[case] expected: &str,

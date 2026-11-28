@@ -47,6 +47,7 @@ fn open(streams: &Streams, subject: &str) -> Result<StreamHandle, SubjectAtCap> 
         host: "api.example.test".to_owned(),
         method: HttpMethod::Get,
         path: "/events".to_owned(),
+        operation: None,
     };
     streams.registry().open(record, grant)
 }
@@ -149,10 +150,25 @@ fn the_number_of_open_streams_is_reported_only_when_it_changes() {
     let streams = streams();
     let held = open(&streams, "user-1").unwrap();
 
-    assert_eq!(streams.report(0), 1);
-    assert_eq!(streams.report(1), 1);
+    assert_eq!(streams.report((0, 0)), (1, 0));
+    assert_eq!(streams.report((1, 0)), (1, 0));
     drop(held);
-    assert_eq!(streams.report(1), 0);
+    assert_eq!(streams.report((1, 0)), (0, 0));
+}
+
+#[test]
+fn the_operations_of_graphql_sockets_are_reported_apart_from_the_streams() {
+    let streams = streams();
+    let held = open(&streams, "user-1").unwrap();
+    let record = streams.registry().record(held.id()).unwrap();
+    let grant = streams.registry().grant(held.id()).unwrap();
+    let operation = streams.registry().open_operation(record, grant);
+
+    assert_eq!(streams.report((1, 0)), (1, 1));
+    assert_eq!(streams.report((1, 1)), (1, 1));
+    drop(operation);
+    assert_eq!(streams.report((1, 1)), (1, 0));
+    drop(held);
 }
 
 /// A decider whose published version and verdict a test sets.

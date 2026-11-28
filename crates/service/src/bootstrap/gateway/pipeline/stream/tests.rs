@@ -1,12 +1,14 @@
 use std::time::{Duration, SystemTime};
 
 use axum::http::Request;
+use iam_application::{GraphQlRequestAnalyzer, ParseBudgetSettings};
 use iam_domain::{
     AccessToken, AccessTokenParts, AssignmentScope, CatalogueEntryState, CompiledRoleSet,
     EnforcementMode, GlobalRevocationState, GrantStatus, HttpMethod, PermissionGrant,
     PolicyVersion, RoleId, RouteFlag, RouteFlags, ServiceName, SessionId, TokenId, TokenIdentity,
     UserRevocationState,
 };
+use iam_infrastructure::{DocumentCacheSettings, MokaDocumentCache};
 use shared_domain::Uuid;
 use test_support::clock::FixedClock;
 use test_support::gateway_snapshot::{CountingPolicyView, GatewaySnapshot};
@@ -85,19 +87,31 @@ fn view_revoking(
     draft.flags = RouteFlags::default().with(RouteFlag::Streaming, streaming);
     draft.enforcement = EnforcementMode::Enforce;
     let state = RouteState::of(route(&mut rng, &draft).parts());
-    let granted = CompiledRoleSet::compile([(
-        PermissionGrant::parse("rest:users:GET /api/stream").unwrap(),
-        GrantStatus::Active,
-    )]);
+    let granted = CompiledRoleSet::compile(
+        [
+            "rest:users:GET /api/stream",
+            "gql:users:Subscription.orderUpdated",
+        ]
+        .map(|key| (PermissionGrant::parse(key).unwrap(), GrantStatus::Active)),
+    );
     let snapshot = GatewaySnapshot::at(PolicyVersion::new(7).unwrap())
         .with_upstream(users)
         .with_route(state.clone())
         .with_catalogue(
             ServiceName::new("users").unwrap(),
-            vec![CatalogueEntryState::untyped(
-                "rest:users:GET /api/stream".to_owned(),
-                [false, false],
-            )],
+            vec![
+                CatalogueEntryState::untyped(
+                    "rest:users:GET /api/stream".to_owned(),
+                    [false, false],
+                ),
+                CatalogueEntryState {
+                    key: "gql:users:Subscription.orderUpdated".to_owned(),
+                    sensitive: false,
+                    audit_always: false,
+                    return_type: Some("String".to_owned()),
+                    possible_types: Vec::new(),
+                },
+            ],
         )
         .with_assignments(SubjectRef::user(Uuid::parse(USER).unwrap()), held)
         .with_role_set(RoleId::parse(ROLE).unwrap(), granted);
@@ -344,6 +358,7 @@ fn anonymous_grant() -> Grant {
         host: "api.example.test".to_owned(),
         method: HttpMethod::Get,
         path: "/api/stream".to_owned(),
+        operation: None,
     }
 }
 
@@ -591,6 +606,80 @@ async fn a_stream_whose_cutoff_cannot_be_read_is_denied_again() {
     });
 
     let decided = redecision(view).decide(&grant_of_the_user()).await;
+
+    assert_eq!(decided, Revalidated::Denied);
+}
+
+#[tokio::test]
+async fn an_operation_that_no_analyzer_can_decide_is_denied_again() {
+    let (view, _route) = view_of(allowed_by_role(), true);
+    let grant = Grant {
+        operation: Some(Arc::new(iam_application::GraphQlOperation {
+            document: "subscription { orderUpdated }".to_owned(),
+            operation_name: None,
+        })),
+        ..grant_of_the_user()
+    };
+
+    let decided = redecision(view).decide(&grant).await;
+
+    assert_eq!(decided, Revalidated::Denied);
+}
+
+#[tokio::test]
+async fn a_stream_without_an_operation_is_decided_on_its_route_alone() {
+    let (view, _route) = view_of(allowed_by_role(), true);
+
+    let decided = redecision(view).decide(&grant_of_the_user()).await;
+
+    assert_eq!(decided, Revalidated::Allowed { next_expiry: None });
+}
+
+fn redecision_of_documents(view: Arc<dyn PolicyView>) -> PipelineRedecision {
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock::at(at(NOW)));
+    let cache = Arc::new(MokaDocumentCache::new(DocumentCacheSettings {
+        capacity_bytes: 1 << 20,
+        time_to_idle: Duration::from_mins(1),
+    }));
+    let authorizer = RequestAuthorizer::new(
+        Arc::new(FakeTokenRepository::new()),
+        Arc::clone(&clock),
+        Arc::new(SequenceUuidGenerator::starting_at(1)),
+        Arc::new(UnauditedCommands),
+    )
+    .with_graphql(Arc::new(GraphQlRequestAnalyzer::new(
+        cache,
+        ParseBudgetSettings::default(),
+    )));
+    PipelineRedecision::new(view, Arc::new(authorizer), clock)
+}
+
+fn grant_of_the_operation(document: &str) -> Grant {
+    Grant {
+        operation: Some(Arc::new(iam_application::GraphQlOperation {
+            document: document.to_owned(),
+            operation_name: None,
+        })),
+        ..grant_of_the_user()
+    }
+}
+
+#[tokio::test]
+async fn an_operation_the_policy_still_allows_keeps_its_stream_allowed() {
+    let (view, _route) = view_of(allowed_by_role(), true);
+    let grant = grant_of_the_operation("subscription { orderUpdated }");
+
+    let decided = redecision_of_documents(view).decide(&grant).await;
+
+    assert_eq!(decided, Revalidated::Allowed { next_expiry: None });
+}
+
+#[tokio::test]
+async fn an_operation_the_policy_no_longer_allows_is_denied_again() {
+    let (view, _route) = view_of(allowed_by_role(), true);
+    let grant = grant_of_the_operation("subscription { paymentUpdated }");
+
+    let decided = redecision_of_documents(view).decide(&grant).await;
 
     assert_eq!(decided, Revalidated::Denied);
 }

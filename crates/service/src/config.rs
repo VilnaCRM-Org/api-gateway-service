@@ -354,6 +354,12 @@ pub struct GatewayConfig {
     /// `STREAM_IDLE_TIMEOUT`: how long a WebSocket or SSE stream may carry no traffic before the
     /// gateway closes it (Story 11.1).
     pub stream_idle_timeout: Duration,
+    /// `GRAPHQL_WS_INIT_TIMEOUT`: how long a client of a GraphQL subscription socket may take to
+    /// send `connection_init` before the gateway closes it with 4408 (Story 11.3).
+    pub graphql_ws_init_timeout: Duration,
+    /// `APPLIED_POLL_MAX_CONCURRENT`: how many polls of `/internal/policy/applied` may wait at once
+    /// (Story 13.3).
+    pub applied_poll_max_concurrent: usize,
     /// `GATEWAY_PROXY_PROTOCOL`: every connection of the public listener starts with a Proxy
     /// Protocol v2 header (Story 10.9).
     pub proxy_protocol: bool,
@@ -388,16 +394,13 @@ impl GatewayConfig {
     pub fn from_args(args: &GatewayArgs) -> Result<Self, ConfigErrors> {
         let mut collector = Collector::default();
         let (app_env, log_level, grace, tokens) = service_basics(&mut collector, &args.service);
-        let listeners = listeners(&mut collector, args);
-        let tls = tls_files(&mut collector, args, app_env);
+        let bindings = bindings(&mut collector, args, app_env);
         let (pod_name, pod_namespace) = pod_identity(&mut collector, args);
-        let endpoints = endpoint_settings(&mut collector, args);
-        let kafka = gateway_kafka(&mut collector, args, app_env);
         let tail = tail_settings(&mut collector, args);
         let (access_log, rate_limit, audit_lane) = lane_bounds(&mut collector, args, app_env);
         match (
             (app_env, log_level, grace, tokens),
-            (listeners, tls, endpoints, kafka),
+            bindings,
             (tail, rate_limit, audit_lane),
         ) {
             (
@@ -428,6 +431,8 @@ impl GatewayConfig {
                 rate_limit,
                 ryw_max_wait: tail.waits.ryw_max_wait,
                 stream_idle_timeout: tail.waits.stream_idle_timeout,
+                graphql_ws_init_timeout: tail.waits.graphql_ws_init_timeout,
+                applied_poll_max_concurrent: tail.waits.applied_poll_max_concurrent,
                 proxy_protocol: listeners.proxy_protocol,
                 pod_name,
                 pod_namespace,
@@ -436,6 +441,24 @@ impl GatewayConfig {
             _ => Err(ConfigErrors(collector.problems)),
         }
     }
+}
+
+/// The listeners, the TLS files, the endpoint discovery and the Kafka connections, each `None` when
+/// a problem was reported for it.
+type Bindings = (
+    Option<Listeners>,
+    Option<TlsChoice>,
+    Option<EndpointSettings>,
+    Option<GatewayKafka>,
+);
+
+/// What the gateway binds and connects to.
+fn bindings(collector: &mut Collector, args: &GatewayArgs, app_env: Option<AppEnv>) -> Bindings {
+    let listeners = listeners(collector, args);
+    let tls = tls_files(collector, args, app_env);
+    let endpoints = endpoint_settings(collector, args);
+    let kafka = gateway_kafka(collector, args, app_env);
+    (listeners, tls, endpoints, kafka)
 }
 
 /// The environment, the log filter, the grace period and the token settings, each `None` when a
@@ -528,9 +551,12 @@ struct TailSettings {
 struct Waits {
     ryw_max_wait: Duration,
     stream_idle_timeout: Duration,
+    graphql_ws_init_timeout: Duration,
+    applied_poll_max_concurrent: usize,
 }
 
-/// `RYW_MAX_WAIT` (1s) and `STREAM_IDLE_TIMEOUT` (5m), both positive.
+/// `RYW_MAX_WAIT` (1s) and `STREAM_IDLE_TIMEOUT` (5m), both positive, and
+/// `APPLIED_POLL_MAX_CONCURRENT` (256, from 1 to 100000).
 fn waits(collector: &mut Collector, args: &GatewayArgs) -> Option<Waits> {
     let ryw_max_wait = collector.collect(
         "RYW_MAX_WAIT",
@@ -540,9 +566,26 @@ fn waits(collector: &mut Collector, args: &GatewayArgs) -> Option<Waits> {
         "STREAM_IDLE_TIMEOUT",
         positive_duration(args.stream_idle_timeout.as_deref(), Duration::from_mins(5)),
     );
+    let applied_poll_max_concurrent = collector.collect(
+        "APPLIED_POLL_MAX_CONCURRENT",
+        bounded(
+            args.applied_poll_max_concurrent.as_deref(),
+            256_usize,
+            1..=MAX_APPLIED_POLLS,
+        ),
+    );
+    let graphql_ws_init_timeout = collector.collect(
+        "GRAPHQL_WS_INIT_TIMEOUT",
+        positive_duration(
+            args.graphql_ws_init_timeout.as_deref(),
+            Duration::from_secs(5),
+        ),
+    );
     Some(Waits {
         ryw_max_wait: ryw_max_wait?,
         stream_idle_timeout: stream_idle_timeout?,
+        graphql_ws_init_timeout: graphql_ws_init_timeout?,
+        applied_poll_max_concurrent: applied_poll_max_concurrent?,
     })
 }
 
@@ -675,6 +718,9 @@ fn access_log_value<T>(
 
 /// The largest accepted `READINESS_AZ_FLOOR`.
 const MAX_AZ_FLOOR: usize = 8;
+
+/// The largest accepted `APPLIED_POLL_MAX_CONCURRENT`.
+const MAX_APPLIED_POLLS: usize = 100_000;
 
 /// The largest accepted `GRAPHQL_PARSE_MISSES_PER_SECOND`.
 const MAX_PARSE_MISSES: u32 = 100_000;

@@ -519,6 +519,22 @@ pub struct GatewayArgs {
         hide_env_values = true
     )]
     pub stream_idle_timeout: Option<String>,
+    /// How long a client of a GraphQL subscription socket may take to send `connection_init`
+    /// (default `5s`, positive).
+    #[arg(
+        long = "graphql-ws-init-timeout",
+        env = "GRAPHQL_WS_INIT_TIMEOUT",
+        hide_env_values = true
+    )]
+    pub graphql_ws_init_timeout: Option<String>,
+    /// How many polls of `/internal/policy/applied` may wait at once; a further poll gets 503
+    /// (default `256`, from `1` to `100000`).
+    #[arg(
+        long = "applied-poll-max-concurrent",
+        env = "APPLIED_POLL_MAX_CONCURRENT",
+        hide_env_values = true
+    )]
+    pub applied_poll_max_concurrent: Option<String>,
     /// The cache misses of GraphQL documents one subject may cause per second (default `20`, from
     /// `1` to `100000`).
     #[arg(

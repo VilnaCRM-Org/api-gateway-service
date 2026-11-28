@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime};
 
-use iam_application::{Principal, ReevaluationBoard, StreamScope};
+use iam_application::{GraphQlOperation, Principal, ReevaluationBoard, StreamScope};
 use iam_domain::{HttpMethod, PolicyVersion, RouteId, ServiceName};
 use tokio::sync::watch;
 use tokio::time::Instant;
@@ -91,6 +91,9 @@ pub struct Grant {
     pub method: HttpMethod,
     /// The path of the opening request.
     pub path: String,
+    /// The GraphQL operation of a subscription operation (Story 11.3), which is decided again
+    /// with the request that opened its socket; `None` for a stream.
+    pub operation: Option<Arc<GraphQlOperation>>,
 }
 
 /// When a stream last carried traffic, on the clock of tokio so that a test can pause it.
@@ -141,6 +144,8 @@ struct Entry {
     evaluated: i64,
     /// Whether the stream still waits for the check that follows its registration.
     pending: bool,
+    /// Whether the entry is an operation of a GraphQL socket, which the stream cap does not count.
+    operation: bool,
 }
 
 #[derive(Debug, Default)]
@@ -201,6 +206,9 @@ pub struct Watched {
     pub activity: Arc<Activity>,
     /// What decides the stream again.
     pub grant: Grant,
+    /// Whether the entry is an operation of a GraphQL socket, which never goes idle on its own:
+    /// the socket that carries it does.
+    pub operation: bool,
 }
 
 /// Every open stream of the pod.
@@ -227,7 +235,8 @@ impl StreamRegistry {
     }
 
     /// Registers a stream. A subject that already holds `per_subject` streams is refused; a stream
-    /// without a subject is never limited.
+    /// without a subject is never limited. The operations of GraphQL sockets are not streams and
+    /// do not count.
     ///
     /// # Errors
     ///
@@ -237,15 +246,39 @@ impl StreamRegistry {
         record: StreamRecord,
         grant: Grant,
     ) -> Result<StreamHandle, SubjectAtCap> {
-        let mut state = locked(&self.state);
+        let state = locked(&self.state);
         let held = record
             .subject
             .as_ref()
             .and_then(|subject| state.by_subject.get(subject))
-            .map_or(0, BTreeSet::len);
+            .map_or(0, |ids| {
+                ids.iter()
+                    .filter(|id| state.entries.get(id).is_some_and(|entry| !entry.operation))
+                    .count()
+            });
         if record.subject.is_some() && held >= self.per_subject {
             return Err(SubjectAtCap);
         }
+        Ok(self.enter(state, record, grant, false))
+    }
+
+    /// Registers an operation of a GraphQL socket (Story 11.3). It is indexed like a stream, so a
+    /// change of its subject, session, route or service decides it again, but it does not count
+    /// against the stream cap of its subject: the socket that carries it does.
+    #[must_use]
+    pub fn open_operation(self: &Arc<Self>, record: StreamRecord, grant: Grant) -> StreamHandle {
+        let state = locked(&self.state);
+        self.enter(state, record, grant, true)
+    }
+
+    /// Puts the entry into the state that `state` guards and returns its handle.
+    fn enter(
+        self: &Arc<Self>,
+        mut state: MutexGuard<'_, State>,
+        record: StreamRecord,
+        grant: Grant,
+        operation: bool,
+    ) -> StreamHandle {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         let evaluated = record.version;
         let (close, closed) = watch::channel(None);
@@ -257,22 +290,33 @@ impl StreamRegistry {
             activity: Arc::clone(&activity),
             evaluated,
             pending: true,
+            operation,
         };
         state.insert(id, entry);
         drop(state);
-        Ok(StreamHandle {
+        StreamHandle {
             registry: Arc::clone(self),
             id,
             closed,
             activity,
             claims: None,
-        })
+        }
     }
 
     /// How many streams are open.
     #[must_use]
     pub fn len(&self) -> usize {
         locked(&self.state).entries.len()
+    }
+
+    /// How many of the open entries are operations of GraphQL sockets (Story 11.3).
+    #[must_use]
+    pub fn operations(&self) -> usize {
+        locked(&self.state)
+            .entries
+            .values()
+            .filter(|entry| entry.operation)
+            .count()
     }
 
     /// Whether no stream is open.
@@ -320,6 +364,7 @@ impl StreamRegistry {
                 assignment_expires_at: entry.record.assignment_expires_at,
                 activity: Arc::clone(&entry.activity),
                 grant: entry.grant.clone(),
+                operation: entry.operation,
             })
             .collect()
     }

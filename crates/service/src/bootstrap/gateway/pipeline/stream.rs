@@ -10,6 +10,7 @@
 //! the decision rule of the pipeline: the route is matched again on the current snapshot, the
 //! revocation sets of that snapshot are read for the token of the stream, and the authorizer
 //! decides the caller again, so the answer is the one a new request of the same caller would get.
+//! An operation of a GraphQL socket (Story 11.3) is decided again on its document as well.
 //!
 //! A stream is registered before it is forwarded, so the version that authorized it may be below
 //! the published one by then. [`admit`] decides such a stream again right after its registration.
@@ -18,7 +19,10 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use axum::http::request::Parts;
-use iam_application::{Authorization, Principal, RequestAuthorizer, RouteRequest};
+use iam_application::{
+    Authorization, OperationVerdict, Principal, RequestAuthorizer, RouteRequest,
+    SubscriptionAuthorizer,
+};
 use iam_domain::{
     AssignmentState, HttpMethod, PathNormalizer, PolicySnapshot, PolicyView, RevocationRule,
     RouteState, SubjectId, SubjectRef,
@@ -112,6 +116,7 @@ fn grant_of(opening: &Opening<'_>) -> Grant {
         host: host_of(opening.parts).unwrap_or_default(),
         method: HttpMethod::parse(opening.parts.method.as_str()).unwrap_or(HttpMethod::Get),
         path: opening.parts.uri.path().to_owned(),
+        operation: None,
     }
 }
 
@@ -151,6 +156,7 @@ pub(super) fn earliest_expiry(
 pub(super) struct PipelineRedecision {
     view: Arc<dyn PolicyView>,
     authorizer: Arc<RequestAuthorizer>,
+    subscriptions: SubscriptionAuthorizer,
     clock: Arc<dyn Clock>,
 }
 
@@ -162,6 +168,7 @@ impl PipelineRedecision {
     ) -> Self {
         Self {
             view,
+            subscriptions: SubscriptionAuthorizer::new(Arc::clone(&authorizer)),
             authorizer,
             clock,
         }
@@ -187,13 +194,21 @@ impl PipelineRedecision {
             request_id: None,
         };
         match self.authorizer.authorize(&request, principal).await {
-            Authorization::Allowed(_) | Authorization::WouldDeny(_) => {
-                Some(earliest_expiry(&snapshot, principal, self.clock.now()))
-            }
+            Authorization::Allowed(_) | Authorization::WouldDeny(_) => {}
             Authorization::Denied(_)
             | Authorization::Unavailable
-            | Authorization::AuditUnavailable => None,
+            | Authorization::AuditUnavailable => return None,
         }
+        if let Some(operation) = grant.operation.as_deref() {
+            let verdict = self
+                .subscriptions
+                .authorize_operation(&request, principal, operation)
+                .await;
+            if !matches!(verdict, OperationVerdict::Allowed { .. }) {
+                return None;
+            }
+        }
+        Some(earliest_expiry(&snapshot, principal, self.clock.now()))
     }
 }
 
