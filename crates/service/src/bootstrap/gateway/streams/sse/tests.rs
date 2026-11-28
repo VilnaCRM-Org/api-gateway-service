@@ -17,6 +17,8 @@ fn open(registry: &Arc<StreamRegistry>) -> Arc<StreamHandle> {
         token_expires_at: None,
         assignment_expires_at: None,
         version: 1,
+        route: None,
+        service: None,
     };
     let grant = Grant {
         principal: None,

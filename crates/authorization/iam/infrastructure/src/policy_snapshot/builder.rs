@@ -12,9 +12,9 @@ use std::time::Duration;
 
 use iam_domain::{
     ApplyPosition, ApplyRules, BootClock, BootInstant, DerivedMismatch, DerivedStateAudit,
-    DigestRing, FenceVerdict, InvalidStateRecord, LogEpoch, Offer, PolicyDigest, PolicyDigestValue,
-    PolicyVersion, RecordVerdict, RelayEpoch, RouteConflict, RouteTableCompiler, StateKey,
-    StateRecordCodec, VersionAssembly, VersionedRecord,
+    DigestRing, FenceVerdict, InvalidStateRecord, LogEpoch, Offer, PolicyChange, PolicyDigest,
+    PolicyDigestValue, PolicyTouch, PolicyVersion, RecordVerdict, RelayEpoch, RouteConflict,
+    RouteTableCompiler, StateKey, StateRecordCodec, VersionAssembly, VersionedRecord,
 };
 
 use super::arc_swap_policy_snapshot::ArcSwapPolicySnapshot;
@@ -118,6 +118,8 @@ pub struct PolicySnapshotBuilder {
     pending: Option<VersionAssembly>,
     published_at: Option<BootInstant>,
     dirty: bool,
+    touched: PolicyTouch,
+    published: Option<PolicyChange>,
 }
 
 impl PolicySnapshotBuilder {
@@ -135,6 +137,8 @@ impl PolicySnapshotBuilder {
             pending: None,
             published_at: None,
             dirty: false,
+            touched: PolicyTouch::nothing(),
+            published: None,
         }
     }
 
@@ -205,6 +209,14 @@ impl PolicySnapshotBuilder {
         true
     }
 
+    /// The publication made since the last call, with what the versions it covers touched
+    /// (Story 11.2): the apply thread hands it to the re-authorization of the open streams. Two
+    /// publications that were not taken in between are joined into one. A state that was replaced
+    /// as a whole touches everything.
+    pub const fn take_published(&mut self) -> Option<PolicyChange> {
+        self.published.take()
+    }
+
     /// Replaces the state with the one built from `entries` in one pass, as after a read of the
     /// whole topic, and publishes it. The result equals the one incremental apply reaches.
     ///
@@ -258,6 +270,7 @@ impl PolicySnapshotBuilder {
         self.ring.record(version, working.digest);
         self.working = working;
         self.pending = None;
+        self.touched = PolicyTouch::everything();
         self.publish();
         Ok(())
     }
@@ -333,6 +346,9 @@ impl PolicySnapshotBuilder {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let log_epoch = assembly.log_epoch().unwrap_or(self.working.log_epoch);
+        for record in body {
+            self.touched.note(&record.key);
+        }
         self.applier.apply(
             &mut self.working,
             changes,
@@ -362,7 +378,20 @@ impl PolicySnapshotBuilder {
             .publish(Arc::new(SnapshotData::new(self.working.clone(), now)));
         self.published_at = Some(now);
         self.dirty = false;
+        self.record_publication();
         self.report_published();
+    }
+
+    /// Keeps what the publication covers for [`take_published`](Self::take_published).
+    fn record_publication(&mut self) {
+        let change = PolicyChange {
+            version: self.working.version,
+            touch: std::mem::take(&mut self.touched),
+        };
+        match self.published.as_mut() {
+            Some(held) => held.absorb(change),
+            None => self.published = Some(change),
+        }
     }
 
     /// The metric events of a publication: the version, the digest of the raw state and the hash of

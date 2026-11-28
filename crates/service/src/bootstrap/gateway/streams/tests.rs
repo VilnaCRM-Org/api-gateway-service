@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use iam_domain::freshness::proof::FreshnessProof;
@@ -39,6 +39,8 @@ fn open(streams: &Streams, subject: &str) -> Result<StreamHandle, SubjectAtCap> 
         token_expires_at: None,
         assignment_expires_at: None,
         version: 1,
+        route: None,
+        service: None,
     };
     let grant = Grant {
         principal: None,
@@ -151,4 +153,168 @@ fn the_number_of_open_streams_is_reported_only_when_it_changes() {
     assert_eq!(streams.report(1), 1);
     drop(held);
     assert_eq!(streams.report(1), 0);
+}
+
+/// A decider whose published version and verdict a test sets.
+#[derive(Debug)]
+struct Published {
+    version: Option<i64>,
+    allow: AtomicBool,
+    decided: AtomicUsize,
+}
+
+impl Published {
+    fn at(version: Option<i64>, allow: bool) -> Arc<Self> {
+        Arc::new(Self {
+            version,
+            allow: AtomicBool::new(allow),
+            decided: AtomicUsize::new(0),
+        })
+    }
+
+    fn decided(&self) -> usize {
+        self.decided.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl Redecision for Published {
+    async fn decide(&self, _grant: &Grant) -> Revalidated {
+        self.decided.fetch_add(1, Ordering::SeqCst);
+        if self.allow.load(Ordering::SeqCst) {
+            Revalidated::Allowed { next_expiry: None }
+        } else {
+            Revalidated::Denied
+        }
+    }
+
+    fn published(&self) -> Option<i64> {
+        self.version
+    }
+}
+
+fn pronounced(version: i64) -> PolicyVersion {
+    PolicyVersion::new(version).unwrap()
+}
+
+#[tokio::test]
+async fn a_stream_authorized_below_the_published_version_is_decided_at_once_and_closed_when_denied()
+{
+    let streams = streams();
+    let decider = Published::at(Some(8), false);
+    streams.install(Arc::<Published>::clone(&decider));
+    let held = open(&streams, "user-1").unwrap();
+
+    streams.admit(held.id()).await;
+
+    assert_eq!(held.closed().await, CloseReason::Revoked);
+    assert_eq!(decider.decided(), 1);
+    assert!(streams.registry().is_empty());
+}
+
+#[tokio::test]
+async fn a_stream_the_published_version_still_allows_stays_open_and_counts_as_decided() {
+    let streams = streams();
+    let decider = Published::at(Some(8), true);
+    streams.install(Arc::<Published>::clone(&decider));
+    let held = open(&streams, "user-1").unwrap();
+    assert_eq!(streams.lagging(pronounced(8)), vec![held.id()]);
+
+    streams.admit(held.id()).await;
+
+    assert_eq!(streams.registry().len(), 1);
+    assert_eq!(streams.lagging(pronounced(8)), Vec::<u64>::new());
+    assert_eq!(decider.decided(), 1);
+}
+
+#[tokio::test]
+async fn a_stream_authorized_on_the_published_version_is_not_decided_again() {
+    let streams = streams();
+    let decider = Published::at(Some(1), false);
+    streams.install(Arc::<Published>::clone(&decider));
+    let held = open(&streams, "user-1").unwrap();
+
+    streams.admit(held.id()).await;
+
+    assert_eq!(decider.decided(), 0);
+    assert_eq!(streams.registry().len(), 1);
+    assert_eq!(streams.lagging(pronounced(1)), Vec::<u64>::new());
+}
+
+#[tokio::test]
+async fn without_a_published_version_the_registration_check_decides_nothing() {
+    let streams = streams();
+    let decider = Published::at(None, false);
+    streams.install(Arc::<Published>::clone(&decider));
+    let held = open(&streams, "user-1").unwrap();
+
+    streams.admit(held.id()).await;
+
+    assert_eq!(decider.decided(), 0);
+    assert_eq!(streams.registry().len(), 1);
+}
+
+#[tokio::test]
+async fn deciding_a_stream_again_without_a_decider_closes_it() {
+    let streams = streams();
+    let held = open(&streams, "user-1").unwrap();
+
+    streams.reevaluate(held.id(), pronounced(2)).await;
+
+    assert_eq!(held.closed().await, CloseReason::Revoked);
+}
+
+#[tokio::test]
+async fn deciding_a_stream_that_is_gone_changes_nothing() {
+    let streams = streams();
+    let decider = Published::at(Some(2), false);
+    streams.install(Arc::<Published>::clone(&decider));
+
+    streams.reevaluate(99, pronounced(2)).await;
+
+    assert_eq!(decider.decided(), 0);
+}
+
+#[tokio::test]
+async fn the_record_moves_once_every_stream_is_decided_against_the_version() {
+    let streams = streams();
+    streams.install(Published::at(Some(1), true));
+    let board = ReevaluationBoard::new();
+    let early = open(&streams, "user-1").unwrap();
+    streams.admit(early.id()).await;
+    let mark = streams.mark();
+    let waiting = open(&streams, "user-2").unwrap();
+
+    streams.settle(mark, pronounced(2));
+
+    assert_eq!(
+        streams.lagging(pronounced(2)),
+        vec![waiting.id()],
+        "the stream that is still waiting for its first check is not settled"
+    );
+    assert!(!streams.finish(pronounced(2), &board));
+    assert_eq!(board.finished(), -1);
+    streams.reevaluate(waiting.id(), pronounced(2)).await;
+    assert!(streams.finish(pronounced(2), &board));
+    assert_eq!(board.finished(), 2);
+}
+
+#[tokio::test]
+async fn the_streams_of_a_scope_come_from_the_registry() {
+    let streams = streams();
+    let first = open(&streams, "user-1").unwrap();
+    let second = open(&streams, "user-2").unwrap();
+    let scope = StreamScope {
+        subjects: ["user-2".to_owned()].into(),
+        ..StreamScope::default()
+    };
+
+    assert_eq!(streams.select(&scope), vec![second.id()]);
+    assert_eq!(
+        streams.select(&StreamScope {
+            everything: true,
+            ..StreamScope::default()
+        }),
+        vec![first.id(), second.id()]
+    );
 }

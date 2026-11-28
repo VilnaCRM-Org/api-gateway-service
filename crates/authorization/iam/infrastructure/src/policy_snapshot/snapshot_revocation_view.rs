@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use iam_domain::{
-    PolicySnapshot, PolicyView, RepositoryError, RevocationStatus, RevocationView, SubjectId,
-    TokenIdentity,
+    PolicySnapshot, PolicyView, RepositoryError, RevocationStatus, RevocationView, SessionId,
+    SubjectId, TokenIdentity,
 };
 
 /// Why the snapshot cannot answer.
@@ -57,10 +57,23 @@ impl SnapshotRevocationView {
             .policy
             .current()
             .ok_or_else(|| unavailable(SnapshotRevocationError::NoSnapshot))?;
-        let session_revoked = identity
-            .session()
-            .is_some_and(|session| snapshot.session_revoked(session));
-        let user_cutoff = match identity.subject() {
+        Self::status_of(snapshot.as_ref(), identity.session(), identity.subject())
+    }
+
+    /// The revocation state that applies to a caller with `session` and `subject`, read from
+    /// `snapshot`: the same answer the view gives for a token of that caller. An open stream is
+    /// decided again with it when a version changes the revocation sets.
+    ///
+    /// # Errors
+    ///
+    /// [`RepositoryError::Unavailable`] when a stored cut-off holds an instant before 1970.
+    pub fn status_of(
+        snapshot: &dyn PolicySnapshot,
+        session: Option<&SessionId>,
+        subject: &SubjectId,
+    ) -> Result<RevocationStatus, RepositoryError> {
+        let session_revoked = session.is_some_and(|session| snapshot.session_revoked(session));
+        let user_cutoff = match subject {
             SubjectId::User(user) => snapshot
                 .user_cutoff(*user)
                 .map(|state| instant(state.tokens_valid_after_micros))

@@ -21,8 +21,8 @@ use std::time::Duration;
 use iam_application::{
     BootstrapMachine, BootstrapOutcome, BootstrapPorts, BootstrapSnapshot, DerivedStateChecker,
     FenceCause, FreshnessProber, PeerReadinessChecker, PeerSet, PodStatus, PolicyVersionBoard,
-    ProofSink, TailApplier, TailEnd, TailMachine, TailPorts, TailProgress, rebootstrap_delay,
-    run_bootstrap, run_tail,
+    ProofSink, ReevaluationBoard, TailApplier, TailEnd, TailMachine, TailPorts, TailProgress,
+    rebootstrap_delay, run_bootstrap, run_tail,
 };
 use iam_domain::{
     BootClock, KafkaTopicInspector, PeerFreshnessClient, PolicyBootstrapLog, PolicyDigest,
@@ -103,6 +103,9 @@ pub struct PolicyAdapters {
     /// The versions the log held and the version published, which the read-your-writes barrier
     /// waits on (Story 10.10).
     pub versions: Arc<PolicyVersionBoard>,
+    /// The publications that wait for the re-authorization of the open streams, and the highest
+    /// version whose re-evaluation has finished (Story 11.2).
+    pub reevaluation: Arc<ReevaluationBoard>,
 }
 
 impl PolicyAdapters {
@@ -187,6 +190,7 @@ impl PolicyAdapters {
             status: Arc::new(PodStatus::new()),
             readiness: None,
             versions: Arc::new(PolicyVersionBoard::new()),
+            reevaluation: Arc::new(ReevaluationBoard::new()),
         }
     }
 }
@@ -227,8 +231,9 @@ pub fn start_policy_with_thread(
     let state = freshness.map(|adapters| Arc::clone(&adapters.state));
     let cell = Arc::clone(&policy.cell);
     let versions = Some(Arc::clone(&policy.versions));
+    let reevaluation = Some(Arc::clone(&policy.reevaluation));
     let (thread, apply_death) =
-        ApplyThread::spawn_tracking(builder, cell, checker, (state, versions))?;
+        ApplyThread::spawn_reevaluating(builder, cell, checker, (state, versions, reevaluation))?;
     let (tail_dead, tail_death) = oneshot::channel();
     let (dead, death) = oneshot::channel();
     tokio::spawn(merge_deaths(apply_death, tail_death, dead));

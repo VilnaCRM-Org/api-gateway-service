@@ -51,6 +51,10 @@ impl Redecision for Decider {
             .pop()
             .unwrap_or(Revalidated::Denied)
     }
+
+    fn published(&self) -> Option<i64> {
+        None
+    }
 }
 
 fn at(seconds: u64) -> SystemTime {
@@ -84,6 +88,8 @@ fn open(
         token_expires_at,
         assignment_expires_at,
         version: 3,
+        route: None,
+        service: None,
     };
     let grant = Grant {
         principal: None,

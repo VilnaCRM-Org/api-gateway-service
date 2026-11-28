@@ -11,6 +11,8 @@ fn record(subject: Option<&str>, session: Option<&str>) -> StreamRecord {
         token_expires_at: None,
         assignment_expires_at: None,
         version: 7,
+        route: None,
+        service: None,
     }
 }
 
@@ -273,6 +275,179 @@ fn renewing_a_stream_that_is_gone_changes_nothing() {
     let registry = StreamRegistry::new(4);
 
     registry.renew(99, None);
+
+    assert!(registry.is_empty());
+}
+
+fn route_id(route: u32) -> RouteId {
+    RouteId::parse(&format!("0192f6a0-0000-7000-8000-{route:012x}")).unwrap()
+}
+
+fn on(route: u32, service: &str) -> StreamRecord {
+    StreamRecord {
+        route: Some(route_id(route)),
+        service: Some(ServiceName::new(service).unwrap()),
+        ..record(Some("user-1"), None)
+    }
+}
+
+fn route_scope(route: u32) -> StreamScope {
+    StreamScope {
+        routes: [route_id(route)].into(),
+        ..StreamScope::default()
+    }
+}
+
+#[test]
+fn the_streams_of_a_subject_or_a_session_are_selected_through_the_indexes() {
+    let registry = StreamRegistry::new(8);
+    let first = registry
+        .open(record(Some("user-1"), Some("session-1")), grant())
+        .unwrap();
+    let second = registry
+        .open(record(Some("user-2"), Some("session-2")), grant())
+        .unwrap();
+    let _third = registry
+        .open(record(Some("user-3"), None), grant())
+        .unwrap();
+
+    let by_subject = StreamScope {
+        subjects: ["user-1".to_owned(), "user-9".to_owned()].into(),
+        ..StreamScope::default()
+    };
+    let by_session = StreamScope {
+        sessions: ["session-2".to_owned()].into(),
+        ..StreamScope::default()
+    };
+
+    assert_eq!(registry.select(&by_subject), vec![first.id()]);
+    assert_eq!(registry.select(&by_session), vec![second.id()]);
+    assert_eq!(registry.select(&StreamScope::default()), Vec::<u64>::new());
+}
+
+#[test]
+fn a_stream_selected_twice_is_listed_once() {
+    let registry = StreamRegistry::new(8);
+    let held = registry
+        .open(record(Some("user-1"), Some("session-1")), grant())
+        .unwrap();
+    let scope = StreamScope {
+        subjects: ["user-1".to_owned()].into(),
+        sessions: ["session-1".to_owned()].into(),
+        ..StreamScope::default()
+    };
+
+    assert_eq!(registry.select(&scope), vec![held.id()]);
+}
+
+#[test]
+fn the_streams_on_a_route_or_of_a_service_are_selected_by_a_scan() {
+    let registry = StreamRegistry::new(8);
+    let first = registry.open(on(1, "users"), grant()).unwrap();
+    let second = registry.open(on(2, "orders"), grant()).unwrap();
+    let _plain = registry.open(record(None, None), grant()).unwrap();
+    let by_service = StreamScope {
+        services: [ServiceName::new("orders").unwrap()].into(),
+        ..StreamScope::default()
+    };
+
+    assert_eq!(registry.select(&route_scope(1)), vec![first.id()]);
+    assert_eq!(registry.select(&by_service), vec![second.id()]);
+}
+
+#[test]
+fn everything_selects_every_open_stream() {
+    let registry = StreamRegistry::new(8);
+    let first = registry.open(record(None, None), grant()).unwrap();
+    let second = registry
+        .open(record(Some("user-1"), None), grant())
+        .unwrap();
+    let scope = StreamScope {
+        everything: true,
+        ..StreamScope::default()
+    };
+
+    assert_eq!(registry.select(&scope), vec![first.id(), second.id()]);
+}
+
+#[test]
+fn a_mark_lies_above_every_stream_registered_before_it() {
+    let registry = StreamRegistry::new(8);
+    let first = registry.open(record(None, None), grant()).unwrap();
+    let mark = registry.mark();
+    let second = registry.open(record(None, None), grant()).unwrap();
+
+    assert!(first.id() < mark);
+    assert!(second.id() >= mark);
+}
+
+#[test]
+fn a_stream_lags_until_it_is_decided_against_the_version() {
+    let registry = StreamRegistry::new(8);
+    let held = registry.open(record(None, None), grant()).unwrap();
+
+    assert!(
+        registry.lagging(7).is_empty(),
+        "the opening version is the record's"
+    );
+    assert_eq!(registry.lagging(8), vec![held.id()]);
+    registry.evaluated(held.id(), 8);
+    assert_eq!(registry.lagging(8), Vec::<u64>::new());
+    registry.evaluated(held.id(), 3);
+    assert!(
+        registry.lagging(8).is_empty(),
+        "the version never goes down"
+    );
+}
+
+#[test]
+fn settling_skips_the_streams_registered_after_the_mark_and_those_waiting_for_their_check() {
+    let registry = StreamRegistry::new(8);
+    let checked = registry.open(record(None, None), grant()).unwrap();
+    registry.admitted(checked.id());
+    let waiting = registry.open(record(None, None), grant()).unwrap();
+    let mark = registry.mark();
+    let later = registry.open(record(None, None), grant()).unwrap();
+    registry.admitted(later.id());
+
+    registry.settle(mark, 9);
+
+    assert_eq!(registry.lagging(9), vec![waiting.id(), later.id()]);
+}
+
+#[test]
+fn the_record_moves_only_when_no_stream_lags_and_never_down() {
+    let registry = StreamRegistry::new(8);
+    let board = ReevaluationBoard::new();
+    let held = registry.open(record(None, None), grant()).unwrap();
+    let version = |value| PolicyVersion::new(value).unwrap();
+
+    assert!(!registry.finish(version(9), &board));
+    assert_eq!(board.finished(), -1);
+    registry.evaluated(held.id(), 9);
+    assert!(registry.finish(version(9), &board));
+    assert_eq!(board.finished(), 9);
+    assert!(registry.finish(version(4), &board));
+    assert_eq!(board.finished(), 9);
+}
+
+#[test]
+fn the_grant_of_an_open_stream_is_found_and_that_of_a_closed_one_is_not() {
+    let registry = StreamRegistry::new(8);
+    let held = registry.open(record(None, None), grant()).unwrap();
+    let id = held.id();
+
+    assert_eq!(registry.grant(id).unwrap().path, "/api/stream");
+    drop(held);
+    assert!(registry.grant(id).is_none());
+}
+
+#[test]
+fn deciding_a_stream_that_is_gone_changes_nothing() {
+    let registry = StreamRegistry::new(8);
+
+    registry.evaluated(5, 3);
+    registry.admitted(5);
 
     assert!(registry.is_empty());
 }

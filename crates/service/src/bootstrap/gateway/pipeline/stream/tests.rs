@@ -3,8 +3,9 @@ use std::time::{Duration, SystemTime};
 use axum::http::Request;
 use iam_domain::{
     AccessToken, AccessTokenParts, AssignmentScope, CatalogueEntryState, CompiledRoleSet,
-    EnforcementMode, GrantStatus, HttpMethod, PermissionGrant, PolicyVersion, RoleId, RouteFlag,
-    RouteFlags, ServiceName, SessionId, TokenId, TokenIdentity,
+    EnforcementMode, GlobalRevocationState, GrantStatus, HttpMethod, PermissionGrant,
+    PolicyVersion, RoleId, RouteFlag, RouteFlags, ServiceName, SessionId, TokenId, TokenIdentity,
+    UserRevocationState,
 };
 use shared_domain::Uuid;
 use test_support::clock::FixedClock;
@@ -63,6 +64,15 @@ fn snapshot_of(
 }
 
 fn view_of(held: Vec<AssignmentState>, streaming: bool) -> (Arc<dyn PolicyView>, RouteState) {
+    view_revoking(held, streaming, |snapshot| snapshot)
+}
+
+/// The view of [`view_of`] over a snapshot that `revoke` has changed.
+fn view_revoking(
+    held: Vec<AssignmentState>,
+    streaming: bool,
+    revoke: impl FnOnce(GatewaySnapshot) -> GatewaySnapshot,
+) -> (Arc<dyn PolicyView>, RouteState) {
     let mut rng = TestRng::from_env();
     let users = iam_domain::UpstreamState::of(upstream(&mut rng, "users", "users").parts());
     let mut draft = route_draft(
@@ -91,7 +101,10 @@ fn view_of(held: Vec<AssignmentState>, streaming: bool) -> (Arc<dyn PolicyView>,
         )
         .with_assignments(SubjectRef::user(Uuid::parse(USER).unwrap()), held)
         .with_role_set(RoleId::parse(ROLE).unwrap(), granted);
-    (Arc::new(CountingPolicyView::serving(snapshot)), state)
+    (
+        Arc::new(CountingPolicyView::serving(revoke(snapshot))),
+        state,
+    )
 }
 
 fn parts(claims: Option<Arc<SubjectClaims>>) -> Parts {
@@ -434,6 +447,148 @@ async fn a_stream_of_a_caller_the_rule_still_allows_gets_the_next_expiry_to_look
 #[tokio::test]
 async fn a_stream_of_a_caller_the_rule_no_longer_allows_is_denied_again() {
     let (view, _route) = view_of(Vec::new(), true);
+
+    let decided = redecision(view).decide(&grant_of_the_user()).await;
+
+    assert_eq!(decided, Revalidated::Denied);
+}
+
+fn allowed_by_role() -> Vec<AssignmentState> {
+    vec![assignment(ROLE, None)]
+}
+
+fn user_cutoff(seconds: u64) -> UserRevocationState {
+    UserRevocationState {
+        user: Uuid::parse(USER).unwrap(),
+        tokens_valid_after_micros: micros(seconds).unwrap(),
+        prune_after_micros: micros(seconds.saturating_add(3_600)).unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn a_stream_whose_session_was_revoked_is_denied_again() {
+    let (view, _route) = view_revoking(allowed_by_role(), true, |snapshot| {
+        snapshot.with_revoked_session(SessionId::new("session-1").unwrap())
+    });
+
+    let decided = redecision(view).decide(&grant_of_the_user()).await;
+
+    assert_eq!(decided, Revalidated::Denied);
+}
+
+#[tokio::test]
+async fn a_stream_whose_token_was_issued_before_the_user_cutoff_is_denied_again() {
+    let (view, _route) = view_revoking(allowed_by_role(), true, |snapshot| {
+        snapshot.with_user_cutoff(user_cutoff(NOW - 30))
+    });
+
+    let decided = redecision(view).decide(&grant_of_the_user()).await;
+
+    assert_eq!(decided, Revalidated::Denied);
+}
+
+#[tokio::test]
+async fn a_stream_whose_token_was_issued_after_the_user_cutoff_stays_allowed() {
+    let (view, _route) = view_revoking(allowed_by_role(), true, |snapshot| {
+        snapshot.with_user_cutoff(user_cutoff(NOW - 120))
+    });
+
+    let decided = redecision(view).decide(&grant_of_the_user()).await;
+
+    assert_eq!(decided, Revalidated::Allowed { next_expiry: None });
+}
+
+#[tokio::test]
+async fn a_stream_whose_token_was_issued_before_the_global_cutoff_is_denied_again() {
+    let (view, _route) = view_revoking(allowed_by_role(), true, |snapshot| {
+        snapshot.with_global_cutoff(GlobalRevocationState {
+            tokens_valid_after_micros: micros(NOW - 30).unwrap(),
+        })
+    });
+
+    let decided = redecision(view).decide(&grant_of_the_user()).await;
+
+    assert_eq!(decided, Revalidated::Denied);
+}
+
+#[tokio::test]
+async fn an_anonymous_stream_ignores_the_revocation_sets() {
+    let (view, _route) = view_revoking(Vec::new(), true, |snapshot| {
+        snapshot.with_global_cutoff(GlobalRevocationState {
+            tokens_valid_after_micros: micros(NOW + 30).unwrap(),
+        })
+    });
+
+    let decided = redecision(view).decide(&anonymous_grant()).await;
+
+    assert_eq!(decided, Revalidated::Allowed { next_expiry: None });
+}
+
+#[test]
+fn the_published_version_is_the_one_of_the_snapshot_and_none_without_a_snapshot() {
+    let (view, _route) = view_of(Vec::new(), true);
+    let empty: Arc<dyn PolicyView> = Arc::new(CountingPolicyView::empty());
+
+    assert_eq!(redecision(view).published(), Some(7));
+    assert_eq!(redecision(empty).published(), None);
+}
+
+#[test]
+fn the_stream_records_the_route_and_the_service_it_was_opened_on() {
+    let (snapshot, route) = snapshot_of(vec![assignment(ROLE, None)], true);
+    let streams = streams(4);
+    let request = parts(None);
+    let caller = principal();
+
+    let handle = register(
+        Some(&streams),
+        &opening(&request, &route, &snapshot, Some(&caller)),
+    )
+    .unwrap()
+    .unwrap();
+
+    let record = streams.registry().record(handle.id()).unwrap();
+    assert_eq!(record.route, Some(route.id));
+    assert_eq!(record.service.as_ref(), Some(route.fields.service()));
+}
+
+#[tokio::test]
+async fn the_check_after_registration_costs_nothing_without_a_stream() {
+    let streams = streams(4);
+
+    admit(None, None).await;
+    admit(Some(&streams), None).await;
+
+    assert!(streams.registry().is_empty());
+}
+
+#[tokio::test]
+async fn a_stream_authorized_on_the_published_version_survives_the_check_after_registration() {
+    let (view, route) = view_of(vec![assignment(ROLE, None)], true);
+    let snapshot = view.current().unwrap();
+    let streams = streams(4);
+    streams.install(Arc::new(redecision(view)));
+    let request = parts(None);
+    let caller = principal();
+    let handle = register(
+        Some(&streams),
+        &opening(&request, &route, &snapshot, Some(&caller)),
+    )
+    .unwrap()
+    .unwrap();
+
+    admit(Some(&streams), Some(&handle)).await;
+
+    assert_eq!(streams.registry().len(), 1);
+}
+
+#[tokio::test]
+async fn a_stream_whose_cutoff_cannot_be_read_is_denied_again() {
+    let (view, _route) = view_revoking(allowed_by_role(), true, |snapshot| {
+        snapshot.with_global_cutoff(GlobalRevocationState {
+            tokens_valid_after_micros: -1,
+        })
+    });
 
     let decided = redecision(view).decide(&grant_of_the_user()).await;
 

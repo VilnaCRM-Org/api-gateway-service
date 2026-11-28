@@ -28,7 +28,9 @@ use std::time::Duration;
 use iam_application::{
     ApplyResult, BootstrapSnapshot, CheckOutcome, DerivedStateChecker, FenceCause, TailApplier,
 };
-use iam_application::{FreshnessState, PolicyVersionBoard, ProofSink, TailProgress};
+use iam_application::{
+    FreshnessState, PolicyVersionBoard, ProofSink, ReevaluationBoard, TailProgress,
+};
 use iam_domain::freshness::proof::FreshnessProof;
 use iam_domain::{DerivedMismatch, FenceVerdict, FramedRecord, PolicyVersion, PolicyView as _};
 use iam_infrastructure::{
@@ -91,6 +93,14 @@ impl Drop for DeathNotice {
 
 /// The fault that the check found, waiting for the tail to take it.
 type Fault = Arc<Mutex<Option<FenceCause>>>;
+
+/// What the thread reports to besides its builder: the proofs of freshness, the versions of the
+/// read-your-writes barrier and the board of the stream re-authorization.
+type Wiring = (
+    Option<Arc<FreshnessState>>,
+    Option<Arc<PolicyVersionBoard>>,
+    Option<Arc<ReevaluationBoard>>,
+);
 
 /// A handle to the apply thread.
 #[derive(Debug)]
@@ -157,6 +167,22 @@ impl ApplyThread {
         checker: Option<DerivedStateChecker>,
         (freshness, versions): (Option<Arc<FreshnessState>>, Option<Arc<PolicyVersionBoard>>),
     ) -> std::io::Result<(Self, oneshot::Receiver<()>)> {
+        Self::spawn_reevaluating(builder, cell, checker, (freshness, versions, None))
+    }
+
+    /// Like [`spawn_tracking`](Self::spawn_tracking), and the thread hands every publication, with
+    /// what its versions touched, to `reevaluation`, which decides the open streams again off this
+    /// thread (Story 11.2). Handing a change over never waits.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of starting the thread.
+    pub fn spawn_reevaluating(
+        builder: PolicySnapshotBuilder,
+        cell: Arc<ArcSwapPolicySnapshot>,
+        checker: Option<DerivedStateChecker>,
+        (freshness, versions, reevaluation): Wiring,
+    ) -> std::io::Result<(Self, oneshot::Receiver<()>)> {
         let (commands, received) = mpsc::channel();
         let (dead, death) = oneshot::channel();
         let fault = Fault::default();
@@ -166,6 +192,7 @@ impl ApplyThread {
             fenced: None,
             proofs: Proofs::new(freshness),
             versions,
+            reevaluation,
         };
         let handle = std::thread::Builder::new()
             .name("policy-apply".to_owned())
@@ -264,6 +291,7 @@ fn serve(
         guard.check(&mut builder, cell);
         guard.proofs.attach(&builder, cell);
         guard.announce(cell);
+        guard.hand_over(&mut builder);
         reclaim(cell);
     }
 }
@@ -278,6 +306,8 @@ struct Guard {
     proofs: Proofs,
     /// Where the versions seen in the log and the version published are announced (Story 10.10).
     versions: Option<Arc<PolicyVersionBoard>>,
+    /// Where each publication and what it touched is handed for the streams (Story 11.2).
+    reevaluation: Option<Arc<ReevaluationBoard>>,
 }
 
 impl Guard {
@@ -323,6 +353,16 @@ impl Guard {
     fn announce(&self, cell: &ArcSwapPolicySnapshot) {
         if let Some(versions) = self.versions.as_ref() {
             versions.note_published(cell.current().map(|snapshot| snapshot.version()));
+        }
+    }
+
+    /// Hands the publication made since the last pass, with what its versions touched, to the
+    /// board that decides the open streams again. Without a board the change is dropped, so the
+    /// builder never keeps touches that nobody reads.
+    fn hand_over(&self, builder: &mut PolicySnapshotBuilder) {
+        let published = builder.take_published();
+        if let (Some(board), Some(change)) = (self.reevaluation.as_ref(), published) {
+            board.submit(change);
         }
     }
 

@@ -7,17 +7,21 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
-use iam_application::{EndpointDirectory, FreshnessState, RequestAuthorizer, ZoneSource};
+use iam_application::{
+    EndpointDirectory, FreshnessState, ReevaluationBoard, RequestAuthorizer, StreamReauthorizer,
+    ZoneSource,
+};
 use iam_domain::freshness::proof::FreshnessProof;
 use iam_domain::{
     AccessToken, AccessTokenParts, AccessTokenVerifier, AssignmentScope, AssignmentState,
     BootClock as _, BootInstant, CatalogueEntryState, CompiledRoleSet, EndpointConditions,
     EndpointParts, EndpointSlice, FreshnessRule, GrantStatus, HttpMethod, PermissionGrant,
-    PolicyVersion, PolicyView, RevocationView, RoleId, RouteFlag, RouteFlags, RouteState,
-    ServiceName, SessionId, SubjectId, SubjectRef, TokenId, TokenMemo, TokenRepository,
-    UpstreamEndpoint, UpstreamState, WatchTarget,
+    PolicyChange, PolicySnapshot, PolicyTouch, PolicyVersion, PolicyView, RevocationView, RoleId,
+    RouteFlag, RouteFlags, RouteState, ServiceName, SessionId, StateKey, SubjectId, SubjectRef,
+    TokenId, TokenMemo, TokenRepository, UpstreamEndpoint, UpstreamState, WatchTarget,
 };
 use iam_infrastructure::{
     CachingTokenRepository, MokaTokenMemo, SnapshotRevocationView, TokenMemoSettings,
@@ -29,7 +33,7 @@ use shared_domain::{Clock, CommandBus, Uuid};
 use test_support::access_token::FakeAccessTokenVerifier;
 use test_support::boot_clock::FakeBootClock;
 use test_support::clock::ManualClock;
-use test_support::gateway_snapshot::{CountingPolicyView, GatewaySnapshot};
+use test_support::gateway_snapshot::GatewaySnapshot;
 use test_support::id::SequenceUuidGenerator;
 use test_support::rng::FakeRng;
 use test_support::route::{route, route_draft};
@@ -54,7 +58,7 @@ const EVENTS_KEY: &str = "rest:streams:GET /events";
 
 /// What a scenario describes before the first stream: the subjects and the assignments that grant
 /// them the keys of the two streaming routes (`None` never expires).
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct StreamsPlan {
     subjects: Vec<(String, Vec<Option<u64>>)>,
 }
@@ -67,6 +71,21 @@ impl StreamsPlan {
         } else {
             self.subjects.push((name.to_owned(), vec![seconds]));
         }
+    }
+
+    /// Takes every key of the subject `name` away, as the revocation of its roles does.
+    fn revoke(&mut self, name: &str) {
+        if let Some((_, held)) = self.subjects.iter_mut().find(|(known, _)| known == name) {
+            held.clear();
+        }
+    }
+
+    /// The position of the subject `name` in the plan, which numbers its user id.
+    fn index_of(&self, name: &str) -> usize {
+        self.subjects
+            .iter()
+            .position(|(known, _)| known == name)
+            .expect("the scenario described that subject")
     }
 
     /// Adds the subject `name` without a key.
@@ -117,14 +136,14 @@ fn micros(seconds: u64) -> Option<i64> {
 
 /// The snapshot of the plan: the two streaming routes of the service `streams`, its catalogue and
 /// the roles and assignments of every subject.
-fn snapshot(plan: &StreamsPlan) -> GatewaySnapshot {
+fn snapshot(plan: &StreamsPlan, version: i64) -> GatewaySnapshot {
     let mut rng = TestRng::from_env();
     let streams = UpstreamState::of(upstream(&mut rng, "streams", "streams").parts());
     let flags = RouteFlags::default().with(RouteFlag::Streaming, true);
     let entries = [WS_KEY, EVENTS_KEY]
         .map(|key| CatalogueEntryState::untyped(key.to_owned(), [false, false]))
         .to_vec();
-    let mut snapshot = GatewaySnapshot::at(PolicyVersion::new(7).expect("a version"))
+    let mut snapshot = GatewaySnapshot::at(PolicyVersion::new(version).expect("a version"))
         .with_upstream(streams.clone())
         .with_catalogue(
             ServiceName::new("streams").expect("a service name"),
@@ -139,6 +158,18 @@ fn snapshot(plan: &StreamsPlan) -> GatewaySnapshot {
         snapshot = with_subject(snapshot, index, held);
     }
     snapshot
+}
+
+/// A policy view whose snapshot a scenario replaces, as the apply thread publishes a version.
+#[derive(Debug)]
+struct Moving(Mutex<Arc<dyn PolicySnapshot>>);
+
+impl PolicyView for Moving {
+    fn current(&self) -> Option<Arc<dyn PolicySnapshot>> {
+        Some(Arc::clone(
+            &self.0.lock().unwrap_or_else(PoisonError::into_inner),
+        ))
+    }
 }
 
 fn with_subject(snapshot: GatewaySnapshot, index: usize, held: &[Option<u64>]) -> GatewaySnapshot {
@@ -298,6 +329,10 @@ pub(crate) struct StreamsHarness {
     streams: Arc<Streams>,
     clock: Arc<ManualClock>,
     boot: Arc<FakeBootClock>,
+    plan: StreamsPlan,
+    moving: Arc<Moving>,
+    board: Arc<ReevaluationBoard>,
+    version: i64,
     sockets: HashMap<String, TcpStream>,
     answers: HashMap<String, u16>,
     _stop: watch::Sender<bool>,
@@ -329,7 +364,8 @@ impl StreamsHarness {
         );
         let clock = Arc::new(ManualClock::at(at(NOW)));
         let policy_clock: Arc<dyn Clock> = Arc::<ManualClock>::clone(&clock);
-        let view: Arc<dyn PolicyView> = Arc::new(CountingPolicyView::serving(snapshot(plan)));
+        let moving = Arc::new(Moving(Mutex::new(Arc::new(snapshot(plan, 7)))));
+        let view: Arc<dyn PolicyView> = Arc::<Moving>::clone(&moving);
         let streams = Streams::new(
             StreamSettings {
                 idle_timeout: Duration::from_mins(5),
@@ -340,6 +376,13 @@ impl StreamsHarness {
         let pipeline = pipeline_over(plan, &view, &freshness, &policy_clock, forwarder)
             .with_streams(Arc::clone(&streams));
         let (stop, stopping) = watch::channel(false);
+        let board = Arc::new(ReevaluationBoard::new());
+        let reauthorizer = Arc::new(StreamReauthorizer::new(
+            Arc::<Streams>::clone(&streams),
+            Arc::clone(&view),
+            Arc::clone(&board),
+        ));
+        drop(tokio::spawn(reauthorizer.run(stopping.clone())));
         let fence = Arc::new(PodFence::new(view, freshness));
         drop(tokio::spawn(Arc::clone(&streams).watch(fence, stopping)));
         let listener = bound().await;
@@ -354,6 +397,10 @@ impl StreamsHarness {
             streams,
             clock,
             boot,
+            plan: plan.clone(),
+            moving,
+            board,
+            version: 7,
             sockets: HashMap::new(),
             answers: HashMap::new(),
             _stop: stop,
@@ -443,6 +490,29 @@ impl StreamsHarness {
     pub(crate) async fn expect_ended(&mut self, name: &str) {
         let rest = self.read_to_end(name, "events").await;
         assert!(rest.ends_with(b"0\r\n\r\n"), "the body ended: {rest:?}");
+    }
+
+    /// Revokes every key of `name` through a new policy version: the snapshot without them is
+    /// published, the version reports the subject as touched, and this returns once the
+    /// re-evaluation of the version has finished.
+    pub(crate) async fn revoke_keys(&mut self, name: &str) {
+        let index = self.plan.index_of(name);
+        self.plan.revoke(name);
+        self.version = self.version.saturating_add(1);
+        let version = PolicyVersion::new(self.version).expect("a version");
+        *self.moving.0.lock().unwrap_or_else(PoisonError::into_inner) =
+            Arc::new(snapshot(&self.plan, self.version));
+        let mut touch = PolicyTouch::nothing();
+        touch.note(&StateKey::Subject(SubjectRef::user(user_id(index))));
+        self.board.submit(PolicyChange { version, touch });
+        tokio::time::timeout(BOUND, self.board.reached(version))
+            .await
+            .expect("the re-evaluation finishes in time");
+    }
+
+    /// Whether the record of finished re-evaluations has reached the last version published.
+    pub(crate) fn reevaluated(&self) -> bool {
+        self.board.finished() >= self.version
     }
 
     /// Moves the clock of tokens and assignments forward.

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use iam_application::{
     ApplyResult, BootstrapEntry, BootstrapSnapshot, DerivedStateChecker, FenceCause,
-    FreshnessState, ProofSink as _, TailApplier,
+    FreshnessState, ProofSink as _, ReevaluationBoard, TailApplier,
 };
 use iam_domain::freshness::proof::FreshnessProof;
 use iam_domain::{
@@ -592,4 +592,79 @@ fn a_mismatch_is_logged_with_its_shard_and_both_hashes() {
         lines[0].field("rebuilt"),
         Some(PolicyDigestValue::ZERO.to_hex().as_str())
     );
+}
+
+/// A running thread that hands what it publishes to a board.
+fn reevaluating() -> (
+    ApplyThread,
+    Arc<ArcSwapPolicySnapshot>,
+    Arc<ReevaluationBoard>,
+) {
+    let cell = Arc::new(ArcSwapPolicySnapshot::deferred());
+    let board = Arc::new(ReevaluationBoard::new());
+    let (thread, _death) = ApplyThread::spawn_reevaluating(
+        builder(&cell),
+        Arc::clone(&cell),
+        None,
+        (None, None, Some(Arc::clone(&board))),
+    )
+    .unwrap();
+    (thread, cell, board)
+}
+
+#[tokio::test]
+async fn an_installed_state_is_handed_over_as_a_touch_of_everything() {
+    let (thread, _cell, board) = reevaluating();
+
+    thread.install(one_subject(4)).await.unwrap();
+
+    let change = tokio::time::timeout(BOUND, board.next()).await.unwrap();
+    assert_eq!(change.version, version(4));
+    assert!(change.touch.touches_everything());
+    assert!(thread.stop());
+}
+
+#[tokio::test]
+async fn a_version_of_the_tail_is_handed_over_with_the_subject_it_touched() {
+    let (thread, _cell, board) = reevaluating();
+    let state = BootstrapSnapshot {
+        log_epoch: LogEpoch::new(1).unwrap(),
+        ..empty_state(3)
+    };
+    thread.install(state).await.unwrap();
+    tokio::time::timeout(BOUND, board.next()).await.unwrap();
+    let digest = subject_digest();
+
+    let result = thread
+        .apply_batch(vec![
+            subject_row(10, 4, digest),
+            subject_row(10, 4, digest),
+            head_row(11, 4, digest, digest),
+        ])
+        .await;
+    thread
+        .run_on_thread(|builder| {
+            builder.flush();
+        })
+        .unwrap();
+
+    assert_eq!(result, ApplyResult::Applied);
+    let change = tokio::time::timeout(BOUND, board.next()).await.unwrap();
+    assert_eq!(change.version, version(4));
+    assert!(!change.touch.touches_everything());
+    let (StateKey::Subject(subject), _payload) = tail_subject() else {
+        panic!("the subject of the tail is a subject key");
+    };
+    assert!(change.touch.subjects().contains(&subject));
+    assert!(thread.stop());
+}
+
+#[tokio::test]
+async fn a_thread_without_a_board_publishes_as_before() {
+    let (thread, cell) = running();
+
+    thread.install(one_subject(4)).await.unwrap();
+
+    assert_eq!(cell.current().unwrap().version(), version(4));
+    assert!(thread.stop());
 }

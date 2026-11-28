@@ -105,3 +105,18 @@ fn the_actor_of_a_service_principal_is_the_service() {
 
     assert_eq!(principal.actor(), ActorRef::Service(name));
 }
+
+#[test]
+fn a_principal_keeps_when_its_token_was_issued_and_expires() {
+    let id = Uuid::parse("0190f2a8-7b3c-7d4e-8f10-1234567890ab").unwrap();
+
+    let principal = Principal::from(identity(SubjectId::User(id), None));
+
+    assert_eq!(principal.issued_at(), SystemTime::UNIX_EPOCH);
+    assert_eq!(
+        principal.expires_at(),
+        SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_mins(15))
+            .unwrap()
+    );
+}

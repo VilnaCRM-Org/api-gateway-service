@@ -99,3 +99,16 @@ proptest! {
         prop_assert_eq!(RevocationRule::check(&issued_at(iat), &status).is_ok(), after_both);
     }
 }
+
+#[rstest]
+#[case::nothing(RevocationStatus::default(), false)]
+#[case::session(RevocationStatus { session_revoked: true, ..RevocationStatus::default() }, true)]
+#[case::user_cutoff_at_issue(RevocationStatus { user_cutoff: Some(at(1_000)), ..RevocationStatus::default() }, true)]
+#[case::user_cutoff_before_issue(RevocationStatus { user_cutoff: Some(at(999)), ..RevocationStatus::default() }, false)]
+#[case::global_cutoff_after_issue(RevocationStatus { global_cutoff: Some(at(1_001)), ..RevocationStatus::default() }, true)]
+fn revokes_applies_the_rule_to_an_issue_instant(
+    #[case] status: RevocationStatus,
+    #[case] revoked: bool,
+) {
+    assert_eq!(RevocationRule::revokes(at(1_000), &status), revoked);
+}

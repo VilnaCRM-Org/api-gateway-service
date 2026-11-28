@@ -27,6 +27,7 @@ pub struct GatewaySnapshot {
     rate_policies: Vec<RatePolicyState>,
     assignments: BTreeMap<SubjectRef, Vec<AssignmentState>>,
     role_sets: BTreeMap<RoleId, CompiledRoleSet>,
+    role_holders: BTreeMap<RoleId, Vec<SubjectRef>>,
     catalogues: BTreeMap<ServiceName, Vec<CatalogueEntryState>>,
     revoked_sessions: Vec<SessionId>,
     user_cutoffs: Vec<UserRevocationState>,
@@ -44,6 +45,7 @@ impl GatewaySnapshot {
             rate_policies: Vec::new(),
             assignments: BTreeMap::new(),
             role_sets: BTreeMap::new(),
+            role_holders: BTreeMap::new(),
             catalogues: BTreeMap::new(),
             revoked_sessions: Vec::new(),
             user_cutoffs: Vec::new(),
@@ -83,6 +85,13 @@ impl GatewaySnapshot {
     #[must_use]
     pub fn with_role_set(mut self, role: RoleId, set: CompiledRoleSet) -> Self {
         self.role_sets.insert(role, set);
+        self
+    }
+
+    /// The same snapshot in which `holders` hold `role`: the reverse index of the role.
+    #[must_use]
+    pub fn with_role_holders(mut self, role: RoleId, holders: Vec<SubjectRef>) -> Self {
+        self.role_holders.insert(role, holders);
         self
     }
 
@@ -187,8 +196,8 @@ impl PolicySnapshot for GatewaySnapshot {
         self.assignments.get(subject).map_or(&[], Vec::as_slice)
     }
 
-    fn subjects_of_role(&self, _role: RoleId) -> Vec<SubjectRef> {
-        Vec::new()
+    fn subjects_of_role(&self, role: RoleId) -> Vec<SubjectRef> {
+        self.role_holders.get(&role).cloned().unwrap_or_default()
     }
 
     fn rate_policy(&self, id: RatePolicyId) -> Option<&RatePolicyState> {

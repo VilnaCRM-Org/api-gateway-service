@@ -269,6 +269,7 @@ pub use snapshot::assembly::{Completeness, Offer, VersionAssembly, VersionedReco
 pub use snapshot::read::{FreshnessProof, PolicySnapshot};
 pub use snapshot::ring::{DIGEST_RING_CAPACITY, DigestRing};
 pub use snapshot::rules::{ApplyPosition, ApplyRules, FenceVerdict, RecordVerdict};
+pub use snapshot::touch::{PolicyChange, PolicyTouch};
 pub use state::batch::{StateBatch, StateChange, StateRow};
 pub use state::key::{CATALOGUE_CHUNK_VERSION, ChunkId, StateKey};
 pub use state::layout::{CatalogueLayout, MAX_CHUNK_BYTES};

@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use axum::Router;
 use axum::serve::Listener;
-use iam_application::{EndpointReadyPeers, PodProbes, ReadYourWritesBarrier};
+use iam_application::{
+    EndpointReadyPeers, OpenStreams, PodProbes, ReadYourWritesBarrier, StreamReauthorizer,
+};
 use iam_domain::{PolicyView, ReadyPeers};
 use rustls::ServerConfig;
 use shared_domain::{BoxError, Clock};
@@ -322,6 +324,28 @@ fn spawn_stream_watch(
     });
 }
 
+/// Starts the re-authorization of the open streams (Story 11.2): it takes each publication of the
+/// apply thread off its board and decides again only the streams that publication touched, so
+/// the apply thread never waits for it and the record of finished re-evaluations moves up in
+/// order.
+fn spawn_stream_reauthorizer(
+    tasks: &mut TaskSupervisor,
+    streams: &Arc<Streams>,
+    policy: &policy::PolicyAdapters,
+) {
+    let view: Arc<dyn PolicyView> =
+        Arc::<iam_infrastructure::ArcSwapPolicySnapshot>::clone(&policy.cell);
+    let open: Arc<dyn OpenStreams> = Arc::<Streams>::clone(streams);
+    let reauthorizer = Arc::new(StreamReauthorizer::new(
+        open,
+        view,
+        Arc::clone(&policy.reevaluation),
+    ));
+    tasks.spawn(StreamReauthorizer::name(), |shutdown| {
+        reauthorizer.run(shutdown)
+    });
+}
+
 fn start_servers(
     config: &GatewayConfig,
     sockets: Sockets,
@@ -349,6 +373,7 @@ fn start_servers(
         Arc::clone(&adapters.clock),
     );
     spawn_stream_watch(tasks, &streams, policy);
+    spawn_stream_reauthorizer(tasks, &streams, policy);
     let ports = PublicPorts {
         forwarder,
         access_log,

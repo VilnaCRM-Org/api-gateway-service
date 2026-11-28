@@ -363,6 +363,7 @@ impl Pipeline {
                     ),
                     None => headers::rewrite_anonymous(&mut parts, forward_credentials),
                 }
+                stream::admit(self.streams.as_ref(), admitted.stream.as_ref()).await;
                 stream::attach(&mut parts, admitted.stream);
                 self.forward(admitted.target, Request::from_parts(parts, admitted.body))
                     .await

@@ -4,3 +4,4 @@ pub mod graphql_request;
 pub mod rate_limit;
 pub mod request_authorizer;
 pub mod snapshot_reads;
+pub mod stream_reauthorizer;

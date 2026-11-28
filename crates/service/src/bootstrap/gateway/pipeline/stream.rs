@@ -5,10 +5,14 @@
 //! with 429 `connection_limit_exceeded` before any upgrade. The registration travels to the
 //! forwarder as a request extension.
 //!
-//! The registry decides a stream again when the earliest assignment expiry behind it passes.
-//! [`PipelineRedecision`] does that with the decision rule of the pipeline: the route is matched
-//! again on the current snapshot and the authorizer decides the caller again, so the answer is the
-//! one a new request of the same caller would get.
+//! The registry decides a stream again when the earliest assignment expiry behind it passes, and
+//! when a published policy version touches it (Story 11.2). [`PipelineRedecision`] does that with
+//! the decision rule of the pipeline: the route is matched again on the current snapshot, the
+//! revocation sets of that snapshot are read for the token of the stream, and the authorizer
+//! decides the caller again, so the answer is the one a new request of the same caller would get.
+//!
+//! A stream is registered before it is forwarded, so the version that authorized it may be below
+//! the published one by then. [`admit`] decides such a stream again right after its registration.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -16,9 +20,10 @@ use std::time::{Duration, SystemTime};
 use axum::http::request::Parts;
 use iam_application::{Authorization, Principal, RequestAuthorizer, RouteRequest};
 use iam_domain::{
-    AssignmentState, HttpMethod, PathNormalizer, PolicySnapshot, PolicyView, RouteState, SubjectId,
-    SubjectRef,
+    AssignmentState, HttpMethod, PathNormalizer, PolicySnapshot, PolicyView, RevocationRule,
+    RouteState, SubjectId, SubjectRef,
 };
+use iam_infrastructure::SnapshotRevocationView;
 use shared_domain::Clock;
 
 use super::{Refusal, host_of, route_for_host};
@@ -58,6 +63,15 @@ pub(super) fn register(
     Ok(Some(Arc::new(holding(handle, opening.parts))))
 }
 
+/// The check that follows the registration of `stream`: a stream that was authorized on a version
+/// below the published one is decided again at once, and closed when the published version denies
+/// it. Any other request, and a route that opens no stream, costs nothing.
+pub(super) async fn admit(streams: Option<&Arc<Streams>>, stream: Option<&Arc<StreamHandle>>) {
+    if let (Some(streams), Some(stream)) = (streams, stream) {
+        streams.admit(stream.id()).await;
+    }
+}
+
 /// Hands the registration of the stream to the forwarder, as an extension of the request.
 pub(super) fn attach(parts: &mut Parts, stream: Option<Arc<StreamHandle>>) {
     if let Some(stream) = stream {
@@ -87,6 +101,8 @@ fn record_of(opening: &Opening<'_>, now: SystemTime) -> StreamRecord {
         assignment_expires_at: principal
             .and_then(|principal| earliest_expiry(opening.snapshot, principal, now)),
         version: opening.snapshot.version().value(),
+        route: Some(opening.route.id),
+        service: Some(opening.route.fields.service().clone()),
     }
 }
 
@@ -159,6 +175,9 @@ impl PipelineRedecision {
         let Some(principal) = grant.principal.as_ref() else {
             return Some(None);
         };
+        if revoked(snapshot.as_ref(), principal) {
+            return None;
+        }
         let request = RouteRequest {
             snapshot: &snapshot,
             service: route.fields.service(),
@@ -178,6 +197,18 @@ impl PipelineRedecision {
     }
 }
 
+/// Whether the revocation sets of `snapshot` revoke the token of `principal`: its session has a
+/// record, or it was issued at or before the cut-off of its user or the global cut-off. A cut-off
+/// that cannot be read revokes, since the stream cannot be proven allowed.
+fn revoked(snapshot: &dyn PolicySnapshot, principal: &Principal) -> bool {
+    let status =
+        SnapshotRevocationView::status_of(snapshot, principal.session(), principal.subject());
+    match status {
+        Ok(status) => RevocationRule::revokes(principal.issued_at(), &status),
+        Err(_unreadable) => true,
+    }
+}
+
 #[async_trait::async_trait]
 impl Redecision for PipelineRedecision {
     async fn decide(&self, grant: &Grant) -> Revalidated {
@@ -186,6 +217,12 @@ impl Redecision for PipelineRedecision {
             .map_or(Revalidated::Denied, |next_expiry| Revalidated::Allowed {
                 next_expiry,
             })
+    }
+
+    fn published(&self) -> Option<i64> {
+        self.view
+            .current()
+            .map(|snapshot| snapshot.version().value())
     }
 }
 

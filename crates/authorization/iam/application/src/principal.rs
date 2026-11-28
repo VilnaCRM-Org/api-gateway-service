@@ -15,6 +15,7 @@ pub struct Principal {
     session: Option<SessionId>,
     token_id: TokenId,
     roles: Vec<String>,
+    issued_at: SystemTime,
     expires_at: SystemTime,
 }
 
@@ -69,6 +70,12 @@ impl Principal {
         &self.roles
     }
 
+    /// When the token was issued (`iat`): the revocation cut-offs are judged against it.
+    #[must_use]
+    pub const fn issued_at(&self) -> SystemTime {
+        self.issued_at
+    }
+
     /// When the token expires (`exp`).
     #[must_use]
     pub const fn expires_at(&self) -> SystemTime {
@@ -83,6 +90,7 @@ impl From<TokenIdentity> for Principal {
             session: identity.session().cloned(),
             token_id: identity.token_id().clone(),
             roles: identity.roles().to_vec(),
+            issued_at: identity.issued_at(),
             expires_at: identity.expires_at(),
         }
     }

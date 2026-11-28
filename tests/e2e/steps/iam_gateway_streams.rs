@@ -77,6 +77,11 @@ async fn anonymous_opens_websocket(world: &mut AppWorld) {
     world.started_streams().await.open(None, "ws").await;
 }
 
+#[when(expr = "the stream keys of the streaming subject {string} are revoked")]
+async fn keys_revoked(world: &mut AppWorld, name: String) {
+    world.started_streams().await.revoke_keys(&name).await;
+}
+
 #[when(expr = "{int} seconds pass on the gateway clock")]
 async fn seconds_pass(world: &mut AppWorld, seconds: u64) {
     world.started_streams().await.pass(seconds);
@@ -137,6 +142,11 @@ async fn websocket_closed(world: &mut AppWorld, name: String, code: u16) {
 #[then(expr = "the event stream of {string} should end")]
 async fn events_end(world: &mut AppWorld, name: String) {
     world.started_streams().await.expect_ended(&name).await;
+}
+
+#[then("the re-evaluation of the revoked version should have finished")]
+async fn reevaluation_finished(world: &mut AppWorld) {
+    assert!(world.started_streams().await.reevaluated());
 }
 
 #[then(expr = "the streams upstream should have received {int} request(s)")]

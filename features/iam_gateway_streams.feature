@@ -48,3 +48,15 @@ Feature: Streams through the gateway
     Then the WebSocket of "alice" should be closed with code 1013
     And the event stream of "alice" should end
     And the stream registry should hold 0 streams of the subject "alice"
+
+  Scenario: A stream closes when the role that allowed it is revoked while another subject's stream stays open
+    Given a streaming gateway with a WebSocket route and an SSE route
+    And the streaming subject "alice" holds the stream keys without expiry
+    And the streaming subject "bob" holds the stream keys without expiry
+    When the streaming subject "alice" opens a WebSocket
+    And the streaming subject "bob" opens a WebSocket
+    And the stream keys of the streaming subject "alice" are revoked
+    Then the WebSocket of "alice" should be closed with code 1008
+    And the stream registry should hold 0 streams of the subject "alice"
+    And the re-evaluation of the revoked version should have finished
+    And a frame sent over the WebSocket of "bob" should come back unchanged

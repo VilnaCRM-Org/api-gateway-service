@@ -7,3 +7,4 @@ pub mod assembly;
 pub mod read;
 pub mod ring;
 pub mod rules;
+pub mod touch;

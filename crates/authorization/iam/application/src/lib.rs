@@ -191,6 +191,9 @@ pub use gateway::request_authorizer::{
     Authorization, GraphQlAuthorization, RequestAuthorizer, RouteRequest, TracedAuthorization,
 };
 pub use gateway::snapshot_reads::{CatalogueCache, LoadedSnapshotReads};
+pub use gateway::stream_reauthorizer::{
+    OpenStreams, ReevaluationBoard, StreamReauthorizer, StreamScope,
+};
 pub use gateway_decision::stale::{
     StaleValidateAccessBatchQueryHandler, StaleValidateAccessQueryHandler,
     ValidateAccessStaleBatchQuery, ValidateAccessStaleQuery,

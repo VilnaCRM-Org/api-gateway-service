@@ -21,8 +21,8 @@
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime};
 
-use iam_application::FreshnessState;
-use iam_domain::PolicyView;
+use iam_application::{FreshnessState, OpenStreams, ReevaluationBoard, StreamScope};
+use iam_domain::{PolicyVersion, PolicyView};
 use shared_domain::Clock;
 use tokio::sync::watch;
 
@@ -70,6 +70,9 @@ pub enum Revalidated {
 pub trait Redecision: std::fmt::Debug + Send + Sync {
     /// Decides `grant` again.
     async fn decide(&self, grant: &Grant) -> Revalidated;
+
+    /// The version of the snapshot that is published now, `None` while there is none.
+    fn published(&self) -> Option<i64>;
 }
 
 /// Whether the pod may keep its streams flowing.
@@ -143,6 +146,41 @@ impl Streams {
         drop(self.decider.set(decider));
     }
 
+    /// The check that follows the registration of the stream `id` (Story 11.2): a stream that
+    /// the opening request authorized on a version below the published one is decided again at
+    /// once on the published snapshot, and closed when that denies it. A stream that waits for
+    /// this check holds back the record of finished re-evaluations.
+    pub async fn admit(&self, id: u64) {
+        let published = self.decider.get().and_then(|decider| decider.published());
+        let authorized = self.registry.record(id).map(|record| record.version);
+        match (authorized, published) {
+            (Some(authorized), Some(published)) if authorized < published => {
+                self.reevaluate_at(id, published).await;
+            }
+            _ => self.registry.admitted(id),
+        }
+    }
+
+    /// Decides the stream `id` again with the decision rule of the pipeline: it stays open and is
+    /// recorded as decided against `version` when the published snapshot allows it, and it is
+    /// closed otherwise.
+    async fn reevaluate_at(&self, id: u64, version: i64) {
+        let Some(grant) = self.registry.grant(id) else {
+            return;
+        };
+        let verdict = match self.decider.get() {
+            Some(decider) => decider.decide(&grant).await,
+            None => Revalidated::Denied,
+        };
+        match verdict {
+            Revalidated::Allowed { next_expiry } => {
+                self.registry.renew(id, next_expiry);
+                self.registry.evaluated(id, version);
+            }
+            Revalidated::Denied => self.registry.close(id, CloseReason::Revoked),
+        }
+    }
+
     /// One pass over the registry: closes the streams of a pod that may not serve, and settles
     /// every stream whose token expired, that went idle or whose assignment expiry passed.
     pub async fn scan(&self, fence: &dyn StreamFence) {
@@ -173,6 +211,33 @@ impl Streams {
             log_open(open);
         }
         open
+    }
+}
+
+#[async_trait::async_trait]
+impl OpenStreams for Streams {
+    fn mark(&self) -> u64 {
+        self.registry.mark()
+    }
+
+    fn select(&self, scope: &StreamScope) -> Vec<u64> {
+        self.registry.select(scope)
+    }
+
+    async fn reevaluate(&self, stream: u64, version: PolicyVersion) {
+        self.reevaluate_at(stream, version.value()).await;
+    }
+
+    fn settle(&self, mark: u64, version: PolicyVersion) {
+        self.registry.settle(mark, version.value());
+    }
+
+    fn lagging(&self, version: PolicyVersion) -> Vec<u64> {
+        self.registry.lagging(version.value())
+    }
+
+    fn finish(&self, version: PolicyVersion, board: &ReevaluationBoard) -> bool {
+        self.registry.finish(version, board)
     }
 }
 

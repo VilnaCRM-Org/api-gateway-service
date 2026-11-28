@@ -6,8 +6,8 @@
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime};
 
@@ -20,27 +20,33 @@ use axum::response::Response;
 use axum::routing::get;
 use hyper::body::{Frame, SizeHint};
 use hyper_util::rt::TokioIo;
-use iam_application::{EndpointDirectory, FreshnessState, RequestAuthorizer, ZoneSource};
+use iam_application::{
+    EndpointDirectory, FreshnessState, Principal, ReevaluationBoard, RequestAuthorizer,
+    StreamReauthorizer, ZoneSource,
+};
 use iam_domain::freshness::proof::FreshnessProof;
 use iam_domain::{
     AccessToken, AccessTokenParts, AccessTokenVerifier, AssignmentScope, AssignmentState,
     BootClock as _, BootInstant, CatalogueEntryState, CompiledRoleSet, EndpointConditions,
-    EndpointParts, EndpointSlice, FreshnessRule, GrantStatus, HttpMethod, PermissionGrant,
-    PolicyVersion, PolicyView, RevocationView, RoleId, RouteFlag, RouteFlags, RouteState,
-    ServiceName, SessionId, SubjectId, SubjectRef, TokenId, TokenMemo, TokenRepository,
-    UpstreamEndpoint, UpstreamState, WatchTarget,
+    EndpointParts, EndpointSlice, FreshnessRule, GlobalRevocationState, GrantStatus, HttpMethod,
+    PermissionGrant, PolicyChange, PolicySnapshot, PolicyTouch, PolicyVersion, PolicyView,
+    RevocationView, RoleId, RouteFlag, RouteFlags, RouteState, ServiceName, SessionId, StateKey,
+    SubjectId, SubjectRef, TokenId, TokenIdentity, TokenMemo, TokenRepository, UpstreamEndpoint,
+    UpstreamState, UserRevocationState, WatchTarget,
 };
 use iam_infrastructure::{
     CachingTokenRepository, MokaTokenMemo, SnapshotRevocationView, TokenMemoSettings,
 };
 use service::bootstrap::gateway::pipeline::{Forwarder, Pipeline, UnauditedCommands, router};
-use service::bootstrap::gateway::streams::{PodFence, StreamSettings, Streams, close_frame};
+use service::bootstrap::gateway::streams::{
+    CloseReason, Grant, PodFence, StreamHandle, StreamRecord, StreamSettings, Streams, close_frame,
+};
 use service::bootstrap::gateway::upstream::HyperUpstreamForwarder;
 use shared_domain::{Clock, CommandBus, Uuid};
 use test_support::access_token::FakeAccessTokenVerifier;
 use test_support::boot_clock::FakeBootClock;
 use test_support::clock::ManualClock;
-use test_support::gateway_snapshot::{CountingPolicyView, GatewaySnapshot};
+use test_support::gateway_snapshot::GatewaySnapshot;
 use test_support::id::SequenceUuidGenerator;
 use test_support::rng::FakeRng;
 use test_support::route::{route, route_draft};
@@ -210,10 +216,15 @@ async fn serve(router: Router) -> SocketAddr {
 }
 
 fn snapshot() -> GatewaySnapshot {
+    snapshot_at(7, &SUBJECTS)
+}
+
+/// The snapshot at `version` in which only `holders` hold their keys.
+fn snapshot_at(version: i64, holders: &[&Subject]) -> GatewaySnapshot {
     let mut rng = TestRng::from_env();
     let streams = UpstreamState::of(upstream(&mut rng, "streams", "streams").parts());
     let flags = RouteFlags::default().with(RouteFlag::Streaming, true);
-    let mut snapshot = GatewaySnapshot::at(PolicyVersion::new(7).unwrap())
+    let mut snapshot = GatewaySnapshot::at(PolicyVersion::new(version).unwrap())
         .with_upstream(streams.clone())
         .with_catalogue(
             ServiceName::new("streams").unwrap(),
@@ -227,9 +238,33 @@ fn snapshot() -> GatewaySnapshot {
         snapshot = snapshot.with_route(RouteState::of(route(&mut rng, &draft).parts()));
     }
     for (index, subject) in SUBJECTS.iter().enumerate() {
-        snapshot = with_subject(snapshot, index, subject);
+        if holders.iter().any(|holder| holder.name == subject.name) {
+            snapshot = with_subject(snapshot, index, subject);
+        }
     }
     snapshot
+}
+
+/// A policy view whose snapshot a test replaces, as the apply thread publishes a version.
+#[derive(Debug)]
+struct Moving(Mutex<Arc<dyn PolicySnapshot>>);
+
+impl Moving {
+    fn serving(snapshot: GatewaySnapshot) -> Self {
+        Self(Mutex::new(Arc::new(snapshot)))
+    }
+
+    fn publish(&self, snapshot: GatewaySnapshot) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Arc::new(snapshot);
+    }
+}
+
+impl PolicyView for Moving {
+    fn current(&self) -> Option<Arc<dyn PolicySnapshot>> {
+        Some(Arc::clone(
+            &self.0.lock().unwrap_or_else(PoisonError::into_inner),
+        ))
+    }
 }
 
 fn with_subject(snapshot: GatewaySnapshot, index: usize, subject: &Subject) -> GatewaySnapshot {
@@ -285,6 +320,8 @@ struct Harness {
     clock: Arc<ManualClock>,
     boot: Arc<FakeBootClock>,
     freshness: Arc<FreshnessState>,
+    moving: Arc<Moving>,
+    board: Arc<ReevaluationBoard>,
     _stop: watch::Sender<bool>,
 }
 
@@ -316,7 +353,8 @@ impl Harness {
             PolicyVersion::new(7).unwrap(),
         );
         let clock = Arc::new(ManualClock::at(at(NOW)));
-        let view: Arc<dyn PolicyView> = Arc::new(CountingPolicyView::serving(snapshot()));
+        let moving = Arc::new(Moving::serving(snapshot()));
+        let view: Arc<dyn PolicyView> = Arc::<Moving>::clone(&moving);
         let streams = Streams::new(
             StreamSettings {
                 idle_timeout: Duration::from_mins(5),
@@ -328,6 +366,13 @@ impl Harness {
         let pipeline = pipeline_over(&view, &freshness, &policy_clock, forwarder)
             .with_streams(Arc::clone(&streams));
         let (stop, stopping) = watch::channel(false);
+        let board = Arc::new(ReevaluationBoard::new());
+        let reauthorizer = Arc::new(StreamReauthorizer::new(
+            Arc::<Streams>::clone(&streams),
+            Arc::clone(&view),
+            Arc::clone(&board),
+        ));
+        drop(tokio::spawn(reauthorizer.run(stopping.clone())));
         let fence = Arc::new(PodFence::new(view, Arc::clone(&freshness)));
         drop(tokio::spawn(Arc::clone(&streams).watch(fence, stopping)));
         Self {
@@ -337,8 +382,25 @@ impl Harness {
             clock,
             boot,
             freshness,
+            moving,
+            board,
             _stop: stop,
         }
+    }
+
+    /// Publishes `snapshot` and hands the apply thread's report of it, with what it touched, to
+    /// the re-authorization; completes once that has decided the streams of the version.
+    async fn apply(&self, snapshot: GatewaySnapshot, touched: &[String]) {
+        let version = snapshot.version();
+        self.moving.publish(snapshot);
+        let mut touch = PolicyTouch::nothing();
+        for key in touched {
+            touch.note(&StateKey::parse(key).unwrap());
+        }
+        self.board.submit(PolicyChange { version, touch });
+        tokio::time::timeout(BOUND, self.board.reached(version))
+            .await
+            .unwrap();
     }
 
     fn upstream_saw(&self) -> usize {
@@ -643,4 +705,176 @@ async fn a_subject_at_its_stream_cap_is_refused_with_429_and_a_closed_stream_fre
     .unwrap();
     let (_again, again) = harness.events(Some("alice")).await;
     assert_eq!(status_of(&again), 200);
+}
+
+fn subject_key(index: usize) -> String {
+    format!("subject/user/{}", user_id(index))
+}
+
+#[tokio::test]
+async fn a_stream_of_a_subject_whose_role_is_revoked_closes_before_the_version_is_finished() {
+    let harness = Harness::start(8).await;
+    let (mut socket, _head) = harness.websocket(Some("alice")).await;
+    let (mut events, _events_head) = harness.events(Some("alice")).await;
+    let (mut bob_socket, _bob_head) = harness.websocket(Some("bob")).await;
+    read_until(&mut events, b"data: hello\n\n").await;
+    let revoked = snapshot_at(8, &[&BOB, &CAROL, &DAVE]);
+
+    harness.apply(revoked, &[subject_key(0)]).await;
+
+    assert_eq!(harness.board.finished(), 8);
+    assert_eq!(
+        harness
+            .streams
+            .registry()
+            .held_by_subject(&subject_text("alice")),
+        0,
+        "the streams were closed before the record reached the version"
+    );
+    the_stream_ended_with_the_frame(&mut socket, 1008).await;
+    the_event_stream_ended(&mut events).await;
+    echo(&mut bob_socket, b"\x81\x03bob").await;
+}
+
+#[tokio::test]
+async fn a_revoked_session_closes_its_streams_and_leaves_the_others_of_the_subject() {
+    let harness = Harness::start(8).await;
+    let (mut socket, _head) = harness.websocket(Some("alice")).await;
+    let (mut bob_socket, _bob_head) = harness.websocket(Some("bob")).await;
+    let revoked =
+        snapshot_at(8, &SUBJECTS).with_revoked_session(SessionId::new("session-alice").unwrap());
+
+    harness
+        .apply(revoked, &["revocation/session/session-alice".to_owned()])
+        .await;
+
+    the_stream_ended_with_the_frame(&mut socket, 1008).await;
+    echo(&mut bob_socket, b"\x81\x03bob").await;
+}
+
+#[tokio::test]
+async fn a_user_cutoff_closes_the_streams_of_the_user_only() {
+    let harness = Harness::start(8).await;
+    let (mut socket, _head) = harness.websocket(Some("alice")).await;
+    let (mut bob_socket, _bob_head) = harness.websocket(Some("bob")).await;
+    let cutoff = UserRevocationState {
+        user: user_id(0),
+        tokens_valid_after_micros: micros(NOW).unwrap(),
+        prune_after_micros: micros(NOW.saturating_add(3_600)).unwrap(),
+    };
+    let revoked = snapshot_at(8, &SUBJECTS).with_user_cutoff(cutoff);
+
+    harness
+        .apply(revoked, &[format!("revocation/user/{}", user_id(0))])
+        .await;
+
+    the_stream_ended_with_the_frame(&mut socket, 1008).await;
+    echo(&mut bob_socket, b"\x81\x03bob").await;
+}
+
+#[tokio::test]
+async fn a_global_cutoff_decides_every_stream_again_and_closes_them_all() {
+    let harness = Harness::start(8).await;
+    let (mut alice_socket, _alice_head) = harness.websocket(Some("alice")).await;
+    let (mut bob_events, _bob_head) = harness.events(Some("bob")).await;
+    read_until(&mut bob_events, b"data: hello\n\n").await;
+    let revoked = snapshot_at(8, &SUBJECTS).with_global_cutoff(GlobalRevocationState {
+        tokens_valid_after_micros: micros(NOW).unwrap(),
+    });
+
+    harness
+        .apply(revoked, &["revocation/global".to_owned()])
+        .await;
+
+    the_stream_ended_with_the_frame(&mut alice_socket, 1008).await;
+    the_event_stream_ended(&mut bob_events).await;
+    assert!(harness.streams.registry().is_empty());
+}
+
+#[tokio::test]
+async fn an_untouched_version_leaves_every_stream_open_and_still_finishes() {
+    let harness = Harness::start(8).await;
+    let (mut socket, _head) = harness.websocket(Some("alice")).await;
+
+    harness.apply(snapshot_at(8, &SUBJECTS), &[]).await;
+
+    assert_eq!(harness.board.finished(), 8);
+    echo(&mut socket, b"\x81\x02hi").await;
+}
+
+/// The grant of alice's stream as the pipeline would have recorded it on version 7.
+fn alice_stream(streams: &Streams) -> StreamHandle {
+    let principal = Principal::from(TokenIdentity::from(&token_of(0, &ALICE)));
+    let record = StreamRecord {
+        subject: Some(user_id(0).to_string()),
+        session: Some("session-alice".to_owned()),
+        required_keys: vec![WS_KEY.to_owned()],
+        scope: "global".to_owned(),
+        token_expires_at: Some(principal.expires_at()),
+        assignment_expires_at: None,
+        version: 7,
+        route: None,
+        service: None,
+    };
+    let grant = Grant {
+        principal: Some(principal),
+        host: HOST.to_owned(),
+        method: HttpMethod::Get,
+        path: "/ws".to_owned(),
+    };
+    streams.registry().open(record, grant).unwrap()
+}
+
+#[tokio::test]
+async fn a_stream_registered_after_the_version_finished_is_evaluated_against_it_at_once() {
+    let harness = Harness::start(8).await;
+    harness.apply(snapshot_at(8, &without_alice()), &[]).await;
+    let late = alice_stream(&harness.streams);
+
+    harness.streams.admit(late.id()).await;
+
+    assert_eq!(late.closed().await, CloseReason::Revoked);
+    assert!(harness.streams.registry().is_empty());
+}
+
+fn without_alice() -> [&'static Subject; 3] {
+    [&BOB, &CAROL, &DAVE]
+}
+
+#[tokio::test]
+async fn the_record_waits_for_a_stream_registered_below_the_version_that_is_still_unchecked() {
+    let harness = Harness::start(8).await;
+    let waiting = alice_stream(&harness.streams);
+
+    harness.apply(snapshot_at(8, &without_alice()), &[]).await;
+
+    assert_eq!(
+        waiting.closed().await,
+        CloseReason::Revoked,
+        "the stream was decided against the version before the record reached it"
+    );
+    assert_eq!(harness.board.finished(), 8);
+}
+
+#[tokio::test]
+async fn a_slow_hook_never_stalls_the_versions_that_follow_and_the_record_advances_in_order() {
+    let harness = Harness::start(8).await;
+    let (mut socket, _head) = harness.websocket(Some("alice")).await;
+    for version in 8..=20 {
+        harness.moving.publish(snapshot_at(version, &SUBJECTS));
+        harness.board.submit(PolicyChange {
+            version: PolicyVersion::new(version).unwrap(),
+            touch: PolicyTouch::nothing(),
+        });
+    }
+
+    tokio::time::timeout(
+        BOUND,
+        harness.board.reached(PolicyVersion::new(20).unwrap()),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(harness.board.finished(), 20);
+    echo(&mut socket, b"\x81\x02hi").await;
 }

@@ -13,6 +13,7 @@ mod history;
 mod revocation_tombstone;
 mod size;
 mod support;
+mod touch;
 
 use support::route_with_pattern;
 use support::{

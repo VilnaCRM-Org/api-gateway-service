@@ -11,8 +11,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime};
 
-use iam_application::Principal;
-use iam_domain::HttpMethod;
+use iam_application::{Principal, ReevaluationBoard, StreamScope};
+use iam_domain::{HttpMethod, PolicyVersion, RouteId, ServiceName};
 use tokio::sync::watch;
 use tokio::time::Instant;
 
@@ -74,6 +74,10 @@ pub struct StreamRecord {
     pub assignment_expires_at: Option<SystemTime>,
     /// The version of the snapshot that authorized the stream.
     pub version: i64,
+    /// The route the stream was opened on, which a change of the route decides again.
+    pub route: Option<RouteId>,
+    /// The service of that route, which a change of its catalogue decides again.
+    pub service: Option<ServiceName>,
 }
 
 /// What the pipeline needs to decide a stream again on a later snapshot.
@@ -132,6 +136,11 @@ struct Entry {
     grant: Grant,
     close: watch::Sender<Option<CloseReason>>,
     activity: Arc<Activity>,
+    /// The version the stream was last decided against: the one that authorized it, until a
+    /// published version decides it again.
+    evaluated: i64,
+    /// Whether the stream still waits for the check that follows its registration.
+    pending: bool,
 }
 
 #[derive(Debug, Default)]
@@ -238,6 +247,7 @@ impl StreamRegistry {
             return Err(SubjectAtCap);
         }
         let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let evaluated = record.version;
         let (close, closed) = watch::channel(None);
         let activity = Arc::new(Activity::new());
         let entry = Entry {
@@ -245,6 +255,8 @@ impl StreamRegistry {
             grant,
             close,
             activity: Arc::clone(&activity),
+            evaluated,
+            pending: true,
         };
         state.insert(id, entry);
         drop(state);
@@ -310,6 +322,111 @@ impl StreamRegistry {
                 grant: entry.grant.clone(),
             })
             .collect()
+    }
+
+    /// A point in the registration order: every stream registered so far has an id below it.
+    #[must_use]
+    pub fn mark(&self) -> u64 {
+        // The counter moves under the lock of the state in `open`, so reading it there orders
+        // this mark against every registration.
+        let _state = locked(&self.state);
+        self.next.load(Ordering::Relaxed)
+    }
+
+    /// The grant of the stream `id`, when it is open.
+    #[must_use]
+    pub fn grant(&self, id: u64) -> Option<Grant> {
+        locked(&self.state)
+            .entries
+            .get(&id)
+            .map(|entry| entry.grant.clone())
+    }
+
+    /// The ids of the open streams within `scope`. The subjects and the sessions come from their
+    /// indexes; a route or a service is a scan, because a change of one is rare.
+    #[must_use]
+    pub fn select(&self, scope: &StreamScope) -> Vec<u64> {
+        let state = locked(&self.state);
+        if scope.everything {
+            return state.entries.keys().copied().collect();
+        }
+        let mut ids: BTreeSet<u64> = BTreeSet::new();
+        for subject in &scope.subjects {
+            ids.extend(state.by_subject.get(subject).into_iter().flatten());
+        }
+        for session in &scope.sessions {
+            ids.extend(state.by_session.get(session).into_iter().flatten());
+        }
+        if !scope.routes.is_empty() || !scope.services.is_empty() {
+            ids.extend(state.entries.iter().filter_map(|(id, entry)| {
+                let on_route = entry
+                    .record
+                    .route
+                    .is_some_and(|route| scope.routes.contains(&route));
+                let of_service = entry
+                    .record
+                    .service
+                    .as_ref()
+                    .is_some_and(|service| scope.services.contains(service));
+                (on_route || of_service).then_some(*id)
+            }));
+        }
+        drop(state);
+        ids.into_iter().collect()
+    }
+
+    /// Records that the stream `id` was decided against `version` and no longer waits for the
+    /// check that follows its registration. The version never goes down.
+    pub fn evaluated(&self, id: u64, version: i64) {
+        if let Some(entry) = locked(&self.state).entries.get_mut(&id) {
+            entry.evaluated = entry.evaluated.max(version);
+            entry.pending = false;
+        }
+    }
+
+    /// Records that the stream `id` needs no decision beyond the one that authorized it: the
+    /// check that follows its registration found the published version no higher.
+    pub fn admitted(&self, id: u64) {
+        if let Some(entry) = locked(&self.state).entries.get_mut(&id) {
+            entry.pending = false;
+        }
+    }
+
+    /// Records that every stream registered before `mark` that has passed its first check is
+    /// decided against `version`.
+    pub fn settle(&self, mark: u64, version: i64) {
+        for (_id, entry) in locked(&self.state).entries.range_mut(..mark) {
+            if !entry.pending {
+                entry.evaluated = entry.evaluated.max(version);
+            }
+        }
+    }
+
+    /// The ids of the streams that were not decided against `version` yet.
+    #[must_use]
+    pub fn lagging(&self, version: i64) -> Vec<u64> {
+        locked(&self.state)
+            .entries
+            .iter()
+            .filter(|(_id, entry)| entry.evaluated < version)
+            .map(|(id, _entry)| *id)
+            .collect()
+    }
+
+    /// Moves the record of `board` to `version` when every stream is decided against it. The
+    /// check and the move happen under the lock of the registry, so no registration falls
+    /// between them. Whether the record moved.
+    pub fn finish(&self, version: PolicyVersion, board: &ReevaluationBoard) -> bool {
+        let state = locked(&self.state);
+        let lagging = state
+            .entries
+            .values()
+            .any(|entry| entry.evaluated < version.value());
+        if !lagging {
+            board.advance(version);
+        }
+        drop(state);
+        !lagging
     }
 
     /// Replaces the earliest assignment expiry of the stream `id` after it was decided again.
